@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers.auth import router as auth_router
 from app.api.routers.health import router as health_router
+from app.api.routers.repos import router as repos_router
 from app.config import settings
 from app.repos.db import close_pool
 
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
 
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(repos_router)
     return application
 
 

@@ -16,6 +16,7 @@ class Settings:
     GITHUB_WEBHOOK_SECRET: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
     JWT_SECRET: str = os.getenv("JWT_SECRET", "")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
 
 
 settings = Settings()
