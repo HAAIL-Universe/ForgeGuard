@@ -10,6 +10,7 @@ from app.repos.repo_repo import (
     get_repo_by_github_id,
     get_repo_by_id,
     get_repos_by_user,
+    get_repos_with_health,
 )
 from app.repos.user_repo import get_user_by_id
 
@@ -85,18 +86,35 @@ async def disconnect_repo(user_id: UUID, repo_id: UUID) -> None:
 
 
 async def list_connected_repos(user_id: UUID) -> list[dict]:
-    """List all connected repos for a user with placeholder health data."""
-    repos = await get_repos_by_user(user_id)
+    """List all connected repos for a user with computed health data."""
+    repos = await get_repos_with_health(user_id)
     result = []
     for repo in repos:
+        total = repo.get("total_count") or 0
+        pass_count = repo.get("pass_count") or 0
+
+        if total == 0:
+            health = "pending"
+            rate = None
+        else:
+            rate = pass_count / total
+            if rate == 1.0:
+                health = "green"
+            elif rate >= 0.5:
+                health = "yellow"
+            else:
+                health = "red"
+
+        last_audit = repo.get("last_audit_at")
+
         result.append({
             "id": str(repo["id"]),
             "full_name": repo["full_name"],
             "default_branch": repo["default_branch"],
             "webhook_active": repo["webhook_active"],
-            "health_score": "pending",
-            "last_audit_at": None,
-            "recent_pass_rate": None,
+            "health_score": health,
+            "last_audit_at": last_audit.isoformat() if last_audit else None,
+            "recent_pass_rate": rate,
         })
     return result
 

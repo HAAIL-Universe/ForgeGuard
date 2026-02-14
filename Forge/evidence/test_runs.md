@@ -300,3 +300,113 @@ M  web/src/pages/Dashboard.tsx
 
 ```
 
+## Test Run 2026-02-14T23:24:21Z
+- Status: PASS
+- Start: 2026-02-14T23:24:21Z
+- End: 2026-02-14T23:24:23Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
+- compileall exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+## master
+ M Forge/scripts/watch_audit.ps1
+ M app/main.py
+ M app/repos/audit_repo.py
+ M app/repos/repo_repo.py
+ M app/services/audit_service.py
+ M app/services/repo_service.py
+ M tests/test_repos_router.py
+ M web/src/App.tsx
+ M web/src/__tests__/App.test.tsx
+ M web/src/components/CommitRow.tsx
+ M web/src/index.css
+ M web/src/pages/AuditDetail.tsx
+ M web/src/pages/CommitTimeline.tsx
+ M web/src/pages/Dashboard.tsx
+?? app/api/routers/ws.py
+?? app/ws_manager.py
+?? tests/test_repo_health.py
+?? tests/test_ws_manager.py
+?? tests/test_ws_router.py
+?? web/src/components/AppShell.tsx
+?? web/src/components/EmptyState.tsx
+?? web/src/components/Skeleton.tsx
+?? web/src/context/ToastContext.tsx
+?? web/src/hooks/
+```
+- git diff --stat:
+```
+ Forge/scripts/watch_audit.ps1    |   9 +++
+ app/main.py                      |   2 +
+ app/repos/audit_repo.py          |  16 ++--
+ app/repos/repo_repo.py           |  38 ++++++++++
+ app/services/audit_service.py    |  18 +++++
+ app/services/repo_service.py     |  28 +++++--
+ tests/test_repos_router.py       |   8 +-
+ web/src/App.tsx                  |  73 ++++++++----------
+ web/src/__tests__/App.test.tsx   |  41 +++++++++-
+ web/src/components/CommitRow.tsx |   8 +-
+ web/src/index.css                |   5 ++
+ web/src/pages/AuditDetail.tsx    | 156 ++++++++++++++++++++++-----------------
+ web/src/pages/CommitTimeline.tsx | 143 +++++++++++++++++++++--------------
+ web/src/pages/Dashboard.tsx      |  90 +++++++++-------------
+ 14 files changed, 405 insertions(+), 230 deletions(-)
+```
+
+## Test Run 2026-02-14T23:39:46Z
+- Status: PASS
+- Start: 2026-02-14T23:39:46Z
+- End: 2026-02-14T23:39:48Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: 007855acf36050e87fe70e837aae2b6c6e5716fa
+- compileall exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+## master
+```
+- git diff --stat:
+```
+
+```
+
+## Test Run 2026-02-14T23:39:52Z
+- Status: PASS
+- Start: 2026-02-14T23:39:52Z
+- End: 2026-02-14T23:39:53Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: git unavailable
+- HEAD: git unavailable
+- compileall exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+git unavailable
+```
+- git diff --stat:
+```
+git unavailable
+```
+
+## Test Run 2026-02-14T23:40:07Z
+- Status: PASS
+- Start: 2026-02-14T23:40:07Z
+- End: 2026-02-14T23:40:08Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: git unavailable
+- HEAD: git unavailable
+- compileall exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+git unavailable
+```
+- git diff --stat:
+```
+git unavailable
+```
+

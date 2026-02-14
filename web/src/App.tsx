@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import CommitTimeline from './pages/CommitTimeline';
 import AuditDetailPage from './pages/AuditDetail';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider } from './context/ToastContext';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuth();
@@ -12,52 +13,42 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function AppLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ background: '#0F172A', color: '#F8FAFC', minHeight: '100vh' }}>
-      {children}
-    </div>
-  );
-}
-
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/auth/callback" element={<AuthCallback />} />
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/repos/:repoId"
-            element={
-              <ProtectedRoute>
-                <AppLayout>
+      <ToastProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/repos/:repoId"
+              element={
+                <ProtectedRoute>
                   <CommitTimeline />
-                </AppLayout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/repos/:repoId/audits/:auditId"
-            element={
-              <ProtectedRoute>
-                <AppLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/repos/:repoId/audits/:auditId"
+              element={
+                <ProtectedRoute>
                   <AuditDetailPage />
-                </AppLayout>
-              </ProtectedRoute>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </ToastProvider>
     </AuthProvider>
   );
 }

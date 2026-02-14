@@ -12,6 +12,7 @@ from app.repos.audit_repo import (
 )
 from app.repos.repo_repo import get_repo_by_github_id
 from app.repos.user_repo import get_user_by_id
+from app.ws_manager import manager as ws_manager
 
 
 async def process_push_event(payload: dict) -> dict | None:
@@ -134,6 +135,22 @@ async def process_push_event(payload: dict) -> dict | None:
             files_checked=len(files),
         )
 
+        # Broadcast real-time update via WebSocket
+        user_id_str = str(repo["user_id"])
+        await ws_manager.broadcast_audit_update(user_id_str, {
+            "id": str(audit_run["id"]),
+            "repo_id": str(repo["id"]),
+            "commit_sha": commit_sha,
+            "commit_message": commit_message,
+            "commit_author": commit_author,
+            "branch": branch,
+            "status": "completed",
+            "overall_result": overall,
+            "started_at": audit_run["started_at"].isoformat() if audit_run.get("started_at") else None,
+            "completed_at": None,
+            "files_checked": len(files),
+        })
+
     except Exception:
         await update_audit_run(
             audit_run_id=audit_run["id"],
@@ -174,6 +191,7 @@ async def get_repo_audits(
             "started_at": item["started_at"].isoformat() if item["started_at"] else None,
             "completed_at": item["completed_at"].isoformat() if item["completed_at"] else None,
             "files_checked": item["files_checked"],
+            "check_summary": item.get("check_summary"),
         })
     return result, total
 

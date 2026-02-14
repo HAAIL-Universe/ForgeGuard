@@ -11,6 +11,7 @@ interface AuditRun {
   started_at: string | null;
   completed_at: string | null;
   files_checked: number;
+  check_summary: string | null;
 }
 
 interface CommitRowProps {
@@ -71,7 +72,12 @@ function CommitRow({ audit, onClick }: CommitRowProps) {
           </div>
         </div>
       </div>
-      <div style={{ flexShrink: 0, marginLeft: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0, marginLeft: '12px' }}>
+        {audit.check_summary && (
+          <span style={{ color: '#64748B', fontSize: '0.65rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+            {audit.check_summary}
+          </span>
+        )}
         <ResultBadge result={audit.overall_result} />
       </div>
     </div>

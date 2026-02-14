@@ -1,15 +1,21 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
+import { useWebSocket } from '../hooks/useWebSocket';
+import AppShell from '../components/AppShell';
 import RepoCard from '../components/RepoCard';
 import type { Repo } from '../components/RepoCard';
 import RepoPickerModal from '../components/RepoPickerModal';
 import ConfirmDialog from '../components/ConfirmDialog';
+import EmptyState from '../components/EmptyState';
+import { SkeletonCard } from '../components/Skeleton';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 function Dashboard() {
-  const { user, token, logout } = useAuth();
+  const { token } = useAuth();
+  const { addToast } = useToast();
   const navigate = useNavigate();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,29 +30,39 @@ function Dashboard() {
       if (res.ok) {
         const data = await res.json();
         setRepos(data.items);
+      } else {
+        addToast('Failed to load repos');
       }
     } catch {
-      // network error -- keep existing
+      addToast('Network error loading repos');
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, addToast]);
 
   useEffect(() => {
     fetchRepos();
   }, [fetchRepos]);
 
+  // Real-time: refresh repos when an audit completes
+  useWebSocket(useCallback((data) => {
+    if (data.type === 'audit_update') {
+      fetchRepos();
+    }
+  }, [fetchRepos]));
+
   const handleDisconnect = async () => {
     if (!disconnectTarget) return;
     try {
-      await fetch(`${API_BASE}/repos/${disconnectTarget.id}/disconnect`, {
+      const res = await fetch(`${API_BASE}/repos/${disconnectTarget.id}/disconnect`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) addToast('Failed to disconnect repo');
       setDisconnectTarget(null);
       fetchRepos();
     } catch {
-      // best effort
+      addToast('Network error disconnecting repo');
       setDisconnectTarget(null);
     }
   };
@@ -56,44 +72,8 @@ function Dashboard() {
   };
 
   return (
-    <div style={{ background: '#0F172A', color: '#F8FAFC', minHeight: '100vh' }}>
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '16px 24px',
-          borderBottom: '1px solid #1E293B',
-        }}
-      >
-        <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>ForgeGuard</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {user?.avatar_url && (
-            <img
-              src={user.avatar_url}
-              alt={user.github_login}
-              style={{ width: 32, height: 32, borderRadius: '50%' }}
-            />
-          )}
-          <span style={{ color: '#94A3B8' }}>{user?.github_login}</span>
-          <button
-            onClick={logout}
-            style={{
-              background: 'transparent',
-              color: '#94A3B8',
-              border: '1px solid #334155',
-              borderRadius: '6px',
-              padding: '6px 16px',
-              cursor: 'pointer',
-              fontSize: '0.875rem',
-            }}
-          >
-            Logout
-          </button>
-        </div>
-      </header>
-
-      <main style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
+    <AppShell sidebarRepos={repos} onReposChange={fetchRepos}>
+      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
         <div
           style={{
             display: 'flex',
@@ -120,17 +100,17 @@ function Dashboard() {
         </div>
 
         {loading ? (
-          <p style={{ color: '#94A3B8' }}>Loading repos...</p>
-        ) : repos.length === 0 ? (
-          <div
-            style={{
-              textAlign: 'center',
-              padding: '64px 24px',
-              color: '#94A3B8',
-            }}
-          >
-            <p>No repos connected yet. Click &quot;Connect a Repo&quot; to get started.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
           </div>
+        ) : repos.length === 0 ? (
+          <EmptyState
+            message='No repos connected yet. Click "Connect a Repo" to get started.'
+            actionLabel="Connect a Repo"
+            onAction={() => setShowPicker(true)}
+          />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {repos.map((repo) => (
@@ -143,7 +123,7 @@ function Dashboard() {
             ))}
           </div>
         )}
-      </main>
+      </div>
 
       {showPicker && (
         <RepoPickerModal
@@ -161,7 +141,7 @@ function Dashboard() {
           onCancel={() => setDisconnectTarget(null)}
         />
       )}
-    </div>
+    </AppShell>
   );
 }
 

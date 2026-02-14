@@ -623,3 +623,203 @@ Outcome: SIGNED-OFF (awaiting AUTHORIZED)
 W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: WARN -- Uncovered routes: /ws (expected handler for 'ws')
+
+---
+## Audit Entry: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states -- Iteration 12
+Timestamp: 2026-02-14T23:44:25Z
+AEM Cycle: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (26 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/ws.py
+- app/main.py
+- app/repos/audit_repo.py
+- app/repos/repo_repo.py
+- app/services/audit_service.py
+- app/services/repo_service.py
+- app/ws_manager.py
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_repo_health.py
+- tests/test_repos_router.py
+- tests/test_ws_manager.py
+- tests/test_ws_router.py
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/CommitRow.tsx
+- web/src/components/EmptyState.tsx
+- web/src/components/Skeleton.tsx
+- web/src/context/ToastContext.tsx
+- web/src/hooks/useWebSocket.ts
+- web/src/index.css
+- web/src/pages/AuditDetail.tsx
+- web/src/pages/CommitTimeline.tsx
+- web/src/pages/Dashboard.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states -- Iteration 12
+Timestamp: 2026-02-14T23:44:25Z
+AEM Cycle: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (26 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/ws.py
+- app/main.py
+- app/repos/audit_repo.py
+- app/repos/repo_repo.py
+- app/services/audit_service.py
+- app/services/repo_service.py
+- app/ws_manager.py
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_repo_health.py
+- tests/test_repos_router.py
+- tests/test_ws_manager.py
+- tests/test_ws_router.py
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/CommitRow.tsx
+- web/src/components/EmptyState.tsx
+- web/src/components/Skeleton.tsx
+- web/src/context/ToastContext.tsx
+- web/src/hooks/useWebSocket.ts
+- web/src/index.css
+- web/src/pages/AuditDetail.tsx
+- web/src/pages/CommitTimeline.tsx
+- web/src/pages/Dashboard.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states -- Iteration 13
+Timestamp: 2026-02-14T23:44:25Z
+AEM Cycle: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (26 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/ws.py
+- app/main.py
+- app/repos/audit_repo.py
+- app/repos/repo_repo.py
+- app/services/audit_service.py
+- app/services/repo_service.py
+- app/ws_manager.py
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_repo_health.py
+- tests/test_repos_router.py
+- tests/test_ws_manager.py
+- tests/test_ws_router.py
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/CommitRow.tsx
+- web/src/components/EmptyState.tsx
+- web/src/components/Skeleton.tsx
+- web/src/context/ToastContext.tsx
+- web/src/hooks/useWebSocket.ts
+- web/src/index.css
+- web/src/pages/AuditDetail.tsx
+- web/src/pages/CommitTimeline.tsx
+- web/src/pages/Dashboard.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states -- Iteration 13
+Timestamp: 2026-02-14T23:44:25Z
+AEM Cycle: Phase 4 -- Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (26 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/ws.py
+- app/main.py
+- app/repos/audit_repo.py
+- app/repos/repo_repo.py
+- app/services/audit_service.py
+- app/services/repo_service.py
+- app/ws_manager.py
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_repo_health.py
+- tests/test_repos_router.py
+- tests/test_ws_manager.py
+- tests/test_ws_router.py
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/CommitRow.tsx
+- web/src/components/EmptyState.tsx
+- web/src/components/Skeleton.tsx
+- web/src/context/ToastContext.tsx
+- web/src/hooks/useWebSocket.ts
+- web/src/index.css
+- web/src/pages/AuditDetail.tsx
+- web/src/pages/CommitTimeline.tsx
+- web/src/pages/Dashboard.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

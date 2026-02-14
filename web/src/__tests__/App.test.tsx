@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import Login from '../pages/Login';
 import HealthBadge from '../components/HealthBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ResultBadge from '../components/ResultBadge';
 import CheckResultCard from '../components/CheckResultCard';
+import Skeleton, { SkeletonCard, SkeletonRow } from '../components/Skeleton';
+import EmptyState from '../components/EmptyState';
 
 describe('Login', () => {
   it('renders the sign in button', () => {
@@ -80,5 +82,42 @@ describe('CheckResultCard', () => {
     );
     expect(screen.getByText('A4')).toBeInTheDocument();
     expect(screen.getByText('Boundary compliance')).toBeInTheDocument();
+  });
+});
+
+describe('Skeleton', () => {
+  it('renders skeleton element', () => {
+    render(<Skeleton />);
+    expect(screen.getByTestId('skeleton')).toBeInTheDocument();
+  });
+
+  it('renders SkeletonCard', () => {
+    render(<SkeletonCard />);
+    const skeletons = screen.getAllByTestId('skeleton');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
+
+  it('renders SkeletonRow', () => {
+    render(<SkeletonRow />);
+    const skeletons = screen.getAllByTestId('skeleton');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
+});
+
+describe('EmptyState', () => {
+  it('renders message', () => {
+    render(<EmptyState message="Nothing here" />);
+    expect(screen.getByText('Nothing here')).toBeInTheDocument();
+  });
+
+  it('renders empty-state test id', () => {
+    render(<EmptyState message="Test" />);
+    expect(screen.getByTestId('empty-state')).toBeInTheDocument();
+  });
+
+  it('renders action button when provided', () => {
+    const fn = () => {};
+    render(<EmptyState message="Empty" actionLabel="Add Item" onAction={fn} />);
+    expect(screen.getByText('Add Item')).toBeInTheDocument();
   });
 });

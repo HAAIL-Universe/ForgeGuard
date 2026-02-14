@@ -43,7 +43,7 @@ def _auth_header():
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
+@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
 def test_list_repos_returns_items(mock_get_repos, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_get_repos.return_value = [
@@ -57,6 +57,9 @@ def test_list_repos_returns_items(mock_get_repos, mock_get_user):
             "webhook_active": True,
             "created_at": "2025-01-01T00:00:00Z",
             "updated_at": "2025-01-01T00:00:00Z",
+            "total_count": 5,
+            "pass_count": 5,
+            "last_audit_at": None,
         }
     ]
 
@@ -66,10 +69,11 @@ def test_list_repos_returns_items(mock_get_repos, mock_get_user):
     assert "items" in data
     assert len(data["items"]) == 1
     assert data["items"][0]["full_name"] == "octocat/hello-world"
+    assert data["items"][0]["health_score"] == "green"
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
+@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
 def test_list_repos_empty(mock_get_repos, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_get_repos.return_value = []

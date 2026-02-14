@@ -95,11 +95,17 @@ async def get_audit_runs_by_repo(
 
     rows = await pool.fetch(
         """
-        SELECT id, repo_id, commit_sha, commit_message, commit_author, branch,
-               status, overall_result, started_at, completed_at, files_checked, created_at
-        FROM audit_runs
-        WHERE repo_id = $1
-        ORDER BY created_at DESC
+        SELECT a.id, a.repo_id, a.commit_sha, a.commit_message, a.commit_author, a.branch,
+               a.status, a.overall_result, a.started_at, a.completed_at, a.files_checked, a.created_at,
+               cs.check_summary
+        FROM audit_runs a
+        LEFT JOIN LATERAL (
+            SELECT string_agg(c.check_code || ':' || c.result, ' ' ORDER BY c.created_at) AS check_summary
+            FROM audit_checks c
+            WHERE c.audit_run_id = a.id
+        ) cs ON true
+        WHERE a.repo_id = $1
+        ORDER BY a.created_at DESC
         LIMIT $2 OFFSET $3
         """,
         repo_id,

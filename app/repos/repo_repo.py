@@ -88,6 +88,44 @@ async def delete_repo(repo_id: UUID) -> bool:
     return result == "DELETE 1"
 
 
+async def get_repos_with_health(user_id: UUID) -> list[dict]:
+    """Fetch repos with recent audit health data for a user.
+
+    Returns each repo with last_audit_at and pass/total counts from the
+    10 most recent completed audit runs.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT
+            r.id, r.user_id, r.github_repo_id, r.full_name,
+            r.default_branch, r.webhook_id, r.webhook_active,
+            r.created_at, r.updated_at,
+            h.last_audit_at,
+            h.pass_count,
+            h.total_count
+        FROM repos r
+        LEFT JOIN LATERAL (
+            SELECT
+                max(a.completed_at) AS last_audit_at,
+                count(*) FILTER (WHERE a.overall_result = 'PASS') AS pass_count,
+                count(*) AS total_count
+            FROM (
+                SELECT overall_result, completed_at
+                FROM audit_runs
+                WHERE repo_id = r.id AND status = 'completed'
+                ORDER BY created_at DESC
+                LIMIT 10
+            ) a
+        ) h ON true
+        WHERE r.user_id = $1
+        ORDER BY r.created_at DESC
+        """,
+        user_id,
+    )
+    return [dict(r) for r in rows]
+
+
 async def update_webhook(
     repo_id: UUID,
     webhook_id: int | None,
