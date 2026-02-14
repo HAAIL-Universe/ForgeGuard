@@ -3,6 +3,8 @@ import { render, screen } from '@testing-library/react';
 import Login from '../pages/Login';
 import HealthBadge from '../components/HealthBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ResultBadge from '../components/ResultBadge';
+import CheckResultCard from '../components/CheckResultCard';
 
 describe('Login', () => {
   it('renders the sign in button', () => {
@@ -43,5 +45,40 @@ describe('ConfirmDialog', () => {
     );
     expect(screen.getByText('Test Title')).toBeInTheDocument();
     expect(screen.getByText('Test message')).toBeInTheDocument();
+  });
+});
+
+describe('ResultBadge', () => {
+  it('renders PASS with green color', () => {
+    render(<ResultBadge result="PASS" />);
+    expect(screen.getByText('PASS')).toBeInTheDocument();
+  });
+
+  it('renders FAIL', () => {
+    render(<ResultBadge result="FAIL" />);
+    expect(screen.getByText('FAIL')).toBeInTheDocument();
+  });
+
+  it('renders PENDING when null', () => {
+    render(<ResultBadge result={null} />);
+    expect(screen.getByText('PENDING')).toBeInTheDocument();
+  });
+});
+
+describe('CheckResultCard', () => {
+  it('renders check info and detail', () => {
+    render(
+      <CheckResultCard
+        check={{
+          id: '1',
+          check_code: 'A4',
+          check_name: 'Boundary compliance',
+          result: 'PASS',
+          detail: null,
+        }}
+      />,
+    );
+    expect(screen.getByText('A4')).toBeInTheDocument();
+    expect(screen.getByText('Boundary compliance')).toBeInTheDocument();
   });
 });

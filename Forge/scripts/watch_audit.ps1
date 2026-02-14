@@ -32,7 +32,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# -- Helpers ---------------------------------------------------------------
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 function Info([string]$m)  { Write-Host "[watch] $(Get-Date -Format 'HH:mm:ss') $m" -ForegroundColor Cyan }
 function Warn([string]$m)  { Write-Host "[watch] $(Get-Date -Format 'HH:mm:ss') $m" -ForegroundColor Yellow }
@@ -88,8 +88,8 @@ function ParseDiffLogForFiles([string]$diffLogPath) {
     }
   }
 
-  if ($files.Count -eq 0) { return ,@() }
-  return ,$files
+  if ($files.Count -eq 0) { return @() }
+  return $files
 }
 
 function ParseDiffLogForPhase([string]$diffLogPath) {
@@ -111,7 +111,7 @@ function ParseDiffLogForPhase([string]$diffLogPath) {
   return "unknown"
 }
 
-# -- Resolve paths ---------------------------------------------------------
+# ── Resolve paths ────────────────────────────────────────────────────────────
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $govRoot = Split-Path -Parent $scriptDir  # Forge/ governance folder
@@ -149,35 +149,36 @@ if (-not (Test-Path $auditScript)) {
   exit 1
 }
 
-# -- Banner ----------------------------------------------------------------
+# ── Banner ───────────────────────────────────────────────────────────────────
 
 Write-Host ""
-Write-Host "  +==================================================+" -ForegroundColor Cyan
-Write-Host "  |         FORGE AUDIT WATCHER -- ACTIVE             |" -ForegroundColor Cyan
-Write-Host "  +==================================================+" -ForegroundColor Cyan
-Write-Host "  |  Watching:  $($resolvedWatchPath | Split-Path -Leaf)/" -ForegroundColor White
-Write-Host "  |  Trigger:   $Trigger" -ForegroundColor White
-Write-Host "  |  Debounce:  ${DebounceMs}ms" -ForegroundColor White
-Write-Host "  |  Gov root:  $govRoot" -ForegroundColor DarkGray
-Write-Host "  |  Proj root: $projectRoot" -ForegroundColor DarkGray
+Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "  ║         FORGE AUDIT WATCHER -- ACTIVE             ║" -ForegroundColor Cyan
+Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
+Write-Host "  ║  Watching:  $($resolvedWatchPath | Split-Path -Leaf)/" -ForegroundColor White
+Write-Host "  ║  Trigger:   $Trigger" -ForegroundColor White
+Write-Host "  ║  Debounce:  ${DebounceMs}ms" -ForegroundColor White
+Write-Host "  ║  Gov root:  $govRoot" -ForegroundColor DarkGray
+Write-Host "  ║  Proj root: $projectRoot" -ForegroundColor DarkGray
 if ($DryRun) {
-  Write-Host "  |  Mode:      DRY RUN (parse only, no audit)" -ForegroundColor Yellow
+  Write-Host "  ║  Mode:      DRY RUN (parse only, no audit)" -ForegroundColor Yellow
 } else {
-  Write-Host "  |  Mode:      LIVE (will run audit on trigger)" -ForegroundColor Green
+  Write-Host "  ║  Mode:      LIVE (will run audit on trigger)" -ForegroundColor Green
 }
-Write-Host "  +==================================================+" -ForegroundColor Cyan
-Write-Host "  |  Press Ctrl+C to stop                            |" -ForegroundColor DarkGray
-Write-Host "  +==================================================+" -ForegroundColor Cyan
+Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
+Write-Host "  ║  Ctrl+X  = manual audit trigger                  ║" -ForegroundColor White
+Write-Host "  ║  Ctrl+C  = stop watcher                         ║" -ForegroundColor DarkGray
+Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
-# -- State -----------------------------------------------------------------
+# ── State ────────────────────────────────────────────────────────────────────
 
 $lastTriggerTime = [DateTime]::MinValue
 $auditCount = 0
 $passCount = 0
 $failCount = 0
 
-# -- File watcher setup ----------------------------------------------------
+# ── File watcher setup ───────────────────────────────────────────────────────
 
 $watcher = New-Object System.IO.FileSystemWatcher
 $watcher.Path = $resolvedWatchPath
@@ -190,7 +191,7 @@ Info "Watcher ready. Waiting for '$Trigger' to be written..."
 Dim "Builder can work freely -- this watcher is passive and read-only."
 Write-Host ""
 
-# -- Main loop -------------------------------------------------------------
+# ── Main loop ────────────────────────────────────────────────────────────────
 
 try {
   $watcher.EnableRaisingEvents = $true
@@ -198,6 +199,62 @@ try {
   while ($true) {
     # Use WaitForChanged with a timeout so Ctrl+C works
     $result = $watcher.WaitForChanged([System.IO.WatcherChangeTypes]::Changed, 1000)
+
+    # Check for manual trigger keypress (Ctrl+X)
+    if ([Console]::KeyAvailable) {
+      $key = [Console]::ReadKey($true)
+      if ($key.Modifiers -band [ConsoleModifiers]::Control -and $key.Key -eq [ConsoleKey]::X) {
+        Write-Host ""
+        Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Magenta
+        Info "MANUAL TRIGGER: Ctrl+X pressed"
+        Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor Magenta
+
+        $diffLogPath = Join-Path $resolvedWatchPath $Trigger
+        $claimedFiles = @(ParseDiffLogForFiles $diffLogPath)
+        $phase = ParseDiffLogForPhase $diffLogPath
+
+        if (-not $claimedFiles -or $claimedFiles.Count -eq 0) {
+          Warn "No files found in diff log. Cannot run manual audit without a file list."
+        } else {
+          $claimedFilesStr = $claimedFiles -join ", "
+          Info "Phase:  $phase"
+          Info "Files:  $claimedFilesStr"
+
+          if ($DryRun) {
+            Good "DRY RUN -- would run: run_audit.ps1 -ClaimedFiles `"$claimedFilesStr`" -Phase `"$phase`""
+          } else {
+            $auditCount++
+            Info "Running manual audit #$auditCount..."
+            Write-Host ""
+            try {
+              $auditOutput = & pwsh -File $auditScript -ClaimedFiles $claimedFilesStr -Phase $phase 2>&1
+              $auditExit = $LASTEXITCODE
+              foreach ($line in $auditOutput) {
+                $lineStr = "$line"
+                if ($lineStr -match 'PASS') { Write-Host "  $lineStr" -ForegroundColor Green }
+                elseif ($lineStr -match 'FAIL') { Write-Host "  $lineStr" -ForegroundColor Red }
+                elseif ($lineStr -match 'WARN') { Write-Host "  $lineStr" -ForegroundColor Yellow }
+                else { Write-Host "  $lineStr" -ForegroundColor Gray }
+              }
+              Write-Host ""
+              if ($auditExit -eq 0) {
+                $passCount++
+                Good "AUDIT #$auditCount RESULT: ALL PASS [$passCount pass / $failCount fail total]"
+              } else {
+                $failCount++
+                Bad  "AUDIT #$auditCount RESULT: FAIL (exit $auditExit) [$passCount pass / $failCount fail total]"
+              }
+            } catch {
+              $failCount++
+              Bad "AUDIT #$auditCount ERROR: $_"
+            }
+          }
+        }
+        Write-Host ""
+        Dim "Resuming watch..."
+        continue
+      }
+    }
 
     if ($result.TimedOut) {
       continue
@@ -216,9 +273,9 @@ try {
     Start-Sleep -Milliseconds 300
 
     Write-Host ""
-    Write-Host "  +--------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Yellow
     Info "TRIGGER DETECTED: $Trigger changed"
-    Write-Host "  +--------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor Yellow
 
     # Parse the diff log
     $diffLogPath = Join-Path $resolvedWatchPath $Trigger
@@ -297,12 +354,12 @@ try {
   $watcher.Dispose()
 
   Write-Host ""
-  Write-Host "  +==================================================+" -ForegroundColor Cyan
-  Write-Host "  |         FORGE AUDIT WATCHER -- STOPPED            |" -ForegroundColor Cyan
-  Write-Host "  +==================================================+" -ForegroundColor Cyan
-  Write-Host "  |  Total audits:  $auditCount" -ForegroundColor White
-  Write-Host "  |  Passed:        $passCount" -ForegroundColor Green
-  Write-Host "  |  Failed:        $failCount" -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Green" })
-  Write-Host "  +==================================================+" -ForegroundColor Cyan
+  Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+  Write-Host "  ║         FORGE AUDIT WATCHER -- STOPPED            ║" -ForegroundColor Cyan
+  Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
+  Write-Host "  ║  Total audits:  $auditCount" -ForegroundColor White
+  Write-Host "  ║  Passed:        $passCount" -ForegroundColor Green
+  Write-Host "  ║  Failed:        $failCount" -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Green" })
+  Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
   Write-Host ""
 }

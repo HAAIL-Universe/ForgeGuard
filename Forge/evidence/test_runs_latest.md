@@ -1,43 +1,44 @@
 Status: PASS
-Start: 2026-02-14T22:30:42Z
-End: 2026-02-14T22:30:44Z
+Start: 2026-02-14T23:09:21Z
+End: 2026-02-14T23:09:23Z
 Branch: master
-HEAD: af904f59503c1317c34412bd31f15988927bdc49
+HEAD: 39afcadcc0d0468cd71d918168e978f7d39daa49
 Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-compileall exit: 0
-pytest exit: 0
 import_sanity exit: 0
+pytest exit: 0
+compileall exit: 0
 git status -sb:
 ```
 ## master
- M .env.example
- M Forge/evidence/audit_ledger.md
- M Forge/evidence/test_runs.md
- M Forge/evidence/test_runs_latest.md
- M app/clients/github_client.py
- M app/config.py
- M app/main.py
- M app/repos/user_repo.py
- M web/src/__tests__/App.test.tsx
- M web/src/pages/Dashboard.tsx
-?? app/api/routers/repos.py
-?? app/repos/repo_repo.py
-?? app/services/repo_service.py
-?? tests/test_repos_router.py
-?? web/src/components/
+M  Forge/Contracts/builder_contract.md
+M  Forge/evidence/audit_ledger.md
+M  Forge/evidence/test_runs.md
+M  Forge/evidence/test_runs_latest.md
+M  Forge/evidence/updatedifflog.md
+M  Forge/scripts/watch_audit.ps1
+M  app/api/routers/repos.py
+A  app/api/routers/webhooks.py
+M  app/audit/__init__.py
+A  app/audit/engine.py
+M  app/clients/github_client.py
+M  app/main.py
+A  app/repos/audit_repo.py
+A  app/services/audit_service.py
+A  app/webhooks.py
+A  tests/test_audit_engine.py
+A  tests/test_webhook_router.py
+A  tests/test_webhooks.py
+M  web/src/App.tsx
+M  web/src/__tests__/App.test.tsx
+A  web/src/components/CheckResultCard.tsx
+A  web/src/components/CommitRow.tsx
+A  web/src/components/ResultBadge.tsx
+A  web/src/pages/AuditDetail.tsx
+A  web/src/pages/CommitTimeline.tsx
+M  web/src/pages/Dashboard.tsx
 ```
 git diff --stat:
 ```
- .env.example                       |   1 +
- Forge/evidence/audit_ledger.md     |  46 +++++++++++++
- Forge/evidence/test_runs.md        |  40 ++++++++++++
- Forge/evidence/test_runs_latest.md |  48 +++++++-------
- app/clients/github_client.py       | 101 ++++++++++++++++++++++++++--
- app/config.py                      |   1 +
- app/main.py                        |   2 +
- app/repos/user_repo.py             |   2 +-
- web/src/__tests__/App.test.tsx     |  32 +++++++++
- web/src/pages/Dashboard.tsx        | 130 +++++++++++++++++++++++++++++++++----
- 10 files changed, 362 insertions(+), 41 deletions(-)
+
 ```
 

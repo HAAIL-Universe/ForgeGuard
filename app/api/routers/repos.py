@@ -1,11 +1,12 @@
-"""Repos router -- connect, disconnect, and list GitHub repositories."""
+"""Repos router -- connect, disconnect, list repos, and audit results."""
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
+from app.services.audit_service import get_audit_detail, get_repo_audits
 from app.services.repo_service import (
     connect_repo,
     disconnect_repo,
@@ -102,3 +103,47 @@ async def disconnect(
         )
 
     return {"status": "disconnected"}
+
+
+@router.get("/{repo_id}/audits")
+async def list_audits(
+    repo_id: UUID,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """List audit runs for a repo, newest first."""
+    try:
+        items, total = await get_repo_audits(
+            repo_id=repo_id,
+            user_id=current_user["id"],
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    return {"items": items, "total": total}
+
+
+@router.get("/{repo_id}/audits/{audit_id}")
+async def get_audit(
+    repo_id: UUID,
+    audit_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Get full audit detail including all check results."""
+    try:
+        detail = await get_audit_detail(
+            repo_id=repo_id,
+            audit_id=audit_id,
+            user_id=current_user["id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    return detail

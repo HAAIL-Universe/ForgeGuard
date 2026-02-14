@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import RepoCard from '../components/RepoCard';
 import type { Repo } from '../components/RepoCard';
@@ -9,6 +10,7 @@ const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 function Dashboard() {
   const { user, token, logout } = useAuth();
+  const navigate = useNavigate();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
   const [showPicker, setShowPicker] = useState(false);
@@ -49,8 +51,8 @@ function Dashboard() {
     }
   };
 
-  const handleRepoClick = (_repo: Repo) => {
-    // Phase 3 will add navigation to /repos/:repoId
+  const handleRepoClick = (repo: Repo) => {
+    navigate(`/repos/${repo.id}`);
   };
 
   return (

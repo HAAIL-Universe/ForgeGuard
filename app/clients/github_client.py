@@ -140,3 +140,46 @@ async def delete_webhook(
         # 404 is fine -- webhook may already be gone
         if response.status_code != 404:
             response.raise_for_status()
+
+
+async def get_repo_file_content(
+    access_token: str,
+    full_name: str,
+    path: str,
+    ref: str,
+) -> str | None:
+    """Fetch a single file's content from a GitHub repo at a specific ref.
+
+    Returns the decoded text content, or None if the file doesn't exist.
+    """
+    import base64
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/contents/{path}",
+            params={"ref": ref},
+            headers=_auth_headers(access_token),
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        if data.get("encoding") == "base64":
+            return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        return data.get("content", "")
+
+
+async def get_commit_files(
+    access_token: str,
+    full_name: str,
+    commit_sha: str,
+) -> list[str]:
+    """Fetch the list of changed file paths for a specific commit."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/commits/{commit_sha}",
+            headers=_auth_headers(access_token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        return [f["filename"] for f in data.get("files", [])]

@@ -321,30 +321,55 @@ When `boot_script: false` or not specified, the builder skips this entirely.
   - Skip any mandatory gate (contract read gate §1, evidence bundle §2, minimal-diff rule §3, physics compliance §5, confirm-before-write §6, test gate §9.1, diff log gate §9.3).
 - If the builder detects that autonomous progress requires scope expansion, it MUST STOP with `RISK_EXCEEDS_SCOPE` and report what additional scope is needed.
 
+### 10.1.1 Watch Audit Startup
+
+When AEM is enabled, the builder MUST start the audit file watcher as a background process **before beginning Phase 1 work**:
+
+```powershell
+pwsh -File .\Forge\scripts\watch_audit.ps1
+```
+
+This watcher monitors `Forge/evidence/updatedifflog.md`. It parses the diff log for claimed files (from `## Files Changed/Created/Modified` tables) and the phase identifier (from `Phase N` in the header), then automatically invokes `run_audit.ps1` with those parameters.
+
+The watcher is **passive during builder work** -- it only triggers when the diff log `Status` field changes to `COMPLETE`. While `Status: IN_PROCESS`, the watcher explicitly skips auditing to avoid interrupting mid-cycle work.
+
+The watcher runs in a background terminal and persists across all phases. The builder does NOT restart it between phases.
+
 ### 10.2 Verification Gate → Audit Script Trigger
 
-After the builder completes the verification hierarchy (§9: static → runtime → behavior → contract), and **only when AEM is enabled**, the builder MUST NOT proceed to sign-off. Instead, it MUST run the deterministic audit script.
+After the builder completes the verification hierarchy (§9: static → runtime → behavior → contract), and **only when AEM is enabled**, the builder MUST NOT proceed to sign-off. Instead, it MUST trigger the deterministic audit script.
 
-The builder does **NOT** switch personas, self-audit, or read `auditor_contract.md` as a role. Auditing is performed by `scripts/run_audit.ps1` — a deterministic script that checks facts, not opinions.
+The builder does **NOT** switch personas, self-audit, or read `auditor_contract.md` as a role. Auditing is performed by `scripts/run_audit.ps1` -- a deterministic script that checks facts, not opinions.
 
-#### Audit execution sequence
+#### Audit trigger sequence (watcher-driven)
 
-1. **Run the audit script:**
-   ```powershell
-   pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "<comma-separated list of files the builder changed>" -Phase "<phase identifier>"
-   ```
-   The `-ClaimedFiles` parameter MUST list every file the builder modified in this cycle (exact relative paths, no invented paths).
+When `watch_audit.ps1` is running (per §10.1.1), the builder triggers the audit by writing the diff log:
 
-2. **Wait for the script to complete.** Do NOT proceed until the script exits.
+1. **Write `Forge/evidence/updatedifflog.md`** with `Status: COMPLETE` and all required sections (Files Changed/Created/Modified tables, Verification Hierarchy, etc.). The watcher detects the file change and automatically:
+   - Parses the claimed files from the diff log tables.
+   - Parses the phase identifier from the header.
+   - Invokes `run_audit.ps1 -ClaimedFiles "<parsed files>" -Phase "<parsed phase>"`.
+   - The builder does NOT manually call `run_audit.ps1`.
 
-3. **Read the script output.** The script produces:
-   - A structured checklist result to stdout (A1–A9, each PASS or FAIL with justification).
-   - An exit code: `0` = all PASS, non-zero = at least one FAIL.
-   - An automatic append to `evidence/audit_ledger.md` (the script writes the ledger entry, not the builder).
+2. **Wait for the audit to complete.** The watcher displays audit results in its terminal. Do NOT proceed until the audit result appears.
+
+3. **Read the audit result** from the watcher terminal output or `evidence/audit_ledger.md`. The audit produces:
+   - A structured checklist (A1--A9, each PASS or FAIL with justification).
+   - An automatic append to `evidence/audit_ledger.md`.
 
 4. **React to the result:**
-   - **Exit code 0 (all PASS):** Proceed to Phase Sign-off (§10.4).
-   - **Exit code non-zero (any FAIL):** Enter the Loopback Protocol (§10.3).
+   - **All PASS:** Proceed to Phase Sign-off (§10.4).
+   - **Any FAIL:** Enter the Loopback Protocol (§10.3).
+
+#### Fallback: manual audit invocation
+
+If `watch_audit.ps1` is NOT running (e.g., terminal was closed, environment limitation), the builder MUST invoke the audit script directly:
+
+```powershell
+pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "<comma-separated list>" -Phase "<phase identifier>"
+```
+
+The `-ClaimedFiles` parameter MUST list every file the builder modified in this cycle (exact relative paths, no invented paths).
 
 5. **If `scripts/run_audit.ps1` does not exist or fails to execute:** STOP with `ENVIRONMENT_LIMITATION`. Report: `"run_audit.ps1 not found or not executable; cannot complete AEM audit gate."` Do NOT fall back to self-audit. Do NOT proceed.
 
