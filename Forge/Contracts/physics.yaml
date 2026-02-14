@@ -1,0 +1,195 @@
+# ForgeGuard -- API Physics (v0.1)
+# Canonical API specification. If it's not here, it doesn't exist.
+
+info:
+  title: "ForgeGuard API"
+  version: "0.1.0"
+  description: "Repository audit monitoring dashboard"
+
+paths:
+
+  # -- Health -------------------------------------------------------
+
+  /health:
+    get:
+      summary: "Health check"
+      auth: none
+      response:
+        status: "ok"
+
+  # -- Auth ---------------------------------------------------------
+
+  /auth/github:
+    get:
+      summary: "Redirect to GitHub OAuth authorization page"
+      auth: none
+      response:
+        redirect: "https://github.com/login/oauth/authorize?..."
+
+  /auth/github/callback:
+    get:
+      summary: "Handle GitHub OAuth callback, exchange code for token, create/update user, return JWT"
+      auth: none
+      query:
+        code: string (required)
+        state: string (required)
+      response:
+        token: string
+        user:
+          id: uuid
+          github_login: string
+          avatar_url: string
+
+  /auth/me:
+    get:
+      summary: "Return current user info from JWT"
+      auth: bearer
+      response:
+        id: uuid
+        github_login: string
+        avatar_url: string
+
+  # -- Repos --------------------------------------------------------
+
+  /repos:
+    get:
+      summary: "List connected repos for the authenticated user"
+      auth: bearer
+      response:
+        items: RepoWithHealth[]
+
+  /repos/available:
+    get:
+      summary: "List GitHub repos available to connect (not yet connected)"
+      auth: bearer
+      response:
+        items: GitHubRepo[]
+
+  /repos/{repo_id}/connect:
+    post:
+      summary: "Connect a GitHub repo -- register webhook and start monitoring"
+      auth: bearer
+      request:
+        github_repo_id: integer (required)
+        full_name: string (required)
+        default_branch: string (required)
+      response:
+        id: uuid
+        full_name: string
+        webhook_active: boolean
+
+  /repos/{repo_id}/disconnect:
+    delete:
+      summary: "Disconnect a repo -- remove webhook and stop monitoring"
+      auth: bearer
+      response:
+        status: "disconnected"
+
+  # -- Audit Runs ---------------------------------------------------
+
+  /repos/{repo_id}/audits:
+    get:
+      summary: "List audit runs for a repo, newest first"
+      auth: bearer
+      query:
+        limit: integer (default 50)
+        offset: integer (default 0)
+      response:
+        items: AuditRunSummary[]
+        total: integer
+
+  /repos/{repo_id}/audits/{audit_id}:
+    get:
+      summary: "Get full audit detail including all check results"
+      auth: bearer
+      response:
+        id: uuid
+        commit_sha: string
+        commit_message: string
+        commit_author: string
+        branch: string
+        status: string
+        overall_result: string
+        started_at: datetime
+        completed_at: datetime
+        files_checked: integer
+        checks: AuditCheck[]
+
+  # -- Webhooks -----------------------------------------------------
+
+  /webhooks/github:
+    post:
+      summary: "Receive GitHub push webhook events"
+      auth: webhook_signature (X-Hub-Signature-256)
+      request:
+        ref: string
+        commits: GithubCommit[]
+        repository: GithubRepository
+      response:
+        status: "accepted"
+
+  # -- WebSocket ----------------------------------------------------
+
+  /ws:
+    websocket:
+      summary: "Real-time audit result updates"
+      auth: bearer (via query param token)
+      messages_from_server:
+        type: "audit_update"
+        payload: AuditRunSummary
+
+# -- Schemas --------------------------------------------------------
+
+schemas:
+
+  HealthResponse:
+    status: string
+
+  RepoWithHealth:
+    id: uuid
+    full_name: string
+    default_branch: string
+    webhook_active: boolean
+    health_score: string
+    last_audit_at: datetime | null
+    recent_pass_rate: float | null
+
+  GitHubRepo:
+    github_repo_id: integer
+    full_name: string
+    default_branch: string
+    private: boolean
+
+  AuditRunSummary:
+    id: uuid
+    commit_sha: string
+    commit_message: string
+    commit_author: string
+    branch: string
+    status: string
+    overall_result: string | null
+    started_at: datetime
+    completed_at: datetime | null
+    files_checked: integer
+
+  AuditCheck:
+    id: uuid
+    check_code: string
+    check_name: string
+    result: string
+    detail: string | null
+
+  GithubCommit:
+    id: string
+    message: string
+    author:
+      name: string
+      email: string
+    added: string[]
+    modified: string[]
+    removed: string[]
+
+  GithubRepository:
+    id: integer
+    full_name: string
+    default_branch: string

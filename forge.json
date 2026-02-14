@@ -1,0 +1,17 @@
+{
+  "project_name": "ForgeGuard",
+  "backend": {
+    "language": "python",
+    "entry_module": "app.main",
+    "test_framework": "pytest",
+    "test_dir": "tests",
+    "dependency_file": "requirements.txt",
+    "venv_path": ".venv"
+  },
+  "frontend": {
+    "enabled": true,
+    "dir": "web",
+    "build_cmd": "build",
+    "test_cmd": "test"
+  }
+}

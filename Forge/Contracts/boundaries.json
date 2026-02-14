@@ -1,0 +1,125 @@
+{
+  "description": "Layer boundary rules for ForgeGuard audit script (A4). Each layer defines a directory glob and a list of forbidden patterns.",
+  "layers": [
+    {
+      "name": "routers",
+      "description": "HTTP layer -- parse request, call service, return response. No business logic, no DB access, no GitHub API calls, no audit logic.",
+      "glob": "app/api/routers/*.py",
+      "forbidden": [
+        {
+          "pattern": "asyncpg",
+          "reason": "DB access belongs in repos, not routers"
+        },
+        {
+          "pattern": "\\bSELECT\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "\\bINSERT\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "\\bUPDATE\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "\\bDELETE FROM\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "httpx",
+          "reason": "HTTP client calls belong in clients, not routers"
+        },
+        {
+          "pattern": "audit_engine",
+          "reason": "Audit logic belongs in services that call the engine, not routers"
+        }
+      ]
+    },
+    {
+      "name": "repos",
+      "description": "Data access layer -- DB queries and transactions only. No business logic, no HTTP client calls, no audit logic.",
+      "glob": "app/repos/*.py",
+      "forbidden": [
+        {
+          "pattern": "httpx",
+          "reason": "HTTP client calls belong in clients, not repos"
+        },
+        {
+          "pattern": "fastapi",
+          "reason": "HTTP framework imports belong in routers, not repos"
+        },
+        {
+          "pattern": "audit_engine",
+          "reason": "Audit logic belongs in services, not repos"
+        }
+      ]
+    },
+    {
+      "name": "clients",
+      "description": "External API layer -- GitHub API wrapper only. No DB access, no business logic, no HTTP framework.",
+      "glob": "app/clients/*.py",
+      "forbidden": [
+        {
+          "pattern": "asyncpg",
+          "reason": "DB access belongs in repos, not clients"
+        },
+        {
+          "pattern": "\\bSELECT\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "\\bINSERT\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "fastapi",
+          "reason": "HTTP framework imports belong in routers, not clients"
+        }
+      ]
+    },
+    {
+      "name": "audit_engine",
+      "description": "Pure analysis layer -- files + rules -> results. No DB, no HTTP, no GitHub API.",
+      "glob": "app/audit/*.py",
+      "forbidden": [
+        {
+          "pattern": "asyncpg",
+          "reason": "DB access belongs in repos, not the audit engine"
+        },
+        {
+          "pattern": "httpx",
+          "reason": "HTTP client calls belong in clients, not the audit engine"
+        },
+        {
+          "pattern": "fastapi",
+          "reason": "HTTP framework imports belong in routers, not the audit engine"
+        }
+      ]
+    },
+    {
+      "name": "services",
+      "description": "Business logic layer -- orchestration, audit coordination, health scoring. No SQL, no HTTP framework, no direct GitHub API calls.",
+      "glob": "app/services/*.py",
+      "forbidden": [
+        {
+          "pattern": "asyncpg",
+          "reason": "DB access belongs in repos, not services"
+        },
+        {
+          "pattern": "\\bSELECT\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "\\bINSERT\\b",
+          "reason": "Raw SQL belongs in repos"
+        },
+        {
+          "pattern": "fastapi",
+          "reason": "HTTP framework imports belong in routers, not services"
+        }
+      ]
+    }
+  ],
+  "known_violations": []
+}
