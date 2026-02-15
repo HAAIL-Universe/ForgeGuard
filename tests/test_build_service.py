@@ -2108,7 +2108,7 @@ async def _fake_stream_with_tool_call(*args, **kwargs):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.execute_tool")
+@patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
 @patch("app.services.build_service.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
@@ -2172,7 +2172,7 @@ async def _fake_stream_with_write_tool(*args, **kwargs):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.execute_tool")
+@patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
 @patch("app.services.build_service.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
@@ -2218,7 +2218,7 @@ async def test_run_build_write_file_tool_emits_file_created(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.execute_tool")
+@patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
 @patch("app.services.build_service.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")

@@ -521,6 +521,18 @@ function BuildProgress() {
             break;
           }
 
+          case 'test_run': {
+            const testCmd = (payload.command ?? '') as string;
+            const testPassed = payload.passed as boolean;
+            const testSummary = (payload.summary ?? '') as string;
+            const testExitCode = (payload.exit_code ?? -1) as number;
+            addActivity(
+              `${testPassed ? '✅' : '❌'} Tests ${testPassed ? 'PASS' : 'FAIL'}: ${testCmd} (exit ${testExitCode})${testSummary ? '\n' + testSummary.slice(0, 200) : ''}`,
+              testPassed ? 'info' : 'warn',
+            );
+            break;
+          }
+
           case 'file_created': {
             const filePath = (payload.path ?? '') as string;
             const sizeBytes = (payload.size_bytes ?? 0) as number;

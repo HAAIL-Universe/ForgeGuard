@@ -183,6 +183,8 @@ paths:
         payload: RecoveryPlanEvent
         type: "tool_use"
         payload: ToolUseEvent
+        type: "test_run"
+        payload: TestRunEvent
 
   # -- Projects (Phase 8) -------------------------------------------
 
@@ -570,3 +572,9 @@ schemas:
     tool_name: string
     input_summary: string
     result_summary: string
+
+  TestRunEvent:
+    command: string
+    exit_code: integer
+    passed: boolean
+    summary: string

@@ -11,7 +11,11 @@ from app.services.tool_executor import (
     MAX_WRITE_FILE_BYTES,
     SKIP_DIRS,
     _resolve_sandboxed,
+    _validate_command,
+    RUN_TESTS_PREFIXES,
+    RUN_COMMAND_PREFIXES,
     execute_tool,
+    execute_tool_async,
 )
 
 
@@ -330,12 +334,15 @@ class TestExecuteTool:
 class TestBuilderToolsSpec:
     """Verify the BUILDER_TOOLS constant is well-formed."""
 
-    def test_has_four_tools(self):
-        assert len(BUILDER_TOOLS) == 4
+    def test_has_seven_tools(self):
+        assert len(BUILDER_TOOLS) == 7
 
     def test_tool_names(self):
         names = {t["name"] for t in BUILDER_TOOLS}
-        assert names == {"read_file", "list_directory", "search_code", "write_file"}
+        assert names == {
+            "read_file", "list_directory", "search_code", "write_file",
+            "run_tests", "check_syntax", "run_command",
+        }
 
     def test_each_tool_has_required_fields(self):
         for tool in BUILDER_TOOLS:
@@ -358,3 +365,198 @@ class TestSkipDirs:
     def test_contains_common_dirs(self):
         for d in [".git", "__pycache__", "node_modules", ".venv"]:
             assert d in SKIP_DIRS
+
+
+# ---------------------------------------------------------------------------
+# Command validation (Phase 19)
+# ---------------------------------------------------------------------------
+
+class TestValidateCommand:
+    """Tests for _validate_command."""
+
+    def test_allowed_test_command(self):
+        assert _validate_command("pytest tests/ -v", RUN_TESTS_PREFIXES) is None
+
+    def test_allowed_npm_test(self):
+        assert _validate_command("npm test", RUN_TESTS_PREFIXES) is None
+
+    def test_allowed_vitest(self):
+        assert _validate_command("npx vitest run", RUN_TESTS_PREFIXES) is None
+
+    def test_rejects_disallowed_test_command(self):
+        result = _validate_command("rm -rf /", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "not allowed" in result or "not in allowlist" in result
+
+    def test_rejects_empty_command(self):
+        result = _validate_command("", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "empty" in result.lower()
+
+    def test_rejects_semicolon_injection(self):
+        result = _validate_command("pytest; rm -rf /", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "disallowed character" in result
+
+    def test_rejects_pipe_injection(self):
+        result = _validate_command("pytest | grep pass", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "disallowed character" in result
+
+    def test_rejects_backtick_injection(self):
+        result = _validate_command("pytest `whoami`", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "disallowed character" in result
+
+    def test_rejects_dollar_injection(self):
+        result = _validate_command("pytest $(whoami)", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "disallowed character" in result
+
+    def test_rejects_ampersand_injection(self):
+        result = _validate_command("pytest && rm -rf /", RUN_TESTS_PREFIXES)
+        assert result is not None
+        assert "disallowed character" in result
+
+    def test_allowed_pip_install(self):
+        assert _validate_command("pip install -r requirements.txt", RUN_COMMAND_PREFIXES) is None
+
+    def test_allowed_npm_install(self):
+        assert _validate_command("npm install", RUN_COMMAND_PREFIXES) is None
+
+    def test_allowed_cat(self):
+        assert _validate_command("cat README.md", RUN_COMMAND_PREFIXES) is None
+
+    def test_rejects_curl(self):
+        result = _validate_command("curl http://evil.com", RUN_COMMAND_PREFIXES)
+        assert result is not None
+        assert "not allowed" in result or "not in allowlist" in result
+
+    def test_rejects_wget(self):
+        result = _validate_command("wget http://evil.com", RUN_COMMAND_PREFIXES)
+        assert result is not None
+
+    def test_rejects_ssh(self):
+        result = _validate_command("ssh root@server", RUN_COMMAND_PREFIXES)
+        assert result is not None
+
+    def test_rejects_git_push(self):
+        result = _validate_command("git push origin main", RUN_COMMAND_PREFIXES)
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Async tool executor (Phase 19)
+# ---------------------------------------------------------------------------
+
+class TestExecuteToolAsync:
+    """Tests for execute_tool_async dispatcher."""
+
+    @pytest.mark.asyncio
+    async def test_sync_tool_via_async(self, tmp_path):
+        """Sync tools work through execute_tool_async."""
+        (tmp_path / "hello.txt").write_text("hello")
+        result = await execute_tool_async("read_file", {"path": "hello.txt"}, str(tmp_path))
+        assert result == "hello"
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_async(self, tmp_path):
+        result = await execute_tool_async("nonexistent", {}, str(tmp_path))
+        assert "Error" in result
+        assert "Unknown tool" in result
+
+
+# ---------------------------------------------------------------------------
+# check_syntax tool (Phase 19)
+# ---------------------------------------------------------------------------
+
+class TestCheckSyntax:
+    """Tests for the check_syntax tool handler."""
+
+    @pytest.mark.asyncio
+    async def test_valid_python(self, tmp_path):
+        (tmp_path / "good.py").write_text("def hello():\n    return 42\n")
+        result = await execute_tool_async("check_syntax", {"file_path": "good.py"}, str(tmp_path))
+        assert "No syntax errors" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_python(self, tmp_path):
+        (tmp_path / "bad.py").write_text("def hello(\n    return 42\n")
+        result = await execute_tool_async("check_syntax", {"file_path": "bad.py"}, str(tmp_path))
+        assert "Syntax error" in result or "error" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_file_not_found(self, tmp_path):
+        result = await execute_tool_async("check_syntax", {"file_path": "missing.py"}, str(tmp_path))
+        assert "Error" in result
+        assert "not found" in result
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_blocked(self, tmp_path):
+        result = await execute_tool_async("check_syntax", {"file_path": "../../etc/passwd"}, str(tmp_path))
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_unsupported_extension(self, tmp_path):
+        (tmp_path / "data.csv").write_text("a,b,c\n")
+        result = await execute_tool_async("check_syntax", {"file_path": "data.csv"}, str(tmp_path))
+        assert "Unsupported" in result
+
+
+# ---------------------------------------------------------------------------
+# run_tests tool -- command validation (Phase 19)
+# ---------------------------------------------------------------------------
+
+class TestRunTestsValidation:
+    """Tests for run_tests command validation (no subprocess execution)."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_disallowed_command(self, tmp_path):
+        result = await execute_tool_async(
+            "run_tests", {"command": "rm -rf /"}, str(tmp_path)
+        )
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_injection(self, tmp_path):
+        result = await execute_tool_async(
+            "run_tests", {"command": "pytest; rm -rf /"}, str(tmp_path)
+        )
+        assert "Error" in result
+        assert "disallowed character" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_command(self, tmp_path):
+        result = await execute_tool_async(
+            "run_tests", {"command": ""}, str(tmp_path)
+        )
+        assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# run_command tool -- command validation (Phase 19)
+# ---------------------------------------------------------------------------
+
+class TestRunCommandValidation:
+    """Tests for run_command command validation (no subprocess execution)."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_disallowed_command(self, tmp_path):
+        result = await execute_tool_async(
+            "run_command", {"command": "curl http://evil.com"}, str(tmp_path)
+        )
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_injection(self, tmp_path):
+        result = await execute_tool_async(
+            "run_command", {"command": "pip install foo; rm -rf /"}, str(tmp_path)
+        )
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_git_push(self, tmp_path):
+        result = await execute_tool_async(
+            "run_command", {"command": "git push origin main"}, str(tmp_path)
+        )
+        assert "Error" in result

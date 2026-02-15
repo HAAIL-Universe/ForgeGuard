@@ -26,7 +26,7 @@ from app.config import settings
 from app.repos import build_repo
 from app.repos import project_repo
 from app.repos.user_repo import get_user_by_id
-from app.services.tool_executor import BUILDER_TOOLS, execute_tool
+from app.services.tool_executor import BUILDER_TOOLS, execute_tool_async
 from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -692,13 +692,20 @@ async def _run_build(
             "- **read_file**: Read a file to check existing code or verify your work.\n"
             "- **list_directory**: List files/folders to understand project structure before making changes.\n"
             "- **search_code**: Search for patterns across files to find implementations or imports.\n"
-            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n\n"
+            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n"
+            "- **run_tests**: Run the test suite to verify your code works.\n"
+            "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
+            "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
             "Guidelines for tool use:\n"
             "1. Use list_directory at the start of each phase to understand the current state.\n"
             "2. Use read_file to examine existing code before modifying it.\n"
             "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
             "4. Use search_code to find existing patterns, imports, or implementations.\n"
-            "5. After writing files, use read_file to verify the content was written correctly.\n"
+            "5. After writing files, use check_syntax to catch syntax errors immediately.\n"
+            "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
+            "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
+            "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
+            "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n"
         )
 
         # Emit build overview (high-level phase list) at build start
@@ -794,7 +801,7 @@ async def _run_build(
             ):
                 if isinstance(item, ToolCall):
                     # --- Tool call detected ---
-                    tool_result = execute_tool(item.name, item.input, working_dir or "")
+                    tool_result = await execute_tool_async(item.name, item.input, working_dir or "")
 
                     # Log the tool call
                     input_summary = json.dumps(item.input)[:200]
@@ -832,6 +839,28 @@ async def _run_build(
                                 "size_bytes": len(content),
                                 "language": lang,
                             }
+                        )
+
+                    # Track run_tests calls — emit test_run event
+                    if item.name == "run_tests":
+                        exit_code_str = tool_result.split("\n")[0] if tool_result else ""
+                        exit_code = 0
+                        try:
+                            exit_code = int(exit_code_str.split(":")[-1].strip())
+                        except (ValueError, IndexError):
+                            pass
+                        await _broadcast_build_event(
+                            user_id, build_id, "test_run", {
+                                "command": item.input.get("command", ""),
+                                "exit_code": exit_code,
+                                "passed": exit_code == 0,
+                                "summary": result_summary,
+                            }
+                        )
+                        await build_repo.append_build_log(
+                            build_id,
+                            f"Test run: {item.input.get('command', '')} → exit {exit_code}",
+                            source="test", level="info" if exit_code == 0 else "warn",
                         )
 
                     tool_calls_this_turn.append({
