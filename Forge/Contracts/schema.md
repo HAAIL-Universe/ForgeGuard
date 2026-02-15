@@ -173,6 +173,59 @@ CREATE INDEX idx_project_contracts_project_id ON project_contracts(project_id);
 
 ---
 
+### builds
+
+Stores one record per build orchestration run.
+
+```sql
+CREATE TABLE builds (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    phase           VARCHAR(100) NOT NULL DEFAULT 'Phase 0',
+    status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    loop_count      INTEGER NOT NULL DEFAULT 0,
+    error_detail    TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`status` values: `pending`, `running`, `completed`, `failed`, `cancelled`
+
+```sql
+CREATE INDEX idx_builds_project_id ON builds(project_id);
+CREATE INDEX idx_builds_project_id_created ON builds(project_id, created_at DESC);
+```
+
+---
+
+### build_logs
+
+Captures streaming builder output for a build.
+
+```sql
+CREATE TABLE build_logs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    build_id        UUID NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+    timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source          VARCHAR(50) NOT NULL DEFAULT 'builder',
+    level           VARCHAR(20) NOT NULL DEFAULT 'info',
+    message         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`source` values: `builder`, `audit`, `system`
+`level` values: `info`, `warn`, `error`, `debug`
+
+```sql
+CREATE INDEX idx_build_logs_build_id ON build_logs(build_id);
+CREATE INDEX idx_build_logs_build_id_timestamp ON build_logs(build_id, timestamp);
+```
+
+---
+
 ## Schema -> Phase Traceability
 
 | Table | Repo Created In | Wired To Caller In | Notes |
@@ -183,6 +236,8 @@ CREATE INDEX idx_project_contracts_project_id ON project_contracts(project_id);
 | audit_checks | Phase 3 | Phase 3 | Audit engine writes check results |
 | projects | Phase 8 | Phase 8 | Project intake & questionnaire |
 | project_contracts | Phase 8 | Phase 8 | Generated contract files |
+| builds | Phase 9 | Phase 9 | Build orchestration runs |
+| build_logs | Phase 9 | Phase 9 | Streaming builder output |
 
 ---
 
@@ -194,4 +249,5 @@ The builder creates migration files in `db/migrations/` during Phase 0.
 db/migrations/
   001_initial_schema.sql
   002_projects.sql
+  003_builds.sql
 ```

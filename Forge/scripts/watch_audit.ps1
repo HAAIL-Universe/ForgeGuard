@@ -158,7 +158,7 @@ if (Test-Path $lockFile) {
 }
 
 # Write lock file
-$lockBody = "PID: $PID`nStarted: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC' -AsUTC)`nScript: $($MyInvocation.MyCommand.Definition)"
+$lockBody = "PID: $PID`nStarted: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC`nScript: $($MyInvocation.MyCommand.Definition)"
 try {
   $lockBody | Set-Content -Path $lockFile -Encoding UTF8 -Force
 } catch {

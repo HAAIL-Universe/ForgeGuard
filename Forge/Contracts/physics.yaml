@@ -261,6 +261,54 @@ paths:
         version: integer
         updated_at: datetime
 
+  # -- Builds (Phase 9) -----------------------------------------------
+
+  /projects/{project_id}/build:
+    post:
+      summary: "Start a build (validates contracts exist, spawns builder)"
+      auth: bearer
+      response:
+        id: uuid
+        project_id: uuid
+        phase: string
+        status: string
+        started_at: datetime
+        created_at: datetime
+
+  /projects/{project_id}/build/cancel:
+    post:
+      summary: "Cancel an active build"
+      auth: bearer
+      response:
+        id: uuid
+        status: string
+
+  /projects/{project_id}/build/status:
+    get:
+      summary: "Current build status (phase, progress, active/idle)"
+      auth: bearer
+      response:
+        id: uuid
+        project_id: uuid
+        phase: string
+        status: string
+        loop_count: integer
+        started_at: datetime | null
+        completed_at: datetime | null
+        error_detail: string | null
+        created_at: datetime
+
+  /projects/{project_id}/build/logs:
+    get:
+      summary: "Paginated build logs"
+      auth: bearer
+      query:
+        limit: integer (default 100)
+        offset: integer (default 0)
+      response:
+        items: BuildLogEntry[]
+        total: integer
+
 # -- Schemas --------------------------------------------------------
 
 schemas:
@@ -344,3 +392,12 @@ schemas:
     version: integer
     created_at: datetime
     updated_at: datetime
+
+  BuildLogEntry:
+    id: uuid
+    build_id: uuid
+    timestamp: datetime
+    source: string
+    level: string
+    message: string
+    created_at: datetime

@@ -47,6 +47,9 @@ class Settings:
         "LLM_QUESTIONNAIRE_MODEL", "claude-3-5-haiku-20241022"
     )
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    LLM_BUILDER_MODEL: str = os.getenv(
+        "LLM_BUILDER_MODEL", "claude-opus-4-6"
+    )
 
 
 # Validate at import time -- but only when NOT running under pytest.

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routers.audit import router as audit_router
 from app.api.routers.auth import router as auth_router
+from app.api.routers.builds import router as builds_router
 from app.api.routers.health import router as health_router
 from app.api.routers.projects import router as projects_router
 from app.api.routers.repos import router as repos_router
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router)
     application.include_router(repos_router)
     application.include_router(projects_router)
+    application.include_router(builds_router)
     application.include_router(webhooks_router)
     application.include_router(ws_router)
     application.include_router(audit_router)
