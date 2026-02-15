@@ -1,10 +1,10 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-15T22:41:58+00:00
+- Timestamp: 2026-02-15T22:52:18+00:00
 - Branch: master
-- HEAD: 284a46d72a95b699f6256e9713b03a673d1335a9
-- BASE_HEAD: e9bdaf4351f9c160e26357bdc4dbc660f6d83357
+- HEAD: d5e487517142cf64a83ccfa8a2a27a4b1c29bde3
+- BASE_HEAD: 284a46d72a95b699f6256e9713b03a673d1335a9
 - Diff basis: staged
 
 ## Cycle Status
@@ -15,33 +15,19 @@
 
 ## Files Changed (staged)
 - Forge/Contracts/physics.yaml
-- app/api/routers/projects.py
-- app/clients/agent_client.py
 - app/services/build_service.py
-- app/services/project_service.py
 - app/services/tool_executor.py
-- tests/test_agent_client.py
-- tests/test_build_integration.py
 - tests/test_build_service.py
-- tests/test_project_service.py
 - tests/test_tool_executor.py
-- web/src/components/ContractProgress.tsx
 - web/src/pages/BuildProgress.tsx
 
 ## git status -sb
-    ## master...origin/master [ahead 11]
+    ## master...origin/master [ahead 12]
     M  Forge/Contracts/physics.yaml
-    M  app/api/routers/projects.py
-    M  app/clients/agent_client.py
     M  app/services/build_service.py
-    M  app/services/project_service.py
-    A  app/services/tool_executor.py
-    M  tests/test_agent_client.py
-    M  tests/test_build_integration.py
+    M  app/services/tool_executor.py
     M  tests/test_build_service.py
-    M  tests/test_project_service.py
-    A  tests/test_tool_executor.py
-    M  web/src/components/ContractProgress.tsx
+    M  tests/test_tool_executor.py
     M  web/src/pages/BuildProgress.tsx
 
 ## Verification
@@ -55,503 +41,503 @@
 
 ## Minimal Diff Hunks
     diff --git a/Forge/Contracts/physics.yaml b/Forge/Contracts/physics.yaml
-    index 91ecd5c..0902857 100644
+    index 0902857..2b9f2e1 100644
     --- a/Forge/Contracts/physics.yaml
     +++ b/Forge/Contracts/physics.yaml
-    @@ -181,6 +181,8 @@ paths:
-             payload: BuildInterjectionEvent
-             type: "recovery_plan"
+    @@ -183,6 +183,8 @@ paths:
              payload: RecoveryPlanEvent
-    +        type: "tool_use"
-    +        payload: ToolUseEvent
+             type: "tool_use"
+             payload: ToolUseEvent
+    +        type: "test_run"
+    +        payload: TestRunEvent
      
        # -- Projects (Phase 8) -------------------------------------------
      
-    @@ -563,3 +565,8 @@ schemas:
-       RecoveryPlanEvent:
-         phase: string
-         plan_text: string
+    @@ -570,3 +572,9 @@ schemas:
+         tool_name: string
+         input_summary: string
+         result_summary: string
     +
-    +  ToolUseEvent:
-    +    tool_name: string
-    +    input_summary: string
-    +    result_summary: string
-    diff --git a/app/api/routers/projects.py b/app/api/routers/projects.py
-    index ca1c800..0bc76b7 100644
-    --- a/app/api/routers/projects.py
-    +++ b/app/api/routers/projects.py
-    @@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
-     
-     from app.api.deps import get_current_user
-     from app.services.project_service import (
-    +    ContractCancelled,
-         cancel_contract_generation,
-         create_new_project,
-         delete_user_project,
-    @@ -206,6 +207,9 @@ async def gen_contracts(
-         """Generate all contract files from completed questionnaire answers."""
-         try:
-             contracts = await generate_contracts(current_user["id"], project_id)
-    +    except ContractCancelled:
-    +        # User cancelled ÔÇö return 200 with cancelled flag (not an error)
-    +        return {"cancelled": True, "contracts": []}
-         except ValueError as exc:
-             detail = str(exc)
-             code = (
-    diff --git a/app/clients/agent_client.py b/app/clients/agent_client.py
-    index b8b5e22..434f351 100644
-    --- a/app/clients/agent_client.py
-    +++ b/app/clients/agent_client.py
-    @@ -11,6 +11,7 @@ No database access, no business logic, no HTTP framework imports.
-     import json
-     from collections.abc import AsyncIterator
-     from dataclasses import dataclass, field
-    +from typing import Union
-     
-     import httpx
-     
-    @@ -26,6 +27,14 @@ class StreamUsage:
-         model: str = ""
-     
-     
-    +@dataclass
-    +class ToolCall:
-    +    """Represents a tool_use block from the streaming response."""
-    +    id: str
-    +    name: str
-    +    input: dict
-    +
-    +
-     def _headers(api_key: str) -> dict:
-         """Build request headers for the Anthropic API."""
-         return {
-    @@ -42,8 +51,9 @@ async def stream_agent(
-         messages: list[dict],
-         max_tokens: int = 16384,
-         usage_out: StreamUsage | None = None,
-    -) -> AsyncIterator[str]:
-    -    """Stream a builder agent session, yielding text chunks.
-    +    tools: list[dict] | None = None,
-    +) -> AsyncIterator[Union[str, ToolCall]]:
-    +    """Stream a builder agent session, yielding text chunks or tool calls.
-     
-         Args:
-             api_key: Anthropic API key.
-    @@ -52,21 +62,31 @@ async def stream_agent(
-             messages: Conversation history in Anthropic messages format.
-             max_tokens: Maximum tokens for the response.
-             usage_out: Optional StreamUsage to accumulate token counts.
-    +        tools: Optional list of tool definitions in Anthropic format.
-     
-         Yields:
-    -        Incremental text chunks from the builder agent.
-    +        str: Incremental text chunks from the builder agent.
-    +        ToolCall: A tool_use block that the caller should execute.
-     
-         Raises:
-             httpx.HTTPStatusError: On API errors.
-             ValueError: On unexpected stream format.
-         """
-    -    payload = {
-    +    payload: dict = {
-             "model": model,
-             "max_tokens": max_tokens,
-             "system": system_prompt,
-             "messages": messages,
-             "stream": True,
-         }
-    +    if tools:
-    +        payload["tools"] = tools
-    +
-    +    # Track tool_use blocks being accumulated
-    +    current_tool_id: str = ""
-    +    current_tool_name: str = ""
-    +    current_tool_json: str = ""
-    +    in_tool_block: bool = False
-     
-         async with httpx.AsyncClient(timeout=300.0) as client:
-             async with client.stream(
-    @@ -82,7 +102,6 @@ async def stream_agent(
-                     data = line[6:]  # strip "data: " prefix
-                     if data == "[DONE]":
-                         break
-    -                # Parse SSE data for content and usage events
-                     try:
-                         event = json.loads(data)
-                         etype = event.get("type", "")
-    @@ -99,11 +118,44 @@ async def stream_agent(
-                             usage = event.get("usage", {})
-                             usage_out.output_tokens += usage.get("output_tokens", 0)
-     
-    +                    # Content block start ÔÇö detect tool_use blocks
-    +                    if etype == "content_block_start":
-    +                        block = event.get("content_block", {})
-    +                        if block.get("type") == "tool_use":
-    +                            in_tool_block = True
-    +                            current_tool_id = block.get("id", "")
-    +                            current_tool_name = block.get("name", "")
-    +                            current_tool_json = ""
-    +
-    +                    # Content block delta ÔÇö text or tool input JSON
-                         if etype == "content_block_delta":
-                             delta = event.get("delta", {})
-    -                        text = delta.get("text", "")
-    -                        if text:
-    -                            yield text
-    +                        if in_tool_block:
-    +                            # Accumulate tool input JSON
-    +                            json_chunk = delta.get("partial_json", "")
-    +                            if json_chunk:
-    +                                current_tool_json += json_chunk
-    +                        else:
-    +                            text = delta.get("text", "")
-    +                            if text:
-    +                                yield text
-    +
-    +                    # Content block stop ÔÇö finalize tool call
-    +                    if etype == "content_block_stop" and in_tool_block:
-    +                        in_tool_block = False
-    +                        try:
-    +                            tool_input = json.loads(current_tool_json) if current_tool_json else {}
-    +                        except json.JSONDecodeError:
-    +                            tool_input = {"_raw": current_tool_json}
-    +                        yield ToolCall(
-    +                            id=current_tool_id,
-    +                            name=current_tool_name,
-    +                            input=tool_input,
-    +                        )
-    +                        current_tool_id = ""
-    +                        current_tool_name = ""
-    +                        current_tool_json = ""
-    +
-                     except (ValueError, KeyError):
-                         # Skip malformed events
-                         continue
+    +  TestRunEvent:
+    +    command: string
+    +    exit_code: integer
+    +    passed: boolean
+    +    summary: string
     diff --git a/app/services/build_service.py b/app/services/build_service.py
-    index 70e7483..d3a4925 100644
+    index d3a4925..9c6e81c 100644
     --- a/app/services/build_service.py
     +++ b/app/services/build_service.py
-    @@ -19,13 +19,14 @@ from datetime import datetime, timezone
-     from pathlib import Path
-     from uuid import UUID
-     
-    -from app.clients.agent_client import StreamUsage, stream_agent
-    +from app.clients.agent_client import StreamUsage, ToolCall, stream_agent
-     from app.clients import git_client
-     from app.clients import github_client
-     from app.config import settings
+    @@ -26,7 +26,7 @@ from app.config import settings
      from app.repos import build_repo
      from app.repos import project_repo
      from app.repos.user_repo import get_user_by_id
-    +from app.services.tool_executor import BUILDER_TOOLS, execute_tool
+    -from app.services.tool_executor import BUILDER_TOOLS, execute_tool
+    +from app.services.tool_executor import BUILDER_TOOLS, execute_tool_async
      from app.ws_manager import manager
      
      logger = logging.getLogger(__name__)
-    @@ -685,7 +686,19 @@ async def _run_build(
-                 "=== END PLAN ===\n\n"
-                 "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
-                 "As you complete each task, emit: === TASK DONE: N ===\n"
-    -            "where N is the task number from your current phase plan.\n"
-    +            "where N is the task number from your current phase plan.\n\n"
-    +            "## Tools\n"
-    +            "You have access to the following tools for interacting with the project:\n"
-    +            "- **read_file**: Read a file to check existing code or verify your work.\n"
-    +            "- **list_directory**: List files/folders to understand project structure before making changes.\n"
-    +            "- **search_code**: Search for patterns across files to find implementations or imports.\n"
-    +            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n\n"
-    +            "Guidelines for tool use:\n"
-    +            "1. Use list_directory at the start of each phase to understand the current state.\n"
-    +            "2. Use read_file to examine existing code before modifying it.\n"
-    +            "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
-    +            "4. Use search_code to find existing patterns, imports, or implementations.\n"
-    +            "5. After writing files, use read_file to verify the content was written correctly.\n"
+    @@ -692,13 +692,20 @@ async def _run_build(
+                 "- **read_file**: Read a file to check existing code or verify your work.\n"
+                 "- **list_directory**: List files/folders to understand project structure before making changes.\n"
+                 "- **search_code**: Search for patterns across files to find implementations or imports.\n"
+    -            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n\n"
+    +            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n"
+    +            "- **run_tests**: Run the test suite to verify your code works.\n"
+    +            "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
+    +            "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
+                 "Guidelines for tool use:\n"
+                 "1. Use list_directory at the start of each phase to understand the current state.\n"
+                 "2. Use read_file to examine existing code before modifying it.\n"
+                 "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
+                 "4. Use search_code to find existing patterns, imports, or implementations.\n"
+    -            "5. After writing files, use read_file to verify the content was written correctly.\n"
+    +            "5. After writing files, use check_syntax to catch syntax errors immediately.\n"
+    +            "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
+    +            "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
+    +            "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
+    +            "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n"
              )
      
              # Emit build overview (high-level phase list) at build start
-    @@ -768,13 +781,68 @@ async def _run_build(
-     
-                 # Stream agent output for this turn
-                 turn_text = ""
-    -            async for chunk in stream_agent(
-    +            tool_calls_this_turn: list[dict] = []
-    +            pending_tool_results: list[dict] = []
-    +
-    +            async for item in stream_agent(
-                     api_key=api_key,
-                     model=settings.LLM_BUILDER_MODEL,
-                     system_prompt=system_prompt,
-                     messages=messages,
-                     usage_out=usage,
-    +                tools=BUILDER_TOOLS if working_dir else None,
+    @@ -794,7 +801,7 @@ async def _run_build(
                  ):
-    +                if isinstance(item, ToolCall):
-    +                    # --- Tool call detected ---
-    +                    tool_result = execute_tool(item.name, item.input, working_dir or "")
-    +
-    +                    # Log the tool call
-    +                    input_summary = json.dumps(item.input)[:200]
-    +                    result_summary = tool_result[:300]
-    +                    await build_repo.append_build_log(
-    +                        build_id,
-    +                        f"Tool: {item.name}({input_summary}) ÔåÆ {result_summary}",
-    +                        source="tool", level="info",
-    +                    )
-    +
-    +                    # Broadcast tool_use WS event
-    +                    await _broadcast_build_event(
-    +                        user_id, build_id, "tool_use", {
-    +                            "tool_name": item.name,
-    +                            "input_summary": input_summary,
-    +                            "result_summary": result_summary,
-    +                        }
-    +                    )
-    +
-    +                    # Track write_file calls as files_written
-    +                    if item.name == "write_file" and tool_result.startswith("OK:"):
-    +                        rel_path = item.input.get("path", "")
-    +                        content = item.input.get("content", "")
-    +                        lang = _detect_language(rel_path)
-    +                        if rel_path and not any(f["path"] == rel_path for f in files_written):
-    +                            files_written.append({
-    +                                "path": rel_path,
-    +                                "size_bytes": len(content),
-    +                                "language": lang,
-    +                            })
-    +                        # Emit file_created event
+                     if isinstance(item, ToolCall):
+                         # --- Tool call detected ---
+    -                    tool_result = execute_tool(item.name, item.input, working_dir or "")
+    +                    tool_result = await execute_tool_async(item.name, item.input, working_dir or "")
+     
+                         # Log the tool call
+                         input_summary = json.dumps(item.input)[:200]
+    @@ -834,6 +841,28 @@ async def _run_build(
+                                 }
+                             )
+     
+    +                    # Track run_tests calls ÔÇö emit test_run event
+    +                    if item.name == "run_tests":
+    +                        exit_code_str = tool_result.split("\n")[0] if tool_result else ""
+    +                        exit_code = 0
+    +                        try:
+    +                            exit_code = int(exit_code_str.split(":")[-1].strip())
+    +                        except (ValueError, IndexError):
+    +                            pass
     +                        await _broadcast_build_event(
-    +                            user_id, build_id, "file_created", {
-    +                                "path": rel_path,
-    +                                "size_bytes": len(content),
-    +                                "language": lang,
+    +                            user_id, build_id, "test_run", {
+    +                                "command": item.input.get("command", ""),
+    +                                "exit_code": exit_code,
+    +                                "passed": exit_code == 0,
+    +                                "summary": result_summary,
     +                            }
     +                        )
+    +                        await build_repo.append_build_log(
+    +                            build_id,
+    +                            f"Test run: {item.input.get('command', '')} ÔåÆ exit {exit_code}",
+    +                            source="test", level="info" if exit_code == 0 else "warn",
+    +                        )
     +
-    +                    tool_calls_this_turn.append({
-    +                        "id": item.id,
-    +                        "name": item.name,
-    +                        "result": tool_result,
-    +                    })
-    +                    continue
+                         tool_calls_this_turn.append({
+                             "id": item.id,
+                             "name": item.name,
+    diff --git a/app/services/tool_executor.py b/app/services/tool_executor.py
+    index 1f3f523..2b136c6 100644
+    --- a/app/services/tool_executor.py
+    +++ b/app/services/tool_executor.py
+    @@ -3,8 +3,13 @@
+     Each tool handler enforces path sandboxing (no traversal outside working_dir),
+     size limits, and returns string results (required by Anthropic tool API).
+     All handlers catch exceptions and return error strings rather than raising.
     +
-    +                # --- Text chunk ---
-    +                chunk = item
-                     accumulated_text += chunk
-                     turn_text += chunk
-     
-    @@ -832,7 +900,37 @@ async def _run_build(
-                                     }
-                                 )
-     
-    -            # Turn complete ÔÇö add assistant response to conversation history
-    +            # Turn complete ÔÇö handle tool calls if any
-    +            if tool_calls_this_turn:
-    +                # Build the assistant message with tool_use content blocks
-    +                assistant_content: list[dict] = []
-    +                if turn_text:
-    +                    assistant_content.append({"type": "text", "text": turn_text})
-    +                for tc in tool_calls_this_turn:
-    +                    assistant_content.append({
-    +                        "type": "tool_use",
-    +                        "id": tc["id"],
-    +                        "name": tc["name"],
-    +                        "input": {},  # original input not needed in history
-    +                    })
-    +                messages.append({"role": "assistant", "content": assistant_content})
-    +
-    +                # Add tool results as a user message
-    +                tool_results_content: list[dict] = [
-    +                    {
-    +                        "type": "tool_result",
-    +                        "tool_use_id": tc["id"],
-    +                        "content": tc["result"][:10_000],  # cap result size
-    +                    }
-    +                    for tc in tool_calls_this_turn
-    +                ]
-    +                messages.append({"role": "user", "content": tool_results_content})
-    +
-    +                # Continue to next iteration ÔÇö the agent will respond to tool results
-    +                total_tokens_all_turns += usage.input_tokens + usage.output_tokens
-    +                continue
-    +
-    +            # Add assistant response to conversation history
-                 messages.append({"role": "assistant", "content": turn_text})
-     
-                 # Check for user interjections between turns
-    diff --git a/app/services/project_service.py b/app/services/project_service.py
-    index 16b823a..f3ffa26 100644
-    --- a/app/services/project_service.py
-    +++ b/app/services/project_service.py
-    @@ -1,5 +1,6 @@
-     """Project service -- orchestrates project CRUD, questionnaire chat, and contract generation."""
+    +Phase 18 tools: read_file, list_directory, search_code, write_file (sync)
+    +Phase 19 tools: run_tests, check_syntax, run_command (async -- subprocess)
+     """
      
     +import asyncio
-     import json
-     import logging
-     from pathlib import Path
-    @@ -23,8 +24,13 @@ from app.repos.project_repo import (
+    +import ast
+     import fnmatch
+     import os
+     import re
+    @@ -17,11 +22,36 @@ from pathlib import Path
+     MAX_READ_FILE_BYTES = 50_000  # 50KB max for read_file
+     MAX_SEARCH_RESULTS = 50
+     MAX_WRITE_FILE_BYTES = 500_000  # 500KB max for write_file
+    +MAX_STDOUT_BYTES = 50_000  # 50KB max for subprocess stdout
+    +MAX_STDERR_BYTES = 10_000  # 10KB max for subprocess stderr
+    +DEFAULT_RUN_TESTS_TIMEOUT = 120  # seconds
+    +DEFAULT_CHECK_SYNTAX_TIMEOUT = 30
+    +DEFAULT_RUN_COMMAND_TIMEOUT = 60
+    +MAX_TEST_RUNS_WARNING = 5  # warn after this many test runs per phase
+     SKIP_DIRS = frozenset({
+         ".git", "__pycache__", "node_modules", ".venv", "venv",
+         ".tox", "dist", "build", ".mypy_cache", ".pytest_cache",
+     })
      
-     logger = logging.getLogger(__name__)
-     
-    -# Active contract generation tasks ÔÇö checked between contracts for cancellation
-    -_active_generations: set[str] = set()
-    +
-    +class ContractCancelled(Exception):
-    +    """Raised when contract generation is cancelled by the user."""
-    +
-    +
-    +# Active contract generation tasks ÔÇö maps project-id ÔåÆ cancel Event
-    +_active_generations: dict[str, asyncio.Event] = {}
-     
-     # ---------------------------------------------------------------------------
-     # Questionnaire definitions
-    @@ -434,14 +440,15 @@ async def generate_contracts(
-             llm_model = settings.LLM_QUESTIONNAIRE_MODEL
-     
-         pid = str(project_id)
-    -    _active_generations.add(pid)
-    +    cancel_event = asyncio.Event()
-    +    _active_generations[pid] = cancel_event
-     
-         generated = []
-         total = len(CONTRACT_TYPES)
-         try:
-             for idx, contract_type in enumerate(CONTRACT_TYPES):
-                 # Check cancellation between contracts
-    -            if pid not in _active_generations:
-    +            if cancel_event.is_set():
-                     logger.info("Contract generation cancelled for project %s", pid)
-                     await manager.send_to_user(str(user_id), {
-                         "type": "contract_progress",
-    @@ -453,7 +460,7 @@ async def generate_contracts(
-                             "total": total,
-                         },
-                     })
-    -                raise ValueError("Contract generation cancelled")
-    +                raise ContractCancelled("Contract generation cancelled")
-     
-                 # Notify client that generation of this contract has started
-                 await manager.send_to_user(str(user_id), {
-    @@ -467,9 +474,40 @@ async def generate_contracts(
-                     },
-                 })
-     
-    -            content, usage = await _generate_contract_content(
-    -                contract_type, project, answers_text, llm_api_key, llm_model, provider
-    +            # Race the LLM call against the cancel event so cancellation
-    +            # takes effect immediately, even mid-generation.
-    +            llm_task = asyncio.ensure_future(
-    +                _generate_contract_content(
-    +                    contract_type, project, answers_text, llm_api_key, llm_model, provider
-    +                )
-    +            )
-    +            cancel_task = asyncio.ensure_future(cancel_event.wait())
-    +
-    +            done, pending = await asyncio.wait(
-    +                [llm_task, cancel_task],
-    +                return_when=asyncio.FIRST_COMPLETED,
-                 )
-    +
-    +            if cancel_task in done:
-    +                # Cancel fired while LLM was running ÔÇö abort immediately
-    +                llm_task.cancel()
-    +                logger.info("Contract generation cancelled mid-LLM for project %s", pid)
-    +                await manager.send_to_user(str(user_id), {
-    +                    "type": "contract_progress",
-    +                    "payload": {
-    +                        "project_id": pid,
-    +                        "contract_type": contract_type,
-    +                        "status": "cancelled",
-    +                        "index": idx,
-    +                        "total": total,
-    +                    },
-    +                })
-    +                raise ContractCancelled("Contract generation cancelled")
-    +
-    +            # LLM finished first ÔÇö clean up the cancel waiter
-    +            cancel_task.cancel()
-    +            content, usage = llm_task.result()
-    +
-                 row = await upsert_contract(project_id, contract_type, content)
-                 generated.append({
-                     "id": str(row["id"]),
-    @@ -494,7 +532,7 @@ async def generate_contracts(
-                     },
-                 })
-         finally:
-    -        _active_generations.discard(pid)
-    +        _active_generations.pop(pid, None)
-     
-         await update_project_status(project_id, "contracts_ready")
-         return generated
-    @@ -506,11 +544,12 @@ async def cancel_contract_generation(
-     ) -> dict:
-         """Cancel an in-progress contract generation.
-     
-    -    Removes the project from the active set so the generation loop
-    -    stops at the next contract boundary.
-    +    Sets the cancel event so the generation loop stops immediately,
-    +    even if an LLM call is currently in flight.
-         """
-         pid = str(project_id)
-    -    if pid not in _active_generations:
-    +    cancel_event = _active_generations.get(pid)
-    +    if cancel_event is None:
-             raise ValueError("No active contract generation for this project")
-     
-         # Verify ownership
-    @@ -518,7 +557,7 @@ async def cancel_contract_generation(
-         if not project or str(project["user_id"]) != str(user_id):
-             raise ValueError("Project not found")
-     
-    -    _active_generations.discard(pid)
-    +    cancel_event.set()
-         logger.info("Contract generation cancel requested for project %s", pid)
-         return {"status": "cancelling"}
-     
-    diff --git a/app/services/tool_executor.py b/app/services/tool_executor.py
-    new file mode 100644
-    index 0000000..1f3f523
-    --- /dev/null
-    +++ b/app/services/tool_executor.py
-    @@ -0,0 +1,310 @@
-    +"""Tool executor -- sandboxed tool handlers for builder agent tool use.
-    +
-    +Each tool handler enforces path sandboxing (no traversal outside working_dir),
-    +size limits, and returns string results (required by Anthropic tool API).
-    +All handlers catch exceptions and return error strings rather than raising.
-    +"""
-    +
-    +import fnmatch
-    +import os
-    +import re
-    +from pathlib import Path
-    +
-    +# ---------------------------------------------------------------------------
-    +# Constants
-    +# ---------------------------------------------------------------------------
-    +
-    +MAX_READ_FILE_BYTES = 50_000  # 50KB max for read_file
-    +MAX_SEARCH_RESULTS = 50
-    +MAX_WRITE_FILE_BYTES = 500_000  # 500KB max for write_file
-    +SKIP_DIRS = frozenset({
-    +    ".git", "__pycache__", "node_modules", ".venv", "venv",
-    +    ".tox", "dist", "build", ".mypy_cache", ".pytest_cache",
+    +# Allowlists for command safety
+    +RUN_TESTS_PREFIXES = (
+    +    "pytest", "python -m pytest", "python3 -m pytest",
+    +    "npm test", "npm run test", "npx vitest", "npx jest",
+    +)
+    +RUN_COMMAND_PREFIXES = (
+    +    "pip install", "pip3 install",
+    +    "npm install", "npx ",
+    +    "python -m ", "python3 -m ",
+    +    "cat ", "head ", "tail ", "wc ", "find ", "ls ",
+    +    "dir ",  # Windows
+    +    "type ",  # Windows cat equivalent
+    +)
+    +BLOCKED_COMMANDS = frozenset({
+    +    "rm", "del", "rmdir", "curl", "wget", "ssh", "scp",
+    +    "git push", "git remote", "shutdown", "reboot",
+    +    "format", "mkfs", "dd ", "chmod", "chown",
     +})
     +
+     
+     # ---------------------------------------------------------------------------
+     # Path sandboxing
+    @@ -63,7 +93,7 @@ def _resolve_sandboxed(rel_path: str, working_dir: str) -> Path | None:
+     
+     
+     def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
+    -    """Dispatch a tool call to the correct handler.
+    +    """Dispatch a synchronous tool call to the correct handler.
+     
+         Args:
+             tool_name: Name of the tool to execute.
+    @@ -73,13 +103,13 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
+         Returns:
+             String result of the tool execution.
+         """
+    -    handlers = {
+    +    sync_handlers = {
+             "read_file": _exec_read_file,
+             "list_directory": _exec_list_directory,
+             "search_code": _exec_search_code,
+             "write_file": _exec_write_file,
+         }
+    -    handler = handlers.get(tool_name)
+    +    handler = sync_handlers.get(tool_name)
+         if handler is None:
+             return f"Error: Unknown tool '{tool_name}'"
+         try:
+    @@ -88,6 +118,48 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
+             return f"Error executing {tool_name}: {exc}"
+     
+     
+    +async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str) -> str:
+    +    """Dispatch a tool call -- supports both sync and async handlers.
     +
-    +# ---------------------------------------------------------------------------
-    +# Path sandboxing
-    +# ---------------------------------------------------------------------------
+    +    This is the main dispatcher used by the build loop. Sync tools (read_file,
+    +    list_directory, search_code, write_file) are called directly. Async tools
+    +    (run_tests, check_syntax, run_command) use subprocess execution.
     +
+    +    Args:
+    +        tool_name: Name of the tool to execute.
+    +        tool_input: Input parameters for the tool.
+    +        working_dir: Absolute path to the build working directory.
     +
-    +def _resolve_sandboxed(rel_path: str, working_dir: str) -> Path | None:
-    +    """Resolve a relative path within working_dir, enforcing sandbox.
-    +
-    +    Returns the resolved absolute Path if safe, or None if the path
-    +    would escape the sandbox (e.g. via `..` traversal or absolute paths).
+    +    Returns:
+    +        String result of the tool execution.
     +    """
-    +    if not rel_path or not working_dir:
-    +        return None
+    +    sync_handlers = {
+    +        "read_file": _exec_read_file,
+    +        "list_directory": _exec_list_directory,
+    +        "search_code": _exec_search_code,
+    +        "write_file": _exec_write_file,
+    +    }
+    +    async_handlers = {
+    +        "run_tests": _exec_run_tests,
+    +        "check_syntax": _exec_check_syntax,
+    +        "run_command": _exec_run_command,
+    +    }
     +
-    +    # Reject absolute paths
-    ... (1222 lines truncated, 1722 total)
+    +    if tool_name in sync_handlers:
+    +        try:
+    +            return sync_handlers[tool_name](tool_input, working_dir)
+    +        except Exception as exc:
+    +            return f"Error executing {tool_name}: {exc}"
+    +
+    +    if tool_name in async_handlers:
+    +        try:
+    +            return await async_handlers[tool_name](tool_input, working_dir)
+    +        except Exception as exc:
+    +            return f"Error executing {tool_name}: {exc}"
+    +
+    +    return f"Error: Unknown tool '{tool_name}'"
+    +
+    +
+     def _exec_read_file(inp: dict, working_dir: str) -> str:
+         """Read a file from the working directory.
+     
+    @@ -222,6 +294,189 @@ def _exec_write_file(inp: dict, working_dir: str) -> str:
+             return f"Error writing '{rel_path}': {exc}"
+     
+     
+    +# ---------------------------------------------------------------------------
+    +# Command validation helpers
+    +# ---------------------------------------------------------------------------
+    +
+    +
+    +def _validate_command(command: str, allowed_prefixes: tuple[str, ...]) -> str | None:
+    +    """Validate a command against an allowlist.
+    +
+    +    Returns None if the command is allowed, or an error message string if blocked.
+    +    """
+    +    if not command or not command.strip():
+    +        return "Error: Command is empty"
+    +
+    +    cmd = command.strip()
+    +
+    +    # Check for command injection characters
+    +    for char in (";", "|", "&", "`", "$", "(", ")", "{", "}"):
+    +        if char in cmd:
+    +            return f"Error: Command contains disallowed character '{char}'"
+    +
+    +    # Check against blocked commands
+    +    cmd_lower = cmd.lower()
+    +    for blocked in BLOCKED_COMMANDS:
+    +        if cmd_lower.startswith(blocked):
+    +            return f"Error: Command '{blocked}' is not allowed"
+    +
+    +    # Check against allowlist
+    +    if not any(cmd_lower.startswith(prefix) for prefix in allowed_prefixes):
+    +        return f"Error: Command not in allowlist. Allowed prefixes: {', '.join(allowed_prefixes)}"
+    +
+    +    return None
+    +
+    +
+    +def _truncate_output(text: str, max_bytes: int) -> str:
+    +    """Truncate output to max_bytes, appending a truncation notice."""
+    +    if len(text) <= max_bytes:
+    +        return text
+    +    return text[:max_bytes] + f"\n\n[... truncated at {max_bytes} bytes ...]"
+    +
+    +
+    +async def _run_subprocess(
+    +    command: str, working_dir: str, timeout: int,
+    +) -> tuple[int, str, str]:
+    +    """Run a subprocess command with timeout and output limits.
+    +
+    +    Returns (exit_code, stdout, stderr).
+    +    """
+    +    # Restricted environment: only PATH
+    +    env = {"PATH": os.environ.get("PATH", "")}
+    +    # Add minimal env vars needed for Python/Node
+    +    for key in ("SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE", "VIRTUAL_ENV"):
+    +        val = os.environ.get(key)
+    +        if val:
+    +            env[key] = val
+    +
+    +    proc = await asyncio.create_subprocess_shell(
+    +        command,
+    +        stdout=asyncio.subprocess.PIPE,
+    +        stderr=asyncio.subprocess.PIPE,
+    +        cwd=working_dir,
+    +        env=env,
+    +    )
+    +    try:
+    +        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+    +            proc.communicate(), timeout=timeout,
+    +        )
+    +    except asyncio.TimeoutError:
+    +        proc.kill()
+    +        await proc.wait()
+    +        return -1, "", f"Error: Command timed out after {timeout}s"
+    +
+    +    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    +    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    +
+    +    stdout = _truncate_output(stdout, MAX_STDOUT_BYTES)
+    +    stderr = _truncate_output(stderr, MAX_STDERR_BYTES)
+    +
+    +    return proc.returncode or 0, stdout, stderr
+    +
+    +
+    +# ---------------------------------------------------------------------------
+    +# Async tool handlers (Phase 19)
+    +# ---------------------------------------------------------------------------
+    +
+    +
+    +async def _exec_run_tests(inp: dict, working_dir: str) -> str:
+    +    """Run a test command in the working directory.
+    +
+    +    Input: { "command": "pytest tests/ -v", "timeout": 120 }
+    +    Returns: Exit code, stdout, and stderr.
+    +    """
+    +    command = inp.get("command", "")
+    +    timeout = min(int(inp.get("timeout", DEFAULT_RUN_TESTS_TIMEOUT)), 300)
+    +
+    +    error = _validate_command(command, RUN_TESTS_PREFIXES)
+    +    if error:
+    +        return error
+    +
+    +    exit_code, stdout, stderr = await _run_subprocess(command, working_dir, timeout)
+    +
+    +    parts = [f"Exit code: {exit_code}"]
+    +    if stdout:
+    +        parts.append(f"--- stdout ---\n{stdout}")
+    +    if stderr:
+    +        parts.append(f"--- stderr ---\n{stderr}")
+    +
+    +    return "\n".join(parts)
+    +
+    +
+    +async def _exec_check_syntax(inp: dict, working_dir: str) -> str:
+    +    """Check syntax of a file in the working directory.
+    +
+    +    Input: { "file_path": "app/services/foo.py" }
+    +    Returns: Syntax errors with line numbers, or "No errors" if clean.
+    +    """
+    +    file_path = inp.get("file_path", "")
+    +    target = _resolve_sandboxed(file_path, working_dir)
+    +    if target is None:
+    +        return f"Error: Invalid or disallowed path '{file_path}'"
+    +    if not target.exists():
+    +        return f"Error: File not found '{file_path}'"
+    +    if not target.is_file():
+    +        return f"Error: '{file_path}' is not a file"
+    +
+    +    ext = target.suffix.lower()
+    +
+    +    # Python files: use ast.parse for syntax checking
+    +    if ext == ".py":
+    +        try:
+    +            source = target.read_text(encoding="utf-8", errors="replace")
+    +            ast.parse(source, filename=file_path)
+    +            return f"No syntax errors in {file_path}"
+    +        except SyntaxError as e:
+    +            return f"Syntax error in {file_path}:{e.lineno}: {e.msg}"
+    +        except Exception as e:
+    +            return f"Error checking {file_path}: {e}"
+    +
+    +    # TypeScript/JavaScript: use tsc --noEmit or node --check
+    +    if ext in (".ts", ".tsx"):
+    +        timeout = int(inp.get("timeout", DEFAULT_CHECK_SYNTAX_TIMEOUT))
+    +        cmd = f"npx tsc --noEmit --pretty false {target}"
+    +        exit_code, stdout, stderr = await _run_subprocess(cmd, working_dir, timeout)
+    +        if exit_code == 0:
+    +            return f"No syntax errors in {file_path}"
+    +        output = (stdout + "\n" + stderr).strip()
+    +        return f"TypeScript errors in {file_path}:\n{output}"
+    +
+    +    if ext in (".js", ".jsx", ".mjs"):
+    +        timeout = int(inp.get("timeout", DEFAULT_CHECK_SYNTAX_TIMEOUT))
+    +        cmd = f"node --check {target}"
+    +        exit_code, stdout, stderr = await _run_subprocess(cmd, working_dir, timeout)
+    +        if exit_code == 0:
+    +            return f"No syntax errors in {file_path}"
+    +        output = (stdout + "\n" + stderr).strip()
+    +        return f"JavaScript errors in {file_path}:\n{output}"
+    +
+    +    return f"Error: Unsupported file type '{ext}' for syntax checking"
+    +
+    +
+    +async def _exec_run_command(inp: dict, working_dir: str) -> str:
+    +    """Run a sandboxed shell command in the working directory.
+    +
+    +    Input: { "command": "pip install -r requirements.txt", "timeout": 60 }
+    +    Returns: Exit code + stdout/stderr.
+    +    """
+    +    command = inp.get("command", "")
+    +    timeout = min(int(inp.get("timeout", DEFAULT_RUN_COMMAND_TIMEOUT)), 300)
+    +
+    +    error = _validate_command(command, RUN_COMMAND_PREFIXES)
+    +    if error:
+    +        return error
+    +
+    +    exit_code, stdout, stderr = await _run_subprocess(command, working_dir, timeout)
+    +
+    +    parts = [f"Exit code: {exit_code}"]
+    +    if stdout:
+    +        parts.append(f"--- stdout ---\n{stdout}")
+    +    if stderr:
+    +        parts.append(f"--- stderr ---\n{stderr}")
+    +
+    +    return "\n".join(parts)
+    +
+    +
+     # ---------------------------------------------------------------------------
+     # Tool Specifications (Anthropic format)
+     # ---------------------------------------------------------------------------
+    @@ -307,4 +562,69 @@ BUILDER_TOOLS = [
+                 "required": ["path", "content"],
+             },
+         },
+    +    {
+    +        "name": "run_tests",
+    +        "description": (
+    +            "Run the project test suite or a subset of tests in the working directory. "
+    +            "Returns exit code, stdout, and stderr. Use this after writing code to verify "
+    +            "it works before signing off a phase. Only sign off when tests pass."
+    +        ),
+    +        "input_schema": {
+    +            "type": "object",
+    +            "properties": {
+    +                "command": {
+    +                    "type": "string",
+    +                    "description": (
+    +                        "Test command to run. Must start with an allowed prefix: "
+    +                        "pytest, python -m pytest, npm test, npx vitest, npx jest."
+    +                    ),
+    +                },
+    +                "timeout": {
+    +                    "type": "integer",
+    +                    "description": "Timeout in seconds (default 120, max 300).",
+    +                },
+    +            },
+    +            "required": ["command"],
+    +        },
+    +    },
+    +    {
+    +        "name": "check_syntax",
+    +        "description": (
+    +            "Check a file for syntax errors. For Python files, uses ast.parse. "
+    +            "For TypeScript/JavaScript, uses tsc/node --check. "
+    +            "Use this after writing files to catch syntax errors immediately."
+    +        ),
+    +        "input_schema": {
+    +            "type": "object",
+    +            "properties": {
+    +                "file_path": {
+    +                    "type": "string",
+    +                    "description": "Relative path to the file to check.",
+    +                },
+    +            },
+    +            "required": ["file_path"],
+    +        },
+    +    },
+    +    {
+    +        "name": "run_command",
+    +        "description": (
+    +            "Run a sandboxed shell command in the working directory. "
+    +            "Allowed commands include: pip install, npm install, python -m, npx, "
+    +            "cat, head, tail, wc, find, ls. Destructive commands are blocked."
+    +        ),
+    +        "input_schema": {
+    +            "type": "object",
+    +            "properties": {
+    +                "command": {
+    +                    "type": "string",
+    +                    "description": "Shell command to run. Must start with an allowed prefix.",
+    +                },
+    +                "timeout": {
+    +                    "type": "integer",
+    +                    "description": "Timeout in seconds (default 60, max 300).",
+    +                },
+    +            },
+    +            "required": ["command"],
+    +        },
+    +    },
+     ]
+    diff --git a/tests/test_build_service.py b/tests/test_build_service.py
+    index b47c652..a57b5ee 100644
+    --- a/tests/test_build_service.py
+    +++ b/tests/test_build_service.py
+    @@ -2108,7 +2108,7 @@ async def _fake_stream_with_tool_call(*args, **kwargs):
+     
+     
+     @pytest.mark.asyncio
+    -@patch("app.services.build_service.execute_tool")
+    +@patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
+     @patch("app.services.build_service.manager")
+     @patch("app.services.build_service.project_repo")
+     @patch("app.services.build_service.build_repo")
+    @@ -2172,7 +2172,7 @@ async def _fake_stream_with_write_tool(*args, **kwargs):
+    ... (274 lines truncated, 774 total)

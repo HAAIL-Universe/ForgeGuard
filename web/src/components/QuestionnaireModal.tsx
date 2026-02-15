@@ -548,7 +548,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
                   : 'Starting...'}
             </p>
             <p style={{ margin: '2px 0 0', fontSize: '0.6rem', color: '#475569', letterSpacing: '0.3px' }}>
-              Model: claude-haiku-4-5
+              Model: claude-sonnet-4-5
             </p>
             {/* Context window meter */}
             {(tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0) && (() => {
@@ -682,7 +682,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           <ContractProgress
             projectId={projectId}
             tokenUsage={tokenUsage}
-            model="claude-haiku-4-5"
+            model="claude-sonnet-4-5"
             onComplete={onContractsGenerated}
           />
         )}

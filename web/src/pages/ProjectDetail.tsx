@@ -539,7 +539,7 @@ function ProjectDetail() {
             <ContractProgress
               projectId={project.id}
               tokenUsage={{ input_tokens: 0, output_tokens: 0 }}
-              model="claude-haiku-4-5"
+              model="claude-sonnet-4-5"
               onComplete={async () => {
                 setShowRegenerate(false);
                 addToast('Contracts regenerated!', 'success');

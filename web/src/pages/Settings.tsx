@@ -133,7 +133,6 @@ function Settings() {
           </h3>
           <p style={{ margin: '0 0 14px', fontSize: '0.75rem', color: '#64748B', lineHeight: 1.5 }}>
             Builds use Claude Opus and run on your own Anthropic API key.
-            Builds use Claude Opus and run on your own Anthropic API key.
           </p>
 
           {hasKey ? (
