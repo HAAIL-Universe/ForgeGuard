@@ -3,6 +3,8 @@
 Validates required settings on import -- fails fast if critical vars are missing.
 """
 
+VERSION = "0.1.0"
+
 import os
 import sys
 

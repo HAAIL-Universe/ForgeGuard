@@ -1,34 +1,30 @@
-﻿Status: PASS
-Start: 2026-02-14T23:56:12Z
-End: 2026-02-14T23:56:13Z
+Status: PASS
+Start: 2026-02-15T01:08:47Z
+End: 2026-02-15T01:08:49Z
 Branch: master
-HEAD: e5f7dcd282338470cfdab5fa2dab9d27e544fac5
+HEAD: 210a82cd02a26464539c7bbff5f45c8918f63802
 Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+import_sanity exit: 0
+pytest exit: 0
 compileall exit: 0
 git status -sb:
 ```
-## master
- M Forge/scripts/watch_audit.ps1
- M USER_INSTRUCTIONS.md
- M app/api/routers/repos.py
- M app/api/routers/webhooks.py
+## master...origin/master
+ M Forge/Contracts/physics.yaml
+ M Forge/evidence/updatedifflog.md
+ M app/api/routers/health.py
  M app/config.py
- M app/main.py
- M boot.ps1
-?? app/api/rate_limit.py
-?? tests/test_config.py
-?? tests/test_hardening.py
-?? tests/test_rate_limit.py
+ M tests/test_health.py
+ M web/src/components/AppShell.tsx
 ```
 git diff --stat:
 ```
- Forge/scripts/watch_audit.ps1 |  99 ++++++++++++++++++++
- USER_INSTRUCTIONS.md          | 142 +++++++++++++++++++++++++---
- app/api/routers/repos.py      |  25 ++++-
- app/api/routers/webhooks.py   |  22 ++++-
- app/config.py                 |  49 ++++++++--
- app/main.py                   |  21 ++++-
- boot.ps1                      | 209 +++++++++++++++++++++++++++++++-----------
- 7 files changed, 488 insertions(+), 79 deletions(-)
+ Forge/Contracts/physics.yaml    |    8 +
+ Forge/evidence/updatedifflog.md | 1137 +--------------------------------------
+ app/api/routers/health.py       |    8 +
+ app/config.py                   |    2 +
+ tests/test_health.py            |    9 +
+ web/src/components/AppShell.tsx |   13 +
+ 6 files changed, 65 insertions(+), 1112 deletions(-)
 ```
 

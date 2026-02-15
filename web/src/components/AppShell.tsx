@@ -132,6 +132,8 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
               overflowY: 'auto',
               flexShrink: 0,
               background: '#0F172A',
+              display: 'flex',
+              flexDirection: 'column',
             }}
           >
             <div style={{ padding: '0 16px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -185,6 +187,17 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
                 );
               })
             )}
+            <div
+              style={{
+                marginTop: 'auto',
+                padding: '12px 16px',
+                borderTop: '1px solid #1E293B',
+                color: '#64748B',
+                fontSize: '0.7rem',
+              }}
+            >
+              v0.1.0
+            </div>
           </aside>
         )}
 

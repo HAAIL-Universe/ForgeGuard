@@ -111,7 +111,7 @@ function ParseDiffLogForPhase([string]$diffLogPath) {
   return "unknown"
 }
 
-# ── Resolve paths ────────────────────────────────────────────────────────────
+# -- Resolve paths ------------------------------------------------------------
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $govRoot = Split-Path -Parent $scriptDir  # Forge/ governance folder
@@ -126,6 +126,43 @@ try {
   }
 } catch {
   $projectRoot = $govRoot
+}
+
+# -- Lock file (single-instance guard) ----------------------------------------
+
+$lockFile = Join-Path $projectRoot ".forge_watcher.lock"
+
+if (Test-Path $lockFile) {
+  $lockContent = Get-Content $lockFile -Raw -ErrorAction SilentlyContinue
+  $stalePid = $null
+  if ($lockContent -match 'PID:\s*(\d+)') {
+    $stalePid = [int]$Matches[1]
+  }
+  $stale = $true
+  if ($stalePid) {
+    try {
+      $proc = Get-Process -Id $stalePid -ErrorAction SilentlyContinue
+      if ($proc -and -not $proc.HasExited) {
+        $stale = $false
+      }
+    } catch { }
+  }
+  if (-not $stale) {
+    Warn "Watcher is already running (PID $stalePid). Lock file: $lockFile"
+    Warn "If this is wrong, delete $lockFile and re-run."
+    exit 0
+  } else {
+    Dim "Removing stale lock file (PID $stalePid no longer running)."
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# Write lock file
+$lockBody = "PID: $PID`nStarted: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC' -AsUTC)`nScript: $($MyInvocation.MyCommand.Definition)"
+try {
+  $lockBody | Set-Content -Path $lockFile -Encoding UTF8 -Force
+} catch {
+  Warn "Could not write lock file: $_  -- continuing without lock."
 }
 
 # Resolve watch path
@@ -352,6 +389,12 @@ try {
 } finally {
   $watcher.EnableRaisingEvents = $false
   $watcher.Dispose()
+
+  # Remove lock file on shutdown
+  if (Test-Path $lockFile) {
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    Dim "Lock file removed."
+  }
 
   Write-Host ""
   Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan

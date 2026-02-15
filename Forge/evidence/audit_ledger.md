@@ -1008,3 +1008,466 @@ Outcome: SIGNED-OFF (awaiting AUTHORIZED)
 W1: WARN -- Potential secrets found: secret=, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions -- Iteration 17
+Timestamp: 2026-02-15T01:09:27Z
+AEM Cycle: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (8 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         FAIL -- updatedifflog.md contains TODO: placeholders.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A5: FAIL -- updatedifflog.md contains TODO: placeholders.
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 18
+Timestamp: 2026-02-15T01:09:39Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         FAIL -- updatedifflog.md contains TODO: placeholders.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A5: FAIL -- updatedifflog.md contains TODO: placeholders.
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 19
+Timestamp: 2026-02-15T01:09:49Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 20
+Timestamp: 2026-02-15T01:10:37Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (9 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test -- Iteration 21
+Timestamp: 2026-02-15T01:10:58Z
+AEM Cycle: Phase 6 -- Integration Test
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (9 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 22
+Timestamp: 2026-02-15T01:11:25Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (9 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 23
+Timestamp: 2026-02-15T01:11:32Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (9 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 24
+Timestamp: 2026-02-15T01:11:52Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (9 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test -- Iteration 25
+Timestamp: 2026-02-15T01:12:22Z
+AEM Cycle: Phase 6 -- Integration Test
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/scripts/watch_audit.ps1. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/scripts/watch_audit.ps1. 
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 26
+Timestamp: 2026-02-15T01:12:42Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (10 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/watch_audit.ps1
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test -- Iteration 27
+Timestamp: 2026-02-15T01:12:46Z
+AEM Cycle: Phase 6 -- Integration Test
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: .gitignore. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: .gitignore. 
+
+### Files Changed
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/watch_audit.ps1
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change -- Iteration 28
+Timestamp: 2026-02-15T01:13:09Z
+AEM Cycle: Phase 6 -- Integration Test: validate full audit pipeline with a minor code change
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (11 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- .gitignore
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/watch_audit.ps1
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 6 -- Integration Test -- Iteration 29
+Timestamp: 2026-02-15T01:13:18Z
+AEM Cycle: Phase 6 -- Integration Test
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (11 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- .gitignore
+- app/api/routers/health.py
+- app/config.py
+- Forge/Contracts/physics.yaml
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/watch_audit.ps1
+- tests/test_health.py
+- web/src/components/AppShell.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

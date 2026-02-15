@@ -17,6 +17,14 @@ paths:
       response:
         status: "ok"
 
+  /health/version:
+    get:
+      summary: "Return application version and current phase"
+      auth: none
+      response:
+        version: string
+        phase: string
+
   # -- Auth ---------------------------------------------------------
 
   /auth/github:
