@@ -39,6 +39,13 @@ PHASE_COMPLETE_SIGNAL = "=== PHASE SIGN-OFF: PASS ==="
 # Build error signal
 BUILD_ERROR_SIGNAL = "RISK_EXCEEDS_SCOPE"
 
+# Plan block delimiters
+PLAN_START_PATTERN = re.compile(r"^=== PLAN ===$", re.MULTILINE)
+PLAN_END_PATTERN = re.compile(r"^=== END PLAN ===$", re.MULTILINE)
+
+# Context compaction threshold (tokens) — compact when this is exceeded
+CONTEXT_COMPACTION_THRESHOLD = 150_000
+
 # Universal governance contract (not per-project — loaded from disk)
 FORGE_CONTRACTS_DIR = Path(__file__).resolve().parent.parent.parent / "Forge" / "Contracts"
 
@@ -116,6 +123,88 @@ def _strip_code_fence(text: str) -> str:
     if stripped.rstrip().endswith("```"):
         stripped = stripped.rstrip()[:-3]
     return stripped.rstrip("\n") + "\n" if stripped.strip() else ""
+
+
+def _parse_build_plan(text: str) -> list[dict]:
+    """Parse a structured build plan from the builder output.
+
+    Expected format:
+        === PLAN ===
+        1. Task description one
+        2. Task description two
+        3. Task description three
+        === END PLAN ===
+
+    Returns list of {id, title, status} dicts.
+    """
+    start_match = PLAN_START_PATTERN.search(text)
+    if not start_match:
+        return []
+    end_match = PLAN_END_PATTERN.search(text, start_match.end())
+    if not end_match:
+        return []
+
+    plan_text = text[start_match.end():end_match.start()].strip()
+    tasks: list[dict] = []
+    for line in plan_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Match "N. description" or "- description"
+        m = re.match(r"^(\d+)[.)]\s+(.+)$", line)
+        if m:
+            tasks.append({
+                "id": int(m.group(1)),
+                "title": m.group(2).strip(),
+                "status": "pending",
+            })
+        elif line.startswith("- "):
+            tasks.append({
+                "id": len(tasks) + 1,
+                "title": line[2:].strip(),
+                "status": "pending",
+            })
+    return tasks
+
+
+def _compact_conversation(messages: list[dict]) -> list[dict]:
+    """Compact a conversation by summarizing older turns.
+
+    Keeps the first message (directive) and last 2 assistant/user pairs
+    intact.  Middle turns are replaced with a summary message.
+
+    Returns a new compacted message list.
+    """
+    if len(messages) <= 5:
+        # Not enough to compact
+        return list(messages)
+
+    # First message is always the directive — keep it
+    directive = messages[0]
+
+    # Keep the last 4 messages (2 turns: user+assistant pairs)
+    tail = messages[-4:]
+
+    # Summarize the middle
+    middle = messages[1:-4]
+    if not middle:
+        return list(messages)
+
+    summary_parts = ["[Context compacted — summary of earlier conversation turns]\n"]
+    for msg in middle:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        # Truncate each message to 500 chars for summary
+        if len(content) > 500:
+            content = content[:500] + "..."
+        summary_parts.append(f"[{role}]: {content}\n")
+
+    summary_msg = {
+        "role": "user",
+        "content": "\n".join(summary_parts),
+    }
+
+    return [directive, summary_msg] + tail
 
 
 # Active build tasks keyed by build_id
@@ -440,53 +529,140 @@ async def _run_build(
         # Track files written during this build
         files_written: list[dict] = []
 
-        # Conversation history for the agent
+        # Conversation history for the agent (multi-turn)
         messages: list[dict] = [
             {"role": "user", "content": directive},
         ]
 
         accumulated_text = ""
         current_phase = "Phase 0"
+        turn_count = 0
+        phase_loop_count = 0  # Audit failures on the current phase
+
+        # Build plan state
+        plan_tasks: list[dict] = []
 
         # Token usage tracking
         usage = StreamUsage()
 
-        # Stream agent output
-        async for chunk in stream_agent(
-            api_key=api_key,
-            model=settings.LLM_BUILDER_MODEL,
-            system_prompt="You are an autonomous software builder operating under the Forge governance framework.",
-            messages=messages,
-            usage_out=usage,
-        ):
-            accumulated_text += chunk
+        # Total token accumulator (across all turns, for compaction check)
+        total_tokens_all_turns = 0
 
-            # Log chunks in batches (every ~500 chars)
-            if len(chunk) >= 10:
+        # System prompt for the builder agent
+        system_prompt = (
+            "You are an autonomous software builder operating under the Forge governance framework.\n\n"
+            "At the start of your first response, emit a structured build plan:\n"
+            "=== PLAN ===\n"
+            "1. First task\n"
+            "2. Second task\n"
+            "...\n"
+            "=== END PLAN ===\n\n"
+            "As you complete each task, emit: === TASK DONE: N ===\n"
+            "where N is the task number from your plan.\n"
+        )
+
+        # Multi-turn conversation loop
+        while True:
+            turn_count += 1
+
+            # Context compaction check
+            compacted = False
+            if total_tokens_all_turns > CONTEXT_COMPACTION_THRESHOLD and len(messages) > 5:
+                messages = _compact_conversation(messages)
+                compacted = True
                 await build_repo.append_build_log(
-                    build_id, chunk, source="builder", level="info"
+                    build_id,
+                    f"Context compacted at {total_tokens_all_turns} tokens (turn {turn_count})",
+                    source="system", level="info",
                 )
-                await _broadcast_build_event(
-                    user_id, build_id, "build_log", {
-                        "message": chunk,
-                        "source": "builder",
-                        "level": "info",
-                    }
-                )
+                await _broadcast_build_event(user_id, build_id, "build_turn", {
+                    "turn": turn_count,
+                    "total_tokens": total_tokens_all_turns,
+                    "compacted": True,
+                })
 
-            # Detect and write file blocks
-            new_blocks = _parse_file_blocks(accumulated_text)
-            already_written_count = len(files_written)
-            if len(new_blocks) > already_written_count and working_dir:
-                for block in new_blocks[already_written_count:]:
-                    await _write_file_block(
-                        build_id, user_id, working_dir,
-                        block["path"], block["content"],
-                        files_written,
+            # Stream agent output for this turn
+            turn_text = ""
+            async for chunk in stream_agent(
+                api_key=api_key,
+                model=settings.LLM_BUILDER_MODEL,
+                system_prompt=system_prompt,
+                messages=messages,
+                usage_out=usage,
+            ):
+                accumulated_text += chunk
+                turn_text += chunk
+
+                # Log chunks in batches (every ~500 chars)
+                if len(chunk) >= 10:
+                    await build_repo.append_build_log(
+                        build_id, chunk, source="builder", level="info"
+                    )
+                    await _broadcast_build_event(
+                        user_id, build_id, "build_log", {
+                            "message": chunk,
+                            "source": "builder",
+                            "level": "info",
+                        }
                     )
 
+                # Detect and write file blocks
+                new_blocks = _parse_file_blocks(accumulated_text)
+                already_written_count = len(files_written)
+                if len(new_blocks) > already_written_count and working_dir:
+                    for block in new_blocks[already_written_count:]:
+                        await _write_file_block(
+                            build_id, user_id, working_dir,
+                            block["path"], block["content"],
+                            files_written,
+                        )
+
+                # Detect and emit build plan
+                if not plan_tasks:
+                    parsed_plan = _parse_build_plan(accumulated_text)
+                    if parsed_plan:
+                        plan_tasks = parsed_plan
+                        await _broadcast_build_event(
+                            user_id, build_id, "build_plan", {
+                                "tasks": plan_tasks,
+                            }
+                        )
+                        await build_repo.append_build_log(
+                            build_id,
+                            f"Build plan detected: {len(plan_tasks)} tasks",
+                            source="system", level="info",
+                        )
+
+                # Detect plan task completion
+                for task in plan_tasks:
+                    if task["status"] == "pending":
+                        signal = f"=== TASK DONE: {task['id']} ==="
+                        if signal in accumulated_text:
+                            task["status"] = "done"
+                            await _broadcast_build_event(
+                                user_id, build_id, "plan_task_complete", {
+                                    "task_id": task["id"],
+                                    "status": "done",
+                                }
+                            )
+
+            # Turn complete — add assistant response to conversation history
+            messages.append({"role": "assistant", "content": turn_text})
+
+            # Update total token count
+            total_tokens_all_turns += usage.input_tokens + usage.output_tokens
+
+            if not compacted:
+                await _broadcast_build_event(user_id, build_id, "build_turn", {
+                    "turn": turn_count,
+                    "total_tokens": total_tokens_all_turns,
+                    "compacted": False,
+                })
+
             # Detect phase completion
+            phase_completed = False
             if PHASE_COMPLETE_SIGNAL in accumulated_text:
+                phase_completed = True
                 phase_match = re.search(
                     r"Phase:\s+(.+?)$", accumulated_text, re.MULTILINE
                 )
@@ -549,11 +725,20 @@ async def _run_build(
                                 )
                         except Exception as exc:
                             logger.warning("Git commit failed for %s: %s", current_phase, exc)
+
+                    # Reset for next phase
+                    phase_loop_count = 0
+                    accumulated_text = ""
+
+                    # Record cost for this phase
+                    await _record_phase_cost(build_id, current_phase, usage)
                 else:
+                    # Audit failed — inject feedback and loop back
+                    phase_loop_count += 1
                     loop_count = await build_repo.increment_loop_count(build_id)
                     await build_repo.append_build_log(
                         build_id,
-                        f"Audit FAIL for {current_phase} (loop {loop_count})",
+                        f"Audit FAIL for {current_phase} (attempt {phase_loop_count})",
                         source="audit",
                         level="warn",
                     )
@@ -564,19 +749,30 @@ async def _run_build(
                         }
                     )
 
-                    if loop_count >= MAX_LOOP_COUNT:
+                    if phase_loop_count >= MAX_LOOP_COUNT:
                         await _fail_build(
                             build_id,
                             user_id,
-                            "RISK_EXCEEDS_SCOPE: 3 consecutive audit failures",
+                            f"RISK_EXCEEDS_SCOPE: {phase_loop_count} consecutive audit failures on {current_phase}",
                         )
                         return
 
-                # Record cost for this phase
-                await _record_phase_cost(build_id, current_phase, usage)
+                    # Record cost for this failed attempt
+                    await _record_phase_cost(build_id, current_phase, usage)
 
-                # Reset accumulated text for next phase detection
-                accumulated_text = ""
+                    # Inject audit feedback as a new user message
+                    feedback_msg = (
+                        f"The audit for {current_phase} FAILED (attempt {phase_loop_count}/{MAX_LOOP_COUNT}).\n\n"
+                        f"Please review the audit findings and fix the issues. "
+                        f"Re-emit the corrected code and the phase sign-off signal when ready.\n"
+                    )
+                    messages.append({"role": "user", "content": feedback_msg})
+
+                    # Reset accumulated text for the retry
+                    accumulated_text = ""
+
+                    # Continue the loop — stream_agent will be called again
+                    continue
 
             # Detect build error signals
             if BUILD_ERROR_SIGNAL in accumulated_text:
@@ -584,6 +780,10 @@ async def _run_build(
                     build_id, user_id, accumulated_text[-500:]
                 )
                 return
+
+            # If no phase was completed and the agent stopped, the build is done
+            if not phase_completed:
+                break
 
         # Build completed (agent finished streaming)
         now = datetime.now(timezone.utc)

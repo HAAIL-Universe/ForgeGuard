@@ -163,6 +163,12 @@ paths:
         payload: AuditRunSummary
         type: "file_created"
         payload: BuildFileEvent
+        type: "build_plan"
+        payload: BuildPlan
+        type: "plan_task_complete"
+        payload: PlanTaskUpdate
+        type: "build_turn"
+        payload: BuildTurnInfo
 
   # -- Projects (Phase 8) -------------------------------------------
 
@@ -477,3 +483,20 @@ schemas:
     output_tokens: integer
     model: string
     estimated_cost_usd: float
+
+  BuildPlan:
+    tasks: BuildPlanTask[]
+
+  BuildPlanTask:
+    id: integer
+    title: string
+    status: string  # pending | done
+
+  PlanTaskUpdate:
+    task_id: integer
+    status: string
+
+  BuildTurnInfo:
+    turn: integer
+    total_tokens: integer
+    compacted: boolean

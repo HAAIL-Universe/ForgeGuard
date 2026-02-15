@@ -86,6 +86,12 @@ interface BuildFile {
   created_at: string;
 }
 
+interface PlanTask {
+  id: number;
+  title: string;
+  status: 'pending' | 'done';
+}
+
 /* ------------------------------------------------------------------ */
 /*  Styles                                                            */
 /* ------------------------------------------------------------------ */
@@ -183,6 +189,9 @@ function BuildProgress() {
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
   const [buildFiles, setBuildFiles] = useState<BuildFile[]>([]);
   const [filesExpanded, setFilesExpanded] = useState(true);
+  const [planTasks, setPlanTasks] = useState<PlanTask[]>([]);
+  const [planExpanded, setPlanExpanded] = useState(true);
+  const [turnCount, setTurnCount] = useState(0);
   const [startTime] = useState(() => Date.now());
   const [elapsed, setElapsed] = useState(0);
   const feedEndRef = useRef<HTMLDivElement>(null);
@@ -466,6 +475,35 @@ function BuildProgress() {
             }
             break;
           }
+
+          case 'build_plan': {
+            const tasks = (payload.tasks ?? []) as PlanTask[];
+            if (tasks.length > 0) {
+              setPlanTasks(tasks);
+              addActivity(`Build plan: ${tasks.length} tasks`, 'system');
+            }
+            break;
+          }
+
+          case 'plan_task_complete': {
+            const taskId = payload.task_id as number;
+            setPlanTasks((prev) =>
+              prev.map((t) => (t.id === taskId ? { ...t, status: 'done' as const } : t)),
+            );
+            const task = planTasks.find((t) => t.id === taskId);
+            if (task) addActivity(`Task ${taskId} done: ${task.title}`, 'system');
+            break;
+          }
+
+          case 'build_turn': {
+            const turn = (payload.turn ?? 0) as number;
+            const compacted = payload.compacted as boolean;
+            setTurnCount(turn);
+            if (compacted) {
+              addActivity(`Context compacted at turn ${turn}`, 'warn');
+            }
+            break;
+          }
         }
       },
       [projectId, addActivity, addToast],
@@ -715,6 +753,46 @@ function BuildProgress() {
             </div>
           </div>
 
+          {/* ======== Build Plan Panel ======== */}
+          {planTasks.length > 0 && (
+            <div style={{ ...cardStyle, padding: '12px 16px' }}>
+              <div
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: planExpanded ? '10px' : 0 }}
+                onClick={() => setPlanExpanded(!planExpanded)}
+              >
+                <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
+                  Build Plan ({planTasks.filter((t) => t.status === 'done').length}/{planTasks.length})
+                </h3>
+                <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: planExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+              </div>
+              {planExpanded && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }} data-testid="build-plan-panel">
+                  {planTasks.map((task) => (
+                    <div
+                      key={task.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '5px 8px',
+                        borderRadius: '4px',
+                        background: task.status === 'done' ? '#0D2818' : '#0F172A',
+                        fontSize: '0.75rem',
+                      }}
+                    >
+                      <span style={{ color: task.status === 'done' ? '#22C55E' : '#475569', flexShrink: 0 }}>
+                        {task.status === 'done' ? '✓' : '○'}
+                      </span>
+                      <span style={{ color: task.status === 'done' ? '#22C55E' : '#94A3B8', flex: 1, textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>
+                        {task.title}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ======== Files Panel ======== */}
           {buildFiles.length > 0 && (
             <div style={{ ...cardStyle, padding: '12px 16px' }}>
@@ -786,6 +864,12 @@ function BuildProgress() {
                   <div style={metricBoxStyle}>
                     <span style={{ fontSize: '0.65rem', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Loopbacks</span>
                     <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#EAB308' }}>{build?.loop_count}</span>
+                  </div>
+                )}
+                {turnCount > 1 && (
+                  <div style={metricBoxStyle}>
+                    <span style={{ fontSize: '0.65rem', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Turns</span>
+                    <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#A78BFA' }}>{turnCount}</span>
                   </div>
                 )}
               </div>

@@ -804,3 +804,439 @@ async def test_start_build_target_type_without_ref(mock_get_user, mock_build_rep
 
     with pytest.raises(ValueError, match="target_ref is required"):
         await build_service.start_build(_PROJECT_ID, _USER_ID, target_type="local_path")
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parse_build_plan (Phase 13)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_build_plan_numbered():
+    """_parse_build_plan parses numbered task list."""
+    text = (
+        "Here's the plan:\n"
+        "=== PLAN ===\n"
+        "1. Set up project structure\n"
+        "2. Implement auth module\n"
+        "3. Create database schema\n"
+        "=== END PLAN ===\n"
+        "Let me begin..."
+    )
+    tasks = build_service._parse_build_plan(text)
+    assert len(tasks) == 3
+    assert tasks[0]["id"] == 1
+    assert tasks[0]["title"] == "Set up project structure"
+    assert tasks[0]["status"] == "pending"
+    assert tasks[2]["id"] == 3
+    assert tasks[2]["title"] == "Create database schema"
+
+
+def test_parse_build_plan_dash_list():
+    """_parse_build_plan parses dash-prefixed task list."""
+    text = (
+        "=== PLAN ===\n"
+        "- First task\n"
+        "- Second task\n"
+        "=== END PLAN ===\n"
+    )
+    tasks = build_service._parse_build_plan(text)
+    assert len(tasks) == 2
+    assert tasks[0]["id"] == 1
+    assert tasks[0]["title"] == "First task"
+    assert tasks[1]["id"] == 2
+
+
+def test_parse_build_plan_no_plan():
+    """_parse_build_plan returns empty list when no plan block exists."""
+    text = "Just some builder output without a plan block."
+    tasks = build_service._parse_build_plan(text)
+    assert tasks == []
+
+
+def test_parse_build_plan_no_end():
+    """_parse_build_plan returns empty list when end delimiter is missing."""
+    text = (
+        "=== PLAN ===\n"
+        "1. Task one\n"
+        "2. Task two\n"
+    )
+    tasks = build_service._parse_build_plan(text)
+    assert tasks == []
+
+
+def test_parse_build_plan_empty_lines():
+    """_parse_build_plan skips empty lines."""
+    text = (
+        "=== PLAN ===\n"
+        "\n"
+        "1. Task A\n"
+        "\n"
+        "2. Task B\n"
+        "\n"
+        "=== END PLAN ===\n"
+    )
+    tasks = build_service._parse_build_plan(text)
+    assert len(tasks) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: _compact_conversation (Phase 13)
+# ---------------------------------------------------------------------------
+
+
+def test_compact_conversation_short():
+    """_compact_conversation returns unchanged list when <= 5 messages."""
+    messages = [
+        {"role": "user", "content": "directive"},
+        {"role": "assistant", "content": "response 1"},
+        {"role": "user", "content": "feedback"},
+    ]
+    result = build_service._compact_conversation(messages)
+    assert len(result) == 3
+    assert result[0]["content"] == "directive"
+
+
+def test_compact_conversation_compacts_middle():
+    """_compact_conversation summarizes middle messages."""
+    messages = [
+        {"role": "user", "content": "directive"},
+        {"role": "assistant", "content": "response 1"},
+        {"role": "user", "content": "feedback 1"},
+        {"role": "assistant", "content": "response 2"},
+        {"role": "user", "content": "feedback 2"},
+        {"role": "assistant", "content": "response 3"},
+        {"role": "user", "content": "feedback 3"},
+        {"role": "assistant", "content": "response 4"},
+    ]
+    result = build_service._compact_conversation(messages)
+
+    # First message (directive) + summary + last 4 messages
+    assert len(result) == 6
+    assert result[0]["content"] == "directive"
+    assert "[Context compacted" in result[1]["content"]
+    # Last 4 messages intact
+    assert result[2]["content"] == "feedback 2"
+    assert result[3]["content"] == "response 3"
+    assert result[4]["content"] == "feedback 3"
+    assert result[5]["content"] == "response 4"
+
+
+def test_compact_conversation_truncates_long_content():
+    """_compact_conversation truncates long messages in the summary."""
+    long_content = "x" * 1000
+    messages = [
+        {"role": "user", "content": "directive"},
+        {"role": "assistant", "content": long_content},
+        {"role": "user", "content": "feedback 1"},
+        {"role": "assistant", "content": "response 2"},
+        {"role": "user", "content": "feedback 2"},
+        {"role": "assistant", "content": "response 3"},
+    ]
+    result = build_service._compact_conversation(messages)
+
+    # The summary message should have truncated the long content
+    summary = result[1]["content"]
+    assert "..." in summary
+    assert len(summary) < len(long_content)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Multi-turn _run_build (Phase 13)
+# ---------------------------------------------------------------------------
+
+
+# Shared call counter for multi-turn stream mocks
+_stream_call_counter: dict[str, int] = {"n": 0}
+
+
+def _reset_stream_counter():
+    _stream_call_counter["n"] = 0
+
+
+async def _fake_stream_pass(*args, **kwargs):
+    """Fake stream_agent: emits plan + sign-off on first call, finishes cleanly on subsequent calls."""
+    _stream_call_counter["n"] += 1
+    if _stream_call_counter["n"] == 1:
+        text = (
+            "=== PLAN ===\n"
+            "1. Create main module\n"
+            "2. Add tests\n"
+            "=== END PLAN ===\n\n"
+            "Building Phase 0...\n"
+            "=== FILE: app/main.py ===\nprint('hello')\n=== END FILE ===\n"
+            "=== TASK DONE: 1 ===\n"
+            "Phase: Phase 0 -- Genesis\n"
+            "=== PHASE SIGN-OFF: PASS ===\n"
+        )
+        for chunk in [text[i:i+50] for i in range(0, len(text), 50)]:
+            yield chunk
+    else:
+        yield "Build complete. All phases done."
+
+
+async def _fake_stream_no_signal(*args, **kwargs):
+    """Fake stream_agent that finishes without phase signal (build done)."""
+    yield "Build complete. All phases done."
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_multi_turn_plan_detected(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build detects build plan and emits build_plan event."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_pass
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    # Mock audit to pass
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # Check that build_plan event was broadcast
+    plan_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_plan"
+    ]
+    assert len(plan_calls) >= 1
+    plan_payload = plan_calls[0][0][1]["payload"]
+    assert len(plan_payload["tasks"]) == 2
+    assert plan_payload["tasks"][0]["title"] == "Create main module"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_multi_turn_audit_feedback(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build injects audit feedback and retries on failure."""
+    call_counter = {"n": 0}
+
+    async def _stream_gen(*args, **kwargs):
+        call_counter["n"] += 1
+        if call_counter["n"] <= 2:
+            text = (
+                "Phase: Phase 0 -- Genesis\n"
+                "=== PHASE SIGN-OFF: PASS ===\n"
+            )
+            yield text
+        else:
+            yield "Build complete."
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2])
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    # First audit fails, second passes, then build finishes on turn 3
+    audit_returns = iter(["FAIL", "PASS"])
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock,
+        side_effect=lambda *a, **k: next(audit_returns),
+    ):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # stream_agent called 3 times: initial + retry after audit fail + final (no signal = break)
+    assert call_counter["n"] == 3
+
+    # Audit fail event should have been broadcast
+    fail_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "audit_fail"
+    ]
+    assert len(fail_calls) >= 1
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_multi_turn_max_failures(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build fails build after MAX_LOOP_COUNT audit failures."""
+    async def _stream_gen(*args, **kwargs):
+        yield "Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2, 3])
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    # All audits fail
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock,
+        return_value="FAIL",
+    ):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # Build should have been marked as failed
+    fail_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_error"
+    ]
+    assert len(fail_calls) >= 1
+    assert "RISK_EXCEEDS_SCOPE" in fail_calls[0][0][1]["payload"]["error_detail"]
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_turn_event_broadcast(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build broadcasts build_turn events with turn count."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_pass
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # build_turn event should have been broadcast
+    turn_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_turn"
+    ]
+    assert len(turn_calls) >= 1
+    first_turn = turn_calls[0][0][1]["payload"]
+    assert first_turn["turn"] == 1
+    assert first_turn["compacted"] is False
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_task_done_broadcast(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build detects TASK DONE signals and broadcasts plan_task_complete."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_pass
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # plan_task_complete event should have been broadcast (task 1 at least)
+    task_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "plan_task_complete"
+    ]
+    assert len(task_calls) >= 1
+    assert task_calls[0][0][1]["payload"]["task_id"] == 1
+    assert task_calls[0][0][1]["payload"]["status"] == "done"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_context_compaction(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build compacts context when total tokens exceed threshold."""
+    call_counter = {"n": 0}
+
+    async def _stream_gen(*args, **kwargs):
+        call_counter["n"] += 1
+        usage_out = kwargs.get("usage_out")
+        if usage_out:
+            # Simulate large token usage that exceeds threshold
+            usage_out.input_tokens = 80000
+            usage_out.output_tokens = 80000
+        if call_counter["n"] <= 5:
+            # Need 5 sign-off turns so messages grows to 6 (1 directive + 5 assistant)
+            # Compaction triggers at turn 6: len(messages)=6>5 and total_tokens>150K
+            yield f"Phase: Phase {call_counter['n'] - 1}\n=== PHASE SIGN-OFF: PASS ===\n"
+        else:
+            yield "Build complete."
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 160000, "total_output_tokens": 160000, "total_cost_usd": Decimal("0.50"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    # All audits pass — each turn adds assistant message, growing len(messages) past 5
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock,
+        return_value="PASS",
+    ):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # build_turn event with compacted=True should have been broadcast
+    turn_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_turn" and c[0][1].get("payload", {}).get("compacted")
+    ]
+    assert len(turn_calls) >= 1

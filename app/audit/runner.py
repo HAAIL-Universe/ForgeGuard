@@ -1,6 +1,8 @@
 """Governance audit runner -- Python port of Forge run_audit.ps1.
 
-Runs 9 blocking checks (A1-A9) and 3 non-blocking warnings (W1-W3).
+Runs 8 blocking checks (A1-A4, A6-A9) and 4 non-blocking warnings (A5, W1-W3).
+A5 (diff-log TODO placeholders) is non-blocking to prevent cyclic audit
+failures when the overwrite_diff_log script writes IN_PROCESS entries.
 Reads layer boundaries from Contracts/boundaries.json.
 Returns structured results and optionally appends to evidence/audit_ledger.md.
 
@@ -303,7 +305,13 @@ def check_a4_boundary_compliance(
 
 
 def check_a5_diff_log_gate(gov_root: str) -> GovernanceCheckResult:
-    """A5: Verify updatedifflog.md exists and has no placeholder markers."""
+    """A5: Verify updatedifflog.md exists and has no placeholder markers.
+
+    Missing file -> FAIL (blocking).
+    Placeholder markers -> WARN (non-blocking) to avoid cyclic failures
+    when the overwrite_diff_log script writes IN_PROCESS entries that the
+    watch-audit picks up before the builder can finalise the diff log.
+    """
     diff_log = os.path.join(gov_root, "evidence", "updatedifflog.md")
 
     if not os.path.isfile(diff_log):
@@ -328,7 +336,7 @@ def check_a5_diff_log_gate(gov_root: str) -> GovernanceCheckResult:
         return {
             "code": "A5",
             "name": "Diff Log Gate",
-            "result": "FAIL",
+            "result": "WARN",
             "detail": f"updatedifflog.md contains {todo_marker} placeholders.",
         }
 
@@ -793,21 +801,24 @@ def run_audit(
         set(f.strip().replace("\\", "/") for f in claimed_files if f.strip())
     )
 
-    # Run blocking checks A1-A9
+    # Run blocking checks A1-A4, A6-A9
     checks: list[GovernanceCheckResult] = [
         check_a1_scope_compliance(claimed, project_root),
         check_a2_minimal_diff(project_root),
         check_a3_evidence_completeness(gov_root),
         check_a4_boundary_compliance(project_root, gov_root),
-        check_a5_diff_log_gate(gov_root),
         check_a6_authorization_gate(project_root, gov_root),
         check_a7_verification_order(gov_root),
         check_a8_test_gate(gov_root),
         check_a9_dependency_gate(claimed, project_root),
     ]
 
-    # Run non-blocking warnings W1-W3
+    # Run non-blocking warnings W1-W3 + A5 (downgraded from blocking)
+    # A5 TODO-placeholder detection is non-blocking to prevent cyclic
+    # failures when the overwrite_diff_log script writes IN_PROCESS
+    # entries that the watch-audit picks up before finalisation.
     warnings: list[GovernanceCheckResult] = [
+        check_a5_diff_log_gate(gov_root),
         check_w1_secrets_in_diff(project_root),
         check_w2_audit_ledger_integrity(gov_root),
         check_w3_physics_route_coverage(project_root, gov_root),

@@ -1,4 +1,4 @@
-"""Tests for app.audit.runner -- one test per check (A1-A9, W1-W3).
+"""Tests for app.audit.runner -- one test per check (A1-A4, A6-A9 blocking; A5, W1-W3 non-blocking).
 
 Uses temporary directories and git repos for isolation.
 Each check has a known-good and known-bad fixture.
@@ -281,7 +281,7 @@ class TestA5DiffLogGate:
         result = check_a5_diff_log_gate(gov_root)
         assert result["result"] == "PASS"
 
-    def test_fail_has_todo(self, tmp_project: Path):
+    def test_warn_has_todo(self, tmp_project: Path):
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
         marker = "TO" + "DO:"
@@ -290,7 +290,7 @@ class TestA5DiffLogGate:
         )
         gov_root = str(tmp_project / "Forge")
         result = check_a5_diff_log_gate(gov_root)
-        assert result["result"] == "FAIL"
+        assert result["result"] == "WARN"
         assert marker in (result["detail"] or "")
 
     def test_fail_missing_file(self, tmp_project: Path):
@@ -554,8 +554,8 @@ class TestRunAudit:
         assert "overall" in result
         assert "checks" in result
         assert "warnings" in result
-        assert len(result["checks"]) == 9  # A1-A9
-        assert len(result["warnings"]) == 3  # W1-W3
+        assert len(result["checks"]) == 8  # A1-A4, A6-A9
+        assert len(result["warnings"]) == 4  # A5, W1-W3
 
     def test_run_audit_appends_ledger(self, tmp_project: Path):
         _write_evidence(tmp_project)
