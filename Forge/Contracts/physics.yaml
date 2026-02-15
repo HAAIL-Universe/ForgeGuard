@@ -136,6 +136,22 @@ paths:
       response:
         status: "accepted"
 
+  # -- Governance Audit Runner --------------------------------------
+
+  /audit/run:
+    get:
+      summary: "Trigger a governance audit run programmatically"
+      auth: bearer
+      query:
+        claimed_files: string (required, comma-separated file paths)
+        phase: string (default "unknown")
+      response:
+        phase: string
+        timestamp: string
+        overall: string
+        checks: GovernanceCheckResult[]
+        warnings: GovernanceCheckResult[]
+
   # -- WebSocket ----------------------------------------------------
 
   /ws:
@@ -201,3 +217,9 @@ schemas:
     id: integer
     full_name: string
     default_branch: string
+
+  GovernanceCheckResult:
+    code: string
+    name: string
+    result: string
+    detail: string | null

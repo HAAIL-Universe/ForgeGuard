@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.routers.audit import router as audit_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.health import router as health_router
 from app.api.routers.repos import router as repos_router
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     application.include_router(repos_router)
     application.include_router(webhooks_router)
     application.include_router(ws_router)
+    application.include_router(audit_router)
     return application
 
 

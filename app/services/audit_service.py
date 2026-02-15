@@ -1,9 +1,11 @@
 """Audit service -- orchestrates audit execution triggered by webhooks."""
 
 import json
+import os
 from uuid import UUID
 
 from app.audit.engine import run_all_checks
+from app.audit.runner import AuditResult, run_audit
 from app.clients.github_client import get_commit_files, get_repo_file_content
 from app.repos.audit_repo import (
     create_audit_run,
@@ -236,3 +238,24 @@ async def get_audit_detail(
         "files_checked": detail["files_checked"],
         "checks": checks,
     }
+
+
+def run_governance_audit(
+    claimed_files: list[str],
+    phase: str = "unknown",
+    project_root: str | None = None,
+) -> AuditResult:
+    """Run a full governance audit (A1-A9, W1-W3).
+
+    Delegates to the Python audit runner (app.audit.runner).
+    Returns structured AuditResult dict.
+    """
+    if project_root is None:
+        project_root = os.getcwd()
+
+    return run_audit(
+        claimed_files=claimed_files,
+        phase=phase,
+        project_root=project_root,
+        append_ledger=False,
+    )

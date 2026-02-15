@@ -7,6 +7,7 @@
 #   .\scripts\overwrite_diff_log.ps1 -Status COMPLETE `
 #     -Summary @("Did X", "Did Y") `
 #     -Verification @("compileall: pass", "pytest: pass") `
+#     -Notes @("None") `
 #     -NextSteps @("Next: do Z")
 #
 # Unstaged (not recommended):
@@ -25,6 +26,7 @@ param(
 
   [string[]]$Summary = @(),
   [string[]]$Verification = @(),
+  [string[]]$Notes = @(),
   [string[]]$NextSteps = @(),
 
   [switch]$Finalize,
@@ -135,9 +137,11 @@ try {
 
   $summaryTodo = "TODO: 1-5 bullets (what changed, why, scope)."
   $verificationTodo = "TODO: verification evidence (static -> runtime -> behavior -> contract)."
+  $notesTodo = "TODO: blockers, risks, constraints."
   $nextStepsTodo = "TODO: next actions (small, specific)."
   $summaryLines = Bullets -items $Summary -todo $summaryTodo
   $verificationLines = Bullets -items $Verification -todo $verificationTodo
+  $notesLines = Bullets -items $Notes -todo $notesTodo
   $nextStepsLines = Bullets -items $NextSteps -todo $nextStepsTodo
 
   $filesLines = if ($changedFiles.Count -gt 0) { @($changedFiles | ForEach-Object { "- $_" }) } else { @("- (none detected)") }
@@ -176,7 +180,7 @@ try {
   $verificationLines | ForEach-Object { $out.Add($_) }
   $out.Add("")
   $out.Add("## Notes (optional)")
-  $out.Add("- TODO: blockers, risks, constraints.")
+  $notesLines | ForEach-Object { $out.Add($_) }
   $out.Add("")
   $out.Add("## Next Steps")
   $nextStepsLines | ForEach-Object { $out.Add($_) }

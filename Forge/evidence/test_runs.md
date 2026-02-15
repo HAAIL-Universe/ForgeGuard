@@ -476,3 +476,69 @@ git unavailable
  6 files changed, 65 insertions(+), 1112 deletions(-)
 ```
 
+## Test Run 2026-02-15T02:04:47Z
+- Status: PASS
+- Start: 2026-02-15T02:04:47Z
+- End: 2026-02-15T02:05:00Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: b4a6987db4bfb57648d4cec42b81d47b0d6ce0d0
+- import_sanity exit: 0
+- compileall exit: 0
+- pytest exit: 0
+- git status -sb:
+```
+## master...origin/master
+ M Forge/Contracts/physics.yaml
+ M Forge/evidence/audit_ledger.md
+ M Forge/evidence/updatedifflog.md
+ M app/main.py
+ M app/services/audit_service.py
+?? app/api/routers/audit.py
+?? app/audit/__main__.py
+?? app/audit/runner.py
+?? tests/test_audit_runner.py
+```
+- git diff --stat:
+```
+ Forge/Contracts/physics.yaml    |   22 +
+ Forge/evidence/audit_ledger.md  |   38 ++
+ Forge/evidence/updatedifflog.md | 1438 +--------------------------------------
+ app/main.py                     |    2 +
+ app/services/audit_service.py   |   23 +
+ 5 files changed, 120 insertions(+), 1403 deletions(-)
+```
+
+## Test Run 2026-02-15T02:08:15Z
+- Status: PASS
+- Start: 2026-02-15T02:08:15Z
+- End: 2026-02-15T02:08:29Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: b4a6987db4bfb57648d4cec42b81d47b0d6ce0d0
+- import_sanity exit: 0
+- compileall exit: 0
+- pytest exit: 0
+- git status -sb:
+```
+## master...origin/master
+M  Forge/Contracts/physics.yaml
+MM Forge/evidence/audit_ledger.md
+M  Forge/evidence/test_runs.md
+M  Forge/evidence/test_runs_latest.md
+M  Forge/evidence/updatedifflog.md
+A  app/api/routers/audit.py
+A  app/audit/__main__.py
+AM app/audit/runner.py
+M  app/main.py
+M  app/services/audit_service.py
+AM tests/test_audit_runner.py
+```
+- git diff --stat:
+```
+ Forge/evidence/audit_ledger.md | 80 ++++++++++++++++++++++++++++++++++++++++++
+ app/audit/runner.py            | 19 +++++-----
+ tests/test_audit_runner.py     |  5 +--
+ 3 files changed, 94 insertions(+), 10 deletions(-)
+```
+
