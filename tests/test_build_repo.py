@@ -1,6 +1,7 @@
-"""Tests for app/repos/build_repo.py -- build and build_logs CRUD operations."""
+"""Tests for app/repos/build_repo.py -- build, build_logs, and build_costs CRUD operations."""
 
 import uuid
+from decimal import Decimal
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -195,3 +196,71 @@ async def test_get_build_logs(mock_get_pool):
 
     assert total == 42
     assert len(logs) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: build_costs
+# ---------------------------------------------------------------------------
+
+
+def _cost_row(**overrides):
+    """Create a fake build_cost DB row."""
+    defaults = {
+        "id": uuid.uuid4(),
+        "build_id": uuid.uuid4(),
+        "phase": "Phase 0",
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "model": "claude-opus-4-6",
+        "estimated_cost_usd": Decimal("0.052500"),
+        "created_at": datetime.now(timezone.utc),
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_record_build_cost(mock_get_pool):
+    pool = _fake_pool()
+    row = _cost_row()
+    pool.fetchrow.return_value = row
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.record_build_cost(
+        row["build_id"], "Phase 0", 1000, 500, "claude-opus-4-6", Decimal("0.052500")
+    )
+
+    pool.fetchrow.assert_called_once()
+    assert result["phase"] == "Phase 0"
+    assert result["input_tokens"] == 1000
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_build_costs(mock_get_pool):
+    pool = _fake_pool()
+    pool.fetch.return_value = [_cost_row(), _cost_row(phase="Phase 1")]
+    mock_get_pool.return_value = pool
+
+    costs = await build_repo.get_build_costs(uuid.uuid4())
+
+    assert len(costs) == 2
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_build_cost_summary(mock_get_pool):
+    pool = _fake_pool()
+    pool.fetchrow.return_value = {
+        "total_input_tokens": 5000,
+        "total_output_tokens": 2500,
+        "total_cost_usd": Decimal("0.225000"),
+        "phase_count": 3,
+    }
+    mock_get_pool.return_value = pool
+
+    summary = await build_repo.get_build_cost_summary(uuid.uuid4())
+
+    assert summary["total_input_tokens"] == 5000
+    assert summary["phase_count"] == 3

@@ -225,7 +225,105 @@ def test_build_endpoints_require_auth(client):
         ("POST", f"/projects/{pid}/build/cancel"),
         ("GET", f"/projects/{pid}/build/status"),
         ("GET", f"/projects/{pid}/build/logs"),
+        ("GET", f"/projects/{pid}/build/summary"),
+        ("GET", f"/projects/{pid}/build/instructions"),
     ]
     for method, url in endpoints:
         resp = client.request(method, url)
         assert resp.status_code == 401, f"{method} {url} should require auth"
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /projects/{id}/build/summary
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.get_build_summary", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_summary(mock_get_user, mock_summary, client):
+    """GET /projects/{id}/build/summary returns cost breakdown."""
+    mock_get_user.return_value = _USER
+    mock_summary.return_value = {
+        "build": _build(status="completed"),
+        "cost": {
+            "total_input_tokens": 5000,
+            "total_output_tokens": 2500,
+            "total_cost_usd": 0.26,
+            "phases": [],
+        },
+        "elapsed_seconds": 120.5,
+        "loop_count": 0,
+    }
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/build/summary", headers=_auth_header())
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cost"]["total_input_tokens"] == 5000
+    assert data["elapsed_seconds"] == 120.5
+
+
+@patch("app.api.routers.builds.build_service.get_build_summary", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_summary_not_found(mock_get_user, mock_summary, client):
+    """GET /projects/{id}/build/summary returns 404 for missing project."""
+    mock_get_user.return_value = _USER
+    mock_summary.side_effect = ValueError("Project not found")
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/build/summary", headers=_auth_header())
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /projects/{id}/build/instructions
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.get_build_instructions", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_instructions(mock_get_user, mock_instr, client):
+    """GET /projects/{id}/build/instructions returns deploy instructions."""
+    mock_get_user.return_value = _USER
+    mock_instr.return_value = {
+        "project_name": "TestApp",
+        "instructions": "# Deploy\n1. Clone repo\n2. Run boot.ps1",
+    }
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/build/instructions", headers=_auth_header())
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["project_name"] == "TestApp"
+    assert "Clone repo" in data["instructions"]
+
+
+@patch("app.api.routers.builds.build_service.get_build_instructions", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_instructions_not_found(mock_get_user, mock_instr, client):
+    """GET /projects/{id}/build/instructions returns 404 for missing project."""
+    mock_get_user.return_value = _USER
+    mock_instr.side_effect = ValueError("Project not found")
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/build/instructions", headers=_auth_header())
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: Rate limiting on build start
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_rate_limited(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build returns 429 when rate limited."""
+    mock_get_user.return_value = _USER
+    mock_limiter.is_allowed.return_value = False
+
+    resp = client.post(f"/projects/{_PROJECT_ID}/build", headers=_auth_header())
+
+    assert resp.status_code == 429
+    mock_start.assert_not_called()

@@ -8,12 +8,24 @@ yields incremental text chunks so the build service can persist them.
 No database access, no business logic, no HTTP framework imports.
 """
 
+from __future__ import annotations
+
+import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 
 import httpx
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
+
+
+@dataclass
+class StreamUsage:
+    """Accumulates token usage from a streaming session."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: str = ""
 
 
 def _headers(api_key: str) -> dict:
@@ -31,6 +43,7 @@ async def stream_agent(
     system_prompt: str,
     messages: list[dict],
     max_tokens: int = 16384,
+    usage_out: StreamUsage | None = None,
 ) -> AsyncIterator[str]:
     """Stream a builder agent session, yielding text chunks.
 
@@ -40,6 +53,7 @@ async def stream_agent(
         system_prompt: Builder directive / system instructions.
         messages: Conversation history in Anthropic messages format.
         max_tokens: Maximum tokens for the response.
+        usage_out: Optional StreamUsage to accumulate token counts.
 
     Yields:
         Incremental text chunks from the builder agent.
@@ -70,12 +84,24 @@ async def stream_agent(
                 data = line[6:]  # strip "data: " prefix
                 if data == "[DONE]":
                     break
-                # Parse SSE data for content_block_delta events
+                # Parse SSE data for content and usage events
                 try:
-                    import json
-
                     event = json.loads(data)
-                    if event.get("type") == "content_block_delta":
+                    etype = event.get("type", "")
+
+                    # Capture usage from message_start
+                    if etype == "message_start" and usage_out is not None:
+                        msg = event.get("message", {})
+                        usage = msg.get("usage", {})
+                        usage_out.input_tokens += usage.get("input_tokens", 0)
+                        usage_out.model = msg.get("model", model)
+
+                    # Capture usage from message_delta (output tokens)
+                    if etype == "message_delta" and usage_out is not None:
+                        usage = event.get("usage", {})
+                        usage_out.output_tokens += usage.get("output_tokens", 0)
+
+                    if etype == "content_block_delta":
                         delta = event.get("delta", {})
                         text = delta.get("text", "")
                         if text:

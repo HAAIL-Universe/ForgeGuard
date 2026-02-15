@@ -43,3 +43,6 @@ class RateLimiter:
 
 # Module-level singleton -- 30 requests per 60 seconds for webhooks.
 webhook_limiter = RateLimiter(max_requests=30, window_seconds=60)
+
+# Build limiter -- 5 build starts per user per hour (prevents abuse).
+build_limiter = RateLimiter(max_requests=5, window_seconds=3600)

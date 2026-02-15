@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_current_user
+from app.api.rate_limit import build_limiter
 from app.services import build_service
 
 router = APIRouter(prefix="/projects", tags=["builds"])
@@ -19,6 +20,8 @@ async def start_build(
     user: dict = Depends(get_current_user),
 ):
     """Start a build for a project."""
+    if not build_limiter.is_allowed(str(user["id"])):
+        raise HTTPException(status_code=429, detail="Build rate limit exceeded")
     try:
         build = await build_service.start_build(project_id, user["id"])
         return build
@@ -82,6 +85,42 @@ async def get_build_logs(
             project_id, user["id"], limit, offset
         )
         return {"items": logs, "total": total}
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GET /projects/{project_id}/build/summary ─────────────────────────────
+
+
+@router.get("/{project_id}/build/summary")
+async def get_build_summary(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Complete build summary with cost breakdown."""
+    try:
+        return await build_service.get_build_summary(project_id, user["id"])
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GET /projects/{project_id}/build/instructions ────────────────────────
+
+
+@router.get("/{project_id}/build/instructions")
+async def get_build_instructions(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Generated deployment instructions."""
+    try:
+        return await build_service.get_build_instructions(project_id, user["id"])
     except ValueError as exc:
         detail = str(exc)
         if "not found" in detail.lower():

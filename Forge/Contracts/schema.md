@@ -226,6 +226,29 @@ CREATE INDEX idx_build_logs_build_id_timestamp ON build_logs(build_id, timestamp
 
 ---
 
+### build_costs
+
+Stores token usage and cost estimation per build phase.
+
+```sql
+CREATE TABLE build_costs (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    build_id            UUID NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+    phase               VARCHAR(100) NOT NULL,
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    model               VARCHAR(100) NOT NULL,
+    estimated_cost_usd  NUMERIC(10, 6) NOT NULL DEFAULT 0,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+```sql
+CREATE INDEX idx_build_costs_build_id ON build_costs(build_id);
+```
+
+---
+
 ## Schema -> Phase Traceability
 
 | Table | Repo Created In | Wired To Caller In | Notes |
@@ -238,6 +261,7 @@ CREATE INDEX idx_build_logs_build_id_timestamp ON build_logs(build_id, timestamp
 | project_contracts | Phase 8 | Phase 8 | Generated contract files |
 | builds | Phase 9 | Phase 9 | Build orchestration runs |
 | build_logs | Phase 9 | Phase 9 | Streaming builder output |
+| build_costs | Phase 11 | Phase 11 | Token usage and cost tracking |
 
 ---
 
@@ -250,4 +274,5 @@ db/migrations/
   001_initial_schema.sql
   002_projects.sql
   003_builds.sql
+  004_build_costs.sql
 ```

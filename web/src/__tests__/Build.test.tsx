@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import PhaseProgressBar from '../components/PhaseProgressBar';
 import BuildLogViewer from '../components/BuildLogViewer';
 import BuildAuditCard from '../components/BuildAuditCard';
 import ProjectCard from '../components/ProjectCard';
+import BuildComplete from '../pages/BuildComplete';
 
 describe('PhaseProgressBar', () => {
   it('renders the progress bar', () => {
@@ -154,5 +156,148 @@ describe('ProjectCard', () => {
   it('displays latest build info', () => {
     render(<ProjectCard project={project} onClick={() => {}} />);
     expect(screen.getByText(/Phase 3/)).toBeInTheDocument();
+  });
+});
+
+// ── BuildComplete ───────────────────────────────────────────────────────
+
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({ token: 'test-token' }),
+  AuthProvider: ({ children }: { children: unknown }) => children,
+}));
+
+const mockSummary = {
+  build: {
+    id: 'b1',
+    project_id: 'p1',
+    phase: 'Phase 5',
+    status: 'completed',
+    loop_count: 1,
+    started_at: '2026-01-01T00:00:00Z',
+    completed_at: '2026-01-01T01:00:00Z',
+    error_detail: null,
+    created_at: '2026-01-01T00:00:00Z',
+  },
+  cost: {
+    total_input_tokens: 50000,
+    total_output_tokens: 25000,
+    total_cost_usd: 2.625,
+    phases: [
+      { phase: 'Phase 0', input_tokens: 10000, output_tokens: 5000, model: 'claude-opus-4-6', estimated_cost_usd: 0.525 },
+    ],
+  },
+  elapsed_seconds: 3600,
+  loop_count: 1,
+};
+
+const mockInstructions = {
+  project_name: 'TestApp',
+  instructions: '# Deployment Instructions — TestApp\n\n## Prerequisites\n- Python 3.12+',
+};
+
+function renderBuildComplete(fetchImpl?: typeof global.fetch) {
+  if (fetchImpl) {
+    global.fetch = fetchImpl;
+  }
+  return render(
+    <MemoryRouter initialEntries={['/projects/p1/build/complete']}>
+      <Routes>
+        <Route path="/projects/:projectId/build/complete" element={<BuildComplete />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe('BuildComplete', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows skeleton while loading', () => {
+    global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+    renderBuildComplete();
+    expect(screen.getByTestId('build-complete-skeleton')).toBeInTheDocument();
+  });
+
+  it('renders build complete page with data', async () => {
+    global.fetch = vi.fn((url: string | URL | Request) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/summary')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockSummary) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(mockInstructions) } as Response);
+    }) as unknown as typeof fetch;
+
+    renderBuildComplete();
+    await waitFor(() => expect(screen.getByTestId('build-complete')).toBeInTheDocument());
+
+    expect(screen.getByText('Build Complete')).toBeInTheDocument();
+    expect(screen.getByText('TestApp')).toBeInTheDocument();
+  });
+
+  it('displays cost summary', async () => {
+    global.fetch = vi.fn((url: string | URL | Request) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/summary')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockSummary) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(mockInstructions) } as Response);
+    }) as unknown as typeof fetch;
+
+    renderBuildComplete();
+    await waitFor(() => expect(screen.getByTestId('summary-cost')).toBeInTheDocument());
+
+    expect(screen.getByText('$2.63')).toBeInTheDocument();
+  });
+
+  it('displays deployment instructions', async () => {
+    global.fetch = vi.fn((url: string | URL | Request) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/summary')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockSummary) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(mockInstructions) } as Response);
+    }) as unknown as typeof fetch;
+
+    renderBuildComplete();
+    await waitFor(() => expect(screen.getByTestId('deploy-instructions')).toBeInTheDocument());
+
+    expect(screen.getByText(/Prerequisites/)).toBeInTheDocument();
+  });
+
+  it('shows status banner for completed build', async () => {
+    global.fetch = vi.fn((url: string | URL | Request) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/summary')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockSummary) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(mockInstructions) } as Response);
+    }) as unknown as typeof fetch;
+
+    renderBuildComplete();
+    await waitFor(() => expect(screen.getByTestId('build-status-banner')).toBeInTheDocument());
+
+    expect(screen.getByText('COMPLETED')).toBeInTheDocument();
+    expect(screen.getByText('All phases passed')).toBeInTheDocument();
+  });
+
+  it('shows failed status for failed build', async () => {
+    const failedSummary = {
+      ...mockSummary,
+      build: { ...mockSummary.build, status: 'failed', error_detail: 'RISK_EXCEEDS_SCOPE' },
+    };
+    global.fetch = vi.fn((url: string | URL | Request) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/summary')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(failedSummary) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(mockInstructions) } as Response);
+    }) as unknown as typeof fetch;
+
+    renderBuildComplete();
+    await waitFor(() => expect(screen.getByTestId('build-status-banner')).toBeInTheDocument());
+
+    expect(screen.getByText('Build Failed')).toBeInTheDocument();
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
   });
 });

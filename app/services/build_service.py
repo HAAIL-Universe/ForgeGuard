@@ -1,17 +1,19 @@
 """Build service -- orchestrates autonomous builder sessions.
 
 Manages the full build lifecycle: validate contracts, spawn agent session,
-stream progress, run inline audits, handle loopback, and advance phases.
+stream progress, run inline audits, handle loopback, track costs, and
+advance phases.
 
 No SQL, no HTTP framework, no direct GitHub API calls.
 """
 
 import asyncio
 import re
+from decimal import Decimal
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.clients.agent_client import stream_agent
+from app.clients.agent_client import StreamUsage, stream_agent
 from app.config import settings
 from app.repos import build_repo
 from app.repos import project_repo
@@ -28,6 +30,10 @@ BUILD_ERROR_SIGNAL = "RISK_EXCEEDS_SCOPE"
 
 # Active build tasks keyed by build_id
 _active_tasks: dict[str, asyncio.Task] = {}
+
+# Cost-per-token estimates (USD) -- updated as pricing changes
+_COST_PER_INPUT_TOKEN: Decimal = Decimal("0.000015")   # $15 / 1M input tokens
+_COST_PER_OUTPUT_TOKEN: Decimal = Decimal("0.000075")  # $75 / 1M output tokens
 
 
 # ---------------------------------------------------------------------------
@@ -221,12 +227,16 @@ async def _run_build(
         accumulated_text = ""
         current_phase = "Phase 0"
 
+        # Token usage tracking
+        usage = StreamUsage()
+
         # Stream agent output
         async for chunk in stream_agent(
             api_key=settings.ANTHROPIC_API_KEY,
             model=settings.LLM_BUILDER_MODEL,
             system_prompt="You are an autonomous software builder operating under the Forge governance framework.",
             messages=messages,
+            usage_out=usage,
         ):
             accumulated_text += chunk
 
@@ -304,6 +314,9 @@ async def _run_build(
                             "RISK_EXCEEDS_SCOPE: 3 consecutive audit failures",
                         )
                         return
+
+                # Record cost for this phase
+                await _record_phase_cost(build_id, current_phase, usage)
 
                 # Reset accumulated text for next phase detection
                 accumulated_text = ""
@@ -424,3 +437,163 @@ async def _broadcast_build_event(
         "type": event_type,
         "payload": payload,
     })
+
+
+async def _record_phase_cost(
+    build_id: UUID, phase: str, usage: StreamUsage
+) -> None:
+    """Persist token usage for the current phase and reset counters."""
+    input_t = usage.input_tokens
+    output_t = usage.output_tokens
+    model = usage.model or settings.LLM_BUILDER_MODEL
+    cost = (Decimal(input_t) * _COST_PER_INPUT_TOKEN
+            + Decimal(output_t) * _COST_PER_OUTPUT_TOKEN)
+    await build_repo.record_build_cost(
+        build_id, phase, input_t, output_t, model, cost
+    )
+    # Reset for next phase
+    usage.input_tokens = 0
+    usage.output_tokens = 0
+
+
+# ---------------------------------------------------------------------------
+# Summary / Instructions (Phase 11 API)
+# ---------------------------------------------------------------------------
+
+
+async def get_build_summary(project_id: UUID, user_id: UUID) -> dict:
+    """Return a complete build summary with cost breakdown.
+
+    Raises:
+        ValueError: If project not found, not owned, or no builds.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest:
+        raise ValueError("No builds found for this project")
+
+    build_id = latest["id"]
+    cost_summary = await build_repo.get_build_cost_summary(build_id)
+    cost_entries = await build_repo.get_build_costs(build_id)
+
+    elapsed_seconds: float | None = None
+    if latest.get("started_at") and latest.get("completed_at"):
+        elapsed_seconds = (
+            latest["completed_at"] - latest["started_at"]
+        ).total_seconds()
+
+    return {
+        "build": latest,
+        "cost": {
+            "total_input_tokens": cost_summary["total_input_tokens"],
+            "total_output_tokens": cost_summary["total_output_tokens"],
+            "total_cost_usd": float(cost_summary["total_cost_usd"]),
+            "phases": [
+                {
+                    "phase": e["phase"],
+                    "input_tokens": e["input_tokens"],
+                    "output_tokens": e["output_tokens"],
+                    "model": e["model"],
+                    "estimated_cost_usd": float(e["estimated_cost_usd"]),
+                }
+                for e in cost_entries
+            ],
+        },
+        "elapsed_seconds": elapsed_seconds,
+        "loop_count": latest["loop_count"],
+    }
+
+
+async def get_build_instructions(project_id: UUID, user_id: UUID) -> dict:
+    """Generate deployment instructions from the project's stack contract.
+
+    Raises:
+        ValueError: If project not found, not owned, or no contracts.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    contracts = await project_repo.get_contracts_by_project(project_id)
+    if not contracts:
+        raise ValueError("No contracts found for this project")
+
+    stack_content = ""
+    blueprint_content = ""
+    for c in contracts:
+        if c["contract_type"] == "stack":
+            stack_content = c["content"]
+        elif c["contract_type"] == "blueprint":
+            blueprint_content = c["content"]
+
+    instructions = _generate_deploy_instructions(
+        project["name"], stack_content, blueprint_content
+    )
+    return {
+        "project_name": project["name"],
+        "instructions": instructions,
+    }
+
+
+def _generate_deploy_instructions(
+    project_name: str, stack_content: str, blueprint_content: str
+) -> str:
+    """Build deployment instructions from stack and blueprint contracts."""
+    lines = [f"# Deployment Instructions — {project_name}\n"]
+
+    # Detect stack components
+    has_python = "python" in stack_content.lower()
+    has_node = "node" in stack_content.lower() or "react" in stack_content.lower()
+    has_postgres = "postgres" in stack_content.lower()
+    has_render = "render" in stack_content.lower()
+
+    lines.append("## Prerequisites\n")
+    if has_python:
+        lines.append("- Python 3.12+")
+    if has_node:
+        lines.append("- Node.js 18+")
+    if has_postgres:
+        lines.append("- PostgreSQL 15+")
+    lines.append("- Git 2.x\n")
+
+    lines.append("## Setup Steps\n")
+    lines.append("1. Clone the generated repository")
+    lines.append("2. Copy `.env.example` to `.env` and fill in credentials")
+    if has_python:
+        lines.append("3. Create virtual environment: `python -m venv .venv`")
+        lines.append("4. Install dependencies: `pip install -r requirements.txt`")
+    if has_node:
+        lines.append("5. Install frontend: `cd web && npm install`")
+    if has_postgres:
+        lines.append("6. Run database migrations: `psql $DATABASE_URL -f db/migrations/*.sql`")
+    lines.append("7. Start the application: `pwsh -File boot.ps1`\n")
+
+    if has_render:
+        lines.append("## Render Deployment\n")
+        lines.append("1. Create a new **Web Service** on Render")
+        lines.append("2. Connect your GitHub repository")
+        lines.append("3. Set **Build Command**: `pip install -r requirements.txt`")
+        lines.append("4. Set **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`")
+        lines.append("5. Add a **PostgreSQL** database")
+        lines.append("6. Configure environment variables in the Render dashboard")
+        if has_node:
+            lines.append("7. For the frontend, create a **Static Site** pointing to `web/`")
+            lines.append("8. Set **Build Command**: `npm install && npm run build`")
+            lines.append("9. Set **Publish Directory**: `web/dist`")
+
+    lines.append("\n## Environment Variables\n")
+    lines.append("| Variable | Required | Description |")
+    lines.append("|----------|----------|-------------|")
+    lines.append("| `DATABASE_URL` | Yes | PostgreSQL connection string |")
+    lines.append("| `JWT_SECRET` | Yes | Random secret for session tokens |")
+    if "github" in stack_content.lower() or "oauth" in stack_content.lower():
+        lines.append("| `GITHUB_CLIENT_ID` | Yes | GitHub OAuth app client ID |")
+        lines.append("| `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth app secret |")
+        lines.append("| `GITHUB_WEBHOOK_SECRET` | Yes | Webhook signature secret |")
+    lines.append("| `FRONTEND_URL` | No | Frontend origin for CORS |")
+    lines.append("| `APP_URL` | No | Backend URL |")
+
+    return "\n".join(lines)

@@ -1,6 +1,7 @@
-"""Build repository -- database reads and writes for builds and build_logs tables."""
+"""Build repository -- database reads and writes for builds, build_logs, and build_costs tables."""
 
 import json
+from decimal import Decimal
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -172,3 +173,70 @@ async def get_build_logs(
         offset,
     )
     return [dict(r) for r in rows], total
+
+
+# ---------------------------------------------------------------------------
+# build_costs
+# ---------------------------------------------------------------------------
+
+
+async def record_build_cost(
+    build_id: UUID,
+    phase: str,
+    input_tokens: int,
+    output_tokens: int,
+    model: str,
+    estimated_cost_usd: Decimal,
+) -> dict:
+    """Record token usage and cost for a build phase."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO build_costs (build_id, phase, input_tokens, output_tokens, model, estimated_cost_usd)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, build_id, phase, input_tokens, output_tokens, model, estimated_cost_usd, created_at
+        """,
+        build_id,
+        phase,
+        input_tokens,
+        output_tokens,
+        model,
+        estimated_cost_usd,
+    )
+    return dict(row)
+
+
+async def get_build_costs(build_id: UUID) -> list[dict]:
+    """Fetch all cost entries for a build."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, build_id, phase, input_tokens, output_tokens, model, estimated_cost_usd, created_at
+        FROM build_costs WHERE build_id = $1
+        ORDER BY created_at ASC
+        """,
+        build_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_build_cost_summary(build_id: UUID) -> dict:
+    """Aggregate cost summary for a build."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT
+            COALESCE(SUM(input_tokens), 0)  AS total_input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+            COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd,
+            COUNT(*) AS phase_count
+        FROM build_costs WHERE build_id = $1
+        """,
+        build_id,
+    )
+    return dict(row) if row else {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": Decimal("0"),
+        "phase_count": 0,
+    }

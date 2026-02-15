@@ -144,6 +144,7 @@ function BuildProgress() {
             setBuild(payload.build as BuildStatus);
             if (data.type === 'build_complete') {
               addToast('Build completed successfully!', 'success');
+              navigate(`/projects/${projectId}/build/complete`);
             } else if (data.type === 'build_error') {
               addToast('Build failed: ' + (payload.error ?? 'Unknown error'));
             }

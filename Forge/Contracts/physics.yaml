@@ -309,6 +309,26 @@ paths:
         items: BuildLogEntry[]
         total: integer
 
+  # -- Build Summary & Instructions (Phase 11) --------------------------
+
+  /projects/{project_id}/build/summary:
+    get:
+      summary: "Complete build summary with cost breakdown"
+      auth: bearer
+      response:
+        build: BuildStatus
+        cost: BuildCostSummary
+        elapsed_seconds: float | null
+        loop_count: integer
+
+  /projects/{project_id}/build/instructions:
+    get:
+      summary: "Generated deployment instructions from project contracts"
+      auth: bearer
+      response:
+        project_name: string
+        instructions: string
+
 # -- Schemas --------------------------------------------------------
 
 schemas:
@@ -401,3 +421,27 @@ schemas:
     level: string
     message: string
     created_at: datetime
+
+  BuildStatus:
+    id: uuid
+    project_id: uuid
+    phase: string
+    status: string
+    loop_count: integer
+    started_at: datetime | null
+    completed_at: datetime | null
+    error_detail: string | null
+    created_at: datetime
+
+  BuildCostSummary:
+    total_input_tokens: integer
+    total_output_tokens: integer
+    total_cost_usd: float
+    phases: BuildCostEntry[]
+
+  BuildCostEntry:
+    phase: string
+    input_tokens: integer
+    output_tokens: integer
+    model: string
+    estimated_cost_usd: float

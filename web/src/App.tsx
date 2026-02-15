@@ -6,6 +6,7 @@ import CommitTimeline from './pages/CommitTimeline';
 import AuditDetailPage from './pages/AuditDetail';
 import ProjectDetail from './pages/ProjectDetail';
 import BuildProgress from './pages/BuildProgress';
+import BuildComplete from './pages/BuildComplete';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 
@@ -60,6 +61,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <BuildProgress />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:projectId/build/complete"
+              element={
+                <ProtectedRoute>
+                  <BuildComplete />
                 </ProtectedRoute>
               }
             />
