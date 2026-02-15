@@ -2,7 +2,7 @@
  * ProjectDetail -- overview page for a single project.
  * Links to questionnaire, contracts, and build progress.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -12,6 +12,9 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import QuestionnaireModal from '../components/QuestionnaireModal';
 import ContractProgress from '../components/ContractProgress';
 import BuildTargetModal, { type BuildTarget } from '../components/BuildTargetModal';
+import { useWebSocket } from '../hooks/useWebSocket';
+
+const BG_TOTAL_CONTRACTS = 9;
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -72,6 +75,11 @@ function ProjectDetail() {
   const [showRegenerate, setShowRegenerate] = useState(false);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
 
+  /* Background contract generation tracking */
+  const [bgGenActive, setBgGenActive] = useState(false);
+  const [bgGenDone, setBgGenDone] = useState<string[]>([]);
+  const genStartedRef = useRef(false);
+
   useEffect(() => {
     const fetchProject = async () => {
       try {
@@ -90,6 +98,46 @@ function ProjectDetail() {
   }, [projectId, token, addToast]);
 
   const hasContracts = (project?.contracts?.length ?? 0) > 0;
+
+  /* Listen for contract_progress WS events (for background tracking) */
+  useWebSocket(
+    useCallback(
+      (data: { type: string; payload: any }) => {
+        if (data.type !== 'contract_progress') return;
+        const p = data.payload;
+        if (p.project_id !== projectId) return;
+
+        if (p.status === 'generating') {
+          genStartedRef.current = true;
+        } else if (p.status === 'done') {
+          setBgGenDone((prev) => (prev.includes(p.contract_type) ? prev : [...prev, p.contract_type]));
+        } else if (p.status === 'cancelled') {
+          genStartedRef.current = false;
+          setBgGenActive(false);
+        }
+      },
+      [projectId],
+    ),
+  );
+
+  /* Auto-complete: when all contracts done in background, refresh & deactivate */
+  useEffect(() => {
+    if (bgGenActive && bgGenDone.length >= BG_TOTAL_CONTRACTS) {
+      setBgGenActive(false);
+      setBgGenDone([]);
+      genStartedRef.current = false;
+      addToast('Contracts generated!', 'success');
+      /* Refresh project data */
+      (async () => {
+        try {
+          const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) setProject(await res.json());
+        } catch { /* ignore */ }
+      })();
+    }
+  }, [bgGenActive, bgGenDone, projectId, token, addToast]);
 
   const handleStartBuild = async () => {
     /* If no contracts exist, open the questionnaire first */
@@ -326,6 +374,48 @@ function ProjectDetail() {
           </div>
         </div>
 
+        {/* Background generation progress bar */}
+        {bgGenActive && !showRegenerate && !showQuestionnaire && (
+          <div
+            style={{
+              background: '#1E293B',
+              borderRadius: '8px',
+              padding: '14px 20px',
+              marginBottom: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="typing-dots">⏳</span> Generating contracts… {bgGenDone.length}/{BG_TOTAL_CONTRACTS}
+              </span>
+              <span style={{ fontSize: '0.7rem', color: '#64748B' }}>
+                {Math.round((bgGenDone.length / BG_TOTAL_CONTRACTS) * 100)}%
+              </span>
+            </div>
+            <div
+              style={{
+                height: '6px',
+                background: '#0F172A',
+                borderRadius: '3px',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${(bgGenDone.length / BG_TOTAL_CONTRACTS) * 100}%`,
+                  height: '100%',
+                  background: bgGenDone.length >= BG_TOTAL_CONTRACTS ? '#22C55E' : '#2563EB',
+                  borderRadius: '3px',
+                  transition: 'width 0.5s ease',
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Contracts expanded panel */}
         {contractsExpanded && hasContracts && (
           <div style={{ background: '#1E293B', borderRadius: '8px', padding: '16px 20px', marginBottom: '16px' }}>
@@ -490,6 +580,10 @@ function ProjectDetail() {
           projectName={project.name}
           onClose={() => setShowQuestionnaire(false)}
           onContractsGenerated={handleContractsGenerated}
+          onDismissDuringGeneration={() => {
+            setBgGenDone([]);
+            setBgGenActive(true);
+          }}
         />
       )}
 
@@ -529,12 +623,21 @@ function ProjectDetail() {
           >
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>Regenerating Contracts</h3>
-              <button
-                onClick={() => { setShowRegenerate(false); }}
-                style={{ background: 'transparent', border: 'none', color: '#94A3B8', fontSize: '1.2rem', cursor: 'pointer' }}
-              >
-                ✕
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ color: '#64748B', fontSize: '0.65rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  Continues in background <span style={{ fontSize: '0.8rem' }}>→</span>
+                </span>
+                <button
+                  onClick={() => {
+                    setShowRegenerate(false);
+                    setBgGenDone([]);
+                    setBgGenActive(true);
+                  }}
+                  style={{ background: 'transparent', border: 'none', color: '#94A3B8', fontSize: '1.2rem', cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             <ContractProgress
               projectId={project.id}

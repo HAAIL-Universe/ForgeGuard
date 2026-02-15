@@ -49,6 +49,7 @@ interface Props {
   projectName: string;
   onClose: () => void;
   onContractsGenerated: () => void;
+  onDismissDuringGeneration?: () => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -356,7 +357,7 @@ function ProgressBar({ completed, current }: { completed: string[]; current: str
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
-function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenerated }: Props) {
+function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenerated, onDismissDuringGeneration }: Props) {
   const { token } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -621,9 +622,23 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
             >
               ↻ Restart
             </button>
-            <button onClick={onClose} style={{ ...btnGhost, padding: '6px 10px' }} data-testid="questionnaire-close">
-              ✕
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {generatingContracts && (
+                <span style={{ color: '#64748B', fontSize: '0.65rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  Continues in background <span style={{ fontSize: '0.8rem' }}>→</span>
+                </span>
+              )}
+              <button
+                onClick={() => {
+                  if (generatingContracts) onDismissDuringGeneration?.();
+                  onClose();
+                }}
+                style={{ ...btnGhost, padding: '6px 10px' }}
+                data-testid="questionnaire-close"
+              >
+                ✕
+              </button>
+            </div>
           </div>
         </div>
 
