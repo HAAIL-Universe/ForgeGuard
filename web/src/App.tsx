@@ -4,6 +4,8 @@ import AuthCallback from './pages/AuthCallback';
 import Dashboard from './pages/Dashboard';
 import CommitTimeline from './pages/CommitTimeline';
 import AuditDetailPage from './pages/AuditDetail';
+import ProjectDetail from './pages/ProjectDetail';
+import BuildProgress from './pages/BuildProgress';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 
@@ -42,6 +44,22 @@ function App() {
               element={
                 <ProtectedRoute>
                   <AuditDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:projectId"
+              element={
+                <ProtectedRoute>
+                  <ProjectDetail />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:projectId/build"
+              element={
+                <ProtectedRoute>
+                  <BuildProgress />
                 </ProtectedRoute>
               }
             />

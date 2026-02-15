@@ -1,34 +1,28 @@
 ﻿Status: PASS
-Start: 2026-02-15T03:22:59Z
-End: 2026-02-15T03:23:01Z
+Start: 2026-02-15T03:37:06Z
+End: 2026-02-15T03:37:08Z
 Branch: master
-HEAD: 33db3562f5899b1190453b53b1fdb21f05aabddf
+HEAD: 58d55f59accd7fbdd338a2ab5bba5f1bc3d6ce9b
 Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
 compileall exit: 0
 import_sanity exit: 0
 git status -sb:
 ```
-## master...origin/master [ahead 1]
-M  Forge/Contracts/physics.yaml
-M  Forge/Contracts/schema.md
- M Forge/evidence/updatedifflog.md
- M Forge/scripts/watch_audit.ps1
-A  app/api/routers/builds.py
-A  app/clients/agent_client.py
-M  app/config.py
-M  app/main.py
-A  app/repos/build_repo.py
-A  app/services/build_service.py
-A  db/migrations/003_builds.sql
-A  tests/test_agent_client.py
-A  tests/test_build_repo.py
-A  tests/test_build_service.py
-A  tests/test_builds_router.py
+## master...origin/master
+M  web/src/App.tsx
+A  web/src/__tests__/Build.test.tsx
+A  web/src/components/BuildAuditCard.tsx
+A  web/src/components/BuildLogViewer.tsx
+A  web/src/components/PhaseProgressBar.tsx
+A  web/src/components/ProjectCard.tsx
+A  web/src/pages/BuildProgress.tsx
+M  web/src/pages/Dashboard.tsx
+A  web/src/pages/ProjectDetail.tsx
+M  web/vite.config.ts
+?? forgeguard_lock.ps1
 ```
 git diff --stat:
 ```
- Forge/evidence/updatedifflog.md | 3015 ++-------------------------------------
- Forge/scripts/watch_audit.ps1   |    2 +-
- 2 files changed, 96 insertions(+), 2921 deletions(-)
+
 ```
 

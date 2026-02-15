@@ -11,6 +11,7 @@ export default defineConfig({
       '/auth/github': 'http://localhost:8000',
       '/auth/me': 'http://localhost:8000',
       '/repos': 'http://localhost:8000',
+      '/projects': 'http://localhost:8000',
       '/webhooks': 'http://localhost:8000',
       '/ws': {
         target: 'ws://localhost:8000',

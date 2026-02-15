@@ -8,6 +8,8 @@ import RepoCard from '../components/RepoCard';
 import type { Repo } from '../components/RepoCard';
 import RepoPickerModal from '../components/RepoPickerModal';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ProjectCard from '../components/ProjectCard';
+import type { Project } from '../components/ProjectCard';
 import EmptyState from '../components/EmptyState';
 import { SkeletonCard } from '../components/Skeleton';
 
@@ -18,7 +20,9 @@ function Dashboard() {
   const { addToast } = useToast();
   const navigate = useNavigate();
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [projectsLoading, setProjectsLoading] = useState(true);
   const [showPicker, setShowPicker] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<Repo | null>(null);
 
@@ -40,16 +44,33 @@ function Dashboard() {
     }
   }, [token, addToast]);
 
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/projects`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProjects(data.items ?? data);
+      }
+    } catch { /* best effort */ }
+    finally { setProjectsLoading(false); }
+  }, [token]);
+
   useEffect(() => {
     fetchRepos();
-  }, [fetchRepos]);
+    fetchProjects();
+  }, [fetchRepos, fetchProjects]);
 
-  // Real-time: refresh repos when an audit completes
+  // Real-time: refresh repos when an audit completes, refresh projects on build events
   useWebSocket(useCallback((data) => {
-    if (data.type === 'audit_update') {
-      fetchRepos();
-    }
-  }, [fetchRepos]));
+    if (data.type === 'audit_update') fetchRepos();
+    if (data.type === 'build_complete' || data.type === 'build_error' || data.type === 'build_started') fetchProjects();
+  }, [fetchRepos, fetchProjects]));
+
+  const handleProjectClick = (project: Project) => {
+    navigate(`/projects/${project.id}`);
+  };
 
   const handleDisconnect = async () => {
     if (!disconnectTarget) return;
@@ -131,6 +152,35 @@ function Dashboard() {
           onConnected={fetchRepos}
         />
       )}
+
+      {/* Projects Section */}
+      <div style={{ padding: '0 24px 24px', maxWidth: '960px', margin: '0 auto' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '20px',
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Projects</h2>
+        </div>
+
+        {projectsLoading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+        ) : projects.length === 0 ? (
+          <EmptyState message="No projects yet." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {projects.map((project) => (
+              <ProjectCard key={project.id} project={project} onClick={handleProjectClick} />
+            ))}
+          </div>
+        )}
+      </div>
 
       {disconnectTarget && (
         <ConfirmDialog
