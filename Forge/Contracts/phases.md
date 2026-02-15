@@ -661,3 +661,338 @@ Canonical phase plan. Each phase is self-contained, shippable, and auditable. Th
 - `USER_INSTRUCTIONS.md` is comprehensive and accurate
 - All tests pass (backend + frontend)
 - `run_audit.ps1` passes all checks
+---
+
+## Phase 16 -- Model Upgrade & Per-Phase Planning
+
+**Objective:** Replace all Haiku usage with Sonnet (BYOK) and restructure the builder's planning to operate per-phase rather than as a monolithic upfront plan. The builder emits a detailed task list at the start of each phase and resets between phases.
+
+**Background:** Currently the builder emits one `=== PLAN ===` block at the very start of the build and `plan_tasks` is never reset. This produces a massive, fragile plan that drifts over time. Separately, all "cheap" LLM calls (questionnaire, auditor) use Haiku. Moving to Sonnet improves reasoning quality across the board. All LLM costs become BYOK -- the user's API key pays for everything.
+
+**Deliverables:**
+
+- **Haiku → Sonnet swap**:
+  - `app/config.py`: change `LLM_QUESTIONNAIRE_MODEL` default from `claude-haiku-4-5` to `claude-sonnet-4-5`
+  - `app/config.py`: add `LLM_PLANNER_MODEL` setting (default: `claude-sonnet-4-5`)
+  - `app/services/build_service.py`: update auditor comment and pricing table to include Sonnet rates
+  - `web/src/pages/Settings.tsx`: update AI Models display -- questionnaire, auditor, and new planner row all show `claude-sonnet-4-5` with `BYOK` badge. Remove `FREE` badges.
+  - `web/src/components/ContractProgress.tsx`: add Sonnet to model context window map (already present but verify)
+  - `USER_INSTRUCTIONS.md`: update env var documentation to reflect Sonnet defaults and add `LLM_PLANNER_MODEL`
+
+- **Per-phase plan lifecycle**:
+  - At the start of the build, emit a high-level phase overview from the parsed phases contract (already available via `_parse_phases_contract()`). Broadcast as `build_overview` WS event: `{ phases: [{ number, name, objective }] }`
+  - Reset `plan_tasks = []` and `accumulated_text = ""` after each phase audit pass (currently only `accumulated_text` resets)
+  - Update the builder's system prompt to instruct: "At the start of each phase, emit a `=== PLAN ===` block covering only the current phase's deliverables. Do not plan ahead to future phases."
+  - Plan detection (`_parse_build_plan()`) now runs fresh each phase since `plan_tasks` is reset
+  - Broadcast `phase_plan` WS event (distinct from `build_plan`) with the per-phase tasks
+
+- **Frontend: Phase overview bar**:
+  - New component at the top of BuildProgress page showing all phases as a horizontal step indicator (grey = pending, blue = active, green = passed, red = failed, amber = paused)
+  - Derived from the `build_overview` WS event at build start, updated by `phase_complete` / `audit_fail` / `build_paused` events
+  - Per-phase task checklist below the overview bar resets when a new `phase_plan` event arrives
+
+- **Tests**:
+  - Test that `plan_tasks` resets between phases
+  - Test `build_overview` event is emitted at build start with correct phase list
+  - Test per-phase plan detection after reset
+  - All existing tests updated for Sonnet model references
+
+**Schema coverage:**
+- No new tables
+
+**Exit criteria:**
+- All LLM calls use Sonnet (no Haiku references remain in code)
+- `LLM_PLANNER_MODEL` config is wired up and documented
+- Builder emits a fresh plan at the start of each phase (verified in test with mocked multi-phase conversation)
+- `plan_tasks` resets between phases -- old tasks don't persist
+- Phase overview bar shows all phases and updates correctly
+- Settings page shows Sonnet + BYOK for all AI model rows
+- All existing tests still pass + new tests for plan reset and overview emission
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 17 -- Recovery Planner
+
+**Objective:** When an audit fails, instead of sending a generic "please fix these issues" message back to the builder, invoke a separate Sonnet call (the "recovery planner") that analyses the failure against the contracts and current project state, then produces a revised remediation strategy. The builder receives a concrete, alternative approach rather than just being told to try harder.
+
+**Background:** Currently on audit failure, the builder receives: `"The audit for {phase} FAILED (attempt N/3). Please review the audit findings and fix the issues."` The builder retries with the same mental model, often repeating the same structural mistake. The recovery planner provides a second perspective -- it reads the failure, the contracts, and the actual files on disk, then proposes a different strategy.
+
+**Deliverables:**
+
+- **Planner prompt template**: `app/templates/contracts/planner_prompt.md`
+  - System prompt for the recovery planner
+  - Instructs Sonnet to: analyse the audit findings, compare against contracts, review the current file state, and produce a numbered remediation plan
+  - Output format: `=== REMEDIATION PLAN ===\n1. Task...\n=== END REMEDIATION PLAN ===`
+  - Rules: must stay within contract boundaries, must not invent new features, must address every audit finding specifically
+
+- **`_gather_project_state()` in `app/services/build_service.py`**:
+  - Walks `working_dir` recursively, builds a file tree string
+  - Reads contents of key files (up to 200KB total): all `.py` files, all `.ts`/`.tsx` files, config files, migration files
+  - Truncates individual files >10KB to first + last 2KB with a `[... truncated ...]` marker
+  - Returns a structured string: file tree + file contents
+
+- **`_run_recovery_planner()` in `app/services/build_service.py`**:
+  - Parameters: `build_id`, `user_id`, `api_key`, `phase`, `audit_findings`, `builder_output`, `contracts`, `working_dir`, `files_written`
+  - Loads `planner_prompt.md` as system prompt
+  - Builds user message with: audit findings, relevant contracts, project state from `_gather_project_state()`, the builder's phase output
+  - Calls Sonnet via `llm_client.chat()` with `LLM_PLANNER_MODEL`
+  - Returns the remediation plan text
+  - Logs the planner call to `build_logs` (source: `planner`)
+  - Tracks token usage for cost recording
+
+- **Build loop integration** (audit FAIL branch in `_run_build()`):
+  - After audit returns FAIL, call `_run_recovery_planner()` with the audit findings
+  - Replace the generic feedback message with the planner's remediation plan:
+    ```
+    f"The audit for {phase} FAILED (attempt {n}/{max}).\n\n"
+    f"A recovery planner has analysed the failure and produced a revised strategy:\n\n"
+    f"{remediation_plan}\n\n"
+    f"Follow this remediation plan to fix the issues and re-submit {phase}."
+    ```
+  - If the planner call itself fails (API error, timeout), fall back to the existing generic message
+  - Broadcast `recovery_plan` WS event: `{ phase, attempt, plan_text }`
+
+- **Cost tracking**:
+  - Record planner token usage as a separate cost entry: phase = `"{phase} (planner)"`, model = `LLM_PLANNER_MODEL`
+  - Planner costs appear as distinct line items in the build summary
+
+- **Frontend: Recovery plan display**:
+  - When `recovery_plan` WS event arrives, show it in the activity feed as a distinct card (amber border, planner icon)
+  - The remediation tasks are rendered as a numbered list within the card
+
+- **Tests**:
+  - Test `_gather_project_state()` with mock filesystem (correct tree output, file content inclusion, truncation at 10KB)
+  - Test `_run_recovery_planner()` with mocked LLM response (correct prompt assembly, result parsing)
+  - Test build loop audit-fail branch invokes the planner and injects its output into conversation
+  - Test planner API failure falls back to generic feedback message
+  - Test planner cost is recorded separately
+
+**Schema coverage:**
+- No new tables
+
+**Exit criteria:**
+- On audit failure, the recovery planner is called and its output injected into the builder conversation
+- The builder receives a specific remediation strategy, not a generic retry message
+- Planner prompt includes: audit findings, contracts, current project state, builder output
+- Project state gathering walks the working directory and reads file contents
+- Planner failure falls back gracefully to the generic feedback message
+- Planner costs appear as separate line items in build summary
+- Recovery plan appears in the frontend activity feed
+- All existing tests still pass + new tests for planner, project state gathering, and fallback
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 18 -- Builder Tool Use (Foundation)
+
+**Objective:** Enable the builder agent to use tools during its build session. Instead of blindly emitting code, the builder can read files, list directories, and search code within the working directory. This is the foundation for the agentic loop -- the builder becomes aware of what it has already written and can make informed decisions.
+
+**Background:** Currently `stream_agent()` makes a single Anthropic Messages API call with no tools. The builder emits code based solely on the contracts it received at the start and its conversation history. It cannot check what files exist, read their contents, or verify its own output. IDE-based builders (Claude in VS Code) are effective because they have tools. This phase brings that capability to the API-driven builder.
+
+**Deliverables:**
+
+- **Tool definitions**:
+  - `read_file` -- read a file from the working directory by relative path; returns file content (truncated at 50KB)
+  - `list_directory` -- list files and folders in a directory within the working directory; returns names with `/` suffix for directories
+  - `search_code` -- grep for a pattern across the working directory; returns matching file paths and line snippets (max 50 results)
+  - `write_file` -- write/overwrite a file at a relative path in the working directory (alternative to file block format; builder can use either)
+  - All tools enforce path sandboxing: paths must be within `working_dir`, no `..` traversal, no absolute paths
+
+- **Tool execution engine** (`app/services/tool_executor.py`):
+  - `execute_tool(tool_name, tool_input, working_dir) -> str` -- dispatches to the correct handler
+  - `_exec_read_file(path, working_dir) -> str` -- reads file, enforces path sandboxing and size limits
+  - `_exec_list_directory(path, working_dir) -> str` -- lists directory contents
+  - `_exec_search_code(pattern, working_dir) -> str` -- runs grep-like search, returns formatted results
+  - `_exec_write_file(path, content, working_dir) -> str` -- writes file, returns confirmation with size
+  - All handlers return string results (tool results must be strings for the API)
+  - All handlers catch exceptions and return error messages rather than raising
+
+- **`stream_agent()` update in `app/clients/agent_client.py`**:
+  - Accept optional `tools` parameter (list of tool definitions in Anthropic format)
+  - Handle `tool_use` content blocks in the streaming response:
+    1. When a `content_block_start` with `type: "tool_use"` is received, accumulate the tool input JSON
+    2. When the `content_block_stop` arrives, yield a special tool-call signal (not raw text)
+    3. The caller executes the tool and sends a `tool_result` message
+    4. Resume streaming with the tool result appended to messages
+  - The streaming loop becomes: stream → detect tool call → pause stream → execute tool → append tool result → continue streaming
+  - Return type changes: yield either text chunks or `ToolCall` objects (dataclass with `id`, `name`, `input`)
+
+- **Build loop integration** (`_run_build()` in `app/services/build_service.py`):
+  - Define tool specs and pass to `stream_agent()`
+  - When a tool call is yielded:
+    1. Execute via `tool_executor.execute_tool()`
+    2. Log the tool call and result to `build_logs` (source: `tool`)
+    3. Broadcast `tool_use` WS event: `{ tool_name, input_summary, result_summary }`
+    4. Append the tool result to messages and continue the agent loop
+  - When `write_file` tool is used, also track the file in `files_written` and emit `file_created` WS event (same as file block parsing)
+  - File block parsing still works as a fallback if the builder emits `=== FILE: ... ===` blocks instead of using the `write_file` tool
+
+- **Builder system prompt update**:
+  - Inform the builder that it has tools available: `read_file`, `list_directory`, `search_code`, `write_file`
+  - Instruct the builder to use `read_file` to verify its work and `list_directory` to understand the current project state before starting each phase
+  - Instruct the builder to use `write_file` for creating files (preferred over file block format)
+
+- **Frontend: Tool use display**:
+  - Tool calls appear in the activity feed with a distinct icon (wrench/tool icon)
+  - Show tool name, abbreviated input, and abbreviated result
+  - Collapsible detail for full tool input/output
+
+- **Tests**:
+  - Unit tests for each tool handler in `tool_executor.py` (path sandboxing, size limits, error handling, directory traversal prevention)
+  - Test `stream_agent()` tool use flow with mocked API response containing tool_use blocks
+  - Test build loop tool call handling (execution, logging, WS broadcast)
+  - Test `write_file` tool triggers `file_created` event and `files_written` tracking
+  - Test file block parsing still works alongside tool use
+
+**Schema coverage:**
+- No new tables
+
+**Exit criteria:**
+- Builder can read files, list directories, and search code during a build session
+- Builder can write files via the `write_file` tool (alternative to file block format)
+- Tool calls are logged to build_logs and broadcast via WebSocket
+- Path sandboxing prevents directory traversal outside working_dir
+- Tool execution errors are handled gracefully (returned as error strings, don't crash the build)
+- File block parsing still works as a fallback
+- Tool use appears in the frontend activity feed
+- All existing tests still pass + new tests for tool executor, agent tool flow, and build loop integration
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 19 -- Builder Tool Use (Verification)
+
+**Objective:** Add test execution and error checking tools so the builder can verify its own code before signing off a phase. The builder runs tests, reads failures, fixes issues, and re-runs -- the same workflow a developer uses in an IDE. This dramatically reduces audit failures because the builder self-verifies before requesting audit.
+
+**Background:** Phase 18 gave the builder file awareness (read, write, search). This phase adds execution awareness. Currently the builder emits code and immediately signs off, hoping it works. The auditor then catches structural issues, but cannot run tests. With test execution tools, the builder can verify its own work, fix issues iteratively, and only sign off when tests pass -- just like Claude does in the IDE.
+
+**Deliverables:**
+
+- **New tools**:
+  - `run_tests` -- execute the project's test suite (or a subset) in the working directory; returns stdout/stderr with pass/fail summary
+    - Input: `{ "command": "pytest tests/test_foo.py -v", "timeout": 120 }`
+    - Executes via `asyncio.create_subprocess_exec` with timeout
+    - Returns: exit code, stdout (truncated at 50KB), stderr (truncated at 10KB)
+    - Security: command must start with an allowed prefix (`pytest`, `python -m pytest`, `npm test`, `npx vitest`); arbitrary commands are rejected
+  - `check_syntax` -- run a syntax/lint check on a specific file; returns errors with line numbers
+    - Input: `{ "file_path": "app/services/foo.py" }`
+    - For Python: uses `py_compile` or `ast.parse` to check syntax
+    - For TypeScript/JavaScript: uses `npx tsc --noEmit` on the file
+    - Returns: list of errors with file, line, message; or "No errors" if clean
+  - `run_command` -- execute a sandboxed shell command in the working directory; returns output
+    - Input: `{ "command": "pip install -r requirements.txt", "timeout": 60 }`
+    - Allowlist of safe commands: `pip install`, `npm install`, `python -m`, `npx`, `cat`, `head`, `tail`, `wc`, `find`, `ls`
+    - Rejects: `rm`, `del`, `curl`, `wget`, `ssh`, `git push`, or any command not on the allowlist
+    - Returns: exit code + stdout/stderr (truncated)
+
+- **Tool executor updates** (`app/services/tool_executor.py`):
+  - `_exec_run_tests(command, timeout, working_dir) -> str`
+  - `_exec_check_syntax(file_path, working_dir) -> str`
+  - `_exec_run_command(command, timeout, working_dir) -> str`
+  - Command allowlist validation for `run_tests` and `run_command`
+  - Timeout enforcement via `asyncio.wait_for` on subprocess
+  - Output truncation to prevent context window overflow
+
+- **Builder system prompt update**:
+  - Instruct the builder: "After writing code for a phase, ALWAYS run tests before emitting the phase sign-off signal. Use `run_tests` to execute the relevant test files. If tests fail, read the error output, fix the code using `write_file`, and re-run. Only emit `=== PHASE SIGN-OFF: PASS ===` when all tests pass."
+  - Instruct the builder: "Use `check_syntax` after writing Python files to catch syntax errors immediately."
+  - Instruct the builder: "Use `run_command` for setup tasks like `pip install -r requirements.txt` or `npm install` when needed."
+
+- **Build loop: verification tracking**:
+  - Track test runs per phase in build logs (source: `test`)
+  - Broadcast `test_run` WS event: `{ command, exit_code, passed, failed, summary }`
+  - If the builder runs tests 5+ times on a single phase without all passing, log a warning
+
+- **Frontend: Test run display**:
+  - Test results appear in the activity feed with pass/fail badge
+  - Green checkmark for all-pass, red X for failures
+  - Collapsible detail showing test output
+
+- **Security hardening**:
+  - All subprocess execution runs with restricted environment (no access to host env vars beyond PATH)
+  - Working directory is enforced as cwd for all subprocess calls
+  - File size limits on tool outputs (prevent a test that dumps 100MB of output from crashing the context)
+  - Per-tool timeout defaults: `run_tests` 120s, `check_syntax` 30s, `run_command` 60s
+
+- **Tests**:
+  - Test `run_tests` with mock subprocess (pass case, fail case, timeout case)
+  - Test `check_syntax` with valid and invalid Python files
+  - Test `run_command` allowlist enforcement (allowed commands succeed, disallowed commands rejected)
+  - Test command injection prevention (semicolons, pipes, backticks in command input are rejected)
+  - Test output truncation at size limits
+  - Test build loop handles test_run WS events correctly
+  - Integration test: builder writes code → runs tests → tests fail → builder fixes → tests pass → sign-off
+
+**Schema coverage:**
+- No new tables
+
+**Exit criteria:**
+- Builder can run tests during a build session and read the results
+- Builder can check syntax on individual files
+- Builder can run safe shell commands (install deps, etc.)
+- Command allowlisting prevents arbitrary command execution
+- Timeout enforcement prevents runaway processes
+- Builder self-verifies before phase sign-off (verified in integration test with mocked agent)
+- Test runs appear in the frontend activity feed with pass/fail badges
+- All command injection vectors are blocked
+- All existing tests still pass + new tests for verification tools, security, and self-verification flow
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 20 -- End-to-End Builder Validation
+
+**Objective:** Full integration testing and prompt refinement of the complete agentic builder pipeline. Validate that the full flow -- per-phase planning → tool-assisted building → self-verification → audit → recovery planning → retry/pause/resume → commit/push -- works reliably end-to-end. Harden edge cases, tune prompts, and ensure the builder produces genuinely usable, tested code.
+
+**Background:** Phases 16-19 introduced per-phase planning, recovery planning, tool use, and self-verification as individual features. This phase validates they all work together as a cohesive system and tunes the prompts to produce optimal builder behaviour.
+
+**Deliverables:**
+
+- **Integration test suite** (`tests/test_builder_e2e.py`):
+  - Full build lifecycle with mocked agent: per-phase plan → tool calls (read_file, write_file, list_directory) → run_tests → phase sign-off → audit pass → next phase plan → completion
+  - Self-verification loop: builder writes code → runs tests → tests fail → builder reads error → fixes code → re-runs → passes → signs off
+  - Recovery planner invocation: audit fail → planner produces remediation → builder follows remediaton → audit pass
+  - Recovery planner failure fallback: planner API error → generic feedback message used → builder retries
+  - Pause + resume with recovery: multiple audit failures → pause → user retries with message → recovery planner produces new strategy → builder succeeds
+  - Tool error handling: tool returns error → builder adapts (doesn't crash)
+  - Large project simulation: 50+ files written across 5+ phases, context compaction triggers, plans reset correctly
+  - Security: builder attempts path traversal in tool calls → sandboxing blocks it
+  - Concurrent tool calls: builder issues multiple tool calls in one response → all executed correctly
+
+- **Prompt tuning**:
+  - Refine builder system prompt based on observed agent behaviour with tools
+  - Refine recovery planner prompt to produce more actionable remediation strategies
+  - Add few-shot examples to the builder directive showing correct tool use patterns
+  - Tune when the builder should use `write_file` tool vs file block format (prefer tools, fall back to blocks)
+  - Ensure the builder consistently runs tests before sign-off (not just sometimes)
+
+- **Edge case hardening**:
+  - Tool call with missing/malformed input → return descriptive error, not crash
+  - Builder emits both tool calls and file blocks in same response → handle both correctly
+  - Builder calls `write_file` for a path it already wrote → overwrite correctly, update `files_written`
+  - Test runner produces binary output → handle encoding gracefully
+  - Working directory runs out of disk space → catch OSError, pause build with error details
+  - Builder never calls `run_tests` → auditor catches untested code (existing behaviour, validate it works)
+
+- **Observability enhancements**:
+  - Build summary endpoint enhanced with: tool calls count (by type), test runs count (pass/fail), recovery planner invocations, files read by builder
+  - Build logs include tool call duration (how long each tool execution took)
+
+- **Documentation**:
+  - Update `USER_INSTRUCTIONS.md` with: tool-assisted build explanation, what the builder can do during a session, security model for tool execution
+  - Update `Forge/Contracts/builder_contract.md` with: tool use instructions, self-verification requirements, per-phase planning format
+
+**Schema coverage:**
+- No new tables
+
+**Exit criteria:**
+- All integration tests pass with mocked agent responses simulating multi-phase, tool-assisted builds
+- Builder consistently self-verifies (runs tests) before phase sign-off in integration tests
+- Recovery planner produces actionable remediations that lead to successful retries in tests
+- No crashes on malformed tool calls, binary output, or disk errors
+- Tool call security (sandboxing, allowlisting) holds under adversarial test inputs
+- Build summary includes complete observability data (tool calls, test runs, planner invocations)
+- `USER_INSTRUCTIONS.md` and `builder_contract.md` are updated and accurate
+- All tests pass (backend + frontend)
+- `run_audit.ps1` passes all checks
