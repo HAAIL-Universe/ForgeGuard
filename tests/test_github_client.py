@@ -1,9 +1,9 @@
-"""Tests for GitHub client -- list_commits."""
+"""Tests for GitHub client -- list_commits, create_github_repo."""
 
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from app.clients.github_client import list_commits
+from app.clients.github_client import list_commits, create_github_repo
 
 
 def _mock_response(data, status_code=200):
@@ -77,3 +77,30 @@ async def test_list_commits_passes_since_param(mock_client_cls):
 
     call_kwargs = mock_client.get.call_args
     assert "since" in call_kwargs.kwargs.get("params", call_kwargs[1].get("params", {}))
+
+
+# ---------- create_github_repo ----------
+
+
+@pytest.mark.asyncio
+@patch("app.clients.github_client.httpx.AsyncClient")
+async def test_create_github_repo_returns_repo_info(mock_client_cls):
+    """create_github_repo POSTs to /user/repos and returns parsed data."""
+    mock_client = AsyncMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client.post.return_value = _mock_response({
+        "id": 98765,
+        "full_name": "octocat/new-project",
+        "default_branch": "main",
+        "private": True,
+    })
+
+    result = await create_github_repo("token", "new-project", description="test repo", private=True)
+
+    assert result["github_repo_id"] == 98765
+    assert result["full_name"] == "octocat/new-project"
+    assert result["default_branch"] == "main"
+    assert result["private"] is True
+    mock_client.post.assert_called_once()

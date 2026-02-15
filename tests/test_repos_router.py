@@ -243,3 +243,92 @@ def test_sync_commits_not_found(mock_backfill, mock_dep_user):
 def test_sync_commits_requires_auth():
     response = client.post(f"/repos/{REPO_ID}/sync")
     assert response.status_code == 401
+
+
+# ---------- POST /repos/create ----------
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.repo_service.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.repo_service.create_github_repo", new_callable=AsyncMock)
+@patch("app.services.repo_service.create_webhook", new_callable=AsyncMock)
+@patch("app.services.repo_service.create_repo", new_callable=AsyncMock)
+def test_create_repo_success(mock_db_create, mock_webhook, mock_gh_create, mock_svc_user, mock_dep_user):
+    mock_dep_user.return_value = MOCK_USER
+    mock_svc_user.return_value = MOCK_USER
+    mock_gh_create.return_value = {
+        "github_repo_id": 99001,
+        "full_name": "octocat/brand-new",
+        "default_branch": "main",
+        "private": False,
+    }
+    mock_webhook.return_value = 77
+    mock_db_create.return_value = {
+        "id": UUID("44444444-4444-4444-4444-444444444444"),
+        "full_name": "octocat/brand-new",
+        "webhook_active": True,
+    }
+
+    response = client.post(
+        "/repos/create",
+        json={"name": "brand-new", "description": "A fresh repo", "private": False},
+        headers=_auth_header(),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["full_name"] == "octocat/brand-new"
+    assert data["webhook_active"] is True
+    mock_gh_create.assert_called_once()
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_create_repo_invalid_name(mock_dep_user):
+    mock_dep_user.return_value = MOCK_USER
+    response = client.post(
+        "/repos/create",
+        json={"name": "has spaces"},
+        headers=_auth_header(),
+    )
+    assert response.status_code == 422
+
+
+def test_create_repo_requires_auth():
+    response = client.post("/repos/create", json={"name": "test"})
+    assert response.status_code == 401
+
+
+# ---------- GET /repos/all ----------
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.repo_service.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.repo_service.list_user_repos", new_callable=AsyncMock)
+@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
+def test_list_all_repos(mock_connected, mock_github, mock_svc_user, mock_dep_user):
+    mock_dep_user.return_value = MOCK_USER
+    mock_svc_user.return_value = MOCK_USER
+    mock_github.return_value = [
+        {"github_repo_id": 111, "full_name": "octocat/repo-a", "default_branch": "main", "private": False},
+        {"github_repo_id": 222, "full_name": "octocat/repo-b", "default_branch": "main", "private": True},
+    ]
+    mock_connected.return_value = [
+        {"id": UUID("33333333-3333-3333-3333-333333333333"), "github_repo_id": 111},
+    ]
+
+    response = client.get("/repos/all", headers=_auth_header())
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 2
+    # repo-a is connected
+    repo_a = next(r for r in items if r["full_name"] == "octocat/repo-a")
+    assert repo_a["connected"] is True
+    assert repo_a["repo_id"] == "33333333-3333-3333-3333-333333333333"
+    # repo-b is not connected
+    repo_b = next(r for r in items if r["full_name"] == "octocat/repo-b")
+    assert repo_b["connected"] is False
+    assert repo_b["repo_id"] is None
+
+
+def test_list_all_repos_requires_auth():
+    response = client.get("/repos/all")
+    assert response.status_code == 401

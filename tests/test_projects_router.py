@@ -75,6 +75,62 @@ def test_create_project(mock_create, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.project_service.repo_create_project", new_callable=AsyncMock)
+def test_create_project_with_repo_id(mock_create, mock_get_user):
+    mock_get_user.return_value = MOCK_USER
+    mock_create.return_value = {
+        "id": UUID(PROJECT_ID),
+        "user_id": UUID(USER_ID),
+        "name": "Linked Project",
+        "description": None,
+        "status": "draft",
+        "repo_id": UUID("33333333-3333-3333-3333-333333333333"),
+        "local_path": None,
+        "questionnaire_state": {},
+        "created_at": "2025-01-01T00:00:00Z",
+        "updated_at": "2025-01-01T00:00:00Z",
+    }
+
+    resp = client.post(
+        "/projects",
+        json={"name": "Linked Project", "repo_id": "33333333-3333-3333-3333-333333333333"},
+        headers=_auth_header(),
+    )
+    assert resp.status_code == 200
+    mock_create.assert_called_once()
+    call_kwargs = mock_create.call_args
+    assert call_kwargs.kwargs.get("repo_id") == UUID("33333333-3333-3333-3333-333333333333") or \
+           call_kwargs[1].get("repo_id") == UUID("33333333-3333-3333-3333-333333333333") or \
+           (len(call_kwargs.args) > 3 and call_kwargs.args[3] is not None)
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.project_service.repo_create_project", new_callable=AsyncMock)
+def test_create_project_with_local_path(mock_create, mock_get_user):
+    mock_get_user.return_value = MOCK_USER
+    mock_create.return_value = {
+        "id": UUID(PROJECT_ID),
+        "user_id": UUID(USER_ID),
+        "name": "Local Project",
+        "description": None,
+        "status": "draft",
+        "repo_id": None,
+        "local_path": "C:\\Users\\me\\projects\\app",
+        "questionnaire_state": {},
+        "created_at": "2025-01-01T00:00:00Z",
+        "updated_at": "2025-01-01T00:00:00Z",
+    }
+
+    resp = client.post(
+        "/projects",
+        json={"name": "Local Project", "local_path": "C:\\Users\\me\\projects\\app"},
+        headers=_auth_header(),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Local Project"
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
 def test_create_project_missing_name(mock_get_user):
     mock_get_user.return_value = MOCK_USER
     resp = client.post("/projects", json={}, headers=_auth_header())

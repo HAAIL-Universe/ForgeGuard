@@ -37,6 +37,12 @@ class CreateProjectRequest(BaseModel):
     description: str | None = Field(
         None, max_length=2000, description="Project description"
     )
+    repo_id: str | None = Field(
+        None, description="Connected ForgeGuard repo UUID to link"
+    )
+    local_path: str | None = Field(
+        None, max_length=1000, description="Local filesystem path for local projects"
+    )
 
 
 class QuestionnaireMessageRequest(BaseModel):
@@ -62,10 +68,13 @@ async def create_project(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Create a new project."""
+    repo_id = UUID(body.repo_id) if body.repo_id else None
     project = await create_new_project(
         user_id=current_user["id"],
         name=body.name,
         description=body.description,
+        repo_id=repo_id,
+        local_path=body.local_path,
     )
     return {
         "id": str(project["id"]),

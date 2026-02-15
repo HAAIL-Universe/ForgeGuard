@@ -15,19 +15,23 @@ async def create_project(
     user_id: UUID,
     name: str,
     description: str | None = None,
+    repo_id: UUID | None = None,
+    local_path: str | None = None,
 ) -> dict:
     """Insert a new project. Returns the created row as a dict."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO projects (user_id, name, description)
-        VALUES ($1, $2, $3)
+        INSERT INTO projects (user_id, name, description, repo_id, local_path)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id, user_id, name, description, status, repo_id,
-                  questionnaire_state, created_at, updated_at
+                  local_path, questionnaire_state, created_at, updated_at
         """,
         user_id,
         name,
         description,
+        repo_id,
+        local_path,
     )
     return _project_to_dict(row)
 
@@ -38,7 +42,7 @@ async def get_project_by_id(project_id: UUID) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT id, user_id, name, description, status, repo_id,
-               questionnaire_state, created_at, updated_at
+               local_path, questionnaire_state, created_at, updated_at
         FROM projects
         WHERE id = $1
         """,
@@ -53,7 +57,7 @@ async def get_projects_by_user(user_id: UUID) -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT id, user_id, name, description, status, repo_id,
-               questionnaire_state, created_at, updated_at
+               local_path, questionnaire_state, created_at, updated_at
         FROM projects
         WHERE user_id = $1
         ORDER BY created_at DESC

@@ -10,7 +10,9 @@ from app.api.deps import get_current_user
 from app.services.audit_service import backfill_repo_commits, get_audit_detail, get_repo_audits
 from app.services.repo_service import (
     connect_repo,
+    create_and_connect_repo,
     disconnect_repo,
+    list_all_user_repos,
     list_available_repos,
     list_connected_repos,
 )
@@ -18,6 +20,24 @@ from app.services.repo_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/repos", tags=["repos"])
+
+
+class CreateRepoRequest(BaseModel):
+    """Request body for creating a new GitHub repo."""
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-zA-Z0-9._-]+$",
+        description="Repository name (no spaces)",
+    )
+    description: str | None = Field(
+        None,
+        max_length=500,
+        description="Short repo description",
+    )
+    private: bool = Field(False, description="Create as private repo")
 
 
 class ConnectRepoRequest(BaseModel):
@@ -56,6 +76,48 @@ async def list_available(
     """List GitHub repos available to connect (not yet connected)."""
     items = await list_available_repos(current_user["id"])
     return {"items": items}
+
+
+@router.get("/all")
+async def list_all(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """List all GitHub repos with connection status."""
+    items = await list_all_user_repos(current_user["id"])
+    return {"items": items}
+
+
+@router.post("/create")
+async def create_repo(
+    body: CreateRepoRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Create a new GitHub repo and connect it to ForgeGuard."""
+    try:
+        repo = await create_and_connect_repo(
+            user_id=current_user["id"],
+            name=body.name,
+            description=body.description,
+            private=body.private,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    except Exception as exc:
+        logger.exception("Failed to create GitHub repo %s", body.name)
+        detail = str(exc) if str(exc) else "Failed to create repo on GitHub"
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=detail,
+        )
+
+    return {
+        "id": str(repo["id"]),
+        "full_name": repo["full_name"],
+        "webhook_active": repo["webhook_active"],
+    }
 
 
 @router.post("/connect")

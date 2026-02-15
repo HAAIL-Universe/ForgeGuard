@@ -96,6 +96,42 @@ async def list_user_repos(access_token: str) -> list[dict]:
     return repos
 
 
+async def create_github_repo(
+    access_token: str,
+    name: str,
+    description: str | None = None,
+    private: bool = False,
+) -> dict:
+    """Create a new repository on the authenticated user's GitHub account.
+
+    Returns a dict with github_repo_id, full_name, default_branch, private.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{GITHUB_API_BASE}/user/repos",
+            json={
+                "name": name,
+                "description": description or "",
+                "private": private,
+                "auto_init": True,
+            },
+            headers=_auth_headers(access_token),
+        )
+        if response.status_code == 422:
+            errors = response.json().get("errors", [])
+            msgs = [e.get("message", "") for e in errors]
+            msg = response.json().get("message", "Validation failed")
+            raise ValueError(f"{msg}: {'; '.join(msgs)}" if msgs else msg)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "github_repo_id": data["id"],
+            "full_name": data["full_name"],
+            "default_branch": data.get("default_branch", "main"),
+            "private": data.get("private", False),
+        }
+
+
 async def create_webhook(
     access_token: str,
     full_name: str,

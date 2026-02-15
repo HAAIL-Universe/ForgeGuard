@@ -128,11 +128,13 @@ vi.mock('../context/AuthContext', () => ({
 }));
 
 describe('CreateProjectModal', () => {
-  it('renders form inputs', () => {
+  it('renders form inputs and source toggle', () => {
     render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
     expect(screen.getByTestId('project-name-input')).toBeInTheDocument();
     expect(screen.getByTestId('project-desc-input')).toBeInTheDocument();
     expect(screen.getByTestId('create-project-submit')).toBeInTheDocument();
+    expect(screen.getByTestId('source-github')).toBeInTheDocument();
+    expect(screen.getByTestId('source-local')).toBeInTheDocument();
   });
 
   it('shows error when submitting empty name', () => {
@@ -154,5 +156,40 @@ describe('CreateProjectModal', () => {
     render(<CreateProjectModal onClose={onClose} onCreated={() => {}} />);
     fireEvent.click(screen.getByTestId('create-project-overlay'));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows github create/select pills when source is GitHub', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    expect(screen.getByTestId('gh-create')).toBeInTheDocument();
+    expect(screen.getByTestId('gh-select')).toBeInTheDocument();
+  });
+
+  it('shows private toggle in create new mode', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    expect(screen.getByTestId('private-toggle')).toBeInTheDocument();
+  });
+
+  it('shows local path input when source is Local', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.click(screen.getByTestId('source-local'));
+    expect(screen.getByTestId('local-path-input')).toBeInTheDocument();
+    // GitHub options should be hidden
+    expect(screen.queryByTestId('gh-create')).toBeNull();
+  });
+
+  it('shows error when local path is empty on submit', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByTestId('project-name-input'), { target: { value: 'Test' } });
+    fireEvent.click(screen.getByTestId('source-local'));
+    fireEvent.click(screen.getByTestId('create-project-submit'));
+    expect(screen.getByText('Project path is required for local projects')).toBeInTheDocument();
+  });
+
+  it('shows error when no repo selected in select mode', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByTestId('project-name-input'), { target: { value: 'Test' } });
+    fireEvent.click(screen.getByTestId('gh-select'));
+    fireEvent.click(screen.getByTestId('create-project-submit'));
+    expect(screen.getByText('Select a repository')).toBeInTheDocument();
   });
 });
