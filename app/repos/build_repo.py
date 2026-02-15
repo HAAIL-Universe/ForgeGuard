@@ -28,7 +28,8 @@ async def create_build(
         VALUES ($1, 'Phase 0', 'pending', $2, $3, $4)
         RETURNING id, project_id, phase, status, target_type, target_ref,
                   working_dir, started_at, completed_at,
-                  loop_count, error_detail, created_at
+                  loop_count, error_detail, created_at,
+                  paused_at, pause_reason, pause_phase
         """,
         project_id,
         target_type,
@@ -45,7 +46,8 @@ async def get_build_by_id(build_id: UUID) -> dict | None:
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
                working_dir, started_at, completed_at,
-               loop_count, error_detail, created_at
+               loop_count, error_detail, created_at,
+               paused_at, pause_reason, pause_phase
         FROM builds WHERE id = $1
         """,
         build_id,
@@ -60,7 +62,8 @@ async def get_latest_build_for_project(project_id: UUID) -> dict | None:
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
                working_dir, started_at, completed_at,
-               loop_count, error_detail, created_at
+               loop_count, error_detail, created_at,
+               paused_at, pause_reason, pause_phase
         FROM builds WHERE project_id = $1
         ORDER BY created_at DESC LIMIT 1
         """,
@@ -124,11 +127,48 @@ async def cancel_build(build_id: UUID) -> bool:
     now = datetime.now(timezone.utc)
     result = await pool.execute(
         """
-        UPDATE builds SET status = 'cancelled', completed_at = $2
-        WHERE id = $1 AND status IN ('pending', 'running')
+        UPDATE builds SET status = 'cancelled', completed_at = $2,
+               paused_at = NULL, pause_reason = NULL, pause_phase = NULL
+        WHERE id = $1 AND status IN ('pending', 'running', 'paused')
         """,
         build_id,
         now,
+    )
+    return result == "UPDATE 1"
+
+
+async def pause_build(
+    build_id: UUID,
+    reason: str,
+    phase: str,
+) -> bool:
+    """Pause a running build. Returns True if updated."""
+    pool = await get_pool()
+    now = datetime.now(timezone.utc)
+    result = await pool.execute(
+        """
+        UPDATE builds SET status = 'paused', paused_at = $2,
+               pause_reason = $3, pause_phase = $4
+        WHERE id = $1 AND status = 'running'
+        """,
+        build_id,
+        now,
+        reason,
+        phase,
+    )
+    return result == "UPDATE 1"
+
+
+async def resume_build(build_id: UUID) -> bool:
+    """Resume a paused build. Returns True if updated."""
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        UPDATE builds SET status = 'running',
+               paused_at = NULL, pause_reason = NULL, pause_phase = NULL
+        WHERE id = $1 AND status = 'paused'
+        """,
+        build_id,
     )
     return result == "UPDATE 1"
 

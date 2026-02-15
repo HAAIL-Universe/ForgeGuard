@@ -190,11 +190,14 @@ CREATE TABLE builds (
     completed_at    TIMESTAMPTZ,
     loop_count      INTEGER NOT NULL DEFAULT 0,
     error_detail    TEXT,
+    paused_at       TIMESTAMPTZ,
+    pause_reason    TEXT,
+    pause_phase     TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-`status` values: `pending`, `running`, `completed`, `failed`, `cancelled`
+`status` values: `pending`, `running`, `completed`, `failed`, `cancelled`, `paused`
 `target_type` values: `github_new`, `github_existing`, `local_path`, `null` (legacy builds)
 
 ```sql
@@ -282,5 +285,5 @@ db/migrations/
   005_questionnaire_state.sql
   006_user_api_key.sql
   007_audit_llm_toggle.sql
-  008_build_targets.sql
+  008_build_targets.sql\n  009_build_pause.sql
 ```

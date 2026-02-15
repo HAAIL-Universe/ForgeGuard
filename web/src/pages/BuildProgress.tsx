@@ -63,7 +63,7 @@ interface PhaseDefinition {
   deliverables: string[];
 }
 
-type PhaseStatus = 'pending' | 'active' | 'pass' | 'fail';
+type PhaseStatus = 'pending' | 'active' | 'pass' | 'fail' | 'paused';
 
 interface PhaseState {
   def: PhaseDefinition;
@@ -90,6 +90,13 @@ interface PlanTask {
   id: number;
   title: string;
   status: 'pending' | 'done';
+}
+
+interface PauseInfo {
+  phase: string;
+  loop_count: number;
+  audit_findings: string;
+  options: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,6 +165,7 @@ const STATUS_ICON: Record<PhaseStatus, string> = {
   active: '◐',
   pass: '●',
   fail: '✕',
+  paused: '⏸',
 };
 
 const STATUS_COLOR: Record<PhaseStatus, string> = {
@@ -165,6 +173,7 @@ const STATUS_COLOR: Record<PhaseStatus, string> = {
   active: '#2563EB',
   pass: '#22C55E',
   fail: '#EF4444',
+  paused: '#F59E0B',
 };
 
 /* ------------------------------------------------------------------ */
@@ -194,6 +203,11 @@ function BuildProgress() {
   const [turnCount, setTurnCount] = useState(0);
   const [startTime] = useState(() => Date.now());
   const [elapsed, setElapsed] = useState(0);
+  const [pauseInfo, setPauseInfo] = useState<PauseInfo | null>(null);
+  const [showPauseModal, setShowPauseModal] = useState(false);
+  const [interjectionText, setInterjectionText] = useState('');
+  const [sendingInterject, setSendingInterject] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const feedEndRef = useRef<HTMLDivElement>(null);
   const phaseStartRef = useRef<number>(Date.now());
 
@@ -216,7 +230,7 @@ function BuildProgress() {
 
   /* ------ elapsed timer ------ */
   useEffect(() => {
-    if (!build || !['pending', 'running'].includes(build.status)) return;
+    if (!build || !['pending', 'running', 'paused'].includes(build.status)) return;
     const ref = build.started_at ? new Date(build.started_at).getTime() : startTime;
     const iv = setInterval(() => setElapsed(Math.floor((Date.now() - ref) / 1000)), 1000);
     return () => clearInterval(iv);
@@ -504,6 +518,52 @@ function BuildProgress() {
             }
             break;
           }
+
+          case 'build_paused': {
+            const phase = payload.phase as string;
+            const loop = (payload.loop_count ?? 0) as number;
+            const findings = (payload.audit_findings ?? '') as string;
+            const options = (payload.options ?? ['retry', 'skip', 'abort']) as string[];
+            setBuild((prev) => prev ? { ...prev, status: 'paused' } : prev);
+            setPauseInfo({ phase, loop_count: loop, audit_findings: findings, options });
+            setShowPauseModal(true);
+            addActivity(`Build paused on ${phase} after ${loop} failures`, 'warn');
+
+            /* Mark current active phase as paused */
+            const pausePhaseNum = parsePhaseNum(phase);
+            setPhaseStates((prev) => {
+              const next = new Map(prev);
+              const ps = next.get(pausePhaseNum);
+              if (ps) next.set(pausePhaseNum, { ...ps, status: 'paused' });
+              return next;
+            });
+            break;
+          }
+
+          case 'build_resumed': {
+            const action = (payload.action ?? 'retry') as string;
+            const phase = (payload.phase ?? '') as string;
+            setBuild((prev) => prev ? { ...prev, status: 'running' } : prev);
+            setPauseInfo(null);
+            setShowPauseModal(false);
+            addActivity(`Build resumed (${action}) on ${phase}`, 'system');
+
+            /* Mark paused phase back to active */
+            const resumePhaseNum = parsePhaseNum(phase);
+            setPhaseStates((prev) => {
+              const next = new Map(prev);
+              const ps = next.get(resumePhaseNum);
+              if (ps && ps.status === 'paused') next.set(resumePhaseNum, { ...ps, status: 'active' });
+              return next;
+            });
+            break;
+          }
+
+          case 'build_interjection': {
+            const msg = (payload.message ?? '') as string;
+            addActivity(`Interjection sent: ${msg.slice(0, 100)}`, 'system');
+            break;
+          }
         }
       },
       [projectId, addActivity, addToast],
@@ -553,9 +613,55 @@ function BuildProgress() {
     }
   };
 
+  const handleResume = async (action: string) => {
+    setResuming(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/resume`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      if (res.ok) {
+        setShowPauseModal(false);
+        setPauseInfo(null);
+        addToast(`Build ${action === 'abort' ? 'aborted' : 'resumed'}`, action === 'abort' ? 'info' : 'success');
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to resume' }));
+        addToast(data.detail || 'Failed to resume build');
+      }
+    } catch {
+      addToast('Network error resuming build');
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  const handleInterject = async () => {
+    if (!interjectionText.trim()) return;
+    setSendingInterject(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: interjectionText }),
+      });
+      if (res.ok) {
+        addToast('Interjection sent', 'success');
+        setInterjectionText('');
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to send' }));
+        addToast(data.detail || 'Failed to send interjection');
+      }
+    } catch {
+      addToast('Network error sending interjection');
+    } finally {
+      setSendingInterject(false);
+    }
+  };
+
   /* ------ derived values ------ */
 
-  const isActive = build && ['pending', 'running'].includes(build.status);
+  const isActive = build && ['pending', 'running', 'paused'].includes(build.status);
   const buildModel = 'claude-opus-4-6';
   const contextWindow = 200_000;
   const totalTok = totalTokens.input + totalTokens.output;
@@ -631,8 +737,8 @@ function BuildProgress() {
                 style={{
                   padding: '2px 10px',
                   borderRadius: '4px',
-                  background: build.status === 'completed' ? '#14532D' : build.status === 'failed' ? '#7F1D1D' : '#1E3A5F',
-                  color: build.status === 'completed' ? '#22C55E' : build.status === 'failed' ? '#EF4444' : '#2563EB',
+                  background: build.status === 'completed' ? '#14532D' : build.status === 'failed' ? '#7F1D1D' : build.status === 'paused' ? '#78350F' : '#1E3A5F',
+                  color: build.status === 'completed' ? '#22C55E' : build.status === 'failed' ? '#EF4444' : build.status === 'paused' ? '#F59E0B' : '#2563EB',
                   fontSize: '0.7rem',
                   fontWeight: 700,
                   textTransform: 'uppercase',
@@ -910,6 +1016,46 @@ function BuildProgress() {
                 <div ref={feedEndRef} />
               </div>
             </div>
+
+            {/* -- Interjection Input -- */}
+            {isActive && (
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }} data-testid="interjection-bar">
+                <input
+                  type="text"
+                  placeholder="Send feedback to the builder..."
+                  value={interjectionText}
+                  onChange={(e) => setInterjectionText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleInterject(); }}
+                  style={{
+                    flex: 1,
+                    background: '#0F172A',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    padding: '8px 12px',
+                    color: '#F8FAFC',
+                    fontSize: '0.8rem',
+                    outline: 'none',
+                  }}
+                />
+                <button
+                  onClick={handleInterject}
+                  disabled={sendingInterject || !interjectionText.trim()}
+                  style={{
+                    background: '#2563EB',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 16px',
+                    cursor: sendingInterject || !interjectionText.trim() ? 'not-allowed' : 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    opacity: sendingInterject || !interjectionText.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {sendingInterject ? 'Sending...' : 'Interject'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -922,6 +1068,82 @@ function BuildProgress() {
           onConfirm={handleCancel}
           onCancel={() => setShowCancelConfirm(false)}
         />
+      )}
+
+      {showPauseModal && pauseInfo && (
+        <div
+          data-testid="pause-modal"
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 100,
+          }}
+        >
+          <div style={{
+            background: '#1E293B',
+            borderRadius: '12px',
+            padding: '24px 32px',
+            maxWidth: '480px',
+            width: '100%',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          }}>
+            <h3 style={{ margin: '0 0 8px', color: '#F59E0B', fontSize: '1rem' }}>
+              ⏸ Build Paused
+            </h3>
+            <p style={{ color: '#94A3B8', fontSize: '0.82rem', margin: '0 0 12px' }}>
+              <strong>{pauseInfo.phase}</strong> — {pauseInfo.loop_count} consecutive audit
+              failure{pauseInfo.loop_count !== 1 ? 's' : ''}.
+            </p>
+            <p style={{ color: '#CBD5E1', fontSize: '0.78rem', margin: '0 0 20px' }}>
+              {pauseInfo.audit_findings}
+            </p>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => handleResume('retry')}
+                disabled={resuming}
+                style={{
+                  background: '#2563EB', color: '#fff', border: 'none', borderRadius: '6px',
+                  padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600,
+                }}
+              >
+                Retry Phase
+              </button>
+              <button
+                onClick={() => handleResume('skip')}
+                disabled={resuming}
+                style={{
+                  background: '#F59E0B', color: '#0F172A', border: 'none', borderRadius: '6px',
+                  padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600,
+                }}
+              >
+                Skip Phase
+              </button>
+              <button
+                onClick={() => handleResume('edit')}
+                disabled={resuming}
+                style={{
+                  background: 'transparent', color: '#94A3B8', border: '1px solid #334155',
+                  borderRadius: '6px', padding: '8px 16px', cursor: 'pointer',
+                  fontSize: '0.8rem', fontWeight: 600,
+                }}
+              >
+                Edit & Retry
+              </button>
+              <button
+                onClick={() => handleResume('abort')}
+                disabled={resuming}
+                style={{
+                  background: 'transparent', color: '#EF4444', border: '1px solid #EF4444',
+                  borderRadius: '6px', padding: '8px 16px', cursor: 'pointer',
+                  fontSize: '0.8rem', fontWeight: 600,
+                }}
+              >
+                Abort Build
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </AppShell>
   );

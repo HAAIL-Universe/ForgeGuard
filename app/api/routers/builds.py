@@ -18,6 +18,16 @@ class StartBuildRequest(BaseModel):
     target_ref: str | None = None
 
 
+class ResumeRequest(BaseModel):
+    """Request body for resuming a paused build."""
+    action: str = "retry"  # "retry" | "skip" | "abort" | "edit"
+
+
+class InterjectRequest(BaseModel):
+    """Request body for injecting a user message into an active build."""
+    message: str
+
+
 # ── POST /projects/{project_id}/build ────────────────────────────────────
 
 
@@ -57,6 +67,49 @@ async def cancel_build(
     try:
         build = await build_service.cancel_build(project_id, user["id"])
         return build
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── POST /projects/{project_id}/build/resume ─────────────────────────────
+
+
+@router.post("/{project_id}/build/resume")
+async def resume_build(
+    project_id: UUID,
+    body: ResumeRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Resume a paused build with the chosen action."""
+    try:
+        build = await build_service.resume_build(
+            project_id, user["id"], action=body.action
+        )
+        return build
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── POST /projects/{project_id}/build/interject ──────────────────────────
+
+
+@router.post("/{project_id}/build/interject")
+async def interject_build(
+    project_id: UUID,
+    body: InterjectRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Inject a user message into an active build."""
+    try:
+        return await build_service.interject_build(
+            project_id, user["id"], body.message
+        )
     except ValueError as exc:
         detail = str(exc)
         if "not found" in detail.lower():

@@ -351,3 +351,86 @@ async def test_create_build_with_target(mock_get_pool):
 
     pool.fetchrow.assert_called_once()
     assert result["project_id"] == row["project_id"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: pause_build / resume_build (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_pause_build_success(mock_get_pool):
+    """pause_build sets status='paused' with reason and phase."""
+    pool = _fake_pool()
+    pool.execute.return_value = "UPDATE 1"
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.pause_build(
+        uuid.uuid4(), "3 audit failures", "Phase 2"
+    )
+
+    assert result is True
+    pool.execute.assert_called_once()
+    query = pool.execute.call_args[0][0]
+    assert "status = 'paused'" in query
+    assert "pause_reason" in query
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_pause_build_not_running(mock_get_pool):
+    """pause_build returns False if build is not running."""
+    pool = _fake_pool()
+    pool.execute.return_value = "UPDATE 0"
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.pause_build(
+        uuid.uuid4(), "reason", "Phase 1"
+    )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_resume_build_success(mock_get_pool):
+    """resume_build clears pause fields and sets status='running'."""
+    pool = _fake_pool()
+    pool.execute.return_value = "UPDATE 1"
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.resume_build(uuid.uuid4())
+
+    assert result is True
+    query = pool.execute.call_args[0][0]
+    assert "status = 'running'" in query
+    assert "paused_at = NULL" in query
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_resume_build_not_paused(mock_get_pool):
+    """resume_build returns False if build is not paused."""
+    pool = _fake_pool()
+    pool.execute.return_value = "UPDATE 0"
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.resume_build(uuid.uuid4())
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_cancel_build_includes_paused(mock_get_pool):
+    """cancel_build can cancel a paused build."""
+    pool = _fake_pool()
+    pool.execute.return_value = "UPDATE 1"
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.cancel_build(uuid.uuid4())
+
+    assert result is True
+    query = pool.execute.call_args[0][0]
+    assert "'paused'" in query

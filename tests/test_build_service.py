@@ -1082,7 +1082,7 @@ async def test_run_build_multi_turn_audit_feedback(
 async def test_run_build_multi_turn_max_failures(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
-    """_run_build fails build after MAX_LOOP_COUNT audit failures."""
+    """_run_build pauses after MAX_LOOP_COUNT audit failures; abort leads to build_error."""
     async def _stream_gen(*args, **kwargs):
         yield "Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
 
@@ -1091,8 +1091,21 @@ async def test_run_build_multi_turn_max_failures(
     mock_build_repo.append_build_log = AsyncMock()
     mock_build_repo.record_build_cost = AsyncMock()
     mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2, 3])
+    mock_build_repo.pause_build = AsyncMock(return_value=True)
+    mock_build_repo.resume_build = AsyncMock(return_value=True)
     mock_project_repo.update_project_status = AsyncMock()
     mock_manager.send_to_user = AsyncMock()
+
+    async def _auto_abort():
+        """Wait for build to pause, then abort."""
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            bid = str(_BUILD_ID)
+            if bid in build_service._pause_events:
+                build_service._resume_actions[bid] = "abort"
+                build_service._pause_events[bid].set()
+                return
+            await asyncio.sleep(0.02)
 
     # All audits fail
     with patch.object(
@@ -1100,18 +1113,27 @@ async def test_run_build_multi_turn_max_failures(
         new_callable=AsyncMock,
         return_value="FAIL",
     ):
-        await build_service._run_build(
-            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
-            "sk-ant-test", audit_llm_enabled=True,
+        await asyncio.gather(
+            build_service._run_build(
+                _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+                "sk-ant-test", audit_llm_enabled=True,
+            ),
+            _auto_abort(),
         )
 
-    # Build should have been marked as failed
+    # Build should have been paused first, then aborted → build_error
+    pause_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_paused"
+    ]
+    assert len(pause_calls) >= 1
+
     fail_calls = [
         c for c in mock_manager.send_to_user.call_args_list
         if c[0][1].get("type") == "build_error"
     ]
     assert len(fail_calls) >= 1
-    assert "RISK_EXCEEDS_SCOPE" in fail_calls[0][0][1]["payload"]["error_detail"]
+    assert "aborted by user" in fail_calls[0][0][1]["payload"]["error_detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -1240,3 +1262,452 @@ async def test_run_build_context_compaction(
         if c[0][1].get("type") == "build_turn" and c[0][1].get("payload", {}).get("compacted")
     ]
     assert len(turn_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pause / Resume / Interject (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_pauses_at_threshold(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build pauses (not fails) after PAUSE_THRESHOLD consecutive audit failures."""
+    call_counter = {"n": 0}
+
+    async def _stream_gen(*args, **kwargs):
+        call_counter["n"] += 1
+        yield f"Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2, 3])
+    mock_build_repo.pause_build = AsyncMock(return_value=True)
+    mock_build_repo.resume_build = AsyncMock(return_value=True)
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    # All audits fail → triggers pause after PAUSE_THRESHOLD
+    # Then resume with "abort" to end the build cleanly
+    async def _auto_resume():
+        """Wait for build to pause, then signal abort."""
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            bid = str(_BUILD_ID)
+            if bid in build_service._pause_events:
+                build_service._resume_actions[bid] = "abort"
+                build_service._pause_events[bid].set()
+                return
+            await asyncio.sleep(0.02)
+
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock,
+        return_value="FAIL",
+    ):
+        # Run both tasks concurrently
+        await asyncio.gather(
+            build_service._run_build(
+                _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+                "sk-ant-test", audit_llm_enabled=True,
+            ),
+            _auto_resume(),
+        )
+
+    # build_paused event should have been broadcast
+    pause_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_paused"
+    ]
+    assert len(pause_calls) >= 1
+    assert pause_calls[0][0][1]["payload"]["phase"] == "Phase 0"
+    assert pause_calls[0][0][1]["payload"]["loop_count"] == 3
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_pause_resume_retry(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build resumes with retry after pause, then completes."""
+    call_counter = {"n": 0}
+    audit_counter = {"n": 0}
+
+    async def _stream_gen(*args, **kwargs):
+        call_counter["n"] += 1
+        if call_counter["n"] <= 4:
+            yield f"Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+        else:
+            yield "Build complete."
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2, 3, 4])
+    mock_build_repo.pause_build = AsyncMock(return_value=True)
+    mock_build_repo.resume_build = AsyncMock(return_value=True)
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    async def _audit(*a, **k):
+        audit_counter["n"] += 1
+        # First 3 fail → pause, then 4th passes after resume
+        return "FAIL" if audit_counter["n"] <= 3 else "PASS"
+
+    async def _auto_resume():
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            bid = str(_BUILD_ID)
+            if bid in build_service._pause_events:
+                build_service._resume_actions[bid] = "retry"
+                build_service._pause_events[bid].set()
+                return
+            await asyncio.sleep(0.02)
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, side_effect=_audit):
+        await asyncio.gather(
+            build_service._run_build(
+                _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+                "sk-ant-test", audit_llm_enabled=True,
+            ),
+            _auto_resume(),
+        )
+
+    # Build should have completed (not failed)
+    complete_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_complete"
+    ]
+    assert len(complete_calls) >= 1
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_pause_skip(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build skips a phase after pause with skip action."""
+    call_counter = {"n": 0}
+
+    async def _stream_gen(*args, **kwargs):
+        call_counter["n"] += 1
+        if call_counter["n"] <= 3:
+            yield f"Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+        else:
+            yield "Build complete."
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2, 3])
+    mock_build_repo.pause_build = AsyncMock(return_value=True)
+    mock_build_repo.resume_build = AsyncMock(return_value=True)
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    async def _auto_resume():
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            bid = str(_BUILD_ID)
+            if bid in build_service._pause_events:
+                build_service._resume_actions[bid] = "skip"
+                build_service._pause_events[bid].set()
+                return
+            await asyncio.sleep(0.02)
+
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock, return_value="FAIL",
+    ):
+        await asyncio.gather(
+            build_service._run_build(
+                _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+                "sk-ant-test", audit_llm_enabled=True,
+            ),
+            _auto_resume(),
+        )
+
+    # build_resumed event with action=skip should have been broadcast
+    resume_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_resumed"
+    ]
+    assert len(resume_calls) >= 1
+    assert resume_calls[0][0][1]["payload"]["action"] == "skip"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_interjection_injected(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build picks up interjection messages between turns."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_pass
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    # Pre-populate interjection queue
+    queue = asyncio.Queue()
+    queue.put_nowait("please add logging")
+    build_service._interjection_queues[str(_BUILD_ID)] = queue
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # build_interjection event should have been broadcast
+    interject_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_interjection"
+    ]
+    assert len(interject_calls) >= 1
+    assert "please add logging" in interject_calls[0][0][1]["payload"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: resume_build (service public API, Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_resume_build_success(mock_build_repo, mock_project_repo):
+    """resume_build signals the pause event and returns updated build."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="paused")
+    )
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.get_build_by_id = AsyncMock(
+        return_value=_build(status="running")
+    )
+
+    # Set up a pause event to be signalled
+    event = asyncio.Event()
+    build_service._pause_events[str(_BUILD_ID)] = event
+
+    result = await build_service.resume_build(_PROJECT_ID, _USER_ID, action="retry")
+
+    assert event.is_set()
+    # The action is stored for _run_build to consume
+    assert build_service._resume_actions.get(str(_BUILD_ID)) == "retry"
+
+    # Cleanup
+    build_service._pause_events.pop(str(_BUILD_ID), None)
+    build_service._resume_actions.pop(str(_BUILD_ID), None)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_resume_build_not_paused(mock_build_repo, mock_project_repo):
+    """resume_build raises ValueError if build is not paused."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="running")
+    )
+
+    with pytest.raises(ValueError, match="No paused build"):
+        await build_service.resume_build(_PROJECT_ID, _USER_ID)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_resume_build_invalid_action(mock_build_repo, mock_project_repo):
+    """resume_build raises ValueError for invalid action."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="paused")
+    )
+
+    with pytest.raises(ValueError, match="Invalid action"):
+        await build_service.resume_build(_PROJECT_ID, _USER_ID, action="explode")
+
+
+# ---------------------------------------------------------------------------
+# Tests: interject_build (service public API, Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_interject_build_success(mock_build_repo, mock_project_repo):
+    """interject_build queues a message."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="running")
+    )
+
+    # Set up interjection queue
+    build_service._interjection_queues[str(_BUILD_ID)] = asyncio.Queue()
+
+    result = await build_service.interject_build(
+        _PROJECT_ID, _USER_ID, "add error handling"
+    )
+
+    assert result["status"] == "queued"
+    assert build_service._interjection_queues[str(_BUILD_ID)].qsize() == 1
+
+    # Cleanup
+    build_service._interjection_queues.pop(str(_BUILD_ID), None)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_interject_build_no_active(mock_build_repo, mock_project_repo):
+    """interject_build raises ValueError if no active build."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed")
+    )
+
+    with pytest.raises(ValueError, match="No active build"):
+        await build_service.interject_build(_PROJECT_ID, _USER_ID, "msg")
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_interject_build_no_queue(mock_build_repo, mock_project_repo):
+    """interject_build raises ValueError if queue not initialized."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="running")
+    )
+
+    # No queue set up
+    build_service._interjection_queues.pop(str(_BUILD_ID), None)
+
+    with pytest.raises(ValueError, match="queue not found"):
+        await build_service.interject_build(_PROJECT_ID, _USER_ID, "msg")
+
+
+# ---------------------------------------------------------------------------
+# Tests: cancel_build with paused status (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_cancel_paused_build(mock_build_repo, mock_project_repo, mock_manager):
+    """cancel_build can cancel a paused build."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="paused")
+    )
+    mock_build_repo.cancel_build = AsyncMock(return_value=True)
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.get_build_by_id = AsyncMock(
+        return_value=_build(status="cancelled")
+    )
+    mock_manager.send_to_user = AsyncMock()
+
+    # Set up pause event
+    event = asyncio.Event()
+    build_service._pause_events[str(_BUILD_ID)] = event
+
+    result = await build_service.cancel_build(_PROJECT_ID, _USER_ID)
+
+    assert result["status"] == "cancelled"
+    assert event.is_set()  # Pause event should be signalled
+
+    # Cleanup
+    build_service._pause_events.pop(str(_BUILD_ID), None)
+    build_service._resume_actions.pop(str(_BUILD_ID), None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: _pause_build helper (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_pause_build_helper(mock_build_repo, mock_manager):
+    """_pause_build persists pause state and broadcasts event."""
+    mock_build_repo.pause_build = AsyncMock(return_value=True)
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    await build_service._pause_build(
+        _BUILD_ID, _USER_ID, "Phase 2", 3, "test reason"
+    )
+
+    mock_build_repo.pause_build.assert_called_once_with(
+        _BUILD_ID, "test reason", "Phase 2"
+    )
+    # Should have created a pause event
+    assert str(_BUILD_ID) in build_service._pause_events
+    # Broadcast
+    pause_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_paused"
+    ]
+    assert len(pause_calls) == 1
+    assert pause_calls[0][0][1]["payload"]["phase"] == "Phase 2"
+    assert pause_calls[0][0][1]["payload"]["loop_count"] == 3
+
+    # Cleanup
+    build_service._pause_events.pop(str(_BUILD_ID), None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: PAUSE_THRESHOLD config (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+def test_pause_threshold_default():
+    """PAUSE_THRESHOLD defaults to 3."""
+    from app.config import settings as s
+    assert isinstance(s.PAUSE_THRESHOLD, int)
+    assert s.PAUSE_THRESHOLD >= 1
+
+
+def test_build_pause_timeout_default():
+    """BUILD_PAUSE_TIMEOUT_MINUTES defaults to 30."""
+    from app.config import settings as s
+    assert isinstance(s.BUILD_PAUSE_TIMEOUT_MINUTES, int)
+    assert s.BUILD_PAUSE_TIMEOUT_MINUTES >= 1

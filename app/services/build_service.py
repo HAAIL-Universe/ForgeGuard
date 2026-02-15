@@ -30,8 +30,8 @@ from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
-# Maximum consecutive loopback failures before stopping
-MAX_LOOP_COUNT = 3
+# Maximum consecutive loopback failures before pausing (overridden by settings.PAUSE_THRESHOLD)
+MAX_LOOP_COUNT = settings.PAUSE_THRESHOLD
 
 # Phase completion signal the builder emits
 PHASE_COMPLETE_SIGNAL = "=== PHASE SIGN-OFF: PASS ==="
@@ -210,12 +210,18 @@ def _compact_conversation(messages: list[dict]) -> list[dict]:
 # Active build tasks keyed by build_id
 _active_tasks: dict[str, asyncio.Task] = {}
 
+# Pause/resume coordination keyed by build_id
+_pause_events: dict[str, asyncio.Event] = {}
+_resume_actions: dict[str, str] = {}           # "retry" | "skip" | "abort" | "edit"
+_interjection_queues: dict[str, asyncio.Queue] = {}
+
 # Cost-per-token estimates (USD) keyed by model prefix -- updated as pricing changes
 _MODEL_PRICING: dict[str, tuple[Decimal, Decimal]] = {
     # (input $/token, output $/token)
     "claude-opus-4":       (Decimal("0.000015"),  Decimal("0.000075")),   # $15 / $75 per 1M
     "claude-sonnet-4":     (Decimal("0.000003"),  Decimal("0.000015")),   # $3 / $15 per 1M
-    "claude-haiku-4":      (Decimal("0.000001"),  Decimal("0.000005")),   # $1 / $5 per 1M
+    "claude-haiku-4":      (Decimal("0.000001"),  Decimal("0.000005")),   # $1 / $5 per 1M (legacy)
+    "claude-sonnet-4":     (Decimal("0.000003"),  Decimal("0.000015")),   # $3 / $15 per 1M
     "claude-3-5-sonnet":   (Decimal("0.000003"),  Decimal("0.000015")),   # $3 / $15 per 1M
 }
 # Fallback: Opus pricing (most expensive = safest default)
@@ -346,10 +352,16 @@ async def cancel_build(project_id: UUID, user_id: UUID) -> dict:
         raise ValueError("Project not found")
 
     latest = await build_repo.get_latest_build_for_project(project_id)
-    if not latest or latest["status"] not in ("pending", "running"):
+    if not latest or latest["status"] not in ("pending", "running", "paused"):
         raise ValueError("No active build to cancel")
 
     build_id = latest["id"]
+
+    # If paused, signal the pause event to unblock the wait
+    event = _pause_events.get(str(build_id))
+    if event:
+        _resume_actions[str(build_id)] = "abort"
+        event.set()
 
     # Cancel the asyncio task if running
     task = _active_tasks.pop(str(build_id), None)
@@ -373,6 +385,103 @@ async def cancel_build(project_id: UUID, user_id: UUID) -> dict:
 
     updated = await build_repo.get_build_by_id(build_id)
     return updated
+
+
+async def resume_build(
+    project_id: UUID,
+    user_id: UUID,
+    action: str = "retry",
+) -> dict:
+    """Resume a paused build.
+
+    Args:
+        project_id: The project whose build to resume.
+        user_id: The authenticated user (ownership check).
+        action: One of 'retry', 'skip', 'abort', 'edit'.
+
+    Returns:
+        The updated build record.
+
+    Raises:
+        ValueError: If project not found, not owned, or no paused build.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest or latest["status"] != "paused":
+        raise ValueError("No paused build to resume")
+
+    if action not in ("retry", "skip", "abort", "edit"):
+        raise ValueError(f"Invalid action: {action}. Must be retry, skip, abort, or edit.")
+
+    build_id = latest["id"]
+
+    # Store the action and signal the pause event
+    _resume_actions[str(build_id)] = action
+    event = _pause_events.get(str(build_id))
+    if event:
+        event.set()
+    else:
+        raise ValueError("Build pause state not found — build may have already resumed")
+
+    await build_repo.append_build_log(
+        build_id,
+        f"Build resumed with action: {action}",
+        source="system", level="info",
+    )
+
+    # Give a tick for the background task to process
+    await asyncio.sleep(0.05)
+
+    updated = await build_repo.get_build_by_id(build_id)
+    return updated
+
+
+async def interject_build(
+    project_id: UUID,
+    user_id: UUID,
+    message: str,
+) -> dict:
+    """Inject a user message into an active build.
+
+    The message will be prepended to the next builder turn as a
+    [User interjection] block.
+
+    Args:
+        project_id: The project whose build to interject.
+        user_id: The authenticated user (ownership check).
+        message: The interjection text.
+
+    Returns:
+        Acknowledgement dict.
+
+    Raises:
+        ValueError: If project not found, not owned, or no active build.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest or latest["status"] not in ("running", "paused"):
+        raise ValueError("No active build to interject")
+
+    build_id = latest["id"]
+
+    # Ensure the interjection queue exists
+    queue = _interjection_queues.get(str(build_id))
+    if queue is None:
+        raise ValueError("Build interjection queue not found")
+
+    queue.put_nowait(message)
+
+    return {
+        "status": "queued",
+        "build_id": str(build_id),
+        "message": message[:200],
+    }
 
 
 async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
@@ -465,6 +574,10 @@ async def _run_build(
             "status": "running",
             "phase": "Phase 0",
         })
+
+        # Initialize interjection queue for this build (keep existing if set)
+        if str(build_id) not in _interjection_queues:
+            _interjection_queues[str(build_id)] = asyncio.Queue()
 
         # Build the directive from contracts
         directive = _build_directive(contracts)
@@ -649,6 +762,33 @@ async def _run_build(
             # Turn complete — add assistant response to conversation history
             messages.append({"role": "assistant", "content": turn_text})
 
+            # Check for user interjections between turns
+            queue = _interjection_queues.get(str(build_id))
+            if queue and not queue.empty():
+                interjections: list[str] = []
+                while not queue.empty():
+                    try:
+                        interjections.append(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                if interjections:
+                    combined = "\n".join(interjections)
+                    messages.append({
+                        "role": "user",
+                        "content": f"[User interjection]\n{combined}\n\nPlease incorporate this feedback and continue.",
+                    })
+                    await build_repo.append_build_log(
+                        build_id,
+                        f"User interjection: {combined[:200]}",
+                        source="user", level="info",
+                    )
+                    await _broadcast_build_event(
+                        user_id, build_id, "build_interjection", {
+                            "message": combined,
+                            "injected_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+
             # Update total token count
             total_tokens_all_turns += usage.input_tokens + usage.output_tokens
 
@@ -750,12 +890,69 @@ async def _run_build(
                     )
 
                     if phase_loop_count >= MAX_LOOP_COUNT:
-                        await _fail_build(
-                            build_id,
-                            user_id,
-                            f"RISK_EXCEEDS_SCOPE: {phase_loop_count} consecutive audit failures on {current_phase}",
+                        # Pause instead of failing -- let user decide
+                        await _pause_build(
+                            build_id, user_id, current_phase,
+                            phase_loop_count,
+                            f"{phase_loop_count} consecutive audit failures on {current_phase}",
                         )
-                        return
+
+                        # Wait for user to resume (or timeout → abort)
+                        event = _pause_events.get(str(build_id))
+                        if event:
+                            try:
+                                await asyncio.wait_for(
+                                    event.wait(),
+                                    timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                                )
+                            except asyncio.TimeoutError:
+                                await _fail_build(
+                                    build_id, user_id,
+                                    f"RISK_EXCEEDS_SCOPE: pause timed out after "
+                                    f"{settings.BUILD_PAUSE_TIMEOUT_MINUTES}m on {current_phase}",
+                                )
+                                return
+
+                        action = _resume_actions.pop(str(build_id), "retry")
+                        _pause_events.pop(str(build_id), None)
+
+                        # Apply resumed DB status
+                        await build_repo.resume_build(build_id)
+
+                        if action == "abort":
+                            await _fail_build(
+                                build_id, user_id,
+                                f"Build aborted by user during pause on {current_phase}",
+                            )
+                            return
+                        elif action == "skip":
+                            # Skip this phase — reset and advance
+                            await build_repo.append_build_log(
+                                build_id,
+                                f"Phase {current_phase} skipped by user",
+                                source="system", level="warn",
+                            )
+                            await _broadcast_build_event(
+                                user_id, build_id, "build_resumed", {
+                                    "action": "skip",
+                                    "phase": current_phase,
+                                }
+                            )
+                            phase_loop_count = 0
+                            accumulated_text = ""
+                            continue
+                        else:
+                            # "retry" or "edit" — loop back for another attempt
+                            await _broadcast_build_event(
+                                user_id, build_id, "build_resumed", {
+                                    "action": action,
+                                    "phase": current_phase,
+                                }
+                            )
+                            phase_loop_count = 0
+                            # (feedback message already appended above)
+                            accumulated_text = ""
+                            continue
 
                     # Record cost for this failed attempt
                     await _record_phase_cost(build_id, current_phase, usage)
@@ -841,7 +1038,11 @@ async def _run_build(
     except Exception as exc:
         await _fail_build(build_id, user_id, str(exc))
     finally:
-        _active_tasks.pop(str(build_id), None)
+        bid = str(build_id)
+        _active_tasks.pop(bid, None)
+        _pause_events.pop(bid, None)
+        _resume_actions.pop(bid, None)
+        _interjection_queues.pop(bid, None)
         # Cleanup temp working dir for GitHub targets on failure/cancel
         # (keep on success so user can inspect; they'll be cleaned up later)
 
@@ -1087,11 +1288,11 @@ async def _run_inline_audit(
             f"VERDICT: FLAGS FOUND\n"
         )
 
-        # Call the auditor LLM (Haiku — cheap and fast)
+        # Call the auditor LLM (Sonnet — accurate and fast)
         from app.clients.llm_client import chat as llm_chat
         result = await llm_chat(
             api_key=api_key,
-            model=settings.LLM_QUESTIONNAIRE_MODEL,  # Haiku
+            model=settings.LLM_QUESTIONNAIRE_MODEL,  # Sonnet
             system_prompt=auditor_system,
             messages=[{"role": "user", "content": user_message}],
             max_tokens=4096,
@@ -1150,6 +1351,33 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
         "id": str(build_id),
         "status": "failed",
         "error_detail": detail,
+    })
+
+
+async def _pause_build(
+    build_id: UUID,
+    user_id: UUID,
+    phase: str,
+    loop_count: int,
+    reason: str,
+) -> None:
+    """Pause a build, persist state, and broadcast event."""
+    await build_repo.pause_build(build_id, reason, phase)
+
+    # Set up the pause event for the background task to wait on
+    event = asyncio.Event()
+    _pause_events[str(build_id)] = event
+
+    await build_repo.append_build_log(
+        build_id,
+        f"Build paused: {reason}",
+        source="system", level="warn",
+    )
+    await _broadcast_build_event(user_id, build_id, "build_paused", {
+        "phase": phase,
+        "loop_count": loop_count,
+        "audit_findings": reason,
+        "options": ["retry", "skip", "abort", "edit"],
     })
 
 

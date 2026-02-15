@@ -226,6 +226,8 @@ def test_build_endpoints_require_auth(client):
     endpoints = [
         ("POST", f"/projects/{pid}/build"),
         ("POST", f"/projects/{pid}/build/cancel"),
+        ("POST", f"/projects/{pid}/build/resume"),
+        ("POST", f"/projects/{pid}/build/interject"),
         ("GET", f"/projects/{pid}/build/status"),
         ("GET", f"/projects/{pid}/build/logs"),
         ("GET", f"/projects/{pid}/build/summary"),
@@ -451,6 +453,140 @@ def test_get_build_file_content_not_found(mock_get_user, mock_content, client):
     resp = client.get(
         f"/projects/{_PROJECT_ID}/build/files/nonexistent.py",
         headers=_auth_header(),
+    )
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /projects/{id}/build/resume (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.resume_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_resume_build(mock_get_user, mock_resume, client):
+    """POST /projects/{id}/build/resume resumes a paused build."""
+    mock_get_user.return_value = _USER
+    mock_resume.return_value = _build(status="running")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/resume",
+        headers=_auth_header(),
+        json={"action": "retry"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "running"
+    mock_resume.assert_called_once_with(
+        _PROJECT_ID, _USER["id"], action="retry",
+    )
+
+
+@patch("app.api.routers.builds.build_service.resume_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_resume_build_not_paused(mock_get_user, mock_resume, client):
+    """POST /projects/{id}/build/resume returns 400 if not paused."""
+    mock_get_user.return_value = _USER
+    mock_resume.side_effect = ValueError("No paused build to resume")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/resume",
+        headers=_auth_header(),
+        json={"action": "retry"},
+    )
+
+    assert resp.status_code == 400
+
+
+@patch("app.api.routers.builds.build_service.resume_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_resume_build_skip(mock_get_user, mock_resume, client):
+    """POST /projects/{id}/build/resume with skip action."""
+    mock_get_user.return_value = _USER
+    mock_resume.return_value = _build(status="running")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/resume",
+        headers=_auth_header(),
+        json={"action": "skip"},
+    )
+
+    assert resp.status_code == 200
+    mock_resume.assert_called_once_with(
+        _PROJECT_ID, _USER["id"], action="skip",
+    )
+
+
+@patch("app.api.routers.builds.build_service.resume_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_resume_build_abort(mock_get_user, mock_resume, client):
+    """POST /projects/{id}/build/resume with abort action."""
+    mock_get_user.return_value = _USER
+    mock_resume.return_value = _build(status="failed")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/resume",
+        headers=_auth_header(),
+        json={"action": "abort"},
+    )
+
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /projects/{id}/build/interject (Phase 14)
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.interject_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_interject_build(mock_get_user, mock_interject, client):
+    """POST /projects/{id}/build/interject sends a message."""
+    mock_get_user.return_value = _USER
+    mock_interject.return_value = {
+        "status": "queued",
+        "build_id": str(_BUILD_ID),
+        "message": "fix the auth module",
+    }
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/interject",
+        headers=_auth_header(),
+        json={"message": "fix the auth module"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "queued"
+
+
+@patch("app.api.routers.builds.build_service.interject_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_interject_build_no_active(mock_get_user, mock_interject, client):
+    """POST /projects/{id}/build/interject returns 400 if no active build."""
+    mock_get_user.return_value = _USER
+    mock_interject.side_effect = ValueError("No active build to interject")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/interject",
+        headers=_auth_header(),
+        json={"message": "hello"},
+    )
+
+    assert resp.status_code == 400
+
+
+@patch("app.api.routers.builds.build_service.interject_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_interject_build_not_found(mock_get_user, mock_interject, client):
+    """POST /projects/{id}/build/interject returns 404 for missing project."""
+    mock_get_user.return_value = _USER
+    mock_interject.side_effect = ValueError("Project not found")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/interject",
+        headers=_auth_header(),
+        json={"message": "hello"},
     )
 
     assert resp.status_code == 404

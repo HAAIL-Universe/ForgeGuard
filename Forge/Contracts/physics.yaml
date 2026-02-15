@@ -169,6 +169,12 @@ paths:
         payload: PlanTaskUpdate
         type: "build_turn"
         payload: BuildTurnInfo
+        type: "build_paused"
+        payload: BuildPauseEvent
+        type: "build_resumed"
+        payload: BuildResumeEvent
+        type: "build_interjection"
+        payload: BuildInterjectionEvent
 
   # -- Projects (Phase 8) -------------------------------------------
 
@@ -294,6 +300,26 @@ paths:
       auth: bearer
       response:
         id: uuid
+        status: string
+
+  /projects/{project_id}/build/resume:
+    post:
+      summary: "Resume a paused build with an action"
+      auth: bearer
+      request:
+        action: string (required, enum: retry, retry_with_message, skip, abort)
+        message: string (optional, user guidance for the builder)
+      response:
+        id: uuid
+        status: string
+
+  /projects/{project_id}/build/interject:
+    post:
+      summary: "Send a message to the builder mid-build"
+      auth: bearer
+      request:
+        message: string (required)
+      response:
         status: string
 
   /projects/{project_id}/build/status:
@@ -500,3 +526,17 @@ schemas:
     turn: integer
     total_tokens: integer
     compacted: boolean
+
+  BuildPauseEvent:
+    phase: string
+    loop_count: integer
+    audit_findings: string
+    options: string[]
+
+  BuildResumeEvent:
+    action: string
+    phase: string
+
+  BuildInterjectionEvent:
+    message: string
+    injected_at: datetime

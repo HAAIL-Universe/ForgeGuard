@@ -133,7 +133,7 @@ function Settings() {
           </h3>
           <p style={{ margin: '0 0 14px', fontSize: '0.75rem', color: '#64748B', lineHeight: 1.5 }}>
             Builds use Claude Opus and run on your own Anthropic API key.
-            Planning, questionnaires, and audits are free — powered by Haiku on us.
+            Builds use Claude Opus and run on your own Anthropic API key.
           </p>
 
           {hasKey ? (
@@ -243,7 +243,7 @@ function Settings() {
               </h3>
               <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B', lineHeight: 1.5, maxWidth: 420 }}>
                 After each build phase a separate LLM reviews the output for contract
-                compliance, architectural drift, and semantic errors. Powered by Haiku (free).
+                compliance, architectural drift, and semantic errors. Powered by Sonnet.
               </p>
             </div>
             <button
@@ -320,8 +320,8 @@ function Settings() {
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: '#0F172A', borderRadius: '6px' }}>
               <span style={{ color: '#94A3B8' }}>Questionnaire</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: '#22C55E', fontWeight: 600 }}>claude-haiku-4-5</span>
-                <span style={{ color: '#64748B', fontSize: '0.65rem' }}>FREE</span>
+                <span style={{ color: '#3B82F6', fontWeight: 600 }}>claude-sonnet-4-5</span>
+                <span style={{ color: '#64748B', fontSize: '0.65rem' }}>BYOK</span>
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: '#0F172A', borderRadius: '6px' }}>
@@ -332,10 +332,17 @@ function Settings() {
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: '#0F172A', borderRadius: '6px' }}>
+              <span style={{ color: '#94A3B8' }}>Planner</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: '#3B82F6', fontWeight: 600 }}>claude-sonnet-4-5</span>
+                <span style={{ color: '#64748B', fontSize: '0.65rem' }}>BYOK</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: '#0F172A', borderRadius: '6px' }}>
               <span style={{ color: '#94A3B8' }}>Auditor</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: '#22C55E', fontWeight: 600 }}>claude-haiku-4-5</span>
-                <span style={{ color: '#64748B', fontSize: '0.65rem' }}>FREE</span>
+                <span style={{ color: '#3B82F6', fontWeight: 600 }}>claude-sonnet-4-5</span>
+                <span style={{ color: '#64748B', fontSize: '0.65rem' }}>BYOK</span>
               </div>
             </div>
           </div>

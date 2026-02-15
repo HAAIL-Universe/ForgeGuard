@@ -44,7 +44,7 @@ class Settings:
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
     LLM_QUESTIONNAIRE_MODEL: str = os.getenv(
-        "LLM_QUESTIONNAIRE_MODEL", "claude-haiku-4-5"
+        "LLM_QUESTIONNAIRE_MODEL", "claude-sonnet-4-5"
     )
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -52,6 +52,13 @@ class Settings:
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "")  # "openai" | "anthropic" | auto
     LLM_BUILDER_MODEL: str = os.getenv(
         "LLM_BUILDER_MODEL", "claude-opus-4-6"
+    )
+    LLM_PLANNER_MODEL: str = os.getenv(
+        "LLM_PLANNER_MODEL", "claude-sonnet-4-5"
+    )
+    PAUSE_THRESHOLD: int = int(os.getenv("PAUSE_THRESHOLD", "3"))
+    BUILD_PAUSE_TIMEOUT_MINUTES: int = int(
+        os.getenv("BUILD_PAUSE_TIMEOUT_MINUTES", "30")
     )
 
 
