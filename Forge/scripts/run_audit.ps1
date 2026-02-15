@@ -221,7 +221,11 @@ try {
       $anyFail = $true
     } else {
       $dlContent = Get-Content $diffLog -Raw
-      if ($dlContent -match '(?i)TODO:') {
+      # Only scan the header portion (above diff hunks) so that git diff
+      # output containing prior audit results doesn't cause false positives.
+      $hunksIdx = $dlContent.IndexOf('## Minimal Diff Hunks')
+      $dlHeader = if ($hunksIdx -ge 0) { $dlContent.Substring(0, $hunksIdx) } else { $dlContent }
+      if ($dlHeader -match '(?i)TODO:') {
         $results["A5"] = "FAIL -- updatedifflog.md contains TODO: placeholders."
         $anyFail = $true
       } else {

@@ -542,3 +542,103 @@ AM tests/test_audit_runner.py
  3 files changed, 94 insertions(+), 10 deletions(-)
 ```
 
+## Test Run 2026-02-15T02:21:05Z
+- Status: PASS
+- Start: 2026-02-15T02:21:05Z
+- End: 2026-02-15T02:21:19Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: 11cee3483d7b9f4bf8e66f7af1ff443e01654e4b
+- compileall exit: 0
+- pytest exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+## master...origin/master
+ M Forge/evidence/updatedifflog.md
+```
+- git diff --stat:
+```
+ Forge/evidence/updatedifflog.md | 6757 +--------------------------------------
+ 1 file changed, 10 insertions(+), 6747 deletions(-)
+```
+
+## Test Run 2026-02-15T02:21:41Z
+- Status: PASS
+- Start: 2026-02-15T02:21:41Z
+- End: 2026-02-15T02:21:54Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: 11cee3483d7b9f4bf8e66f7af1ff443e01654e4b
+- import_sanity exit: 0
+- pytest exit: 0
+- compileall exit: 0
+- git status -sb:
+```
+## master...origin/master
+ M Forge/evidence/test_runs.md
+ M Forge/evidence/test_runs_latest.md
+ M Forge/evidence/updatedifflog.md
+```
+- git diff --stat:
+```
+ Forge/evidence/test_runs.md        |   21 +
+ Forge/evidence/test_runs_latest.md |   26 +-
+ Forge/evidence/updatedifflog.md    | 6757 +-----------------------------------
+ 3 files changed, 38 insertions(+), 6766 deletions(-)
+```
+
+## Test Run 2026-02-15T02:26:18Z
+- Status: PASS
+- Start: 2026-02-15T02:26:18Z
+- End: 2026-02-15T02:26:31Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: 11cee3483d7b9f4bf8e66f7af1ff443e01654e4b
+- compileall exit: 0
+- pytest exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+## master...origin/master
+M  Forge/evidence/audit_ledger.md
+M  Forge/evidence/test_runs.md
+M  Forge/evidence/test_runs_latest.md
+ M Forge/evidence/updatedifflog.md
+M  Forge/scripts/run_audit.ps1
+M  app/audit/runner.py
+M  tests/test_audit_runner.py
+```
+- git diff --stat:
+```
+ Forge/evidence/updatedifflog.md | 13442 +++++++++++++++++++-------------------
+ 1 file changed, 6824 insertions(+), 6618 deletions(-)
+```
+
+## Test Run 2026-02-15T02:28:50Z
+- Status: PASS
+- Start: 2026-02-15T02:28:50Z
+- End: 2026-02-15T02:29:04Z
+- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
+- Branch: master
+- HEAD: 11cee3483d7b9f4bf8e66f7af1ff443e01654e4b
+- compileall exit: 0
+- pytest exit: 0
+- import_sanity exit: 0
+- git status -sb:
+```
+## master...origin/master
+M  Forge/evidence/audit_ledger.md
+M  Forge/evidence/test_runs.md
+M  Forge/evidence/test_runs_latest.md
+M  Forge/evidence/updatedifflog.md
+M  Forge/scripts/overwrite_diff_log.ps1
+M  Forge/scripts/run_audit.ps1
+M  app/audit/runner.py
+M  tests/test_audit_runner.py
+```
+- git diff --stat:
+```
+
+```
+

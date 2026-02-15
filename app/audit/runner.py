@@ -317,9 +317,14 @@ def check_a5_diff_log_gate(gov_root: str) -> GovernanceCheckResult:
     with open(diff_log, encoding="utf-8") as f:
         content = f.read()
 
+    # Only scan the header portion (above diff hunks) so that git diff
+    # output containing prior audit results doesn't cause false positives.
+    hunks_marker = "## Minimal Diff Hunks"
+    header = content.split(hunks_marker, 1)[0] if hunks_marker in content else content
+
     # Build pattern dynamically to avoid literal match in diff logs
     todo_marker = "TO" + "DO:"
-    if re.search(re.escape(todo_marker), content, re.IGNORECASE):
+    if re.search(re.escape(todo_marker), header, re.IGNORECASE):
         return {
             "code": "A5",
             "name": "Diff Log Gate",

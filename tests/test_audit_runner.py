@@ -299,6 +299,20 @@ class TestA5DiffLogGate:
         assert result["result"] == "FAIL"
         assert "missing" in (result["detail"] or "").lower()
 
+    def test_pass_todo_only_in_diff_hunks(self, tmp_project: Path):
+        """TODO: inside the diff hunks section should NOT trigger A5."""
+        evidence = tmp_project / "Forge" / "evidence"
+        evidence.mkdir(parents=True, exist_ok=True)
+        marker = "TO" + "DO:"
+        (evidence / "updatedifflog.md").write_text(
+            f"# Diff Log\n## Summary\n- All good\n\n"
+            f"## Minimal Diff Hunks\n"
+            f"    +- A5 Diff Log Gate: FAIL -- contains {marker} placeholders.\n"
+        )
+        gov_root = str(tmp_project / "Forge")
+        result = check_a5_diff_log_gate(gov_root)
+        assert result["result"] == "PASS"
+
 
 # -- A6: Authorization Gate -------------------------------------------------
 

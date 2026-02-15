@@ -204,6 +204,7 @@ if ($DryRun) {
 }
 Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
 Write-Host "  ║  Ctrl+X  = manual audit trigger                  ║" -ForegroundColor White
+Write-Host "  ║  Ctrl+P  = bypass (force PASS with reason)        ║" -ForegroundColor Yellow
 Write-Host "  ║  Ctrl+C  = stop watcher                         ║" -ForegroundColor DarkGray
 Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
@@ -214,6 +215,7 @@ $lastTriggerTime = [DateTime]::MinValue
 $auditCount = 0
 $passCount = 0
 $failCount = 0
+$bypassCount = 0
 
 # ── File watcher setup ───────────────────────────────────────────────────────
 
@@ -237,9 +239,96 @@ try {
     # Use WaitForChanged with a timeout so Ctrl+C works
     $result = $watcher.WaitForChanged([System.IO.WatcherChangeTypes]::Changed, 1000)
 
-    # Check for manual trigger keypress (Ctrl+X)
+    # Check for hotkey presses (Ctrl+P bypass, Ctrl+X manual trigger)
     if ([Console]::KeyAvailable) {
       $key = [Console]::ReadKey($true)
+      if ($key.Modifiers -band [ConsoleModifiers]::Control -and $key.Key -eq [ConsoleKey]::P) {
+        # ── Ctrl+P: Bypass (force PASS) ──
+        Write-Host ""
+        Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Yellow
+        Warn "BYPASS REQUESTED: Ctrl+P pressed"
+        Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor Yellow
+
+        # Get reason from user
+        Write-Host ""
+        Write-Host "  Enter bypass reason (required):" -ForegroundColor Yellow -NoNewline
+        Write-Host " " -NoNewline
+        $bypassReason = Read-Host
+
+        if (-not $bypassReason -or $bypassReason.Trim() -eq "") {
+          Bad "Bypass cancelled -- reason is required."
+          Write-Host ""
+          Dim "Resuming watch..."
+          continue
+        }
+
+        $diffLogPath = Join-Path $resolvedWatchPath $Trigger
+        $phase = ParseDiffLogForPhase $diffLogPath
+        $claimedFiles = @(ParseDiffLogForFiles $diffLogPath)
+        $claimedFilesStr = if ($claimedFiles.Count -gt 0) { $claimedFiles -join ", " } else { "(none parsed)" }
+        $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+        # Determine iteration number from ledger
+        $auditLedger = Join-Path $govRoot "evidence" "audit_ledger.md"
+        $iteration = 1
+        if (Test-Path $auditLedger) {
+          $ledgerText = Get-Content $auditLedger -Raw
+          $iterMatches = [regex]::Matches($ledgerText, '(?m)^## Audit Entry:.*Iteration (\d+)')
+          if ($iterMatches.Count -gt 0) {
+            $lastIter = [int]$iterMatches[$iterMatches.Count - 1].Groups[1].Value
+            $iteration = $lastIter + 1
+          }
+        }
+
+        # Append BYPASS entry to audit ledger
+        $bypassEntry = @"
+
+---
+## Audit Entry: $phase -- Iteration $iteration
+Timestamp: $ts
+AEM Cycle: $phase
+Outcome: BYPASS (manual override)
+Bypass Reason: $($bypassReason.Trim())
+
+### Checklist
+- All checks: BYPASSED by operator via Ctrl+P in watch_audit.ps1
+
+### Files Changed
+- $($claimedFilesStr -replace ', ', "`n- ")
+
+### Notes
+This entry was created by the watcher bypass (Ctrl+P), not by run_audit.ps1.
+The operator determined the audit failure was not a genuine code issue.
+"@
+
+        if (-not (Test-Path $auditLedger)) {
+          $header = @"
+# Audit Ledger -- Forge AEM
+Append-only record of all Internal Audit Pass results.
+Do not overwrite or truncate this file.
+"@
+          New-Item -Path $auditLedger -ItemType File -Force | Out-Null
+          Set-Content -Path $auditLedger -Value $header -Encoding UTF8
+        }
+
+        Add-Content -Path $auditLedger -Value $bypassEntry -Encoding UTF8
+
+        $bypassCount++
+        $passCount++
+        $auditCount++
+
+        Good "BYPASS #$bypassCount RECORDED (Iteration $iteration): $($bypassReason.Trim())"
+        Info "Appended BYPASS entry to audit_ledger.md"
+
+        Write-Host ""
+        Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor DarkCyan
+        Write-Host "  │  Audits: $auditCount   Passed: $passCount   Failed: $failCount   Bypassed: $bypassCount" -ForegroundColor $(if ($failCount -gt 0) { "Yellow" } else { "Green" })
+        Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
+        Write-Host ""
+        Dim "Resuming watch..."
+        continue
+      }
+
       if ($key.Modifiers -band [ConsoleModifiers]::Control -and $key.Key -eq [ConsoleKey]::X) {
         Write-Host ""
         Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Magenta

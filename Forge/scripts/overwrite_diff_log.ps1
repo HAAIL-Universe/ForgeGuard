@@ -107,12 +107,17 @@ try {
       Err "Finalize failed: evidence/updatedifflog.md not found at $logPath"
       exit 1
     }
-    $todoMatches = Select-String -Path $logPath -Pattern "TODO:" -SimpleMatch -ErrorAction SilentlyContinue
-    if ($todoMatches) {
-      Err "Finalize failed: TODO placeholders remain in diff log."
+    # Only scan the header portion (above diff hunks) so that git diff
+    # output containing prior audit results doesn't cause false positives.
+    $dlContent = Get-Content $logPath -Raw
+    $hunksIdx = $dlContent.IndexOf('## Minimal Diff Hunks')
+    $dlHeader = if ($hunksIdx -ge 0) { $dlContent.Substring(0, $hunksIdx) } else { $dlContent }
+    $todoMatches = [regex]::Matches($dlHeader, '(?i)TODO:')
+    if ($todoMatches.Count -gt 0) {
+      Err "Finalize failed: TODO placeholders remain in diff log header."
       exit 1
     }
-    Info "Finalize passed: no TODO placeholders found."
+    Info "Finalize passed: no TODO placeholders found in header."
     exit 0
   }
 
@@ -173,9 +178,6 @@ try {
   $out.Add("## git status -sb")
   $statusIndented | ForEach-Object { $out.Add($_) }
   $out.Add("")
-  $out.Add("## Minimal Diff Hunks")
-  $patchIndented | ForEach-Object { $out.Add($_) }
-  $out.Add("")
   $out.Add("## Verification")
   $verificationLines | ForEach-Object { $out.Add($_) }
   $out.Add("")
@@ -184,6 +186,9 @@ try {
   $out.Add("")
   $out.Add("## Next Steps")
   $nextStepsLines | ForEach-Object { $out.Add($_) }
+  $out.Add("")
+  $out.Add("## Minimal Diff Hunks")
+  $patchIndented | ForEach-Object { $out.Add($_) }
   $out.Add("")
 
   $out | Out-File -LiteralPath $logPath -Encoding utf8
