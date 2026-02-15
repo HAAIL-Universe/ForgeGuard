@@ -179,6 +179,8 @@ paths:
         payload: BuildResumeEvent
         type: "build_interjection"
         payload: BuildInterjectionEvent
+        type: "recovery_plan"
+        payload: RecoveryPlanEvent
 
   # -- Projects (Phase 8) -------------------------------------------
 
@@ -557,3 +559,7 @@ schemas:
   BuildInterjectionEvent:
     message: string
     injected_at: datetime
+
+  RecoveryPlanEvent:
+    phase: string
+    plan_text: string

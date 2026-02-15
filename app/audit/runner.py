@@ -131,6 +131,16 @@ def check_a1_scope_compliance(
     claimed: list[str], project_root: str
 ) -> GovernanceCheckResult:
     """A1: Verify git diff matches claimed files exactly."""
+    # Governance files that are always allowed to change (updated by
+    # audit scripts, diff-log helpers, and phase planning).
+    _GOVERNANCE_ALLOWLIST = {
+        "Forge/Contracts/phases.md",
+        "Forge/evidence/audit_ledger.md",
+        "Forge/evidence/updatedifflog.md",
+        "Forge/evidence/test_runs_latest.md",
+        "Forge/evidence/test_runs.md",
+    }
+
     rc_staged, staged = _git("diff", "--cached", "--name-only", cwd=project_root)
     rc_unstaged, unstaged = _git("diff", "--name-only", cwd=project_root)
 
@@ -145,7 +155,7 @@ def check_a1_scope_compliance(
         )
 
     claimed_set = set(claimed)
-    unclaimed = diff_files - claimed_set
+    unclaimed = diff_files - claimed_set - _GOVERNANCE_ALLOWLIST
     phantom = claimed_set - diff_files
 
     if unclaimed or phantom:

@@ -498,6 +498,18 @@ function BuildProgress() {
             break;
           }
 
+          case 'recovery_plan': {
+            const planPhase = payload.phase as string;
+            const planText = (payload.plan_text ?? '') as string;
+            if (planText) {
+              addActivity(
+                `Recovery plan for ${planPhase}:\n${planText.slice(0, 500)}${planText.length > 500 ? '…' : ''}`,
+                'warn',
+              );
+            }
+            break;
+          }
+
           case 'file_created': {
             const filePath = (payload.path ?? '') as string;
             const sizeBytes = (payload.size_bytes ?? 0) as number;

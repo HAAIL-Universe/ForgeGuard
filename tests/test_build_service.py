@@ -294,7 +294,7 @@ async def test_run_inline_audit(mock_build_repo):
         _BUILD_ID, "Phase 1", "builder output", _contracts(), "sk-ant-test", False
     )
 
-    assert result == "PASS"
+    assert result == ("PASS", "")
     mock_build_repo.append_build_log.assert_called()
 
 
@@ -310,7 +310,7 @@ async def test_run_inline_audit_enabled_no_prompt(mock_build_repo, tmp_path, mon
         _BUILD_ID, "Phase 1", "output", _contracts(), "sk-ant-test", True
     )
 
-    assert result == "PASS"
+    assert result == ("PASS", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1010,7 +1010,7 @@ async def test_run_build_multi_turn_plan_detected(
     mock_manager.send_to_user = AsyncMock()
 
     # Mock audit to pass
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
@@ -1062,11 +1062,15 @@ async def test_run_build_multi_turn_audit_feedback(
     mock_manager.send_to_user = AsyncMock()
 
     # First audit fails, second passes, then build finishes on turn 3
-    audit_returns = iter(["FAIL", "PASS"])
+    audit_returns = iter([("FAIL", "Audit found issues"), ("PASS", "")])
     with patch.object(
         build_service, "_run_inline_audit",
         new_callable=AsyncMock,
         side_effect=lambda *a, **k: next(audit_returns),
+    ), patch.object(
+        build_service, "_run_recovery_planner",
+        new_callable=AsyncMock,
+        return_value="Mocked remediation plan",
     ):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
@@ -1122,7 +1126,11 @@ async def test_run_build_multi_turn_max_failures(
     with patch.object(
         build_service, "_run_inline_audit",
         new_callable=AsyncMock,
-        return_value="FAIL",
+        return_value=("FAIL", "Audit found issues"),
+    ), patch.object(
+        build_service, "_run_recovery_planner",
+        new_callable=AsyncMock,
+        return_value="Mocked remediation plan",
     ):
         await asyncio.gather(
             build_service._run_build(
@@ -1168,7 +1176,7 @@ async def test_run_build_turn_event_broadcast(
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
@@ -1206,7 +1214,7 @@ async def test_run_build_task_done_broadcast(
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
@@ -1263,7 +1271,7 @@ async def test_run_build_context_compaction(
     with patch.object(
         build_service, "_run_inline_audit",
         new_callable=AsyncMock,
-        return_value="PASS",
+        return_value=("PASS", ""),
     ):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
@@ -1328,7 +1336,11 @@ async def test_run_build_pauses_at_threshold(
     with patch.object(
         build_service, "_run_inline_audit",
         new_callable=AsyncMock,
-        return_value="FAIL",
+        return_value=("FAIL", "Audit found issues"),
+    ), patch.object(
+        build_service, "_run_recovery_planner",
+        new_callable=AsyncMock,
+        return_value="Mocked remediation plan",
     ):
         # Run both tasks concurrently
         await asyncio.gather(
@@ -1385,7 +1397,7 @@ async def test_run_build_pause_resume_retry(
     async def _audit(*a, **k):
         audit_counter["n"] += 1
         # First 3 fail → pause, then 4th passes after resume
-        return "FAIL" if audit_counter["n"] <= 3 else "PASS"
+        return ("FAIL", "Audit found issues") if audit_counter["n"] <= 3 else ("PASS", "")
 
     async def _auto_resume():
         await asyncio.sleep(0.05)
@@ -1397,7 +1409,8 @@ async def test_run_build_pause_resume_retry(
                 return
             await asyncio.sleep(0.02)
 
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, side_effect=_audit):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, side_effect=_audit), \
+         patch.object(build_service, "_run_recovery_planner", new_callable=AsyncMock, return_value="Mocked remediation"):
         await asyncio.gather(
             build_service._run_build(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
@@ -1458,7 +1471,10 @@ async def test_run_build_pause_skip(
 
     with patch.object(
         build_service, "_run_inline_audit",
-        new_callable=AsyncMock, return_value="FAIL",
+        new_callable=AsyncMock, return_value=("FAIL", "Audit found issues"),
+    ), patch.object(
+        build_service, "_run_recovery_planner",
+        new_callable=AsyncMock, return_value="Mocked remediation plan",
     ):
         await asyncio.gather(
             build_service._run_build(
@@ -1503,7 +1519,7 @@ async def test_run_build_interjection_injected(
     queue.put_nowait("please add logging")
     build_service._interjection_queues[str(_BUILD_ID)] = queue
 
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
@@ -1776,7 +1792,7 @@ async def test_plan_tasks_reset_between_phases(
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
@@ -1824,7 +1840,7 @@ async def test_build_overview_emitted(
     })
     mock_manager.send_to_user = AsyncMock()
 
-    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
         await build_service._run_build(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
@@ -1847,3 +1863,217 @@ def test_no_haiku_references_in_pricing():
     """No Haiku model entries remain in the pricing table."""
     for key in build_service._MODEL_PRICING:
         assert "haiku" not in key.lower(), f"Legacy Haiku entry found: {key}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _gather_project_state (Phase 17)
+# ---------------------------------------------------------------------------
+
+
+def test_gather_project_state_empty_dir(tmp_path):
+    """_gather_project_state returns tree for an empty directory."""
+    result = build_service._gather_project_state(str(tmp_path))
+    assert "## File Tree" in result
+    assert "(empty)" in result
+
+
+def test_gather_project_state_with_files(tmp_path):
+    """_gather_project_state includes code files and respects tree layout."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("print('hello')", encoding="utf-8")
+    (tmp_path / "app" / "config.json").write_text('{"key": "val"}', encoding="utf-8")
+    (tmp_path / "README.md").write_text("# Project", encoding="utf-8")
+    (tmp_path / "data.bin").write_bytes(b"\x00\x01\x02")  # non-code file
+
+    result = build_service._gather_project_state(str(tmp_path))
+    assert "main.py" in result
+    assert "print('hello')" in result  # file content included
+    assert "config.json" in result
+    assert "README.md" in result
+    assert "data.bin" in result  # in tree but not content
+
+
+def test_gather_project_state_truncates_large_file(tmp_path):
+    """_gather_project_state truncates files larger than 10KB."""
+    (tmp_path / "big.py").write_text("x" * 20_000, encoding="utf-8")
+    result = build_service._gather_project_state(str(tmp_path))
+    assert "[... truncated" in result
+
+
+def test_gather_project_state_skips_pycache(tmp_path):
+    """_gather_project_state skips __pycache__ directories."""
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "module.cpython-312.pyc").write_bytes(b"\x00")
+    (tmp_path / "app.py").write_text("pass", encoding="utf-8")
+    result = build_service._gather_project_state(str(tmp_path))
+    assert "__pycache__" not in result
+    assert "app.py" in result
+
+
+def test_gather_project_state_none():
+    """_gather_project_state handles None working_dir."""
+    result = build_service._gather_project_state(None)
+    assert "not available" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _run_recovery_planner (Phase 17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+async def test_run_recovery_planner_success(mock_build_repo, monkeypatch):
+    """_run_recovery_planner returns the planner's remediation text."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+
+    fake_result = {
+        "text": "=== REMEDIATION PLAN ===\n1. Fix the thing\n=== END REMEDIATION PLAN ===",
+        "usage": {"input_tokens": 500, "output_tokens": 200},
+    }
+
+    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock) as mock_broadcast:
+        with patch("app.clients.llm_client.chat", new_callable=AsyncMock, return_value=fake_result):
+            result = await build_service._run_recovery_planner(
+                build_id=_BUILD_ID,
+                user_id=_USER_ID,
+                api_key="sk-ant-test",
+                phase="Phase 0",
+                audit_findings="VERDICT: FLAGS FOUND\nMissing tests",
+                builder_output="phase output here",
+                contracts=_contracts(),
+                working_dir=None,
+            )
+
+    assert "REMEDIATION PLAN" in result
+    assert "Fix the thing" in result
+    # Cost should have been recorded
+    mock_build_repo.record_build_cost.assert_called_once()
+    cost_args = mock_build_repo.record_build_cost.call_args
+    assert "planner" in cost_args[0][1]  # phase arg contains "(planner)"
+    # WS event should have been broadcast
+    mock_broadcast.assert_called_once()
+    assert mock_broadcast.call_args[0][2] == "recovery_plan"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+async def test_run_recovery_planner_missing_prompt(mock_build_repo, monkeypatch, tmp_path):
+    """_run_recovery_planner returns empty string when prompt file is missing."""
+    mock_build_repo.append_build_log = AsyncMock()
+    monkeypatch.setattr(build_service, "FORGE_CONTRACTS_DIR", tmp_path)
+
+    result = await build_service._run_recovery_planner(
+        build_id=_BUILD_ID,
+        user_id=_USER_ID,
+        api_key="sk-ant-test",
+        phase="Phase 0",
+        audit_findings="FAIL",
+        builder_output="output",
+        contracts=_contracts(),
+        working_dir=None,
+    )
+    assert result == ""
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_recovery_planner_fallback_on_error(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """If _run_recovery_planner raises, the build loop uses generic feedback."""
+    call_counter = {"n": 0}
+
+    async def _stream_gen(*args, **kwargs):
+        call_counter["n"] += 1
+        if call_counter["n"] <= 2:
+            yield "Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+        else:
+            yield "Build complete."
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2])
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_manager.send_to_user = AsyncMock()
+
+    audit_returns = iter([("FAIL", "Audit found issues"), ("PASS", "")])
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock,
+        side_effect=lambda *a, **k: next(audit_returns),
+    ), patch.object(
+        build_service, "_run_recovery_planner",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("LLM API timeout"),
+    ):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # Build should still have completed (fell back to generic feedback)
+    assert call_counter["n"] == 3
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_recovery_planner_injects_remediation(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """On audit FAIL, the recovery planner's output is injected into messages."""
+    captured_messages = []
+
+    async def _stream_gen(*args, messages=None, **kwargs):
+        if messages:
+            captured_messages.append(list(messages))
+        yield "Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+
+    mock_stream.side_effect = _stream_gen
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.increment_loop_count = AsyncMock(side_effect=[1, 2])
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_manager.send_to_user = AsyncMock()
+
+    audit_returns = iter([("FAIL", "Audit found issues"), ("PASS", "")])
+    with patch.object(
+        build_service, "_run_inline_audit",
+        new_callable=AsyncMock,
+        side_effect=lambda *a, **k: next(audit_returns),
+    ), patch.object(
+        build_service, "_run_recovery_planner",
+        new_callable=AsyncMock,
+        return_value="=== REMEDIATION PLAN ===\n1. Fix X\n=== END REMEDIATION PLAN ===",
+    ):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # The second call to stream_agent should have the remediation plan in messages
+    assert len(captured_messages) >= 2
+    retry_msgs = captured_messages[1]
+    # Last user message should contain the remediation plan
+    user_msgs = [m for m in retry_msgs if m["role"] == "user"]
+    last_user = user_msgs[-1]["content"]
+    assert "recovery planner" in last_user.lower()
+    assert "REMEDIATION PLAN" in last_user

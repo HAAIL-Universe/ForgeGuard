@@ -4802,3 +4802,40 @@ A5: PASS -- No TODO: placeholders in updatedifflog.md.
 W1: WARN -- Potential secrets found: sk-
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 18 -- Builder Tool Use Foundation -- Iteration 106
+Timestamp: 2026-02-15T22:24:48Z
+AEM Cycle: Phase 18 -- Builder Tool Use Foundation
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (10 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+
+### Files Changed
+- app/audit/runner.py
+- app/services/build_service.py
+- app/templates/contracts/recovery_planner_prompt.md
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/recovery_planner_prompt.md
+- Forge/scripts/run_audit.ps1
+- tests/test_build_integration.py
+- tests/test_build_service.py
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

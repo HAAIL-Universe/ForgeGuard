@@ -139,6 +139,11 @@ def _build_patches():
         "github_client": patch("app.services.build_service.github_client"),
         "manager": patch("app.services.build_service.manager"),
         "get_user": patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock),
+        "recovery_planner": patch(
+            "app.services.build_service._run_recovery_planner",
+            new_callable=AsyncMock,
+            return_value="Mocked remediation plan",
+        ),
     }
 
 
@@ -219,7 +224,7 @@ class TestFullBuildLifecycle:
 
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
 
                     await build_service._run_build(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
@@ -262,7 +267,7 @@ class TestFullBuildLifecycle:
                 {"path": "app/main.py", "content": "# v2 fixed\n"},
             ])
 
-            audit_results = iter(["FAIL", "PASS"])
+            audit_results = iter([("FAIL", "Audit found issues"), ("PASS", "")])
 
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([first_output, second_output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
@@ -303,7 +308,7 @@ class TestFullBuildLifecycle:
 
             # MAX_LOOP_COUNT failures, then pass after resume
             fail_count = settings.PAUSE_THRESHOLD
-            results = ["FAIL"] * fail_count + ["PASS"]
+            results = [("FAIL", "Audit found issues")] * fail_count + [("PASS", "")]
             audit_iter = iter(results)
             responses = [fail_output] * fail_count + [pass_output]
 
@@ -352,7 +357,7 @@ class TestFullBuildLifecycle:
 
             fail_output = _make_phase_output("Phase 0")
             fail_count = settings.PAUSE_THRESHOLD
-            results = ["FAIL"] * fail_count
+            results = [("FAIL", "Audit found issues")] * fail_count
             audit_iter = iter(results)
 
             async def auto_skip():
@@ -400,7 +405,7 @@ class TestFullBuildLifecycle:
 
             fail_output = _make_phase_output("Phase 0")
             fail_count = settings.PAUSE_THRESHOLD
-            results = ["FAIL"] * fail_count
+            results = [("FAIL", "Audit found issues")] * fail_count
             audit_iter = iter(results)
 
             async def auto_abort():
@@ -472,7 +477,7 @@ class TestInterjection:
 
             with patch("app.services.build_service.stream_agent", side_effect=capturing_stream):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
 
                     await build_service._run_build(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
@@ -514,7 +519,7 @@ class TestContextCompaction:
             # Force high token usage to trigger compaction
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
                     with patch("app.services.build_service.CONTEXT_COMPACTION_THRESHOLD", 0):
                         await build_service._run_build(
                             _BUILD_ID, _PROJECT_ID, _USER_ID,
@@ -557,7 +562,7 @@ class TestFileOverwrite:
 
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
 
                     await build_service._run_build(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
@@ -596,7 +601,7 @@ class TestBuildTargets:
 
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
 
                     await build_service._run_build(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
@@ -629,7 +634,7 @@ class TestBuildTargets:
 
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
 
                     await build_service._run_build(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
@@ -750,7 +755,7 @@ class TestGitPushRetry:
 
             with patch("app.services.build_service.stream_agent", side_effect=_mock_stream_agent([output])):
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
-                    mock_audit.return_value = "PASS"
+                    mock_audit.return_value = ("PASS", "")
                     with patch.object(settings, "GIT_PUSH_MAX_RETRIES", 2):
                         await asyncio.gather(
                             build_service._run_build(

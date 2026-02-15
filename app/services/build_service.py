@@ -905,12 +905,12 @@ async def _run_build(
                 )
 
                 # Run inline audit
-                audit_result = await _run_inline_audit(
+                audit_verdict, audit_report = await _run_inline_audit(
                     build_id, current_phase, accumulated_text,
                     contracts, api_key, audit_llm_enabled,
                 )
 
-                if audit_result == "PASS":
+                if audit_verdict == "PASS":
                     await build_repo.append_build_log(
                         build_id,
                         f"Audit PASS for {current_phase}",
@@ -1032,13 +1032,50 @@ async def _run_build(
                     # Record cost for this failed attempt
                     await _record_phase_cost(build_id, current_phase, usage)
 
+                    # --- Recovery Planner ---
+                    # Instead of generic feedback, invoke a separate LLM to
+                    # analyse the failure and produce a targeted remediation plan.
+                    remediation_plan = ""
+                    if audit_report and api_key:
+                        try:
+                            remediation_plan = await _run_recovery_planner(
+                                build_id=build_id,
+                                user_id=user_id,
+                                api_key=api_key,
+                                phase=current_phase,
+                                audit_findings=audit_report,
+                                builder_output=accumulated_text,
+                                contracts=contracts,
+                                working_dir=working_dir,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Recovery planner failed for %s: %s — falling back to generic feedback",
+                                current_phase, exc,
+                            )
+                            remediation_plan = ""
+
+                    if remediation_plan:
+                        feedback = (
+                            f"The audit for {current_phase} FAILED "
+                            f"(attempt {phase_loop_count}).\n\n"
+                            f"A recovery planner has analysed the failure and "
+                            f"produced a revised strategy:\n\n"
+                            f"{remediation_plan}\n\n"
+                            f"Follow this remediation plan to fix the issues "
+                            f"and re-submit {current_phase}."
+                        )
+                    else:
+                        feedback = (
+                            f"[Audit Feedback for {current_phase}]\n"
+                            f"{audit_report or 'FAIL'}\n\n"
+                            f"Please address the issues above and try again."
+                        )
+
                     # Inject audit feedback as a new user message
                     messages.append({
                         "role": "user",
-                        "content": (
-                            f"[Audit Feedback for {current_phase}]\n{audit_result}\n\n"
-                            "Please address the issues above and try again."
-                        ),
+                        "content": feedback,
                     })
 
             # Check for error signal
@@ -1054,7 +1091,7 @@ async def _run_build(
 
             # Push to GitHub after successful phase (with retry + backoff)
             if (
-                audit_result == "PASS"
+                audit_verdict == "PASS"
                 and working_dir
                 and files_written
                 and target_type in ("github_new", "github_existing")
@@ -1358,6 +1395,193 @@ def _build_directive(contracts: list[dict]) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Recovery Planner
+# ---------------------------------------------------------------------------
+
+_MAX_PROJECT_STATE_BYTES = 200_000  # 200KB cap for project state
+_MAX_SINGLE_FILE_BYTES = 10_000     # 10KB per file; truncate beyond this
+_CODE_EXTENSIONS = frozenset({
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".json", ".yaml", ".yml",
+    ".toml", ".cfg", ".md", ".html", ".css",
+})
+
+
+def _gather_project_state(working_dir: str | None) -> str:
+    """Walk the working directory and produce a file tree + key file contents.
+
+    Returns a structured string suitable for inclusion in an LLM prompt.
+    Respects size limits: total output ≤ 200KB, individual files ≤ 10KB
+    (truncated to first + last 2KB with a marker).
+    """
+    if not working_dir or not Path(working_dir).is_dir():
+        return "(working directory not available)"
+
+    root = Path(working_dir)
+    tree_lines: list[str] = []
+    file_contents: list[str] = []
+    total_bytes = 0
+
+    # Walk and collect
+    skip_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", ".tox", "dist", "build"}
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune uninteresting directories
+        dirnames[:] = [d for d in sorted(dirnames) if d not in skip_dirs]
+        rel_dir = Path(dirpath).relative_to(root)
+
+        for fname in sorted(filenames):
+            rel_path = rel_dir / fname
+            tree_lines.append(str(rel_path))
+
+            # Include contents of code files
+            ext = Path(fname).suffix.lower()
+            if ext not in _CODE_EXTENSIONS:
+                continue
+            if total_bytes >= _MAX_PROJECT_STATE_BYTES:
+                continue
+
+            full_path = Path(dirpath) / fname
+            try:
+                raw = full_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+
+            # Truncate large files
+            if len(raw) > _MAX_SINGLE_FILE_BYTES:
+                half = _MAX_SINGLE_FILE_BYTES // 5  # ~2KB each side
+                raw = (
+                    raw[:half]
+                    + f"\n\n[... truncated {len(raw) - half * 2} chars ...]\n\n"
+                    + raw[-half:]
+                )
+
+            entry = f"\n--- {rel_path} ---\n{raw}\n"
+            total_bytes += len(entry)
+            file_contents.append(entry)
+
+    tree_str = "\n".join(tree_lines) if tree_lines else "(empty)"
+    return (
+        f"## File Tree\n```\n{tree_str}\n```\n\n"
+        f"## File Contents\n{''.join(file_contents)}"
+    )
+
+
+async def _run_recovery_planner(
+    *,
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    phase: str,
+    audit_findings: str,
+    builder_output: str,
+    contracts: list[dict],
+    working_dir: str | None,
+) -> str:
+    """Invoke the recovery planner to analyse an audit failure.
+
+    Calls a separate Sonnet LLM to analyse the audit findings, the builder's
+    output, and the current project state, then produce a targeted remediation
+    plan. Returns the remediation plan text, or empty string on failure.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    # Load recovery planner system prompt
+    prompt_path = FORGE_CONTRACTS_DIR / "recovery_planner_prompt.md"
+    if not prompt_path.exists():
+        logger.warning("recovery_planner_prompt.md not found — skipping recovery planner")
+        return ""
+    system_prompt = prompt_path.read_text(encoding="utf-8")
+
+    # Build reference contracts text
+    reference_types = {
+        "blueprint", "manifesto", "stack", "schema",
+        "physics", "boundaries", "phases", "ui",
+    }
+    reference_parts = ["# Reference Contracts\n"]
+    for c in contracts:
+        if c["contract_type"] in reference_types:
+            reference_parts.append(f"\n---\n## {c['contract_type']}\n{c['content']}\n")
+    reference_text = "\n".join(reference_parts)
+
+    # Gather current project state
+    project_state = _gather_project_state(working_dir)
+
+    # Truncate builder output to last 30K chars
+    max_builder_chars = 30_000
+    trimmed_builder = builder_output
+    if len(builder_output) > max_builder_chars:
+        trimmed_builder = (
+            f"[... truncated {len(builder_output) - max_builder_chars} chars ...]\n"
+            + builder_output[-max_builder_chars:]
+        )
+
+    # Truncate audit findings to 20K chars
+    max_findings_chars = 20_000
+    trimmed_findings = audit_findings
+    if len(audit_findings) > max_findings_chars:
+        trimmed_findings = audit_findings[:max_findings_chars] + "\n[... truncated ...]"
+
+    user_message = (
+        f"## Recovery Request\n\n"
+        f"**Phase:** {phase}\n\n"
+        f"### Audit Findings (FAILED)\n\n{trimmed_findings}\n\n"
+        f"### Builder Output (what was attempted)\n\n"
+        f"```\n{trimmed_builder}\n```\n\n"
+        f"### Current Project State\n\n{project_state}\n\n"
+        f"### Contracts\n\n{reference_text}\n\n"
+        f"Produce a remediation plan that addresses every audit finding.\n"
+    )
+
+    await build_repo.append_build_log(
+        build_id,
+        f"Invoking recovery planner for {phase}",
+        source="planner",
+        level="info",
+    )
+
+    result = await llm_chat(
+        api_key=api_key,
+        model=settings.LLM_PLANNER_MODEL,
+        system_prompt=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+        max_tokens=4096,
+        provider="anthropic",
+    )
+
+    planner_text = result["text"] if isinstance(result, dict) else result
+    planner_usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+    # Log the planner output
+    await build_repo.append_build_log(
+        build_id,
+        f"Recovery planner response ({planner_usage.get('input_tokens', 0)} in / "
+        f"{planner_usage.get('output_tokens', 0)} out):\n{planner_text}",
+        source="planner",
+        level="info",
+    )
+
+    # Record planner cost separately
+    input_t = planner_usage.get("input_tokens", 0)
+    output_t = planner_usage.get("output_tokens", 0)
+    model = settings.LLM_PLANNER_MODEL
+    input_rate, output_rate = _get_token_rates(model)
+    cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+    await build_repo.record_build_cost(
+        build_id, f"{phase} (planner)", input_t, output_t, model, cost,
+    )
+
+    # Broadcast recovery plan WS event
+    await _broadcast_build_event(
+        user_id, build_id, "recovery_plan", {
+            "phase": phase,
+            "plan_text": planner_text,
+        },
+    )
+
+    return planner_text
+
+
 async def _run_inline_audit(
     build_id: UUID,
     phase: str,
@@ -1365,7 +1589,7 @@ async def _run_inline_audit(
     contracts: list[dict],
     api_key: str,
     audit_llm_enabled: bool = True,
-) -> str:
+) -> tuple[str, str]:
     """Run an LLM-based audit of the builder's phase output.
 
     When audit_llm_enabled is True, sends the builder output + reference
@@ -1373,9 +1597,10 @@ async def _run_inline_audit(
     prompt. The auditor checks for contract compliance, architectural
     drift, and semantic correctness.
 
-    When disabled, returns 'PASS' as a no-op (self-certification).
+    When disabled, returns ('PASS', '') as a no-op (self-certification).
 
-    Returns 'PASS' or 'FAIL'.
+    Returns (verdict, report) where verdict is 'PASS' or 'FAIL' and
+    report is the full auditor response text (empty on PASS/stub).
     """
     try:
         await build_repo.append_build_log(
@@ -1392,13 +1617,13 @@ async def _run_inline_audit(
                 source="audit",
                 level="info",
             )
-            return "PASS"
+            return ("PASS", "")
 
         # Load auditor system prompt from Forge/Contracts
         auditor_prompt_path = FORGE_CONTRACTS_DIR / "auditor_prompt.md"
         if not auditor_prompt_path.exists():
             logger.warning("auditor_prompt.md not found — falling back to stub audit")
-            return "PASS"
+            return ("PASS", "")
         auditor_system = auditor_prompt_path.read_text(encoding="utf-8")
 
         # Build reference contracts (everything except builder_contract + builder_directive)
@@ -1469,9 +1694,9 @@ async def _run_inline_audit(
 
         # Parse verdict
         if "VERDICT: CLEAN" in audit_text:
-            return "PASS"
+            return ("PASS", audit_text)
         elif "VERDICT: FLAGS FOUND" in audit_text:
-            return "FAIL"
+            return ("FAIL", audit_text)
         else:
             # Ambiguous response — log warning, default to PASS
             logger.warning("Auditor response missing clear verdict — defaulting to PASS")
@@ -1481,7 +1706,7 @@ async def _run_inline_audit(
                 source="audit",
                 level="warn",
             )
-            return "PASS"
+            return ("PASS", audit_text)
 
     except Exception as exc:
         logger.error("LLM audit error for %s: %s", phase, exc)
@@ -1491,7 +1716,7 @@ async def _run_inline_audit(
             source="audit",
             level="error",
         )
-        return "PASS"
+        return ("PASS", "")
 
 
 async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:

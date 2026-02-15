@@ -83,6 +83,16 @@ try {
 
   # ── A1: Scope compliance ───────────────────────────────────────────────
 
+  # Governance files that are always allowed to change (updated by
+  # audit scripts, diff-log helpers, and phase planning).
+  $governanceAllowlist = @(
+    'Forge/Contracts/phases.md',
+    'Forge/evidence/audit_ledger.md',
+    'Forge/evidence/updatedifflog.md',
+    'Forge/evidence/test_runs_latest.md',
+    'Forge/evidence/test_runs.md'
+  )
+
   try {
     $diffStagedRaw   = & git diff --cached --name-only 2>$null
     $diffUnstagedRaw = & git diff --name-only 2>$null
@@ -96,7 +106,7 @@ try {
       Where-Object { $_ -ne "" } |
       Sort-Object -Unique
 
-    $unclaimed = $diffFiles | Where-Object { $_ -notin $claimed }
+    $unclaimed = $diffFiles | Where-Object { $_ -notin $claimed -and $_ -notin $governanceAllowlist }
     $phantom   = $claimed   | Where-Object { $_ -notin $diffFiles }
 
     if ($unclaimed -or $phantom) {
