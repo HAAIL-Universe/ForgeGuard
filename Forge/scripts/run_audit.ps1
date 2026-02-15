@@ -1,4 +1,4 @@
-﻿# scripts/run_audit.ps1
+# scripts/run_audit.ps1
 # Deterministic audit script for Forge AEM (Autonomous Execution Mode).
 # Runs 9 blocking checks (A1-A9) and 3 non-blocking warnings (W1-W3).
 # Reads layer boundaries from Contracts/boundaries.json.
@@ -24,7 +24,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers ------------------------------------------------------------------
 
 function Info([string]$m) { Write-Host "[run_audit] $m" -ForegroundColor Cyan }
 function Warn([string]$m) { Write-Host "[run_audit] $m" -ForegroundColor Yellow }
@@ -41,7 +41,7 @@ function RepoRoot {
   return (& git rev-parse --show-toplevel).Trim()
 }
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# -- Main ---------------------------------------------------------------------
 
 try {
   RequireGit
@@ -54,10 +54,10 @@ try {
   $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
   # Parse claimed files into a sorted, normalized set
-  $claimed = $ClaimedFiles.Split(",") |
+  $claimed = @($ClaimedFiles.Split(",") |
     ForEach-Object { $_.Trim().Replace("\", "/") } |
     Where-Object { $_ -ne "" } |
-    Sort-Object -Unique
+    Sort-Object -Unique)
 
   if ($claimed.Count -eq 0) {
     throw "ClaimedFiles is empty."
@@ -79,7 +79,7 @@ try {
   $warnings  = [ordered]@{}
   $anyFail   = $false
 
-  # ── A1: Scope compliance ───────────────────────────────────────────────
+  # -- A1: Scope compliance -----------------------------------------------
 
   try {
     $diffStagedRaw   = & git diff --cached --name-only 2>$null
@@ -111,7 +111,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A2: Minimal-diff discipline ────────────────────────────────────────
+  # -- A2: Minimal-diff discipline ----------------------------------------
 
   try {
     $summaryRaw = & git diff --cached --summary 2>&1
@@ -133,7 +133,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A3: Evidence completeness ──────────────────────────────────────────
+  # -- A3: Evidence completeness ------------------------------------------
 
   try {
     $a3Failures = @()
@@ -164,7 +164,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A4: Boundary compliance (reads Contracts/boundaries.json) ──────────
+  # -- A4: Boundary compliance (reads Contracts/boundaries.json) ----------
 
   try {
     $a4Violations = @()
@@ -213,7 +213,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A5: Diff Log Gate ──────────────────────────────────────────────────
+  # -- A5: Diff Log Gate --------------------------------------------------
 
   try {
     if (-not (Test-Path $diffLog)) {
@@ -237,7 +237,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A6: Authorization Gate ─────────────────────────────────────────────
+  # -- A6: Authorization Gate ---------------------------------------------
 
   try {
     $lastAuthHash = $null
@@ -268,7 +268,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A7: Verification hierarchy order ───────────────────────────────────
+  # -- A7: Verification hierarchy order -----------------------------------
 
   try {
     if (-not (Test-Path $diffLog)) {
@@ -324,7 +324,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A8: Test gate ──────────────────────────────────────────────────────
+  # -- A8: Test gate ------------------------------------------------------
 
   try {
     if (-not (Test-Path $testRunsLatest)) {
@@ -344,7 +344,7 @@ try {
     $anyFail = $true
   }
 
-  # ── A9: Dependency gate ────────────────────────────────────────────────
+  # -- A9: Dependency gate ------------------------------------------------
 
   try {
     $a9Failures = @()
@@ -508,7 +508,7 @@ try {
     $anyFail = $true
   }
 
-  # ── W1: No secrets in diff ────────────────────────────────────────────
+  # -- W1: No secrets in diff --------------------------------------------
 
   try {
     $diffContent = & git diff --cached 2>&1
@@ -534,7 +534,7 @@ try {
     $warnings["W1"] = "WARN -- Error scanning for secrets: $_"
   }
 
-  # ── W2: Audit ledger integrity ────────────────────────────────────────
+  # -- W2: Audit ledger integrity ----------------------------------------
 
   try {
     if (-not (Test-Path $auditLedger)) {
@@ -548,7 +548,7 @@ try {
     $warnings["W2"] = "WARN -- Error checking audit ledger: $_"
   }
 
-  # ── W3: Physics route coverage ────────────────────────────────────────
+  # -- W3: Physics route coverage ----------------------------------------
 
   try {
     if (-not (Test-Path $physicsYaml)) {
@@ -613,7 +613,7 @@ try {
     $warnings["W3"] = "WARN -- Error checking physics coverage: $_"
   }
 
-  # ── Build output ──────────────────────────────────────────────────────
+  # -- Build output ------------------------------------------------------
 
   $overall = if ($anyFail) { "FAIL" } else { "PASS" }
 
@@ -643,7 +643,7 @@ Overall: $overall
 
   Write-Output $output
 
-  # ── Append to audit ledger ─────────────────────────────────────────────
+  # -- Append to audit ledger ---------------------------------------------
 
   $iteration = 1
   if (Test-Path $auditLedger) {
@@ -713,7 +713,7 @@ Do not overwrite or truncate this file.
   Add-Content -Path $auditLedger -Value $ledgerEntry -Encoding UTF8
   Info "Appended audit entry (Iteration $iteration, Outcome: $outcome)."
 
-  # ── Exit ───────────────────────────────────────────────────────────────
+  # -- Exit ---------------------------------------------------------------
 
   if ($anyFail) {
     exit 1

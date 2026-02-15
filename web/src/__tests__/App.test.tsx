@@ -125,7 +125,7 @@ describe('EmptyState', () => {
 });
 
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ token: 'test-token', user: { id: '1', login: 'test' }, logout: () => {} }),
+  useAuth: () => ({ token: 'test-token', user: { id: '1', login: 'test' }, logout: () => {}, loading: false, authFetch: globalThis.fetch }),
 }));
 
 describe('CreateProjectModal', () => {
@@ -298,7 +298,7 @@ describe('QuestionnaireModal', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('has a voice toggle button', () => {
+  it('has a restart button', () => {
     render(
       <QuestionnaireModal
         projectId="test-id"
@@ -307,7 +307,7 @@ describe('QuestionnaireModal', () => {
         onContractsGenerated={() => {}}
       />,
     );
-    expect(screen.getByTestId('voice-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('restart-btn')).toBeInTheDocument();
   });
 
   it('shows generate banner when questionnaire is complete', async () => {

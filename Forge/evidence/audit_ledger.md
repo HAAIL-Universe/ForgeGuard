@@ -3399,3 +3399,383 @@ Outcome: FAIL
 W1: PASS -- No secret patterns detected.
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 74
+Timestamp: 2026-02-15T16:18:59Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/auth.py, app/api/routers/projects.py, app/clients/llm_client.py, app/config.py, app/repos/audit_repo.py, app/repos/user_repo.py, app/services/audit_service.py, app/services/build_service.py, app/services/project_service.py, Forge/evidence/updatedifflog.md, tests/test_audit_service.py, tests/test_auth_router.py, tests/test_build_service.py, tests/test_llm_client.py, tests/test_project_service.py, tests/test_projects_router.py, USER_INSTRUCTIONS.md, web/src/__tests__/App.test.tsx, web/src/App.tsx, web/src/components/AppShell.tsx, web/src/context/AuthContext.tsx, web/src/pages/BuildComplete.tsx, web/src/pages/BuildProgress.tsx, web/src/pages/ProjectDetail.tsx, web/vite.config.ts. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         FAIL -- updatedifflog.md contains TODO: placeholders.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/auth.py, app/api/routers/projects.py, app/clients/llm_client.py, app/config.py, app/repos/audit_repo.py, app/repos/user_repo.py, app/services/audit_service.py, app/services/build_service.py, app/services/project_service.py, Forge/evidence/updatedifflog.md, tests/test_audit_service.py, tests/test_auth_router.py, tests/test_build_service.py, tests/test_llm_client.py, tests/test_project_service.py, tests/test_projects_router.py, USER_INSTRUCTIONS.md, web/src/__tests__/App.test.tsx, web/src/App.tsx, web/src/components/AppShell.tsx, web/src/context/AuthContext.tsx, web/src/pages/BuildComplete.tsx, web/src/pages/BuildProgress.tsx, web/src/pages/ProjectDetail.tsx, web/vite.config.ts. 
+- A5: FAIL -- updatedifflog.md contains TODO: placeholders.
+
+### Files Changed
+- Forge/evidence/test_runs_latest.md
+- Forge/scripts/run_audit.ps1
+- web/src/components/QuestionnaireModal.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds -- Iteration 75
+Timestamp: 2026-02-15T16:19:59Z
+AEM Cycle: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (32 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         FAIL -- updatedifflog.md contains TODO: placeholders.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A5: FAIL -- updatedifflog.md contains TODO: placeholders.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/repos/audit_repo.py
+- app/repos/user_repo.py
+- app/services/audit_service.py
+- app/services/build_service.py
+- app/services/project_service.py
+- db/migrations/006_user_api_key.sql
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_service.py
+- tests/test_auth_router.py
+- tests/test_build_service.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Settings.tsx
+- web/vite.config.ts
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds -- Iteration 76
+Timestamp: 2026-02-15T16:20:23Z
+AEM Cycle: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (32 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/repos/audit_repo.py
+- app/repos/user_repo.py
+- app/services/audit_service.py
+- app/services/build_service.py
+- app/services/project_service.py
+- db/migrations/006_user_api_key.sql
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_service.py
+- tests/test_auth_router.py
+- tests/test_build_service.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Settings.tsx
+- web/vite.config.ts
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds -- Iteration 77
+Timestamp: 2026-02-15T16:20:48Z
+AEM Cycle: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (32 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/repos/audit_repo.py
+- app/repos/user_repo.py
+- app/services/audit_service.py
+- app/services/build_service.py
+- app/services/project_service.py
+- db/migrations/006_user_api_key.sql
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_service.py
+- tests/test_auth_router.py
+- tests/test_build_service.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Settings.tsx
+- web/vite.config.ts
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds -- Iteration 78
+Timestamp: 2026-02-15T17:28:13Z
+AEM Cycle: Phase 12 -- BYOK ÔÇô user-supplied Anthropic API key for builds
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: web/src/__tests__/Build.test.tsx. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: web/src/__tests__/Build.test.tsx. 
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/repos/audit_repo.py
+- app/repos/user_repo.py
+- app/services/audit_service.py
+- app/services/build_service.py
+- app/services/project_service.py
+- db/migrations/006_user_api_key.sql
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_service.py
+- tests/test_auth_router.py
+- tests/test_build_service.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Settings.tsx
+- web/vite.config.ts
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 12 -- BYOK ├ö├ç├┤ user-supplied Anthropic API key for builds -- Iteration 79
+Timestamp: 2026-02-15T18:16:16Z
+AEM Cycle: Phase 12 -- BYOK ├ö├ç├┤ user-supplied Anthropic API key for builds
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: web/src/__tests__/Build.test.tsx. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: web/src/__tests__/Build.test.tsx. 
+- A7: FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/repos/audit_repo.py
+- app/repos/user_repo.py
+- app/services/audit_service.py
+- app/services/build_service.py
+- app/services/project_service.py
+- db/migrations/006_user_api_key.sql
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_service.py
+- tests/test_auth_router.py
+- tests/test_build_service.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/App.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Settings.tsx
+- web/vite.config.ts
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 12 -- BYOK ├ö├ç├┤ user-supplied Anthropic API key for builds -- Iteration 80
+Timestamp: 2026-02-15T18:16:40Z
+AEM Cycle: Phase 12 -- BYOK ├ö├ç├┤ user-supplied Anthropic API key for builds
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (34 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/repos/audit_repo.py
+- app/repos/user_repo.py
+- app/services/audit_service.py
+- app/services/build_service.py
+- app/services/project_service.py
+- db/migrations/006_user_api_key.sql
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_service.py
+- tests/test_auth_router.py
+- tests/test_build_service.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/App.test.tsx
+- web/src/__tests__/Build.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Settings.tsx
+- web/vite.config.ts
+
+### Notes
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

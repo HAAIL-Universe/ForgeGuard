@@ -63,6 +63,26 @@ async def update_audit_run(
     )
 
 
+async def mark_stale_audit_runs(repo_id: UUID, stale_minutes: int = 5) -> int:
+    """Mark audit runs stuck in 'pending' or 'running' for longer than
+    *stale_minutes* as 'error'. Returns the number of rows updated."""
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        UPDATE audit_runs
+        SET status = 'error', overall_result = 'ERROR',
+            completed_at = now()
+        WHERE repo_id = $1
+          AND status IN ('pending', 'running')
+          AND created_at < now() - ($2 || ' minutes')::interval
+        """,
+        repo_id,
+        str(stale_minutes),
+    )
+    # asyncpg returns 'UPDATE N'
+    return int(result.split()[-1])
+
+
 async def insert_audit_checks(
     audit_run_id: UUID,
     checks: list[dict],

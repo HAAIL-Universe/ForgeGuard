@@ -92,6 +92,24 @@ async def get_build_logs(
         raise HTTPException(status_code=400, detail=detail)
 
 
+# ── GET /projects/{project_id}/build/phases ──────────────────────────────
+
+
+@router.get("/{project_id}/build/phases")
+async def get_build_phases(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Phase definitions parsed from the project's phases contract."""
+    try:
+        return await build_service.get_build_phases(project_id, user["id"])
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
 # ── GET /projects/{project_id}/build/summary ─────────────────────────────
 
 

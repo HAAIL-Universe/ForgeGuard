@@ -8,10 +8,8 @@ import pytest
 
 from app.services.project_service import (
     QUESTIONNAIRE_SECTIONS,
-    _build_template_vars,
     _parse_llm_response,
     _questionnaire_progress,
-    _render_template,
     create_new_project,
     generate_contracts,
     get_project_detail,
@@ -71,7 +69,7 @@ def test_progress_empty():
     assert result["current_section"] == "product_intent"
     assert result["completed_sections"] == []
     assert result["is_complete"] is False
-    assert len(result["remaining_sections"]) == 8
+    assert len(result["remaining_sections"]) == 7
 
 
 def test_progress_partial():
@@ -90,59 +88,6 @@ def test_progress_complete():
     assert result["current_section"] is None
     assert result["is_complete"] is True
     assert len(result["remaining_sections"]) == 0
-
-
-# ---------------------------------------------------------------------------
-# _build_template_vars
-# ---------------------------------------------------------------------------
-
-
-def test_build_template_vars():
-    project = {"name": "TestApp", "description": "A test app"}
-    answers = {
-        "product_intent": {"product_intent": "Build a dashboard", "target_users": "devs"},
-        "tech_stack": {"backend_language": "Python"},
-    }
-    result = _build_template_vars(project, answers)
-    assert result["project_name"] == "TestApp"
-    assert result["product_intent"] == "Build a dashboard"
-    assert result["backend_language"] == "Python"
-
-
-def test_build_template_vars_with_list():
-    project = {"name": "TestApp", "description": ""}
-    answers = {"product_intent": {"key_features": ["auth", "dashboard", "api"]}}
-    result = _build_template_vars(project, answers)
-    assert "- auth" in result["key_features"]
-    assert "- dashboard" in result["key_features"]
-
-
-# ---------------------------------------------------------------------------
-# _render_template
-# ---------------------------------------------------------------------------
-
-
-def test_render_template_blueprint():
-    variables = {
-        "project_name": "TestApp",
-        "project_description": "A test app",
-        "product_intent": "Build something",
-        "target_users": "developers",
-        "key_features": "- feature1",
-        "success_criteria": "works",
-    }
-    result = _render_template("blueprint", variables)
-    assert "TestApp" in result
-    assert "A test app" in result
-    assert "Build something" in result
-
-
-def test_render_template_missing_vars():
-    variables = {"project_name": "TestApp"}
-    result = _render_template("blueprint", variables)
-    assert "TestApp" in result
-    # Missing vars should become empty strings, not raise
-    assert "{" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -191,17 +136,22 @@ async def test_process_questionnaire_first_message(
         "status": "draft",
         "questionnaire_state": {},
     }
-    mock_llm.return_value = json.dumps({
-        "reply": "Tell me about your product.",
-        "section": "product_intent",
-        "section_complete": False,
-        "extracted_data": None,
-    })
+    mock_llm.return_value = {
+        "text": json.dumps({
+            "reply": "Tell me about your product.",
+            "section": "product_intent",
+            "section_complete": False,
+            "extracted_data": None,
+        }),
+        "usage": {"input_tokens": 50, "output_tokens": 30},
+    }
 
     result = await process_questionnaire_message(USER_ID, PROJECT_ID, "Hi")
 
     assert result["reply"] == "Tell me about your product."
     assert result["is_complete"] is False
+    assert result["token_usage"]["input_tokens"] == 50
+    assert result["token_usage"]["output_tokens"] == 30
     mock_status.assert_called_once()  # draft -> questionnaire
 
 
@@ -255,10 +205,12 @@ async def test_process_questionnaire_already_complete(mock_project):
 
 
 @pytest.mark.asyncio
+@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
 @patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
 @patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-async def test_generate_contracts_success(mock_project, mock_upsert, mock_status):
+async def test_generate_contracts_success(mock_project, mock_upsert, mock_status, mock_ws, mock_gen):
     mock_project.return_value = {
         "id": PROJECT_ID,
         "user_id": USER_ID,
@@ -279,10 +231,11 @@ async def test_generate_contracts_success(mock_project, mock_upsert, mock_status
         "created_at": "2025-01-01T00:00:00Z",
         "updated_at": "2025-01-01T00:00:00Z",
     }
+    mock_gen.return_value = ("# generated content", {"input_tokens": 100, "output_tokens": 200})
 
     result = await generate_contracts(USER_ID, PROJECT_ID)
-    assert len(result) == 10
-    assert mock_upsert.call_count == 10
+    assert len(result) == 9
+    assert mock_upsert.call_count == 9
 
 
 @pytest.mark.asyncio

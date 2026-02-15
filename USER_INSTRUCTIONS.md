@@ -87,7 +87,7 @@ APP_URL=http://localhost:8000
 - `APP_URL` — `http://localhost:8000`
 - `ANTHROPIC_API_KEY` — required for AI-powered builds (get one at [console.anthropic.com](https://console.anthropic.com))
 - `LLM_BUILDER_MODEL` — model for builds (default: `claude-opus-4-6`)
-- `LLM_QUESTIONNAIRE_MODEL` — model for questionnaire (default: `claude-3-5-haiku-20241022`)
+- `LLM_QUESTIONNAIRE_MODEL` — model for questionnaire (default: `claude-haiku-4-5`)
 
 ---
 

@@ -32,6 +32,7 @@ def _make_patches():
         "get_user_by_id": AsyncMock(return_value=MOCK_USER),
         "list_commits": AsyncMock(return_value=[]),
         "get_existing_commit_shas": AsyncMock(return_value=set()),
+        "mark_stale_audit_runs": AsyncMock(return_value=0),
         "create_audit_run": AsyncMock(return_value={"id": UUID("aaaa1111-1111-1111-1111-111111111111")}),
         "update_audit_run": AsyncMock(),
         "get_commit_files": AsyncMock(return_value=["README.md"]),
@@ -156,3 +157,54 @@ async def test_backfill_handles_commit_error_gracefully():
     # Both count as "synced" (processed) even if one errored
     assert result["synced"] == 2
     assert result["skipped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_cleans_stale_runs():
+    """backfill_repo_commits calls mark_stale_audit_runs before processing."""
+    mocks = _make_patches()
+    mocks["list_commits"].return_value = []
+    mocks["mark_stale_audit_runs"].return_value = 3
+
+    patches = _apply_patches(mocks)
+    for p in patches:
+        p.start()
+    try:
+        result = await backfill_repo_commits(REPO_ID, USER_ID)
+    finally:
+        for p in patches:
+            p.stop()
+
+    mocks["mark_stale_audit_runs"].assert_called_once_with(REPO_ID)
+    assert result["synced"] == 0
+    assert result["skipped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_marks_error_on_cancel():
+    """If backfill is cancelled mid-commit, the in-progress row is marked error."""
+    import asyncio
+
+    mocks = _make_patches()
+    mocks["list_commits"].return_value = [
+        {"sha": "aaa111", "message": "first", "author": "Alice"},
+    ]
+    mocks["get_existing_commit_shas"].return_value = set()
+    mocks["get_commit_files"].side_effect = asyncio.CancelledError()
+
+    patches = _apply_patches(mocks)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await backfill_repo_commits(REPO_ID, USER_ID)
+    finally:
+        for p in patches:
+            p.stop()
+
+    # The audit run should have been marked as error before re-raising
+    error_calls = [
+        c for c in mocks["update_audit_run"].call_args_list
+        if c.kwargs.get("status") == "error" or (c.args and len(c.args) > 1 and c.args[1] == "error")
+    ]
+    assert len(error_calls) >= 1

@@ -1,5 +1,6 @@
 """Audit service -- orchestrates audit execution triggered by webhooks."""
 
+import asyncio
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ from app.repos.audit_repo import (
     create_audit_run,
     get_existing_commit_shas,
     insert_audit_checks,
+    mark_stale_audit_runs,
     update_audit_run,
 )
 from app.repos.repo_repo import get_repo_by_github_id, get_repo_by_id
@@ -288,6 +290,11 @@ async def backfill_repo_commits(
     full_name = repo["full_name"]
     branch = repo.get("default_branch", "main")
 
+    # Clean up any audit runs left stuck from a prior interrupted sync
+    cleaned = await mark_stale_audit_runs(repo_id)
+    if cleaned:
+        logger.info("Cleaned %d stale audit runs for repo %s", cleaned, repo_id)
+
     # Find the latest audit we already have so we only pull newer commits
     existing_shas = await get_existing_commit_shas(repo_id)
 
@@ -364,6 +371,16 @@ async def backfill_repo_commits(
                 files_checked=len(files),
             )
             synced += 1
+
+        except asyncio.CancelledError:
+            logger.warning("Backfill cancelled for commit %s", sha)
+            await update_audit_run(
+                audit_run_id=audit_run["id"],
+                status="error",
+                overall_result="ERROR",
+                files_checked=0,
+            )
+            raise  # re-raise so the request terminates properly
 
         except Exception:
             logger.exception("Backfill failed for commit %s", sha)

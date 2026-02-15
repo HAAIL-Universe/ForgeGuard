@@ -63,7 +63,8 @@ def _build(**overrides):
 @patch("app.services.build_service.asyncio.create_task")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
-async def test_start_build_success(mock_build_repo, mock_project_repo, mock_create_task):
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_repo, mock_create_task):
     """start_build creates a build record and spawns a background task."""
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
@@ -71,6 +72,7 @@ async def test_start_build_success(mock_build_repo, mock_project_repo, mock_crea
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
     mock_build_repo.create_build = AsyncMock(return_value=_build())
     mock_create_task.return_value = MagicMock()
+    mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
 
     result = await build_service.start_build(_PROJECT_ID, _USER_ID)
 
@@ -130,6 +132,21 @@ async def test_start_build_already_running(mock_build_repo, mock_project_repo):
     )
 
     with pytest.raises(ValueError, match="already in progress"):
+        await build_service.start_build(_PROJECT_ID, _USER_ID)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+async def test_start_build_no_api_key(mock_get_user, mock_build_repo, mock_project_repo):
+    """start_build raises ValueError when user has no Anthropic API key."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": None}
+
+    with pytest.raises(ValueError, match="API key required"):
         await build_service.start_build(_PROJECT_ID, _USER_ID)
 
 
@@ -240,7 +257,7 @@ async def test_get_build_logs(mock_build_repo, mock_project_repo):
 
 
 def test_build_directive_format():
-    """_build_directive assembles contracts in canonical order."""
+    """_build_directive assembles contracts in canonical order with universal governance."""
     contracts = [
         {"contract_type": "manifesto", "content": "# Manifesto"},
         {"contract_type": "blueprint", "content": "# Blueprint"},
@@ -248,7 +265,8 @@ def test_build_directive_format():
 
     result = build_service._build_directive(contracts)
 
-    assert "# Project Contracts" in result
+    # Should include the universal governance heading and per-project contracts
+    assert "Forge Governance" in result or "Project Contracts" in result
     # Blueprint should come before manifesto in canonical order
     bp_pos = result.index("blueprint")
     mf_pos = result.index("manifesto")
@@ -263,13 +281,30 @@ def test_build_directive_format():
 @pytest.mark.asyncio
 @patch("app.services.build_service.build_repo")
 async def test_run_inline_audit(mock_build_repo):
-    """_run_inline_audit logs the invocation and returns PASS."""
+    """_run_inline_audit returns PASS when audit is disabled."""
     mock_build_repo.append_build_log = AsyncMock()
 
-    result = await build_service._run_inline_audit(_BUILD_ID, "Phase 1")
+    result = await build_service._run_inline_audit(
+        _BUILD_ID, "Phase 1", "builder output", _contracts(), "sk-ant-test", False
+    )
 
     assert result == "PASS"
     mock_build_repo.append_build_log.assert_called()
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+async def test_run_inline_audit_enabled_no_prompt(mock_build_repo, tmp_path, monkeypatch):
+    """_run_inline_audit falls back to PASS when auditor_prompt.md is missing."""
+    mock_build_repo.append_build_log = AsyncMock()
+    # Point FORGE_CONTRACTS_DIR to empty tmp dir → no auditor_prompt.md
+    monkeypatch.setattr(build_service, "FORGE_CONTRACTS_DIR", tmp_path)
+
+    result = await build_service._run_inline_audit(
+        _BUILD_ID, "Phase 1", "output", _contracts(), "sk-ant-test", True
+    )
+
+    assert result == "PASS"
 
 
 # ---------------------------------------------------------------------------
@@ -431,3 +466,21 @@ async def test_record_phase_cost(mock_build_repo):
     mock_build_repo.record_build_cost.assert_called_once()
     assert usage.input_tokens == 0
     assert usage.output_tokens == 0
+
+
+def test_get_token_rates_model_aware():
+    """_get_token_rates returns correct pricing per model family."""
+    from decimal import Decimal
+
+    opus_in, opus_out = build_service._get_token_rates("claude-opus-4-6")
+    assert opus_in == Decimal("0.000015")
+    assert opus_out == Decimal("0.000075")
+
+    haiku_in, haiku_out = build_service._get_token_rates("claude-haiku-4-5-20251001")
+    assert haiku_in == Decimal("0.000001")
+    assert haiku_out == Decimal("0.000005")
+
+    # Unknown model falls back to Opus (safest = most expensive)
+    unk_in, unk_out = build_service._get_token_rates("some-unknown-model")
+    assert unk_in == Decimal("0.000015")
+    assert unk_out == Decimal("0.000075")

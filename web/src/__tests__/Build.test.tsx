@@ -162,7 +162,7 @@ describe('ProjectCard', () => {
 // ── BuildComplete ───────────────────────────────────────────────────────
 
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ token: 'test-token' }),
+  useAuth: () => ({ token: 'test-token', loading: false, authFetch: globalThis.fetch }),
   AuthProvider: ({ children }: { children: unknown }) => children,
 }));
 

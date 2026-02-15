@@ -17,6 +17,7 @@ from app.services.project_service import (
     list_contracts,
     list_user_projects,
     process_questionnaire_message,
+    reset_questionnaire,
     update_contract,
 )
 
@@ -171,6 +172,20 @@ async def questionnaire_progress(
     """Current questionnaire progress."""
     try:
         return await get_questionnaire_state(current_user["id"], project_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        )
+
+
+@router.delete("/{project_id}/questionnaire")
+async def questionnaire_reset(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Reset questionnaire to start over."""
+    try:
+        return await reset_questionnaire(current_user["id"], project_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

@@ -57,6 +57,7 @@ def test_auth_me_returns_user_with_valid_token(mock_get_user):
         "github_id": 12345,
         "github_login": "octocat",
         "avatar_url": "https://example.com/avatar.png",
+        "anthropic_api_key": "sk-ant-test",
     }
 
     token = create_token("11111111-1111-1111-1111-111111111111", "octocat")
@@ -68,6 +69,7 @@ def test_auth_me_returns_user_with_valid_token(mock_get_user):
     data = response.json()
     assert data["github_login"] == "octocat"
     assert data["id"] == "11111111-1111-1111-1111-111111111111"
+    assert data["has_anthropic_key"] is True
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
@@ -80,3 +82,57 @@ def test_auth_me_returns_401_when_user_not_found(mock_get_user):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Tests: API key management (BYOK)
+# ---------------------------------------------------------------------------
+
+_USER_DICT = {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "github_id": 12345,
+    "github_login": "octocat",
+    "avatar_url": "https://example.com/avatar.png",
+    "anthropic_api_key": None,
+}
+
+
+@patch("app.api.routers.auth.set_anthropic_api_key", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_save_api_key(mock_get_user, mock_set_key):
+    mock_get_user.return_value = _USER_DICT
+    token = create_token("11111111-1111-1111-1111-111111111111", "octocat")
+    response = client.put(
+        "/auth/api-key",
+        json={"api_key": "sk-ant-api03-test"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["saved"] is True
+    mock_set_key.assert_called_once()
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_save_api_key_empty_rejected(mock_get_user):
+    mock_get_user.return_value = _USER_DICT
+    token = create_token("11111111-1111-1111-1111-111111111111", "octocat")
+    response = client.put(
+        "/auth/api-key",
+        json={"api_key": "   "},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
+
+
+@patch("app.api.routers.auth.set_anthropic_api_key", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_remove_api_key(mock_get_user, mock_set_key):
+    mock_get_user.return_value = _USER_DICT
+    token = create_token("11111111-1111-1111-1111-111111111111", "octocat")
+    response = client.delete(
+        "/auth/api-key",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["removed"] is True
+    mock_set_key.assert_called_once()

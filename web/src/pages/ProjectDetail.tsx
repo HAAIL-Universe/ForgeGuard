@@ -10,8 +10,31 @@ import AppShell from '../components/AppShell';
 import Skeleton from '../components/Skeleton';
 import ConfirmDialog from '../components/ConfirmDialog';
 import QuestionnaireModal from '../components/QuestionnaireModal';
+import ContractProgress from '../components/ContractProgress';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
+
+const needsKeyBanner = (
+  <div style={{
+    background: '#1E293B',
+    border: '1px solid #92400E',
+    borderRadius: '6px',
+    padding: '10px 16px',
+    marginBottom: '16px',
+    fontSize: '0.8rem',
+    color: '#FBBF24',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+  }}>
+    <span style={{ fontSize: '1rem' }}>🔑</span>
+    <span>
+      Add your Anthropic API key in{' '}
+      <Link to="/settings" style={{ color: '#60A5FA', textDecoration: 'underline' }}>Settings</Link>{' '}
+      to start a build. Questionnaires and audits are free.
+    </span>
+  </div>
+);
 
 interface ProjectDetailData {
   id: string;
@@ -34,7 +57,7 @@ interface ProjectDetailData {
 
 function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
-  const { token } = useAuth();
+  const { user, token } = useAuth();
   const { addToast } = useToast();
   const navigate = useNavigate();
   const [project, setProject] = useState<ProjectDetailData | null>(null);
@@ -44,6 +67,8 @@ function ProjectDetail() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
+  const [contractsExpanded, setContractsExpanded] = useState(false);
+  const [showRegenerate, setShowRegenerate] = useState(false);
 
   useEffect(() => {
     const fetchProject = async () => {
@@ -250,6 +275,7 @@ function ProjectDetail() {
           </Link>
 
           <div
+            onClick={() => setContractsExpanded(!contractsExpanded)}
             style={{
               background: '#1E293B',
               borderRadius: '8px',
@@ -257,9 +283,16 @@ function ProjectDetail() {
               display: 'flex',
               flexDirection: 'column',
               gap: '8px',
+              cursor: 'pointer',
+              transition: 'background 0.15s',
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#263348')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#1E293B')}
           >
-            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Contracts</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Contracts</span>
+              <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: contractsExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+            </div>
             <span style={{ color: '#94A3B8', fontSize: '0.7rem' }}>
               {project.contracts?.length ?? 0} generated
             </span>
@@ -281,6 +314,59 @@ function ProjectDetail() {
             </span>
           </div>
         </div>
+
+        {/* Contracts expanded panel */}
+        {contractsExpanded && hasContracts && (
+          <div style={{ background: '#1E293B', borderRadius: '8px', padding: '16px 20px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '0.9rem' }}>Generated Contracts</h3>
+              <button
+                onClick={() => setShowRegenerate(true)}
+                style={{
+                  background: '#2563EB',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '6px 14px',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#1D4ED8')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#2563EB')}
+              >
+                ↻ Regenerate
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {project.contracts.map((c) => (
+                <div
+                  key={c.contract_type}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '6px 10px',
+                    background: '#0F172A',
+                    borderRadius: '4px',
+                    fontSize: '0.78rem',
+                  }}
+                >
+                  <span style={{ color: '#F8FAFC', textTransform: 'capitalize' }}>
+                    {c.contract_type.replace(/_/g, ' ')}
+                  </span>
+                  <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
+                    v{c.version} · {new Date(c.updated_at).toLocaleDateString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* BYOK warning */}
+        {hasContracts && !buildActive && !(user?.has_anthropic_key) && needsKeyBanner}
 
         {/* Build Actions */}
         <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
@@ -394,6 +480,60 @@ function ProjectDetail() {
           onClose={() => setShowQuestionnaire(false)}
           onContractsGenerated={handleContractsGenerated}
         />
+      )}
+
+      {showRegenerate && project && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}
+          onClick={() => {}}
+        >
+          <div
+            style={{
+              background: '#1E293B',
+              borderRadius: '10px',
+              display: 'flex',
+              flexDirection: 'column',
+              maxWidth: '560px',
+              width: '95%',
+              maxHeight: '80vh',
+              overflow: 'hidden',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem' }}>Regenerating Contracts</h3>
+              <button
+                onClick={() => { setShowRegenerate(false); }}
+                style={{ background: 'transparent', border: 'none', color: '#94A3B8', fontSize: '1.2rem', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+            <ContractProgress
+              projectId={project.id}
+              tokenUsage={{ input_tokens: 0, output_tokens: 0 }}
+              model="claude-haiku-4-5"
+              onComplete={async () => {
+                setShowRegenerate(false);
+                addToast('Contracts regenerated!', 'success');
+                try {
+                  const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  if (res.ok) setProject(await res.json());
+                } catch { /* ignore */ }
+              }}
+            />
+          </div>
+        </div>
       )}
     </AppShell>
   );

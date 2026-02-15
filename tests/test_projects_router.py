@@ -21,7 +21,7 @@ def _set_test_config(monkeypatch):
     monkeypatch.setattr("app.config.settings.APP_URL", "http://localhost:8000")
     monkeypatch.setattr("app.config.settings.GITHUB_WEBHOOK_SECRET", "whsec_test")
     monkeypatch.setattr("app.config.settings.ANTHROPIC_API_KEY", "test-api-key")
-    monkeypatch.setattr("app.config.settings.LLM_QUESTIONNAIRE_MODEL", "claude-3-5-haiku-20241022")
+    monkeypatch.setattr("app.config.settings.LLM_QUESTIONNAIRE_MODEL", "claude-haiku-4-5")
 
 
 USER_ID = "22222222-2222-2222-2222-222222222222"
@@ -248,7 +248,10 @@ def test_questionnaire_message(
         "status": "draft",
         "questionnaire_state": {},
     }
-    mock_llm.return_value = '{"reply": "What does your product do?", "section": "product_intent", "section_complete": false, "extracted_data": null}'
+    mock_llm.return_value = {
+        "text": '{"reply": "What does your product do?", "section": "product_intent", "section_complete": false, "extracted_data": null}',
+        "usage": {"input_tokens": 10, "output_tokens": 20},
+    }
 
     resp = client.post(
         f"/projects/{PROJECT_ID}/questionnaire",
@@ -332,10 +335,13 @@ def test_generate_contracts_incomplete(mock_project, mock_get_user):
 @patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
 @patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
 @patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
+@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
 def test_generate_contracts_success(
-    mock_status, mock_upsert, mock_project, mock_get_user
+    mock_gen, mock_ws, mock_status, mock_upsert, mock_project, mock_get_user
 ):
     mock_get_user.return_value = MOCK_USER
+    mock_gen.return_value = ("# generated content", {"input_tokens": 100, "output_tokens": 200})
     all_sections = [
         "product_intent", "tech_stack", "database_schema", "api_endpoints",
         "ui_requirements", "architectural_boundaries", "deployment_target",
@@ -367,7 +373,7 @@ def test_generate_contracts_success(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["contracts"]) == 10
+    assert len(data["contracts"]) == 9
 
 
 # ---------- GET /projects/{id}/contracts ----------

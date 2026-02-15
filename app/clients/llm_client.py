@@ -47,13 +47,20 @@ async def chat_anthropic(
             raise ValueError(f"Anthropic API {response.status_code}: {err_msg}")
 
     data = response.json()
+    usage = data.get("usage", {})
     content_blocks = data.get("content", [])
     if not content_blocks:
         raise ValueError("Empty response from Anthropic API")
 
     for block in content_blocks:
         if block.get("type") == "text":
-            return block["text"]
+            return {
+                "text": block["text"],
+                "usage": {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                },
+            }
 
     raise ValueError("No text block in Anthropic API response")
 
@@ -112,7 +119,14 @@ async def chat_openai(
     if not content:
         raise ValueError("No content in OpenAI API response")
 
-    return content
+    usage = data.get("usage", {})
+    return {
+        "text": content,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +161,8 @@ async def chat(
 
     Returns
     -------
-    str
-        The assistant's text reply.
+    dict
+        ``{"text": str, "usage": {"input_tokens": int, "output_tokens": int}}``
     """
     if provider == "openai":
         return await chat_openai(api_key, model, system_prompt, messages, max_tokens)

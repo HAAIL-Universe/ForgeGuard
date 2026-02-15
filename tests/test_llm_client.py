@@ -34,6 +34,7 @@ async def test_chat_success(mock_client_cls):
         "content": [{"type": "text", "text": "Hello from Haiku!"}],
         "model": "claude-3-5-haiku-20241022",
         "role": "assistant",
+        "usage": {"input_tokens": 10, "output_tokens": 20},
     })
     mock_client_cls.return_value = mock_client
 
@@ -44,7 +45,9 @@ async def test_chat_success(mock_client_cls):
         messages=[{"role": "user", "content": "Hi"}],
     )
 
-    assert result == "Hello from Haiku!"
+    assert result["text"] == "Hello from Haiku!"
+    assert result["usage"]["input_tokens"] == 10
+    assert result["usage"]["output_tokens"] == 20
     mock_client.post.assert_called_once()
     call_kwargs = mock_client.post.call_args
     body = call_kwargs.kwargs["json"] if "json" in call_kwargs.kwargs else call_kwargs[1]["json"]
@@ -141,6 +144,7 @@ async def test_chat_openai_success(mock_client_cls):
     """Successful OpenAI chat returns message content."""
     mock_client = _make_mock_client({
         "choices": [{"message": {"role": "assistant", "content": "Hello from GPT!"}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 15},
     })
     mock_client_cls.return_value = mock_client
 
@@ -151,7 +155,9 @@ async def test_chat_openai_success(mock_client_cls):
         messages=[{"role": "user", "content": "Hi"}],
     )
 
-    assert result == "Hello from GPT!"
+    assert result["text"] == "Hello from GPT!"
+    assert result["usage"]["input_tokens"] == 5
+    assert result["usage"]["output_tokens"] == 15
     call_kwargs = mock_client.post.call_args
     body = call_kwargs.kwargs.get("json", call_kwargs[1].get("json", {}))
     assert body["model"] == "gpt-4o"
@@ -226,6 +232,7 @@ async def test_chat_dispatches_to_openai(mock_client_cls):
     """chat(provider='openai') routes to OpenAI endpoint."""
     mock_client = _make_mock_client({
         "choices": [{"message": {"role": "assistant", "content": "dispatched"}}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
     })
     mock_client_cls.return_value = mock_client
 
@@ -237,7 +244,7 @@ async def test_chat_dispatches_to_openai(mock_client_cls):
         provider="openai",
     )
 
-    assert result == "dispatched"
+    assert result["text"] == "dispatched"
     call_kwargs = mock_client.post.call_args
     url = call_kwargs.args[0] if call_kwargs.args else call_kwargs[0][0]
     assert "openai.com" in url
@@ -249,6 +256,7 @@ async def test_chat_defaults_to_anthropic(mock_client_cls):
     """chat() defaults to Anthropic."""
     mock_client = _make_mock_client({
         "content": [{"type": "text", "text": "default"}],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
     })
     mock_client_cls.return_value = mock_client
 
@@ -259,7 +267,7 @@ async def test_chat_defaults_to_anthropic(mock_client_cls):
         messages=[{"role": "user", "content": "Hi"}],
     )
 
-    assert result == "default"
+    assert result["text"] == "default"
     call_kwargs = mock_client.post.call_args
     url = call_kwargs.args[0] if call_kwargs.args else call_kwargs[0][0]
     assert "anthropic.com" in url

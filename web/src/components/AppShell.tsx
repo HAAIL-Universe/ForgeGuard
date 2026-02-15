@@ -103,7 +103,6 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
               style={{ width: 28, height: 28, borderRadius: '50%' }}
             />
           )}
-          <span style={{ color: '#94A3B8', fontSize: '0.85rem' }}>{user?.github_login}</span>
           <button
             onClick={logout}
             style={{
@@ -192,11 +191,50 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
                 marginTop: 'auto',
                 padding: '12px 16px',
                 borderTop: '1px solid #1E293B',
-                color: '#64748B',
-                fontSize: '0.7rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
               }}
             >
-              v0.1.0
+              <div
+                onClick={() => navigate('/settings')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  cursor: 'pointer',
+                  flex: 1,
+                  minWidth: 0,
+                }}
+                title={user?.github_login ?? 'Settings'}
+              >
+                {user?.avatar_url && (
+                  <img
+                    src={user.avatar_url}
+                    alt={user.github_login}
+                    style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0 }}
+                  />
+                )}
+                <span style={{ color: '#CBD5E1', fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {user?.github_login}
+                </span>
+              </div>
+              <button
+                onClick={() => navigate('/settings')}
+                title="Settings"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#64748B',
+                  cursor: 'pointer',
+                  fontSize: '0.95rem',
+                  padding: '4px',
+                  flexShrink: 0,
+                  lineHeight: 1,
+                }}
+              >
+                ⚙
+              </button>
             </div>
           </aside>
         )}

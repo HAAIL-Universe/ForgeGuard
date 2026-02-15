@@ -7,11 +7,37 @@ import AuditDetailPage from './pages/AuditDetail';
 import ProjectDetail from './pages/ProjectDetail';
 import BuildProgress from './pages/BuildProgress';
 import BuildComplete from './pages/BuildComplete';
+import Settings from './pages/Settings';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { token } = useAuth();
+  const { token, loading } = useAuth();
+  if (loading) {
+    return (
+      <div
+        style={{
+          background: '#0F172A',
+          color: '#94A3B8',
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <div
+          style={{
+            width: '40px',
+            height: '40px',
+            border: '3px solid #1E293B',
+            borderTop: '3px solid #2563EB',
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }}
+        />
+      </div>
+    );
+  }
   if (!token) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -69,6 +95,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <BuildComplete />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <Settings />
                 </ProtectedRoute>
               }
             />

@@ -7,6 +7,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import ContractProgress from './ContractProgress';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -22,7 +23,6 @@ const SECTION_LABELS: Record<string, string> = {
   ui_requirements: 'UI Requirements',
   architectural_boundaries: 'Boundaries',
   deployment_target: 'Deployment',
-  phase_breakdown: 'Phase Breakdown',
 };
 
 const ALL_SECTIONS = Object.keys(SECTION_LABELS);
@@ -34,6 +34,7 @@ const ALL_SECTIONS = Object.keys(SECTION_LABELS);
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  section?: string;
 }
 
 interface QuestionnaireState {
@@ -150,83 +151,178 @@ const SpeechRecognition =
     : null;
 
 function useSpeechRecognition(onResult: (text: string) => void) {
-  const recognitionRef = useRef<any>(null);
   const [listening, setListening] = useState(false);
   const listeningRef = useRef(false);
+  const recRef = useRef<any>(null);
+  const onResultRef = useRef(onResult);
+  onResultRef.current = onResult;
+  /* Generation counter — bumped on every stop/start so stale restarts are ignored */
+  const genRef = useRef(0);
+  /* Restart timer — ensures only ONE pending restart at a time */
+  const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* Consecutive network-error counter — give up after too many */
+  const netErrCount = useRef(0);
 
-  useEffect(() => {
-    if (!SpeechRecognition) return;
-    const rec = new SpeechRecognition();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = 'en-US';
-
-    rec.onresult = (e: any) => {
-      let finalTranscript = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          finalTranscript += e.results[i][0].transcript;
-        }
-      }
-      if (finalTranscript) {
-        onResult(finalTranscript);
-      }
-    };
-
-    rec.onerror = (e: any) => {
-      /* 'no-speech' and 'aborted' are normal during pauses — auto-restart */
-      if (e.error === 'no-speech' || e.error === 'aborted') {
-        if (listeningRef.current) {
-          try { rec.start(); } catch { /* already running */ }
-        }
-        return;
-      }
-      listeningRef.current = false;
-      setListening(false);
-    };
-
-    /* Browser fires onend after silence; auto-restart if user hasn't toggled off */
-    rec.onend = () => {
-      if (listeningRef.current) {
-        try { rec.start(); } catch { /* already running */ }
-      } else {
-        setListening(false);
-      }
-    };
-
-    recognitionRef.current = rec;
-    return () => {
-      listeningRef.current = false;
-      rec.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  /* Tear down the current instance completely */
+  const killRec = useCallback(() => {
+    const old = recRef.current;
+    recRef.current = null;
+    if (old) {
+      old.onresult = null;
+      old.onerror = null;
+      old.onend = null;
+      old.onaudiostart = null;
+      old.onaudioend = null;
+      try { old.abort(); } catch { /* ignore */ }
+    }
   }, []);
 
-  const toggle = useCallback(() => {
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    if (listening) {
-      listeningRef.current = false;
-      rec.abort();
-      setListening(false);
-    } else {
-      listeningRef.current = true;
-      rec.start();
-      setListening(true);
+  /* Cancel any pending restart */
+  const cancelRestart = useCallback(() => {
+    if (restartTimer.current) {
+      clearTimeout(restartTimer.current);
+      restartTimer.current = null;
     }
-  }, [listening]);
+  }, []);
+
+  /* Build a fresh SpeechRecognition (never reused) */
+  const makeRec = useCallback(() => {
+    if (!SpeechRecognition) return null;
+    const r = new SpeechRecognition();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = 'en-US';
+    return r;
+  }, []);
+
+  const stop = useCallback(() => {
+    console.debug('[mic] stop()');
+    genRef.current++;
+    listeningRef.current = false;
+    setListening(false);
+    cancelRestart();
+    killRec();
+  }, [killRec, cancelRestart]);
+
+  const start = useCallback(() => {
+    if (!SpeechRecognition) return;
+    console.debug('[mic] start()');
+
+    /* Tear down any previous instance */
+    cancelRestart();
+    killRec();
+    netErrCount.current = 0;
+
+    const gen = ++genRef.current;
+
+    /**
+     * Schedule a (re)start with a fresh SpeechRecognition instance.
+     * Uses a delay to let Chrome fully release the network connection
+     * from the previous instance.  Only ONE restart can be pending.
+     */
+    const scheduleStart = (delay: number) => {
+      cancelRestart();
+      restartTimer.current = setTimeout(() => {
+        restartTimer.current = null;
+        if (!listeningRef.current || genRef.current !== gen) return;
+
+        killRec();                        // ensure nothing lingering
+        const r = makeRec();
+        if (!r) return;
+        recRef.current = r;
+
+        r.onresult = (e: any) => {
+          netErrCount.current = 0;        // got results — connection is healthy
+          let finalText = '';
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            if (e.results[i].isFinal) {
+              finalText += e.results[i][0].transcript;
+            }
+          }
+          if (finalText) {
+            console.debug('[mic] transcript:', finalText.slice(0, 60));
+            onResultRef.current(finalText);
+          }
+        };
+
+        r.onerror = (e: any) => {
+          console.debug('[mic] error:', e.error);
+          if (e.error === 'not-allowed') {
+            genRef.current++;
+            listeningRef.current = false;
+            setListening(false);
+            cancelRestart();
+            killRec();
+            return;
+          }
+          if (e.error === 'network') {
+            netErrCount.current++;
+            if (netErrCount.current > 3) {
+              console.debug('[mic] too many network errors, giving up');
+              genRef.current++;
+              listeningRef.current = false;
+              setListening(false);
+              cancelRestart();
+              killRec();
+              return;
+            }
+          }
+          /* Do NOT restart here — onend always fires after onerror
+             and will handle the restart.  Restarting from both causes
+             two competing instances → more network errors. */
+        };
+
+        r.onend = () => {
+          console.debug('[mic] onend, listening=', listeningRef.current, 'gen=', genRef.current === gen);
+          if (listeningRef.current && genRef.current === gen) {
+            /* Delay restart so Chrome fully tears down the connection.
+               Longer delay after network errors to let things settle. */
+            const d = netErrCount.current > 0 ? 800 : 300;
+            console.debug('[mic] scheduling restart in', d, 'ms');
+            scheduleStart(d);
+          }
+        };
+
+        try {
+          r.start();
+          console.debug('[mic] started OK');
+        } catch (e) {
+          console.debug('[mic] start threw:', e);
+          listeningRef.current = false;
+          setListening(false);
+          cancelRestart();
+          killRec();
+        }
+      }, delay);
+    };
+
+    listeningRef.current = true;
+    setListening(true);
+    scheduleStart(50);                     // tiny initial delay
+  }, [killRec, makeRec, cancelRestart]);
+
+  const toggle = useCallback(() => {
+    if (listening) {
+      stop();
+    } else {
+      start();
+    }
+  }, [listening, start, stop]);
+
+  /* Cleanup on unmount */
+  useEffect(() => {
+    return () => {
+      genRef.current++;
+      listeningRef.current = false;
+      cancelRestart();
+      killRec();
+    };
+  }, [killRec]);
 
   return { listening, toggle, supported: !!SpeechRecognition };
 }
 
-function speak(text: string) {
-  if (typeof window === 'undefined' || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.rate = 1.05;
-  utter.pitch = 1;
-  window.speechSynthesis.speak(utter);
-}
+
 
 /* ------------------------------------------------------------------ */
 /*  Progress bar                                                      */
@@ -265,7 +361,6 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [qState, setQState] = useState<QuestionnaireState>({
     current_section: 'product_intent',
     completed_sections: [],
@@ -273,9 +368,12 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
     is_complete: false,
   });
   const [error, setError] = useState('');
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [resetting, setResetting] = useState(false);
+  const [tokenUsage, setTokenUsage] = useState({ input_tokens: 0, output_tokens: 0 });
+  const [generatingContracts, setGeneratingContracts] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const loadedRef = useRef(false);
 
   /* auto-scroll on new messages */
   useEffect(() => {
@@ -294,6 +392,9 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
 
   /* ---- Load existing state on mount ---- */
   useEffect(() => {
+    if (loadedRef.current) return;   // StrictMode double-mount guard
+    loadedRef.current = true;
+
     const load = async () => {
       try {
         const res = await fetch(`${API_BASE}/projects/${projectId}/questionnaire/state`, {
@@ -307,13 +408,21 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
             remaining_sections: state.remaining_sections,
             is_complete: state.is_complete,
           });
-          /* Restore prior conversation */
-          const history: ChatMessage[] = (state.conversation_history ?? []).map(
-            (m: { role: string; content: string }) => ({
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-            }),
-          );
+          /* Restore prior conversation — only messages from the current section */
+          const currentSec = state.current_section;
+          const history: ChatMessage[] = (state.conversation_history ?? [])
+            .filter((m: { section?: string }) => !currentSec || m.section === currentSec)
+            .map(
+              (m: { role: string; content: string; section?: string }) => ({
+                role: m.role as 'user' | 'assistant',
+                content: m.content,
+                section: m.section,
+              }),
+            );
+          /* Restore token usage */
+          if (state.token_usage) {
+            setTokenUsage(state.token_usage);
+          }
           if (history.length > 0) {
             setMessages(history);
           } else if (!state.is_complete) {
@@ -367,18 +476,31 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
       }
 
       const data = await res.json();
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
+
+      /* Detect section transition — clear visible messages for a fresh screen */
+      const newCurrentSection = data.remaining_sections[0] ?? null;
+      const prevSection = qState.current_section;
+      const sectionChanged = prevSection && newCurrentSection && prevSection !== newCurrentSection;
+
+      if (sectionChanged) {
+        /* Section just completed — start fresh with only the transition reply */
+        setMessages([{ role: 'assistant', content: data.reply, section: newCurrentSection }]);
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: data.reply, section: newCurrentSection ?? prevSection ?? undefined }]);
+      }
+
       setQState({
-        current_section: data.remaining_sections[0] ?? null,
+        current_section: newCurrentSection,
         completed_sections: data.completed_sections,
         remaining_sections: data.remaining_sections,
         is_complete: data.is_complete,
       });
 
-      /* auto-read assistant reply with TTS */
-      if (voiceEnabled) {
-        speak(data.reply);
+      /* Update token usage */
+      if (data.token_usage) {
+        setTokenUsage(data.token_usage);
       }
+
     } catch {
       setError('Network error');
     } finally {
@@ -387,25 +509,8 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
   };
 
   /* ---- Generate contracts ---- */
-  const handleGenerate = async () => {
-    setGenerating(true);
-    setError('');
-    try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/generate`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        onContractsGenerated();
-      } else {
-        const d = await res.json().catch(() => ({}));
-        setError(d.detail || 'Failed to generate contracts');
-      }
-    } catch {
-      setError('Network error');
-    } finally {
-      setGenerating(false);
-    }
+  const handleStartGenerate = () => {
+    setGeneratingContracts(true);
   };
 
   /* ---- Textarea auto-grow + Ctrl/Cmd+Enter submit ---- */
@@ -442,21 +547,79 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
                   ? `Section: ${SECTION_LABELS[qState.current_section] ?? qState.current_section}`
                   : 'Starting...'}
             </p>
+            <p style={{ margin: '2px 0 0', fontSize: '0.6rem', color: '#475569', letterSpacing: '0.3px' }}>
+              Model: claude-haiku-4-5
+            </p>
+            {/* Context window meter */}
+            {(tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0) && (() => {
+              const totalTokens = tokenUsage.input_tokens + tokenUsage.output_tokens;
+              const contextWindow = 200_000;
+              const pct = Math.min((totalTokens / contextWindow) * 100, 100);
+              const barColor = pct < 50 ? '#22C55E' : pct < 80 ? '#F59E0B' : '#EF4444';
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                  <div style={{
+                    flex: 1,
+                    height: '4px',
+                    background: '#1E293B',
+                    borderRadius: '2px',
+                    overflow: 'hidden',
+                    maxWidth: '120px',
+                  }}>
+                    <div style={{
+                      width: `${pct}%`,
+                      height: '100%',
+                      background: barColor,
+                      borderRadius: '2px',
+                      transition: 'width 0.3s',
+                    }} />
+                  </div>
+                  <span style={{ fontSize: '0.55rem', color: '#64748B', whiteSpace: 'nowrap' }}>
+                    {totalTokens.toLocaleString()} / 200K
+                  </span>
+                </div>
+              );
+            })()}
           </div>
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            {/* Voice toggle */}
+            {/* Restart questionnaire */}
             <button
-              onClick={() => setVoiceEnabled((v) => !v)}
-              title={voiceEnabled ? 'Mute assistant voice' : 'Enable assistant voice'}
-              data-testid="voice-toggle"
+              onClick={async () => {
+                if (!confirm('Restart the questionnaire? All answers will be cleared.')) return;
+                setResetting(true);
+                try {
+                  const res = await fetch(`${API_BASE}/projects/${projectId}/questionnaire`, {
+                    method: 'DELETE',
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  if (res.ok) {
+                    setMessages([]);
+                    setQState({
+                      current_section: 'product_intent',
+                      completed_sections: [],
+                      remaining_sections: [...ALL_SECTIONS],
+                      is_complete: false,
+                    });
+                    setInput('');
+                    setError('');
+                  }
+                } catch { /* ignore */ }
+                setResetting(false);
+              }}
+              disabled={resetting}
+              title="Restart questionnaire"
+              data-testid="restart-btn"
               style={{
                 ...btnGhost,
                 padding: '6px 10px',
-                fontSize: '1rem',
-                opacity: voiceEnabled ? 1 : 0.5,
+                fontSize: '0.7rem',
+                fontWeight: 600,
+                color: '#F59E0B',
+                borderColor: '#F59E0B33',
+                opacity: resetting ? 0.5 : 1,
               }}
             >
-              {voiceEnabled ? '🔊' : '🔇'}
+              ↻ Restart
             </button>
             <button onClick={onClose} style={{ ...btnGhost, padding: '6px 10px' }} data-testid="questionnaire-close">
               ✕
@@ -514,8 +677,18 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           </div>
         )}
 
+        {/* Contract generation progress */}
+        {generatingContracts && (
+          <ContractProgress
+            projectId={projectId}
+            tokenUsage={tokenUsage}
+            model="claude-haiku-4-5"
+            onComplete={onContractsGenerated}
+          />
+        )}
+
         {/* Generate contracts banner */}
-        {qState.is_complete && (
+        {qState.is_complete && !generatingContracts && (
           <div
             style={{
               padding: '12px 20px',
@@ -533,17 +706,15 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
               ✓ All sections complete — ready to generate contracts
             </span>
             <button
-              onClick={handleGenerate}
-              disabled={generating}
+              onClick={handleStartGenerate}
               data-testid="generate-contracts-btn"
               style={{
                 ...btnPrimary,
                 background: '#16A34A',
-                opacity: generating ? 0.6 : 1,
-                cursor: generating ? 'wait' : 'pointer',
+                cursor: 'pointer',
               }}
             >
-              {generating ? 'Generating...' : 'Generate Contracts'}
+              Generate Contracts
             </button>
           </div>
         )}

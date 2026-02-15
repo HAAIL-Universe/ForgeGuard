@@ -184,6 +184,7 @@ export default function BuildComplete() {
           <h3 style={{ color: '#F8FAFC', margin: '0 0 12px' }}>Token Usage by Phase</h3>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #334155', color: '#94A3B8', fontSize: 13 }}>
             <span style={{ flex: 2 }}>Phase</span>
+            <span style={{ flex: 1 }}>Model</span>
             <span style={{ flex: 1, textAlign: 'right' }}>Input</span>
             <span style={{ flex: 1, textAlign: 'right' }}>Output</span>
             <span style={{ flex: 1, textAlign: 'right' }}>Cost</span>
@@ -191,6 +192,7 @@ export default function BuildComplete() {
           {summary.cost.phases.map((entry, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #1E293B', color: '#F8FAFC', fontSize: 14 }}>
               <span style={{ flex: 2 }}>{entry.phase}</span>
+              <span style={{ flex: 1, color: '#A78BFA', fontSize: 12 }}>{entry.model.replace('claude-', '')}</span>
               <span style={{ flex: 1, textAlign: 'right', color: '#94A3B8' }}>{formatTokens(entry.input_tokens)}</span>
               <span style={{ flex: 1, textAlign: 'right', color: '#94A3B8' }}>{formatTokens(entry.output_tokens)}</span>
               <span style={{ flex: 1, textAlign: 'right' }}>${entry.estimated_cost_usd.toFixed(4)}</span>
@@ -198,6 +200,7 @@ export default function BuildComplete() {
           ))}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', color: '#F8FAFC', fontWeight: 600, fontSize: 14 }}>
             <span style={{ flex: 2 }}>Total</span>
+            <span style={{ flex: 1 }}></span>
             <span style={{ flex: 1, textAlign: 'right' }}>{formatTokens(summary.cost.total_input_tokens)}</span>
             <span style={{ flex: 1, textAlign: 'right' }}>{formatTokens(summary.cost.total_output_tokens)}</span>
             <span style={{ flex: 1, textAlign: 'right' }}>${summary.cost.total_cost_usd.toFixed(4)}</span>
