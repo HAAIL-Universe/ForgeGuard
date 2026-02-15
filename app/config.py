@@ -47,6 +47,9 @@ class Settings:
         "LLM_QUESTIONNAIRE_MODEL", "claude-3-5-haiku-20241022"
     )
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "")  # "openai" | "anthropic" | auto
     LLM_BUILDER_MODEL: str = os.getenv(
         "LLM_BUILDER_MODEL", "claude-opus-4-6"
     )

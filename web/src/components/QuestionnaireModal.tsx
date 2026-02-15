@@ -1,0 +1,626 @@
+/**
+ * QuestionnaireModal -- voice-first chat modal for the Forge intake questionnaire.
+ *
+ * Walks the user through 8 sections to collect all information needed
+ * to generate Forge contract files. Supports both voice (Web Speech API)
+ * and text input.
+ */
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
+
+/* ------------------------------------------------------------------ */
+/*  Section labels for progress display                               */
+/* ------------------------------------------------------------------ */
+
+const SECTION_LABELS: Record<string, string> = {
+  product_intent: 'Product Intent',
+  tech_stack: 'Tech Stack',
+  database_schema: 'Database Schema',
+  api_endpoints: 'API Endpoints',
+  ui_requirements: 'UI Requirements',
+  architectural_boundaries: 'Boundaries',
+  deployment_target: 'Deployment',
+  phase_breakdown: 'Phase Breakdown',
+};
+
+const ALL_SECTIONS = Object.keys(SECTION_LABELS);
+
+/* ------------------------------------------------------------------ */
+/*  Types                                                             */
+/* ------------------------------------------------------------------ */
+
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface QuestionnaireState {
+  current_section: string | null;
+  completed_sections: string[];
+  remaining_sections: string[];
+  is_complete: boolean;
+}
+
+interface Props {
+  projectId: string;
+  projectName: string;
+  onClose: () => void;
+  onContractsGenerated: () => void;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Styles                                                            */
+/* ------------------------------------------------------------------ */
+
+const overlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  backgroundColor: 'rgba(0,0,0,0.65)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 100,
+};
+
+const modalStyle: React.CSSProperties = {
+  background: '#1E293B',
+  borderRadius: '10px',
+  display: 'flex',
+  flexDirection: 'column',
+  maxWidth: '640px',
+  width: '95%',
+  height: '80vh',
+  maxHeight: '720px',
+  overflow: 'hidden',
+};
+
+const headerStyle: React.CSSProperties = {
+  padding: '16px 20px',
+  borderBottom: '1px solid #334155',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  flexShrink: 0,
+};
+
+const messagesStyle: React.CSSProperties = {
+  flex: 1,
+  overflowY: 'auto',
+  padding: '16px 20px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+};
+
+const inputBarStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '8px',
+  padding: '12px 20px',
+  borderTop: '1px solid #334155',
+  flexShrink: 0,
+  alignItems: 'flex-end',
+};
+
+const textareaStyle: React.CSSProperties = {
+  flex: 1,
+  padding: '10px 14px',
+  background: '#0F172A',
+  border: '1px solid #334155',
+  borderRadius: '8px',
+  color: '#F8FAFC',
+  fontSize: '0.875rem',
+  resize: 'none',
+  fontFamily: 'inherit',
+  lineHeight: '1.4',
+  minHeight: '44px',
+  maxHeight: '120px',
+};
+
+const btnPrimary: React.CSSProperties = {
+  background: '#2563EB',
+  color: '#fff',
+  border: 'none',
+  borderRadius: '8px',
+  padding: '10px 16px',
+  cursor: 'pointer',
+  fontSize: '0.8rem',
+  fontWeight: 600,
+  whiteSpace: 'nowrap',
+};
+
+const btnGhost: React.CSSProperties = {
+  background: 'transparent',
+  color: '#94A3B8',
+  border: '1px solid #334155',
+  borderRadius: '8px',
+  padding: '10px 14px',
+  cursor: 'pointer',
+  fontSize: '0.8rem',
+};
+
+/* ------------------------------------------------------------------ */
+/*  Speech helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+const SpeechRecognition =
+  typeof window !== 'undefined'
+    ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    : null;
+
+function useSpeechRecognition(onResult: (text: string) => void) {
+  const recognitionRef = useRef<any>(null);
+  const [listening, setListening] = useState(false);
+  const listeningRef = useRef(false);
+
+  useEffect(() => {
+    if (!SpeechRecognition) return;
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+
+    rec.onresult = (e: any) => {
+      let finalTranscript = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          finalTranscript += e.results[i][0].transcript;
+        }
+      }
+      if (finalTranscript) {
+        onResult(finalTranscript);
+      }
+    };
+
+    rec.onerror = (e: any) => {
+      /* 'no-speech' and 'aborted' are normal during pauses — auto-restart */
+      if (e.error === 'no-speech' || e.error === 'aborted') {
+        if (listeningRef.current) {
+          try { rec.start(); } catch { /* already running */ }
+        }
+        return;
+      }
+      listeningRef.current = false;
+      setListening(false);
+    };
+
+    /* Browser fires onend after silence; auto-restart if user hasn't toggled off */
+    rec.onend = () => {
+      if (listeningRef.current) {
+        try { rec.start(); } catch { /* already running */ }
+      } else {
+        setListening(false);
+      }
+    };
+
+    recognitionRef.current = rec;
+    return () => {
+      listeningRef.current = false;
+      rec.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggle = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    if (listening) {
+      listeningRef.current = false;
+      rec.abort();
+      setListening(false);
+    } else {
+      listeningRef.current = true;
+      rec.start();
+      setListening(true);
+    }
+  }, [listening]);
+
+  return { listening, toggle, supported: !!SpeechRecognition };
+}
+
+function speak(text: string) {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.05;
+  utter.pitch = 1;
+  window.speechSynthesis.speak(utter);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Progress bar                                                      */
+/* ------------------------------------------------------------------ */
+
+function ProgressBar({ completed, current }: { completed: string[]; current: string | null }) {
+  return (
+    <div style={{ display: 'flex', gap: '3px', padding: '0 20px 10px' }} data-testid="questionnaire-progress">
+      {ALL_SECTIONS.map((s) => {
+        const done = completed.includes(s);
+        const active = s === current;
+        return (
+          <div
+            key={s}
+            title={SECTION_LABELS[s]}
+            style={{
+              flex: 1,
+              height: '4px',
+              borderRadius: '2px',
+              background: done ? '#22C55E' : active ? '#2563EB' : '#334155',
+              transition: 'background 0.3s',
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Component                                                         */
+/* ------------------------------------------------------------------ */
+
+function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenerated }: Props) {
+  const { token } = useAuth();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [qState, setQState] = useState<QuestionnaireState>({
+    current_section: 'product_intent',
+    completed_sections: [],
+    remaining_sections: [...ALL_SECTIONS],
+    is_complete: false,
+  });
+  const [error, setError] = useState('');
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /* auto-scroll on new messages */
+  useEffect(() => {
+    if (typeof messagesEndRef.current?.scrollIntoView === 'function') {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  /* voice recognition */
+  const handleVoiceResult = useCallback((text: string) => {
+    setInput((prev) => (prev ? `${prev} ${text}` : text));
+    textareaRef.current?.focus();
+  }, []);
+
+  const { listening, toggle: toggleMic, supported: micSupported } = useSpeechRecognition(handleVoiceResult);
+
+  /* ---- Load existing state on mount ---- */
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/projects/${projectId}/questionnaire/state`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const state = await res.json();
+          setQState({
+            current_section: state.current_section,
+            completed_sections: state.completed_sections,
+            remaining_sections: state.remaining_sections,
+            is_complete: state.is_complete,
+          });
+          /* Restore prior conversation */
+          const history: ChatMessage[] = (state.conversation_history ?? []).map(
+            (m: { role: string; content: string }) => ({
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            }),
+          );
+          if (history.length > 0) {
+            setMessages(history);
+          } else if (!state.is_complete) {
+            sendMessage("Let's get started. What would you like to build?", true);
+          }
+          if (state.is_complete && history.length === 0) {
+            setMessages([
+              {
+                role: 'assistant',
+                content:
+                  'The questionnaire is already complete! You can generate your contracts now.',
+              },
+            ]);
+          }
+        }
+      } catch {
+        /* ignore — we'll start fresh */
+      }
+    };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, token]);
+
+  /* ---- Send message ---- */
+  const sendMessage = async (text?: string, isInitial?: boolean) => {
+    const content = text ?? input.trim();
+    if (!content) return;
+
+    if (!isInitial) {
+      setMessages((prev) => [...prev, { role: 'user', content }]);
+    }
+    setInput('');
+    setSending(true);
+    setError('');
+
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/questionnaire`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: content }),
+      });
+
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.detail || 'Failed to send message');
+        setSending(false);
+        return;
+      }
+
+      const data = await res.json();
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
+      setQState({
+        current_section: data.remaining_sections[0] ?? null,
+        completed_sections: data.completed_sections,
+        remaining_sections: data.remaining_sections,
+        is_complete: data.is_complete,
+      });
+
+      /* auto-read assistant reply with TTS */
+      if (voiceEnabled) {
+        speak(data.reply);
+      }
+    } catch {
+      setError('Network error');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  /* ---- Generate contracts ---- */
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/generate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        onContractsGenerated();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setError(d.detail || 'Failed to generate contracts');
+      }
+    } catch {
+      setError('Network error');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  /* ---- Textarea auto-grow + Ctrl/Cmd+Enter submit ---- */
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      sendMessage();
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  const autoGrow = (el: HTMLTextAreaElement) => {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  };
+
+  /* ---- Render ---- */
+  return (
+    <div style={overlayStyle} onClick={onClose} data-testid="questionnaire-overlay">
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()} data-testid="questionnaire-modal">
+        {/* Header */}
+        <div style={headerStyle}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#F8FAFC' }}>
+              Project Intake — {projectName}
+            </h3>
+            <p style={{ margin: '2px 0 0', fontSize: '0.7rem', color: '#64748B' }}>
+              {qState.is_complete
+                ? 'All sections complete ✓'
+                : qState.current_section
+                  ? `Section: ${SECTION_LABELS[qState.current_section] ?? qState.current_section}`
+                  : 'Starting...'}
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            {/* Voice toggle */}
+            <button
+              onClick={() => setVoiceEnabled((v) => !v)}
+              title={voiceEnabled ? 'Mute assistant voice' : 'Enable assistant voice'}
+              data-testid="voice-toggle"
+              style={{
+                ...btnGhost,
+                padding: '6px 10px',
+                fontSize: '1rem',
+                opacity: voiceEnabled ? 1 : 0.5,
+              }}
+            >
+              {voiceEnabled ? '🔊' : '🔇'}
+            </button>
+            <button onClick={onClose} style={{ ...btnGhost, padding: '6px 10px' }} data-testid="questionnaire-close">
+              ✕
+            </button>
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <ProgressBar completed={qState.completed_sections} current={qState.current_section} />
+
+        {/* Messages */}
+        <div style={messagesStyle} data-testid="questionnaire-messages">
+          {messages.map((msg, i) => (
+            <div
+              key={i}
+              style={{
+                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                maxWidth: '85%',
+                padding: '10px 14px',
+                borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                background: msg.role === 'user' ? '#2563EB' : '#0F172A',
+                color: '#F8FAFC',
+                fontSize: '0.85rem',
+                lineHeight: '1.45',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {msg.content}
+            </div>
+          ))}
+
+          {sending && (
+            <div
+              style={{
+                alignSelf: 'flex-start',
+                padding: '10px 14px',
+                borderRadius: '14px 14px 14px 4px',
+                background: '#0F172A',
+                color: '#64748B',
+                fontSize: '0.85rem',
+              }}
+            >
+              <span className="typing-dots">Thinking…</span>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div style={{ padding: '0 20px 8px', color: '#EF4444', fontSize: '0.75rem' }} data-testid="questionnaire-error">
+            {error}
+          </div>
+        )}
+
+        {/* Generate contracts banner */}
+        {qState.is_complete && (
+          <div
+            style={{
+              padding: '12px 20px',
+              borderTop: '1px solid #334155',
+              background: 'rgba(34,197,94,0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              flexShrink: 0,
+            }}
+            data-testid="generate-banner"
+          >
+            <span style={{ color: '#22C55E', fontSize: '0.8rem', fontWeight: 600 }}>
+              ✓ All sections complete — ready to generate contracts
+            </span>
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              data-testid="generate-contracts-btn"
+              style={{
+                ...btnPrimary,
+                background: '#16A34A',
+                opacity: generating ? 0.6 : 1,
+                cursor: generating ? 'wait' : 'pointer',
+              }}
+            >
+              {generating ? 'Generating...' : 'Generate Contracts'}
+            </button>
+          </div>
+        )}
+
+        {/* Input bar */}
+        <div style={inputBarStyle}>
+          {/* Mic button */}
+          {micSupported && (
+            <button
+              onClick={toggleMic}
+              title={listening ? 'Stop listening' : 'Start voice input'}
+              data-testid="mic-btn"
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '50%',
+                border: 'none',
+                background: listening ? '#EF4444' : '#334155',
+                color: '#fff',
+                fontSize: '1.1rem',
+                cursor: 'pointer',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'background 0.2s',
+                animation: listening ? 'pulse 1.5s infinite' : 'none',
+              }}
+            >
+              🎙️
+            </button>
+          )}
+
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              autoGrow(e.target);
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder={listening ? 'Listening...' : 'Type or tap the mic to speak...'}
+            rows={1}
+            disabled={sending}
+            data-testid="questionnaire-input"
+            style={{
+              ...textareaStyle,
+              opacity: sending ? 0.5 : 1,
+            }}
+          />
+
+          <button
+            onClick={() => sendMessage()}
+            disabled={sending || !input.trim()}
+            data-testid="questionnaire-send"
+            style={{
+              ...btnPrimary,
+              opacity: sending || !input.trim() ? 0.4 : 1,
+              cursor: sending || !input.trim() ? 'default' : 'pointer',
+              height: '44px',
+            }}
+          >
+            Send
+          </button>
+        </div>
+      </div>
+
+      {/* Pulse animation for mic */}
+      <style>{`
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+          70% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+          100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+export default QuestionnaireModal;

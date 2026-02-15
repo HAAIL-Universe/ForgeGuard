@@ -8,6 +8,7 @@ import CheckResultCard from '../components/CheckResultCard';
 import Skeleton, { SkeletonCard, SkeletonRow } from '../components/Skeleton';
 import EmptyState from '../components/EmptyState';
 import CreateProjectModal from '../components/CreateProjectModal';
+import QuestionnaireModal from '../components/QuestionnaireModal';
 
 describe('Login', () => {
   it('renders the sign in button', () => {
@@ -191,5 +192,164 @@ describe('CreateProjectModal', () => {
     fireEvent.click(screen.getByTestId('gh-select'));
     fireEvent.click(screen.getByTestId('create-project-submit'));
     expect(screen.getByText('Select a repository')).toBeInTheDocument();
+  });
+});
+
+describe('QuestionnaireModal', () => {
+  beforeEach(() => {
+    /* Mock fetch: first call = state endpoint, subsequent = questionnaire POST */
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/questionnaire/state')) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                current_section: 'product_intent',
+                completed_sections: [],
+                remaining_sections: [
+                  'product_intent',
+                  'tech_stack',
+                  'database_schema',
+                  'api_endpoints',
+                  'ui_requirements',
+                  'architectural_boundaries',
+                  'deployment_target',
+                  'phase_breakdown',
+                ],
+                is_complete: false,
+                conversation_history: [],
+              }),
+          });
+        }
+        if (url.includes('/questionnaire') && !url.includes('/state')) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                reply: 'Tell me about your product.',
+                section: 'product_intent',
+                completed_sections: [],
+                remaining_sections: [
+                  'product_intent',
+                  'tech_stack',
+                  'database_schema',
+                  'api_endpoints',
+                  'ui_requirements',
+                  'architectural_boundaries',
+                  'deployment_target',
+                  'phase_breakdown',
+                ],
+                is_complete: false,
+              }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders modal with header, progress, input and send button', async () => {
+    render(
+      <QuestionnaireModal
+        projectId="test-id"
+        projectName="TestProject"
+        onClose={() => {}}
+        onContractsGenerated={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('questionnaire-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('questionnaire-progress')).toBeInTheDocument();
+    expect(screen.getByTestId('questionnaire-input')).toBeInTheDocument();
+    expect(screen.getByTestId('questionnaire-send')).toBeInTheDocument();
+    expect(screen.getByText(/TestProject/)).toBeInTheDocument();
+  });
+
+  it('calls onClose when close button is clicked', async () => {
+    const onClose = vi.fn();
+    render(
+      <QuestionnaireModal
+        projectId="test-id"
+        projectName="Test"
+        onClose={onClose}
+        onContractsGenerated={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('questionnaire-close'));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('calls onClose when overlay is clicked', async () => {
+    const onClose = vi.fn();
+    render(
+      <QuestionnaireModal
+        projectId="test-id"
+        projectName="Test"
+        onClose={onClose}
+        onContractsGenerated={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('questionnaire-overlay'));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('has a voice toggle button', () => {
+    render(
+      <QuestionnaireModal
+        projectId="test-id"
+        projectName="Test"
+        onClose={() => {}}
+        onContractsGenerated={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('voice-toggle')).toBeInTheDocument();
+  });
+
+  it('shows generate banner when questionnaire is complete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            current_section: null,
+            completed_sections: [
+              'product_intent',
+              'tech_stack',
+              'database_schema',
+              'api_endpoints',
+              'ui_requirements',
+              'architectural_boundaries',
+              'deployment_target',
+              'phase_breakdown',
+            ],
+            remaining_sections: [],
+            is_complete: true,
+            conversation_history: [
+              { role: 'assistant', content: 'All done!' },
+            ],
+          }),
+      }),
+    );
+
+    render(
+      <QuestionnaireModal
+        projectId="test-id"
+        projectName="Test"
+        onClose={() => {}}
+        onContractsGenerated={() => {}}
+      />,
+    );
+
+    /* Wait for state to load */
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('generate-banner')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('generate-contracts-btn')).toBeInTheDocument();
   });
 });

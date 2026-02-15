@@ -9,6 +9,7 @@ import { useToast } from '../context/ToastContext';
 import AppShell from '../components/AppShell';
 import Skeleton from '../components/Skeleton';
 import ConfirmDialog from '../components/ConfirmDialog';
+import QuestionnaireModal from '../components/QuestionnaireModal';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -40,6 +41,9 @@ function ProjectDetail() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [showQuestionnaire, setShowQuestionnaire] = useState(false);
 
   useEffect(() => {
     const fetchProject = async () => {
@@ -58,7 +62,15 @@ function ProjectDetail() {
     fetchProject();
   }, [projectId, token, addToast]);
 
+  const hasContracts = (project?.contracts?.length ?? 0) > 0;
+
   const handleStartBuild = async () => {
+    /* If no contracts exist, open the questionnaire first */
+    if (!hasContracts) {
+      setShowQuestionnaire(true);
+      return;
+    }
+
     setStarting(true);
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
@@ -77,6 +89,18 @@ function ProjectDetail() {
     } finally {
       setStarting(false);
     }
+  };
+
+  const handleContractsGenerated = async () => {
+    setShowQuestionnaire(false);
+    addToast('Contracts generated!', 'success');
+    /* Refresh project data to pick up contracts */
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setProject(await res.json());
+    } catch { /* ignore */ }
   };
 
   const handleCancelBuild = async () => {
@@ -100,6 +124,28 @@ function ProjectDetail() {
       addToast('Network error cancelling build');
     }
     setShowCancelConfirm(false);
+  };
+
+  const handleDeleteProject = async () => {
+    setDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        addToast('Project removed', 'success');
+        navigate('/');
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to remove project' }));
+        addToast(data.detail || 'Failed to remove project');
+      }
+    } catch {
+      addToast('Network error removing project');
+    } finally {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
   };
 
   if (loading) {
@@ -151,6 +197,26 @@ function ProjectDetail() {
           >
             {project.status}
           </span>
+          <div style={{ marginLeft: 'auto' }}>
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              style={{
+                background: 'transparent',
+                color: '#EF4444',
+                border: '1px solid #EF4444',
+                borderRadius: '6px',
+                padding: '6px 14px',
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              Remove
+            </button>
+          </div>
         </div>
 
         {project.description && (
@@ -234,7 +300,7 @@ function ProjectDetail() {
                 opacity: starting ? 0.6 : 1,
               }}
             >
-              {starting ? 'Starting...' : 'Start Build'}
+              {starting ? 'Starting...' : hasContracts ? 'Start Build' : 'Start Build — Begin Intake'}
             </button>
           )}
           {buildActive && (
@@ -308,6 +374,25 @@ function ProjectDetail() {
           confirmLabel="Cancel Build"
           onConfirm={handleCancelBuild}
           onCancel={() => setShowCancelConfirm(false)}
+        />
+      )}
+
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title="Remove Project"
+          message={`Are you sure you want to remove "${project.name}"? This will delete all contracts, builds, and questionnaire data. This cannot be undone.`}
+          confirmLabel={deleting ? 'Removing...' : 'Remove Project'}
+          onConfirm={handleDeleteProject}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+
+      {showQuestionnaire && project && (
+        <QuestionnaireModal
+          projectId={project.id}
+          projectName={project.name}
+          onClose={() => setShowQuestionnaire(false)}
+          onContractsGenerated={handleContractsGenerated}
         />
       )}
     </AppShell>

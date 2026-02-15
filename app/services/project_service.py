@@ -67,22 +67,28 @@ The questionnaire has these sections (in order):
 7. deployment_target — Where it runs, CI/CD, infrastructure
 8. phase_breakdown — Implementation phases with deliverables and exit criteria
 
-RULES:
-- Ask focused questions for the current section. One section at a time.
-- When you have enough info for the current section, summarize what you captured
-  and move to the next section.
-- Your response MUST be valid JSON with this structure:
+CRITICAL RULES:
+- Ask AT MOST 2-3 focused questions per section, then COMPLETE IT.
+- Do NOT over-ask. If the user gives a reasonable answer, mark the section
+  complete and move on. You can infer sensible defaults for anything unclear.
+- One section at a time. After completing one, immediately ask about the next.
+- If the user's single answer covers multiple sections, mark ALL covered
+  sections as complete in one response.
+- Your response MUST be ONLY valid JSON — no markdown fences, no extra text:
   {
-    "reply": "<your message to the user>",
+    "reply": "<your conversational message to the user>",
     "section": "<current section name>",
     "section_complete": true|false,
     "extracted_data": { <key-value pairs of captured information> }
   }
-- If section_complete is true, extracted_data must contain the final data for
-  that section.
-- Be conversational but efficient. Don't ask unnecessary follow-ups if the user
-  gave comprehensive answers.
-- When all sections are complete, set section to "complete" and section_complete
+- When section_complete is true, extracted_data MUST contain the collected data.
+- When section_complete is false, extracted_data should be {} or partial data.
+- ALWAYS set section_complete to true after AT MOST 2 exchanges per section.
+  Don't let any section drag on — keep momentum. The user sees a progress bar;
+  it must visibly advance.
+- Be conversational but FAST. Prefer completing a section and moving on over
+  asking the perfect follow-up question.
+- When all sections are done, set section to "complete" and section_complete
   to true.
 """
 
@@ -199,23 +205,62 @@ async def process_questionnaire_message(
         f"Previously collected data: {json.dumps(answers, indent=2)}"
     )
 
-    llm_messages = [{"role": "user", "content": context_msg}]
-    llm_messages.extend(history)
-    llm_messages.append({"role": "user", "content": message})
+    # Anthropic requires strictly alternating user/assistant roles.
+    # Merge context into the first user message and ensure no consecutive
+    # same-role messages exist.
+    llm_messages: list[dict] = []
+    for m in history:
+        if llm_messages and llm_messages[-1]["role"] == m["role"]:
+            # Merge consecutive same-role messages
+            llm_messages[-1]["content"] += "\n\n" + m["content"]
+        else:
+            llm_messages.append({"role": m["role"], "content": m["content"]})
+
+    # Append the new user message
+    new_user_content = message
+
+    if llm_messages and llm_messages[-1]["role"] == "user":
+        llm_messages[-1]["content"] += "\n\n" + new_user_content
+    else:
+        llm_messages.append({"role": "user", "content": new_user_content})
+
+    # Pick LLM provider: explicit env var > auto-detect by available key
+    provider = settings.LLM_PROVIDER.strip().lower() if settings.LLM_PROVIDER else ""
+    if not provider:
+        provider = "anthropic" if settings.ANTHROPIC_API_KEY else "openai"
+
+    if provider == "openai":
+        llm_api_key = settings.OPENAI_API_KEY
+        llm_model = settings.OPENAI_MODEL
+    else:
+        llm_api_key = settings.ANTHROPIC_API_KEY
+        llm_model = settings.LLM_QUESTIONNAIRE_MODEL
+
+    # Build dynamic system prompt with project context
+    dynamic_system = (
+        f"{_SYSTEM_PROMPT}\n\n"
+        f"--- PROJECT CONTEXT ---\n"
+        f"{context_msg}"
+    )
 
     try:
         raw_reply = await llm_chat(
-            api_key=settings.ANTHROPIC_API_KEY,
-            model=settings.LLM_QUESTIONNAIRE_MODEL,
-            system_prompt=_SYSTEM_PROMPT,
+            api_key=llm_api_key,
+            model=llm_model,
+            system_prompt=dynamic_system,
             messages=llm_messages,
+            provider=provider,
         )
     except Exception as exc:
         logger.exception("LLM chat failed for project %s", project_id)
         raise ValueError(f"LLM service error: {exc}") from exc
 
+    logger.info("LLM raw response (first 500 chars): %s", raw_reply[:500])
+
     # Parse the structured JSON response from the LLM
     parsed = _parse_llm_response(raw_reply)
+    logger.info("Parsed LLM response — section_complete=%s, section=%s",
+                parsed.get("section_complete"), parsed.get("section"))
 
     # Update state based on LLM response
     history.append({"role": "user", "content": message})
@@ -254,7 +299,7 @@ async def get_questionnaire_state(
     user_id: UUID,
     project_id: UUID,
 ) -> dict:
-    """Return current questionnaire progress."""
+    """Return current questionnaire progress and conversation history."""
     project = await get_project_by_id(project_id)
     if not project:
         raise ValueError("Project not found")
@@ -262,7 +307,9 @@ async def get_questionnaire_state(
         raise ValueError("Project not found")
 
     qs = project.get("questionnaire_state") or {}
-    return _questionnaire_progress(qs)
+    progress = _questionnaire_progress(qs)
+    progress["conversation_history"] = qs.get("conversation_history", [])
+    return progress
 
 
 # ---------------------------------------------------------------------------
@@ -391,24 +438,41 @@ def _questionnaire_progress(qs: dict) -> dict:
 def _parse_llm_response(raw: str) -> dict:
     """Parse structured JSON from LLM response.
 
-    Falls back to treating the whole reply as plain text if JSON parsing fails.
+    Tries multiple strategies to extract valid JSON, then falls back to
+    treating the whole reply as plain text.
     """
-    # Try to extract JSON from the response (might be wrapped in markdown)
+    import re as _re
+
     text = raw.strip()
+
+    # Strategy 1: strip markdown code fences (```json ... ```)
     if text.startswith("```"):
-        # Strip markdown code fences
         lines = text.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
+    # Strategy 2: direct parse
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict) and "reply" in parsed:
+            logger.debug("LLM JSON parsed directly")
             return parsed
     except (json.JSONDecodeError, TypeError):
         pass
 
+    # Strategy 3: find first { ... } block in the text
+    brace_match = _re.search(r'\{[\s\S]*\}', text)
+    if brace_match:
+        try:
+            parsed = json.loads(brace_match.group())
+            if isinstance(parsed, dict) and "reply" in parsed:
+                logger.debug("LLM JSON extracted via brace search")
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     # Fallback: treat as plain text reply
+    logger.warning("LLM returned non-JSON response, using fallback: %s", text[:200])
     return {
         "reply": raw,
         "section": None,
