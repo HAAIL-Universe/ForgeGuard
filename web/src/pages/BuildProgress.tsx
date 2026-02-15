@@ -14,6 +14,7 @@ import { useToast } from '../context/ToastContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import AppShell from '../components/AppShell';
 import ConfirmDialog from '../components/ConfirmDialog';
+import DevConsole, { createInitialSteps, mapEventToSteps, DevStep } from '../components/DevConsole';
 import EmptyState from '../components/EmptyState';
 import Skeleton from '../components/Skeleton';
 
@@ -218,6 +219,8 @@ function BuildProgress() {
   const [sendingInterject, setSendingInterject] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [logSearch, setLogSearch] = useState('');
+  const [devConsoleOpen, setDevConsoleOpen] = useState(false);
+  const [devSteps, setDevSteps] = useState<DevStep[]>(createInitialSteps);
   const feedEndRef = useRef<HTMLDivElement>(null);
   const phaseStartRef = useRef<number>(Date.now());
 
@@ -368,6 +371,28 @@ function BuildProgress() {
         const payload = data.payload as Record<string, unknown>;
         const eventPid = payload.project_id as string;
         if (eventPid && eventPid !== projectId) return;
+
+        /* Update DevConsole steps for every event */
+        const stepUpdates = mapEventToSteps(data.type, payload);
+        if (stepUpdates.length > 0) {
+          const now = new Date().toISOString();
+          setDevSteps((prev) => {
+            const next = [...prev];
+            for (const upd of stepUpdates) {
+              const idx = next.findIndex((s) => s.id === upd.id);
+              if (idx >= 0) {
+                next[idx] = {
+                  ...next[idx],
+                  status: upd.status,
+                  detail: upd.detail ?? next[idx].detail,
+                  startedAt: upd.status === 'active' && !next[idx].startedAt ? now : next[idx].startedAt,
+                  completedAt: upd.status === 'done' || upd.status === 'error' ? now : next[idx].completedAt,
+                };
+              }
+            }
+            return next;
+          });
+        }
 
         switch (data.type) {
           case 'build_started': {
@@ -674,6 +699,13 @@ function BuildProgress() {
   };
 
   const handleStartBuild = async () => {
+    /* Mark first dev step immediately */
+    setDevSteps(createInitialSteps());
+    setDevSteps((prev) =>
+      prev.map((s) =>
+        s.id === 'build_request' ? { ...s, status: 'active' as const, startedAt: new Date().toISOString(), detail: 'Sending POST...' } : s,
+      ),
+    );
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
         method: 'POST',
@@ -831,6 +863,24 @@ function BuildProgress() {
             )}
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            {/* Dev Console toggle */}
+            <button
+              onClick={() => setDevConsoleOpen(true)}
+              data-testid="dev-console-btn"
+              title="Dev Console — build step tracker"
+              style={{
+                background: 'transparent',
+                color: '#64748B',
+                border: '1px solid #334155',
+                borderRadius: '6px',
+                padding: '5px 10px',
+                cursor: 'pointer',
+                fontSize: '0.9rem',
+                lineHeight: 1,
+              }}
+            >
+              🛠
+            </button>
             {build?.status === 'completed' && (
               <button
                 onClick={() => navigate(`/projects/${projectId}/build/complete`)}
@@ -1203,6 +1253,9 @@ function BuildProgress() {
           </div>
         </div>
       </div>
+
+      {/* Dev Console Modal */}
+      <DevConsole open={devConsoleOpen} onClose={() => setDevConsoleOpen(false)} steps={devSteps} />
 
       {showCancelConfirm && (
         <ConfirmDialog
