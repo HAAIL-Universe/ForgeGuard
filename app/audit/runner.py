@@ -303,7 +303,7 @@ def check_a4_boundary_compliance(
 
 
 def check_a5_diff_log_gate(gov_root: str) -> GovernanceCheckResult:
-    """A5: Verify updatedifflog.md exists and has no TODO: placeholders."""
+    """A5: Verify updatedifflog.md exists and has no placeholder markers."""
     diff_log = os.path.join(gov_root, "evidence", "updatedifflog.md")
 
     if not os.path.isfile(diff_log):
