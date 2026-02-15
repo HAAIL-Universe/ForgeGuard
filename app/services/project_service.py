@@ -1,5 +1,6 @@
 """Project service -- orchestrates project CRUD, questionnaire chat, and contract generation."""
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -23,8 +24,13 @@ from app.repos.project_repo import (
 
 logger = logging.getLogger(__name__)
 
-# Active contract generation tasks — checked between contracts for cancellation
-_active_generations: set[str] = set()
+
+class ContractCancelled(Exception):
+    """Raised when contract generation is cancelled by the user."""
+
+
+# Active contract generation tasks — maps project-id → cancel Event
+_active_generations: dict[str, asyncio.Event] = {}
 
 # ---------------------------------------------------------------------------
 # Questionnaire definitions
@@ -434,14 +440,15 @@ async def generate_contracts(
         llm_model = settings.LLM_QUESTIONNAIRE_MODEL
 
     pid = str(project_id)
-    _active_generations.add(pid)
+    cancel_event = asyncio.Event()
+    _active_generations[pid] = cancel_event
 
     generated = []
     total = len(CONTRACT_TYPES)
     try:
         for idx, contract_type in enumerate(CONTRACT_TYPES):
             # Check cancellation between contracts
-            if pid not in _active_generations:
+            if cancel_event.is_set():
                 logger.info("Contract generation cancelled for project %s", pid)
                 await manager.send_to_user(str(user_id), {
                     "type": "contract_progress",
@@ -453,7 +460,7 @@ async def generate_contracts(
                         "total": total,
                     },
                 })
-                raise ValueError("Contract generation cancelled")
+                raise ContractCancelled("Contract generation cancelled")
 
             # Notify client that generation of this contract has started
             await manager.send_to_user(str(user_id), {
@@ -467,9 +474,40 @@ async def generate_contracts(
                 },
             })
 
-            content, usage = await _generate_contract_content(
-                contract_type, project, answers_text, llm_api_key, llm_model, provider
+            # Race the LLM call against the cancel event so cancellation
+            # takes effect immediately, even mid-generation.
+            llm_task = asyncio.ensure_future(
+                _generate_contract_content(
+                    contract_type, project, answers_text, llm_api_key, llm_model, provider
+                )
             )
+            cancel_task = asyncio.ensure_future(cancel_event.wait())
+
+            done, pending = await asyncio.wait(
+                [llm_task, cancel_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if cancel_task in done:
+                # Cancel fired while LLM was running — abort immediately
+                llm_task.cancel()
+                logger.info("Contract generation cancelled mid-LLM for project %s", pid)
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": contract_type,
+                        "status": "cancelled",
+                        "index": idx,
+                        "total": total,
+                    },
+                })
+                raise ContractCancelled("Contract generation cancelled")
+
+            # LLM finished first — clean up the cancel waiter
+            cancel_task.cancel()
+            content, usage = llm_task.result()
+
             row = await upsert_contract(project_id, contract_type, content)
             generated.append({
                 "id": str(row["id"]),
@@ -494,7 +532,7 @@ async def generate_contracts(
                 },
             })
     finally:
-        _active_generations.discard(pid)
+        _active_generations.pop(pid, None)
 
     await update_project_status(project_id, "contracts_ready")
     return generated
@@ -506,11 +544,12 @@ async def cancel_contract_generation(
 ) -> dict:
     """Cancel an in-progress contract generation.
 
-    Removes the project from the active set so the generation loop
-    stops at the next contract boundary.
+    Sets the cancel event so the generation loop stops immediately,
+    even if an LLM call is currently in flight.
     """
     pid = str(project_id)
-    if pid not in _active_generations:
+    cancel_event = _active_generations.get(pid)
+    if cancel_event is None:
         raise ValueError("No active contract generation for this project")
 
     # Verify ownership
@@ -518,7 +557,7 @@ async def cancel_contract_generation(
     if not project or str(project["user_id"]) != str(user_id):
         raise ValueError("Project not found")
 
-    _active_generations.discard(pid)
+    cancel_event.set()
     logger.info("Contract generation cancel requested for project %s", pid)
     return {"status": "cancelling"}
 

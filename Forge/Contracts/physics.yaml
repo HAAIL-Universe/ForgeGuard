@@ -181,6 +181,8 @@ paths:
         payload: BuildInterjectionEvent
         type: "recovery_plan"
         payload: RecoveryPlanEvent
+        type: "tool_use"
+        payload: ToolUseEvent
 
   # -- Projects (Phase 8) -------------------------------------------
 
@@ -563,3 +565,8 @@ schemas:
   RecoveryPlanEvent:
     phase: string
     plan_text: string
+
+  ToolUseEvent:
+    tool_name: string
+    input_summary: string
+    result_summary: string

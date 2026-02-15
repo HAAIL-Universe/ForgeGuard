@@ -190,8 +190,15 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((res) => {
+      .then(async (res) => {
         if (!res.ok) throw new Error('Generation failed');
+        const body = await res.json();
+        if (body.cancelled) {
+          /* Server confirmed cancellation — WS event already handled UI */
+          setCancelled(true);
+          setGenerating(false);
+          return;
+        }
         /* Mark any remaining as done (safety net) */
         setStatuses((prev) => {
           const updated = { ...prev };
@@ -204,10 +211,14 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         setGenerating(false);
       })
       .catch(() => {
-        if (!cancelled) addLog('✗ Contract generation failed');
+        /* Only show error if not already in cancelled state */
+        setCancelled((prev) => {
+          if (!prev) addLog('✗ Contract generation failed');
+          return prev;
+        });
         setGenerating(false);
       });
-  }, [projectId, token, addLog, cancelled]);
+  }, [projectId, token, addLog]);
 
   /* Derived values */
   const contextWindow = MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;

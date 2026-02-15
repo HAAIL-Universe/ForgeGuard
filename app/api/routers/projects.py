@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.services.project_service import (
+    ContractCancelled,
     cancel_contract_generation,
     create_new_project,
     delete_user_project,
@@ -206,6 +207,9 @@ async def gen_contracts(
     """Generate all contract files from completed questionnaire answers."""
     try:
         contracts = await generate_contracts(current_user["id"], project_id)
+    except ContractCancelled:
+        # User cancelled — return 200 with cancelled flag (not an error)
+        return {"cancelled": True, "contracts": []}
     except ValueError as exc:
         detail = str(exc)
         code = (

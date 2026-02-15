@@ -2077,3 +2077,207 @@ async def test_recovery_planner_injects_remediation(
     last_user = user_msgs[-1]["content"]
     assert "recovery planner" in last_user.lower()
     assert "REMEDIATION PLAN" in last_user
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tool-use in build loop (Phase 18)
+# ---------------------------------------------------------------------------
+
+from app.clients.agent_client import ToolCall
+
+
+async def _fake_stream_with_tool_call(*args, **kwargs):
+    """Fake stream that yields a read_file tool call, then sign-off on next call."""
+    # First call: text + tool call
+    _stream_call_counter["n"] += 1
+    if _stream_call_counter["n"] == 1:
+        # Yield text first
+        yield "Let me check the project structure.\n"
+        # Yield a tool call
+        yield ToolCall(id="tc_001", name="read_file", input={"path": "README.md"})
+    elif _stream_call_counter["n"] == 2:
+        # After tool result, continue with phase sign-off
+        text = (
+            "Great, I see the README.\n"
+            "Phase: Phase 0 -- Genesis\n"
+            "=== PHASE SIGN-OFF: PASS ===\n"
+        )
+        yield text
+    else:
+        yield "Build complete."
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.execute_tool")
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_tool_call_execution(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager, mock_execute_tool, tmp_path,
+):
+    """_run_build executes tool calls and continues the conversation."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_with_tool_call
+    mock_execute_tool.return_value = "# README\nForgeGuard project"
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+            working_dir=str(tmp_path),
+        )
+
+    # execute_tool was called with the right arguments
+    mock_execute_tool.assert_called_once_with("read_file", {"path": "README.md"}, str(tmp_path))
+
+    # tool_use WS event was broadcast
+    tool_use_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "tool_use"
+    ]
+    assert len(tool_use_calls) >= 1
+    tool_payload = tool_use_calls[0][0][1]["payload"]
+    assert tool_payload["tool_name"] == "read_file"
+
+
+async def _fake_stream_with_write_tool(*args, **kwargs):
+    """Fake stream that uses write_file tool to create a file."""
+    _stream_call_counter["n"] += 1
+    if _stream_call_counter["n"] == 1:
+        yield "Creating the main module.\n"
+        yield ToolCall(
+            id="tc_002", name="write_file",
+            input={"path": "app/main.py", "content": "print('hello')"},
+        )
+    elif _stream_call_counter["n"] == 2:
+        text = (
+            "File created successfully.\n"
+            "Phase: Phase 0 -- Genesis\n"
+            "=== PHASE SIGN-OFF: PASS ===\n"
+        )
+        yield text
+    else:
+        yield "Build complete."
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.execute_tool")
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_write_file_tool_emits_file_created(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager, mock_execute_tool, tmp_path,
+):
+    """write_file tool calls emit file_created WS events."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_with_write_tool
+    mock_execute_tool.return_value = "OK: Wrote 14 bytes to app/main.py"
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+            working_dir=str(tmp_path),
+        )
+
+    # file_created event was broadcast for the write_file tool
+    file_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "file_created"
+    ]
+    assert len(file_calls) >= 1
+    file_payload = file_calls[0][0][1]["payload"]
+    assert file_payload["path"] == "app/main.py"
+
+    # Tool call was logged
+    log_calls = mock_build_repo.append_build_log.call_args_list
+    tool_logs = [c for c in log_calls if c[1].get("source") == "tool" or (len(c[0]) > 2 and c[0][2] == "tool")]
+    assert len(tool_logs) >= 1
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.execute_tool")
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_run_build_tool_result_in_messages(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager, mock_execute_tool, tmp_path,
+):
+    """After tool execution, tool_result is appended to messages for continuation."""
+    captured_messages: list[list[dict]] = []
+
+    async def _stream_cap(*args, messages=None, **kwargs):
+        _stream_call_counter["n"] += 1
+        if messages:
+            captured_messages.append(list(messages))
+        if _stream_call_counter["n"] == 1:
+            yield "Checking file.\n"
+            yield ToolCall(id="tc_003", name="list_directory", input={"path": "."})
+        elif _stream_call_counter["n"] == 2:
+            yield "Phase: Phase 0\n=== PHASE SIGN-OFF: PASS ===\n"
+        else:
+            yield "Build complete."
+
+    _reset_stream_counter()
+    mock_stream.side_effect = _stream_cap
+    mock_execute_tool.return_value = "app/\ntests/\nREADME.md"
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+            working_dir=str(tmp_path),
+        )
+
+    # Second call should have tool_result in messages
+    assert len(captured_messages) >= 2
+    second_msgs = captured_messages[1]
+
+    # Should have an assistant message with tool_use content block
+    assistant_msgs = [m for m in second_msgs if m["role"] == "assistant"]
+    assert any(
+        isinstance(m.get("content"), list) and
+        any(b.get("type") == "tool_use" for b in m["content"])
+        for m in assistant_msgs
+    )
+
+    # Should have a user message with tool_result
+    user_msgs = [m for m in second_msgs if m["role"] == "user"]
+    assert any(
+        isinstance(m.get("content"), list) and
+        any(b.get("type") == "tool_result" for b in m["content"])
+        for m in user_msgs
+    )

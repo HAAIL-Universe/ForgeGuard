@@ -510,6 +510,17 @@ function BuildProgress() {
             break;
           }
 
+          case 'tool_use': {
+            const toolName = (payload.tool_name ?? '') as string;
+            const inputSummary = (payload.input_summary ?? '') as string;
+            const resultSummary = (payload.result_summary ?? '') as string;
+            addActivity(
+              `🔧 ${toolName}(${inputSummary.slice(0, 80)}) → ${resultSummary.slice(0, 120)}`,
+              'info',
+            );
+            break;
+          }
+
           case 'file_created': {
             const filePath = (payload.path ?? '') as string;
             const sizeBytes = (payload.size_bytes ?? 0) as number;

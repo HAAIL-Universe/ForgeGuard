@@ -1,558 +1,557 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-15T22:24:44+00:00
+- Timestamp: 2026-02-15T22:41:58+00:00
 - Branch: master
-- HEAD: e9bdaf4351f9c160e26357bdc4dbc660f6d83357
-- BASE_HEAD: 8de5071897732b10d5c24dd04a739ed698af09e9
+- HEAD: 284a46d72a95b699f6256e9713b03a673d1335a9
+- BASE_HEAD: e9bdaf4351f9c160e26357bdc4dbc660f6d83357
 - Diff basis: staged
 
 ## Cycle Status
-- Status: COMPLETE
+- Status: IN_PROCESS
 
 ## Summary
-- Recovery planner prompt created
-- _run_inline_audit returns (verdict, report) tuple
-- _gather_project_state walks working dir
-- _run_recovery_planner calls Sonnet with findings+state+contracts
-- Audit FAIL branch invokes planner, injects remediation
-- Planner failure falls back to generic feedback
-- recovery_plan WS event + frontend display
-- Planner cost tracked separately
+- TODO: 1-5 bullets (what changed, why, scope).
 
 ## Files Changed (staged)
 - Forge/Contracts/physics.yaml
-- Forge/Contracts/recovery_planner_prompt.md
-- Forge/scripts/run_audit.ps1
-- app/audit/runner.py
+- app/api/routers/projects.py
+- app/clients/agent_client.py
 - app/services/build_service.py
-- app/templates/contracts/recovery_planner_prompt.md
+- app/services/project_service.py
+- app/services/tool_executor.py
+- tests/test_agent_client.py
 - tests/test_build_integration.py
 - tests/test_build_service.py
+- tests/test_project_service.py
+- tests/test_tool_executor.py
+- web/src/components/ContractProgress.tsx
 - web/src/pages/BuildProgress.tsx
 
 ## git status -sb
-    ## master...origin/master [ahead 10]
+    ## master...origin/master [ahead 11]
     M  Forge/Contracts/physics.yaml
-    A  Forge/Contracts/recovery_planner_prompt.md
-    M  Forge/scripts/run_audit.ps1
-    M  app/audit/runner.py
+    M  app/api/routers/projects.py
+    M  app/clients/agent_client.py
     M  app/services/build_service.py
-    A  app/templates/contracts/recovery_planner_prompt.md
+    M  app/services/project_service.py
+    A  app/services/tool_executor.py
+    M  tests/test_agent_client.py
     M  tests/test_build_integration.py
     M  tests/test_build_service.py
+    M  tests/test_project_service.py
+    A  tests/test_tool_executor.py
+    M  web/src/components/ContractProgress.tsx
     M  web/src/pages/BuildProgress.tsx
 
 ## Verification
-- pytest: 359 backend pass
-- vitest: 61 frontend pass
-- Total: 420 tests pass
+- TODO: verification evidence (static -> runtime -> behavior -> contract).
 
 ## Notes (optional)
-- Planner prompt at Forge/Contracts/recovery_planner_prompt.md
+- TODO: blockers, risks, constraints.
 
 ## Next Steps
-- Phase 18: Builder Tool Use Foundation
+- TODO: next actions (small, specific).
 
 ## Minimal Diff Hunks
     diff --git a/Forge/Contracts/physics.yaml b/Forge/Contracts/physics.yaml
-    index 0e8ea04..91ecd5c 100644
+    index 91ecd5c..0902857 100644
     --- a/Forge/Contracts/physics.yaml
     +++ b/Forge/Contracts/physics.yaml
-    @@ -179,6 +179,8 @@ paths:
-             payload: BuildResumeEvent
-             type: "build_interjection"
+    @@ -181,6 +181,8 @@ paths:
              payload: BuildInterjectionEvent
-    +        type: "recovery_plan"
-    +        payload: RecoveryPlanEvent
+             type: "recovery_plan"
+             payload: RecoveryPlanEvent
+    +        type: "tool_use"
+    +        payload: ToolUseEvent
      
        # -- Projects (Phase 8) -------------------------------------------
      
-    @@ -557,3 +559,7 @@ schemas:
-       BuildInterjectionEvent:
-         message: string
-         injected_at: datetime
+    @@ -563,3 +565,8 @@ schemas:
+       RecoveryPlanEvent:
+         phase: string
+         plan_text: string
     +
-    +  RecoveryPlanEvent:
-    +    phase: string
-    +    plan_text: string
-    diff --git a/Forge/Contracts/recovery_planner_prompt.md b/Forge/Contracts/recovery_planner_prompt.md
-    new file mode 100644
-    index 0000000..a0127c0
-    --- /dev/null
-    +++ b/Forge/Contracts/recovery_planner_prompt.md
-    @@ -0,0 +1,49 @@
-    +# Recovery Planner ÔÇö System Prompt
-    +
-    +You are a recovery planning agent for the Forge governance framework. An audit has **failed** on a builder's phase output. Your job is to analyse the failure and produce a concrete, alternative remediation strategy so the builder can fix the issues on its next attempt.
-    +
-    +## Context
-    +
-    +You are given:
-    +1. **Audit findings** ÔÇö the full auditor report explaining what failed and why.
-    +2. **The builder's phase output** ÔÇö what the builder actually produced (the code/files that were checked).
-    +3. **The project's contracts** ÔÇö the source-of-truth specifications the builder must conform to.
-    +4. **Current project state** ÔÇö the actual file tree and contents of key files on disk.
-    +
-    +## Your Task
-    +
-    +Analyse the audit failure and produce a numbered remediation plan. The plan must:
-    +
-    +1. **Address every audit finding specifically** ÔÇö map each finding to a concrete fix. Don't just say "fix the issues"; explain *what* to change and *where*.
-    +2. **Propose an alternative approach** if the builder's structural approach caused the failure. The builder already tried once and failed ÔÇö repeating the same approach will likely fail again.
-    +3. **Reference specific file paths** ÔÇö tell the builder exactly which files to modify or recreate (e.g., `app/services/foo_service.py` line ~42).
-    +4. **Respect the contracts** ÔÇö ensure every proposed fix aligns with the schema, stack, boundaries, physics, and UI specifications.
-    +5. **Account for existing code** ÔÇö don't propose changes that would break working code from previous phases. If a fix requires updating an existing file, specify what to change and what to preserve.
-    +6. **Include test fixes** ÔÇö if the audit flagged test issues, include specific test remediation tasks.
-    +7. **Order fixes logically** ÔÇö address foundational issues first (schema/repo fixes before service/router fixes).
-    +
-    +## Output Format
-    +
-    +Emit exactly this structure:
-    +
-    +```
-    +=== REMEDIATION PLAN ===
-    +
-    +Root cause: {Brief summary of why the audit failed ÔÇö 1-2 sentences}
-    +
-    +1. {Fix description ÔÇö specific, actionable, with file paths and what to change}
-    +2. {Fix description}
-    +3. {Fix description}
-    +...
-    +
-    +=== END REMEDIATION PLAN ===
-    +```
-    +
-    +## Rules
-    +
-    +- Do NOT emit any code. You are a planner, not an implementer. Describe *what* to do, not *how* to code it.
-    +- Do NOT invent new features or endpoints beyond what the phase requires. Stay within contract scope.
-    +- Do NOT skip any audit finding. Every flagged issue must have a corresponding fix task.
-    +- Do NOT propose "start over" or "rewrite everything" ÔÇö propose targeted fixes.
-    +- Keep task descriptions concise but complete (1-3 sentences each).
-    +- If an audit finding is unclear or ambiguous, note this with `ÔÜá´©Å UNCLEAR:` prefix and propose the most likely fix.
-    diff --git a/Forge/scripts/run_audit.ps1 b/Forge/scripts/run_audit.ps1
-    index 69ecfb4..42fa8f5 100644
-    --- a/Forge/scripts/run_audit.ps1
-    +++ b/Forge/scripts/run_audit.ps1
-    @@ -83,6 +83,16 @@ try {
+    +  ToolUseEvent:
+    +    tool_name: string
+    +    input_summary: string
+    +    result_summary: string
+    diff --git a/app/api/routers/projects.py b/app/api/routers/projects.py
+    index ca1c800..0bc76b7 100644
+    --- a/app/api/routers/projects.py
+    +++ b/app/api/routers/projects.py
+    @@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
      
-       # ÔöÇÔöÇ A1: Scope compliance ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+     from app.api.deps import get_current_user
+     from app.services.project_service import (
+    +    ContractCancelled,
+         cancel_contract_generation,
+         create_new_project,
+         delete_user_project,
+    @@ -206,6 +207,9 @@ async def gen_contracts(
+         """Generate all contract files from completed questionnaire answers."""
+         try:
+             contracts = await generate_contracts(current_user["id"], project_id)
+    +    except ContractCancelled:
+    +        # User cancelled ÔÇö return 200 with cancelled flag (not an error)
+    +        return {"cancelled": True, "contracts": []}
+         except ValueError as exc:
+             detail = str(exc)
+             code = (
+    diff --git a/app/clients/agent_client.py b/app/clients/agent_client.py
+    index b8b5e22..434f351 100644
+    --- a/app/clients/agent_client.py
+    +++ b/app/clients/agent_client.py
+    @@ -11,6 +11,7 @@ No database access, no business logic, no HTTP framework imports.
+     import json
+     from collections.abc import AsyncIterator
+     from dataclasses import dataclass, field
+    +from typing import Union
      
-    +  # Governance files that are always allowed to change (updated by
-    +  # audit scripts, diff-log helpers, and phase planning).
-    +  $governanceAllowlist = @(
-    +    'Forge/Contracts/phases.md',
-    +    'Forge/evidence/audit_ledger.md',
-    +    'Forge/evidence/updatedifflog.md',
-    +    'Forge/evidence/test_runs_latest.md',
-    +    'Forge/evidence/test_runs.md'
-    +  )
+     import httpx
+     
+    @@ -26,6 +27,14 @@ class StreamUsage:
+         model: str = ""
+     
+     
+    +@dataclass
+    +class ToolCall:
+    +    """Represents a tool_use block from the streaming response."""
+    +    id: str
+    +    name: str
+    +    input: dict
     +
-       try {
-         $diffStagedRaw   = & git diff --cached --name-only 2>$null
-         $diffUnstagedRaw = & git diff --name-only 2>$null
-    @@ -96,7 +106,7 @@ try {
-           Where-Object { $_ -ne "" } |
-           Sort-Object -Unique
-     
-    -    $unclaimed = $diffFiles | Where-Object { $_ -notin $claimed }
-    +    $unclaimed = $diffFiles | Where-Object { $_ -notin $claimed -and $_ -notin $governanceAllowlist }
-         $phantom   = $claimed   | Where-Object { $_ -notin $diffFiles }
-     
-         if ($unclaimed -or $phantom) {
-    diff --git a/app/audit/runner.py b/app/audit/runner.py
-    index 9d150bb..aa49b5a 100644
-    --- a/app/audit/runner.py
-    +++ b/app/audit/runner.py
-    @@ -131,6 +131,16 @@ def check_a1_scope_compliance(
-         claimed: list[str], project_root: str
-     ) -> GovernanceCheckResult:
-         """A1: Verify git diff matches claimed files exactly."""
-    +    # Governance files that are always allowed to change (updated by
-    +    # audit scripts, diff-log helpers, and phase planning).
-    +    _GOVERNANCE_ALLOWLIST = {
-    +        "Forge/Contracts/phases.md",
-    +        "Forge/evidence/audit_ledger.md",
-    +        "Forge/evidence/updatedifflog.md",
-    +        "Forge/evidence/test_runs_latest.md",
-    +        "Forge/evidence/test_runs.md",
-    +    }
     +
-         rc_staged, staged = _git("diff", "--cached", "--name-only", cwd=project_root)
-         rc_unstaged, unstaged = _git("diff", "--name-only", cwd=project_root)
+     def _headers(api_key: str) -> dict:
+         """Build request headers for the Anthropic API."""
+         return {
+    @@ -42,8 +51,9 @@ async def stream_agent(
+         messages: list[dict],
+         max_tokens: int = 16384,
+         usage_out: StreamUsage | None = None,
+    -) -> AsyncIterator[str]:
+    -    """Stream a builder agent session, yielding text chunks.
+    +    tools: list[dict] | None = None,
+    +) -> AsyncIterator[Union[str, ToolCall]]:
+    +    """Stream a builder agent session, yielding text chunks or tool calls.
      
-    @@ -145,7 +155,7 @@ def check_a1_scope_compliance(
-             )
+         Args:
+             api_key: Anthropic API key.
+    @@ -52,21 +62,31 @@ async def stream_agent(
+             messages: Conversation history in Anthropic messages format.
+             max_tokens: Maximum tokens for the response.
+             usage_out: Optional StreamUsage to accumulate token counts.
+    +        tools: Optional list of tool definitions in Anthropic format.
      
-         claimed_set = set(claimed)
-    -    unclaimed = diff_files - claimed_set
-    +    unclaimed = diff_files - claimed_set - _GOVERNANCE_ALLOWLIST
-         phantom = claimed_set - diff_files
+         Yields:
+    -        Incremental text chunks from the builder agent.
+    +        str: Incremental text chunks from the builder agent.
+    +        ToolCall: A tool_use block that the caller should execute.
      
-         if unclaimed or phantom:
+         Raises:
+             httpx.HTTPStatusError: On API errors.
+             ValueError: On unexpected stream format.
+         """
+    -    payload = {
+    +    payload: dict = {
+             "model": model,
+             "max_tokens": max_tokens,
+             "system": system_prompt,
+             "messages": messages,
+             "stream": True,
+         }
+    +    if tools:
+    +        payload["tools"] = tools
+    +
+    +    # Track tool_use blocks being accumulated
+    +    current_tool_id: str = ""
+    +    current_tool_name: str = ""
+    +    current_tool_json: str = ""
+    +    in_tool_block: bool = False
+     
+         async with httpx.AsyncClient(timeout=300.0) as client:
+             async with client.stream(
+    @@ -82,7 +102,6 @@ async def stream_agent(
+                     data = line[6:]  # strip "data: " prefix
+                     if data == "[DONE]":
+                         break
+    -                # Parse SSE data for content and usage events
+                     try:
+                         event = json.loads(data)
+                         etype = event.get("type", "")
+    @@ -99,11 +118,44 @@ async def stream_agent(
+                             usage = event.get("usage", {})
+                             usage_out.output_tokens += usage.get("output_tokens", 0)
+     
+    +                    # Content block start ÔÇö detect tool_use blocks
+    +                    if etype == "content_block_start":
+    +                        block = event.get("content_block", {})
+    +                        if block.get("type") == "tool_use":
+    +                            in_tool_block = True
+    +                            current_tool_id = block.get("id", "")
+    +                            current_tool_name = block.get("name", "")
+    +                            current_tool_json = ""
+    +
+    +                    # Content block delta ÔÇö text or tool input JSON
+                         if etype == "content_block_delta":
+                             delta = event.get("delta", {})
+    -                        text = delta.get("text", "")
+    -                        if text:
+    -                            yield text
+    +                        if in_tool_block:
+    +                            # Accumulate tool input JSON
+    +                            json_chunk = delta.get("partial_json", "")
+    +                            if json_chunk:
+    +                                current_tool_json += json_chunk
+    +                        else:
+    +                            text = delta.get("text", "")
+    +                            if text:
+    +                                yield text
+    +
+    +                    # Content block stop ÔÇö finalize tool call
+    +                    if etype == "content_block_stop" and in_tool_block:
+    +                        in_tool_block = False
+    +                        try:
+    +                            tool_input = json.loads(current_tool_json) if current_tool_json else {}
+    +                        except json.JSONDecodeError:
+    +                            tool_input = {"_raw": current_tool_json}
+    +                        yield ToolCall(
+    +                            id=current_tool_id,
+    +                            name=current_tool_name,
+    +                            input=tool_input,
+    +                        )
+    +                        current_tool_id = ""
+    +                        current_tool_name = ""
+    +                        current_tool_json = ""
+    +
+                     except (ValueError, KeyError):
+                         # Skip malformed events
+                         continue
     diff --git a/app/services/build_service.py b/app/services/build_service.py
-    index db4933c..70e7483 100644
+    index 70e7483..d3a4925 100644
     --- a/app/services/build_service.py
     +++ b/app/services/build_service.py
-    @@ -905,12 +905,12 @@ async def _run_build(
-                     )
+    @@ -19,13 +19,14 @@ from datetime import datetime, timezone
+     from pathlib import Path
+     from uuid import UUID
      
-                     # Run inline audit
-    -                audit_result = await _run_inline_audit(
-    +                audit_verdict, audit_report = await _run_inline_audit(
-                         build_id, current_phase, accumulated_text,
-                         contracts, api_key, audit_llm_enabled,
-                     )
+    -from app.clients.agent_client import StreamUsage, stream_agent
+    +from app.clients.agent_client import StreamUsage, ToolCall, stream_agent
+     from app.clients import git_client
+     from app.clients import github_client
+     from app.config import settings
+     from app.repos import build_repo
+     from app.repos import project_repo
+     from app.repos.user_repo import get_user_by_id
+    +from app.services.tool_executor import BUILDER_TOOLS, execute_tool
+     from app.ws_manager import manager
      
-    -                if audit_result == "PASS":
-    +                if audit_verdict == "PASS":
-                         await build_repo.append_build_log(
-                             build_id,
-                             f"Audit PASS for {current_phase}",
-    @@ -1032,13 +1032,50 @@ async def _run_build(
-                         # Record cost for this failed attempt
-                         await _record_phase_cost(build_id, current_phase, usage)
+     logger = logging.getLogger(__name__)
+    @@ -685,7 +686,19 @@ async def _run_build(
+                 "=== END PLAN ===\n\n"
+                 "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
+                 "As you complete each task, emit: === TASK DONE: N ===\n"
+    -            "where N is the task number from your current phase plan.\n"
+    +            "where N is the task number from your current phase plan.\n\n"
+    +            "## Tools\n"
+    +            "You have access to the following tools for interacting with the project:\n"
+    +            "- **read_file**: Read a file to check existing code or verify your work.\n"
+    +            "- **list_directory**: List files/folders to understand project structure before making changes.\n"
+    +            "- **search_code**: Search for patterns across files to find implementations or imports.\n"
+    +            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n\n"
+    +            "Guidelines for tool use:\n"
+    +            "1. Use list_directory at the start of each phase to understand the current state.\n"
+    +            "2. Use read_file to examine existing code before modifying it.\n"
+    +            "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
+    +            "4. Use search_code to find existing patterns, imports, or implementations.\n"
+    +            "5. After writing files, use read_file to verify the content was written correctly.\n"
+             )
      
-    +                    # --- Recovery Planner ---
-    +                    # Instead of generic feedback, invoke a separate LLM to
-    +                    # analyse the failure and produce a targeted remediation plan.
-    +                    remediation_plan = ""
-    +                    if audit_report and api_key:
-    +                        try:
-    +                            remediation_plan = await _run_recovery_planner(
-    +                                build_id=build_id,
-    +                                user_id=user_id,
-    +                                api_key=api_key,
-    +                                phase=current_phase,
-    +                                audit_findings=audit_report,
-    +                                builder_output=accumulated_text,
-    +                                contracts=contracts,
-    +                                working_dir=working_dir,
-    +                            )
-    +                        except Exception as exc:
-    +                            logger.warning(
-    +                                "Recovery planner failed for %s: %s ÔÇö falling back to generic feedback",
-    +                                current_phase, exc,
-    +                            )
-    +                            remediation_plan = ""
+             # Emit build overview (high-level phase list) at build start
+    @@ -768,13 +781,68 @@ async def _run_build(
+     
+                 # Stream agent output for this turn
+                 turn_text = ""
+    -            async for chunk in stream_agent(
+    +            tool_calls_this_turn: list[dict] = []
+    +            pending_tool_results: list[dict] = []
     +
-    +                    if remediation_plan:
-    +                        feedback = (
-    +                            f"The audit for {current_phase} FAILED "
-    +                            f"(attempt {phase_loop_count}).\n\n"
-    +                            f"A recovery planner has analysed the failure and "
-    +                            f"produced a revised strategy:\n\n"
-    +                            f"{remediation_plan}\n\n"
-    +                            f"Follow this remediation plan to fix the issues "
-    +                            f"and re-submit {current_phase}."
+    +            async for item in stream_agent(
+                     api_key=api_key,
+                     model=settings.LLM_BUILDER_MODEL,
+                     system_prompt=system_prompt,
+                     messages=messages,
+                     usage_out=usage,
+    +                tools=BUILDER_TOOLS if working_dir else None,
+                 ):
+    +                if isinstance(item, ToolCall):
+    +                    # --- Tool call detected ---
+    +                    tool_result = execute_tool(item.name, item.input, working_dir or "")
+    +
+    +                    # Log the tool call
+    +                    input_summary = json.dumps(item.input)[:200]
+    +                    result_summary = tool_result[:300]
+    +                    await build_repo.append_build_log(
+    +                        build_id,
+    +                        f"Tool: {item.name}({input_summary}) ÔåÆ {result_summary}",
+    +                        source="tool", level="info",
+    +                    )
+    +
+    +                    # Broadcast tool_use WS event
+    +                    await _broadcast_build_event(
+    +                        user_id, build_id, "tool_use", {
+    +                            "tool_name": item.name,
+    +                            "input_summary": input_summary,
+    +                            "result_summary": result_summary,
+    +                        }
+    +                    )
+    +
+    +                    # Track write_file calls as files_written
+    +                    if item.name == "write_file" and tool_result.startswith("OK:"):
+    +                        rel_path = item.input.get("path", "")
+    +                        content = item.input.get("content", "")
+    +                        lang = _detect_language(rel_path)
+    +                        if rel_path and not any(f["path"] == rel_path for f in files_written):
+    +                            files_written.append({
+    +                                "path": rel_path,
+    +                                "size_bytes": len(content),
+    +                                "language": lang,
+    +                            })
+    +                        # Emit file_created event
+    +                        await _broadcast_build_event(
+    +                            user_id, build_id, "file_created", {
+    +                                "path": rel_path,
+    +                                "size_bytes": len(content),
+    +                                "language": lang,
+    +                            }
     +                        )
-    +                    else:
-    +                        feedback = (
-    +                            f"[Audit Feedback for {current_phase}]\n"
-    +                            f"{audit_report or 'FAIL'}\n\n"
-    +                            f"Please address the issues above and try again."
-    +                        )
     +
-                         # Inject audit feedback as a new user message
-                         messages.append({
-                             "role": "user",
-    -                        "content": (
-    -                            f"[Audit Feedback for {current_phase}]\n{audit_result}\n\n"
-    -                            "Please address the issues above and try again."
-    -                        ),
-    +                        "content": feedback,
-                         })
+    +                    tool_calls_this_turn.append({
+    +                        "id": item.id,
+    +                        "name": item.name,
+    +                        "result": tool_result,
+    +                    })
+    +                    continue
+    +
+    +                # --- Text chunk ---
+    +                chunk = item
+                     accumulated_text += chunk
+                     turn_text += chunk
      
-                 # Check for error signal
-    @@ -1054,7 +1091,7 @@ async def _run_build(
+    @@ -832,7 +900,37 @@ async def _run_build(
+                                     }
+                                 )
      
-                 # Push to GitHub after successful phase (with retry + backoff)
-                 if (
-    -                audit_result == "PASS"
-    +                audit_verdict == "PASS"
-                     and working_dir
-                     and files_written
-                     and target_type in ("github_new", "github_existing")
-    @@ -1358,6 +1395,193 @@ def _build_directive(contracts: list[dict]) -> str:
-         return "\n".join(parts)
+    -            # Turn complete ÔÇö add assistant response to conversation history
+    +            # Turn complete ÔÇö handle tool calls if any
+    +            if tool_calls_this_turn:
+    +                # Build the assistant message with tool_use content blocks
+    +                assistant_content: list[dict] = []
+    +                if turn_text:
+    +                    assistant_content.append({"type": "text", "text": turn_text})
+    +                for tc in tool_calls_this_turn:
+    +                    assistant_content.append({
+    +                        "type": "tool_use",
+    +                        "id": tc["id"],
+    +                        "name": tc["name"],
+    +                        "input": {},  # original input not needed in history
+    +                    })
+    +                messages.append({"role": "assistant", "content": assistant_content})
+    +
+    +                # Add tool results as a user message
+    +                tool_results_content: list[dict] = [
+    +                    {
+    +                        "type": "tool_result",
+    +                        "tool_use_id": tc["id"],
+    +                        "content": tc["result"][:10_000],  # cap result size
+    +                    }
+    +                    for tc in tool_calls_this_turn
+    +                ]
+    +                messages.append({"role": "user", "content": tool_results_content})
+    +
+    +                # Continue to next iteration ÔÇö the agent will respond to tool results
+    +                total_tokens_all_turns += usage.input_tokens + usage.output_tokens
+    +                continue
+    +
+    +            # Add assistant response to conversation history
+                 messages.append({"role": "assistant", "content": turn_text})
      
+                 # Check for user interjections between turns
+    diff --git a/app/services/project_service.py b/app/services/project_service.py
+    index 16b823a..f3ffa26 100644
+    --- a/app/services/project_service.py
+    +++ b/app/services/project_service.py
+    @@ -1,5 +1,6 @@
+     """Project service -- orchestrates project CRUD, questionnaire chat, and contract generation."""
      
+    +import asyncio
+     import json
+     import logging
+     from pathlib import Path
+    @@ -23,8 +24,13 @@ from app.repos.project_repo import (
+     
+     logger = logging.getLogger(__name__)
+     
+    -# Active contract generation tasks ÔÇö checked between contracts for cancellation
+    -_active_generations: set[str] = set()
+    +
+    +class ContractCancelled(Exception):
+    +    """Raised when contract generation is cancelled by the user."""
+    +
+    +
+    +# Active contract generation tasks ÔÇö maps project-id ÔåÆ cancel Event
+    +_active_generations: dict[str, asyncio.Event] = {}
+     
+     # ---------------------------------------------------------------------------
+     # Questionnaire definitions
+    @@ -434,14 +440,15 @@ async def generate_contracts(
+             llm_model = settings.LLM_QUESTIONNAIRE_MODEL
+     
+         pid = str(project_id)
+    -    _active_generations.add(pid)
+    +    cancel_event = asyncio.Event()
+    +    _active_generations[pid] = cancel_event
+     
+         generated = []
+         total = len(CONTRACT_TYPES)
+         try:
+             for idx, contract_type in enumerate(CONTRACT_TYPES):
+                 # Check cancellation between contracts
+    -            if pid not in _active_generations:
+    +            if cancel_event.is_set():
+                     logger.info("Contract generation cancelled for project %s", pid)
+                     await manager.send_to_user(str(user_id), {
+                         "type": "contract_progress",
+    @@ -453,7 +460,7 @@ async def generate_contracts(
+                             "total": total,
+                         },
+                     })
+    -                raise ValueError("Contract generation cancelled")
+    +                raise ContractCancelled("Contract generation cancelled")
+     
+                 # Notify client that generation of this contract has started
+                 await manager.send_to_user(str(user_id), {
+    @@ -467,9 +474,40 @@ async def generate_contracts(
+                     },
+                 })
+     
+    -            content, usage = await _generate_contract_content(
+    -                contract_type, project, answers_text, llm_api_key, llm_model, provider
+    +            # Race the LLM call against the cancel event so cancellation
+    +            # takes effect immediately, even mid-generation.
+    +            llm_task = asyncio.ensure_future(
+    +                _generate_contract_content(
+    +                    contract_type, project, answers_text, llm_api_key, llm_model, provider
+    +                )
+    +            )
+    +            cancel_task = asyncio.ensure_future(cancel_event.wait())
+    +
+    +            done, pending = await asyncio.wait(
+    +                [llm_task, cancel_task],
+    +                return_when=asyncio.FIRST_COMPLETED,
+                 )
+    +
+    +            if cancel_task in done:
+    +                # Cancel fired while LLM was running ÔÇö abort immediately
+    +                llm_task.cancel()
+    +                logger.info("Contract generation cancelled mid-LLM for project %s", pid)
+    +                await manager.send_to_user(str(user_id), {
+    +                    "type": "contract_progress",
+    +                    "payload": {
+    +                        "project_id": pid,
+    +                        "contract_type": contract_type,
+    +                        "status": "cancelled",
+    +                        "index": idx,
+    +                        "total": total,
+    +                    },
+    +                })
+    +                raise ContractCancelled("Contract generation cancelled")
+    +
+    +            # LLM finished first ÔÇö clean up the cancel waiter
+    +            cancel_task.cancel()
+    +            content, usage = llm_task.result()
+    +
+                 row = await upsert_contract(project_id, contract_type, content)
+                 generated.append({
+                     "id": str(row["id"]),
+    @@ -494,7 +532,7 @@ async def generate_contracts(
+                     },
+                 })
+         finally:
+    -        _active_generations.discard(pid)
+    +        _active_generations.pop(pid, None)
+     
+         await update_project_status(project_id, "contracts_ready")
+         return generated
+    @@ -506,11 +544,12 @@ async def cancel_contract_generation(
+     ) -> dict:
+         """Cancel an in-progress contract generation.
+     
+    -    Removes the project from the active set so the generation loop
+    -    stops at the next contract boundary.
+    +    Sets the cancel event so the generation loop stops immediately,
+    +    even if an LLM call is currently in flight.
+         """
+         pid = str(project_id)
+    -    if pid not in _active_generations:
+    +    cancel_event = _active_generations.get(pid)
+    +    if cancel_event is None:
+             raise ValueError("No active contract generation for this project")
+     
+         # Verify ownership
+    @@ -518,7 +557,7 @@ async def cancel_contract_generation(
+         if not project or str(project["user_id"]) != str(user_id):
+             raise ValueError("Project not found")
+     
+    -    _active_generations.discard(pid)
+    +    cancel_event.set()
+         logger.info("Contract generation cancel requested for project %s", pid)
+         return {"status": "cancelling"}
+     
+    diff --git a/app/services/tool_executor.py b/app/services/tool_executor.py
+    new file mode 100644
+    index 0000000..1f3f523
+    --- /dev/null
+    +++ b/app/services/tool_executor.py
+    @@ -0,0 +1,310 @@
+    +"""Tool executor -- sandboxed tool handlers for builder agent tool use.
+    +
+    +Each tool handler enforces path sandboxing (no traversal outside working_dir),
+    +size limits, and returns string results (required by Anthropic tool API).
+    +All handlers catch exceptions and return error strings rather than raising.
+    +"""
+    +
+    +import fnmatch
+    +import os
+    +import re
+    +from pathlib import Path
+    +
     +# ---------------------------------------------------------------------------
-    +# Recovery Planner
+    +# Constants
     +# ---------------------------------------------------------------------------
     +
-    +_MAX_PROJECT_STATE_BYTES = 200_000  # 200KB cap for project state
-    +_MAX_SINGLE_FILE_BYTES = 10_000     # 10KB per file; truncate beyond this
-    +_CODE_EXTENSIONS = frozenset({
-    +    ".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".json", ".yaml", ".yml",
-    +    ".toml", ".cfg", ".md", ".html", ".css",
+    +MAX_READ_FILE_BYTES = 50_000  # 50KB max for read_file
+    +MAX_SEARCH_RESULTS = 50
+    +MAX_WRITE_FILE_BYTES = 500_000  # 500KB max for write_file
+    +SKIP_DIRS = frozenset({
+    +    ".git", "__pycache__", "node_modules", ".venv", "venv",
+    +    ".tox", "dist", "build", ".mypy_cache", ".pytest_cache",
     +})
     +
     +
-    +def _gather_project_state(working_dir: str | None) -> str:
-    +    """Walk the working directory and produce a file tree + key file contents.
+    +# ---------------------------------------------------------------------------
+    +# Path sandboxing
+    +# ---------------------------------------------------------------------------
     +
-    +    Returns a structured string suitable for inclusion in an LLM prompt.
-    +    Respects size limits: total output Ôëñ 200KB, individual files Ôëñ 10KB
-    +    (truncated to first + last 2KB with a marker).
+    +
+    +def _resolve_sandboxed(rel_path: str, working_dir: str) -> Path | None:
+    +    """Resolve a relative path within working_dir, enforcing sandbox.
+    +
+    +    Returns the resolved absolute Path if safe, or None if the path
+    +    would escape the sandbox (e.g. via `..` traversal or absolute paths).
     +    """
-    +    if not working_dir or not Path(working_dir).is_dir():
-    +        return "(working directory not available)"
+    +    if not rel_path or not working_dir:
+    +        return None
     +
-    +    root = Path(working_dir)
-    +    tree_lines: list[str] = []
-    +    file_contents: list[str] = []
-    +    total_bytes = 0
-    +
-    +    # Walk and collect
-    +    skip_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", ".tox", "dist", "build"}
-    +
-    +    for dirpath, dirnames, filenames in os.walk(root):
-    +        # Prune uninteresting directories
-    +        dirnames[:] = [d for d in sorted(dirnames) if d not in skip_dirs]
-    +        rel_dir = Path(dirpath).relative_to(root)
-    +
-    +        for fname in sorted(filenames):
-    +            rel_path = rel_dir / fname
-    +            tree_lines.append(str(rel_path))
-    +
-    +            # Include contents of code files
-    +            ext = Path(fname).suffix.lower()
-    +            if ext not in _CODE_EXTENSIONS:
-    +                continue
-    +            if total_bytes >= _MAX_PROJECT_STATE_BYTES:
-    +                continue
-    +
-    +            full_path = Path(dirpath) / fname
-    +            try:
-    +                raw = full_path.read_text(encoding="utf-8", errors="replace")
-    +            except Exception:
-    +                continue
-    +
-    +            # Truncate large files
-    +            if len(raw) > _MAX_SINGLE_FILE_BYTES:
-    +                half = _MAX_SINGLE_FILE_BYTES // 5  # ~2KB each side
-    +                raw = (
-    +                    raw[:half]
-    +                    + f"\n\n[... truncated {len(raw) - half * 2} chars ...]\n\n"
-    +                    + raw[-half:]
-    +                )
-    +
-    +            entry = f"\n--- {rel_path} ---\n{raw}\n"
-    +            total_bytes += len(entry)
-    +            file_contents.append(entry)
-    +
-    +    tree_str = "\n".join(tree_lines) if tree_lines else "(empty)"
-    +    return (
-    +        f"## File Tree\n```\n{tree_str}\n```\n\n"
-    +        f"## File Contents\n{''.join(file_contents)}"
-    +    )
-    +
-    +
-    +async def _run_recovery_planner(
-    +    *,
-    +    build_id: UUID,
-    +    user_id: UUID,
-    +    api_key: str,
-    +    phase: str,
-    +    audit_findings: str,
-    +    builder_output: str,
-    +    contracts: list[dict],
-    +    working_dir: str | None,
-    +) -> str:
-    +    """Invoke the recovery planner to analyse an audit failure.
-    +
-    +    Calls a separate Sonnet LLM to analyse the audit findings, the builder's
-    +    output, and the current project state, then produce a targeted remediation
-    +    plan. Returns the remediation plan text, or empty string on failure.
-    +    """
-    +    from app.clients.llm_client import chat as llm_chat
-    +
-    +    # Load recovery planner system prompt
-    +    prompt_path = FORGE_CONTRACTS_DIR / "recovery_planner_prompt.md"
-    +    if not prompt_path.exists():
-    +        logger.warning("recovery_planner_prompt.md not found ÔÇö skipping recovery planner")
-    +        return ""
-    +    system_prompt = prompt_path.read_text(encoding="utf-8")
-    +
-    +    # Build reference contracts text
-    +    reference_types = {
-    +        "blueprint", "manifesto", "stack", "schema",
-    +        "physics", "boundaries", "phases", "ui",
-    +    }
-    +    reference_parts = ["# Reference Contracts\n"]
-    +    for c in contracts:
-    +        if c["contract_type"] in reference_types:
-    +            reference_parts.append(f"\n---\n## {c['contract_type']}\n{c['content']}\n")
-    +    reference_text = "\n".join(reference_parts)
-    +
-    +    # Gather current project state
-    +    project_state = _gather_project_state(working_dir)
-    +
-    +    # Truncate builder output to last 30K chars
-    +    max_builder_chars = 30_000
-    +    trimmed_builder = builder_output
-    +    if len(builder_output) > max_builder_chars:
-    +        trimmed_builder = (
-    +            f"[... truncated {len(builder_output) - max_builder_chars} chars ...]\n"
-    +            + builder_output[-max_builder_chars:]
-    +        )
-    +
-    +    # Truncate audit findings to 20K chars
-    +    max_findings_chars = 20_000
-    +    trimmed_findings = audit_findings
-    +    if len(audit_findings) > max_findings_chars:
-    +        trimmed_findings = audit_findings[:max_findings_chars] + "\n[... truncated ...]"
-    +
-    +    user_message = (
-    +        f"## Recovery Request\n\n"
-    +        f"**Phase:** {phase}\n\n"
-    +        f"### Audit Findings (FAILED)\n\n{trimmed_findings}\n\n"
-    +        f"### Builder Output (what was attempted)\n\n"
-    +        f"```\n{trimmed_builder}\n```\n\n"
-    +        f"### Current Project State\n\n{project_state}\n\n"
-    +        f"### Contracts\n\n{reference_text}\n\n"
-    +        f"Produce a remediation plan that addresses every audit finding.\n"
-    +    )
-    +
-    +    await build_repo.append_build_log(
-    +        build_id,
-    +        f"Invoking recovery planner for {phase}",
-    +        source="planner",
-    +        level="info",
-    +    )
-    +
-    +    result = await llm_chat(
-    +        api_key=api_key,
-    +        model=settings.LLM_PLANNER_MODEL,
-    +        system_prompt=system_prompt,
-    +        messages=[{"role": "user", "content": user_message}],
-    +        max_tokens=4096,
-    +        provider="anthropic",
-    +    )
-    +
-    +    planner_text = result["text"] if isinstance(result, dict) else result
-    +    planner_usage = result.get("usage", {}) if isinstance(result, dict) else {}
-    +
-    +    # Log the planner output
-    +    await build_repo.append_build_log(
-    +        build_id,
-    +        f"Recovery planner response ({planner_usage.get('input_tokens', 0)} in / "
-    +        f"{planner_usage.get('output_tokens', 0)} out):\n{planner_text}",
-    +        source="planner",
-    +        level="info",
-    +    )
-    +
-    +    # Record planner cost separately
-    +    input_t = planner_usage.get("input_tokens", 0)
-    +    output_t = planner_usage.get("output_tokens", 0)
-    +    model = settings.LLM_PLANNER_MODEL
-    +    input_rate, output_rate = _get_token_rates(model)
-    +    cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
-    +    await build_repo.record_build_cost(
-    +        build_id, f"{phase} (planner)", input_t, output_t, model, cost,
-    +    )
-    +
-    +    # Broadcast recovery plan WS event
-    +    await _broadcast_build_event(
-    +        user_id, build_id, "recovery_plan", {
-    +            "phase": phase,
-    +            "plan_text": planner_text,
-    +        },
-    +    )
-    +
-    +    return planner_text
-    +
-    +
-     async def _run_inline_audit(
-         build_id: UUID,
-         phase: str,
-    @@ -1365,7 +1589,7 @@ async def _run_inline_audit(
-         contracts: list[dict],
-         api_key: str,
-         audit_llm_enabled: bool = True,
-    -) -> str:
-    +) -> tuple[str, str]:
-         """Run an LLM-based audit of the builder's phase output.
-     
-         When audit_llm_enabled is True, sends the builder output + reference
-    @@ -1373,9 +1597,10 @@ async def _run_inline_audit(
-         prompt. The auditor checks for contract compliance, architectural
-         drift, and semantic correctness.
-     
-    -    When disabled, returns 'PASS' as a no-op (self-certification).
-    +    When disabled, returns ('PASS', '') as a no-op (self-certification).
-     
-    -    Returns 'PASS' or 'FAIL'.
-    +    Returns (verdict, report) where verdict is 'PASS' or 'FAIL' and
-    +    report is the full auditor response text (empty on PASS/stub).
-         """
-         try:
-             await build_repo.append_build_log(
-    @@ -1392,13 +1617,13 @@ async def _run_inline_audit(
-                     source="audit",
-                     level="info",
-                 )
-    -            return "PASS"
-    +            return ("PASS", "")
-     
-             # Load auditor system prompt from Forge/Contracts
-             auditor_prompt_path = FORGE_CONTRACTS_DIR / "auditor_prompt.md"
-             if not auditor_prompt_path.exists():
-                 logger.warning("auditor_prompt.md not found ÔÇö falling back to stub audit")
-    -            return "PASS"
-    +            return ("PASS", "")
-             auditor_system = auditor_prompt_path.read_text(encoding="utf-8")
-     
-             # Build reference contracts (everything except builder_contract + builder_directive)
-    @@ -1469,9 +1694,9 @@ async def _run_inline_audit(
-     
-             # Parse verdict
-             if "VERDICT: CLEAN" in audit_text:
-    -            return "PASS"
-    +            return ("PASS", audit_text)
-             elif "VERDICT: FLAGS FOUND" in audit_text:
-    -            return "FAIL"
-    +            return ("FAIL", audit_text)
-             else:
-                 # Ambiguous response ÔÇö log warning, default to PASS
-                 logger.warning("Auditor response missing clear verdict ÔÇö defaulting to PASS")
-    @@ -1481,7 +1706,7 @@ async def _run_inline_audit(
-                     source="audit",
-                     level="warn",
-                 )
-    -            return "PASS"
-    +            return ("PASS", audit_text)
-     
-         except Exception as exc:
-             logger.error("LLM audit error for %s: %s", phase, exc)
-    @@ -1491,7 +1716,7 @@ async def _run_inline_audit(
-                 source="audit",
-                 level="error",
-             )
-    -        return "PASS"
-    +        return ("PASS", "")
-     
-     
-     async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
-    diff --git a/app/templates/contracts/recovery_planner_prompt.md b/app/templates/contracts/recovery_planner_prompt.md
-    new file mode 100644
-    index 0000000..a0127c0
-    --- /dev/null
-    +++ b/app/templates/contracts/recovery_planner_prompt.md
-    @@ -0,0 +1,49 @@
-    +# Recovery Planner ÔÇö System Prompt
-    +
-    +You are a recovery planning agent for the Forge governance framework. An audit has **failed** on a builder's phase output. Your job is to analyse the failure and produce a concrete, alternative remediation strategy so the builder can fix the issues on its next attempt.
-    +
-    +## Context
-    +
-    +You are given:
-    +1. **Audit findings** ÔÇö the full auditor report explaining what failed and why.
-    +2. **The builder's phase output** ÔÇö what the builder actually produced (the code/files that were checked).
-    +3. **The project's contracts** ÔÇö the source-of-truth specifications the builder must conform to.
-    +4. **Current project state** ÔÇö the actual file tree and contents of key files on disk.
-    +
-    +## Your Task
-    ... (551 lines truncated, 1051 total)
+    +    # Reject absolute paths
+    ... (1222 lines truncated, 1722 total)

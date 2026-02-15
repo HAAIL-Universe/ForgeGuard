@@ -19,13 +19,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from app.clients.agent_client import StreamUsage, stream_agent
+from app.clients.agent_client import StreamUsage, ToolCall, stream_agent
 from app.clients import git_client
 from app.clients import github_client
 from app.config import settings
 from app.repos import build_repo
 from app.repos import project_repo
 from app.repos.user_repo import get_user_by_id
+from app.services.tool_executor import BUILDER_TOOLS, execute_tool
 from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -685,7 +686,19 @@ async def _run_build(
             "=== END PLAN ===\n\n"
             "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
             "As you complete each task, emit: === TASK DONE: N ===\n"
-            "where N is the task number from your current phase plan.\n"
+            "where N is the task number from your current phase plan.\n\n"
+            "## Tools\n"
+            "You have access to the following tools for interacting with the project:\n"
+            "- **read_file**: Read a file to check existing code or verify your work.\n"
+            "- **list_directory**: List files/folders to understand project structure before making changes.\n"
+            "- **search_code**: Search for patterns across files to find implementations or imports.\n"
+            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n\n"
+            "Guidelines for tool use:\n"
+            "1. Use list_directory at the start of each phase to understand the current state.\n"
+            "2. Use read_file to examine existing code before modifying it.\n"
+            "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
+            "4. Use search_code to find existing patterns, imports, or implementations.\n"
+            "5. After writing files, use read_file to verify the content was written correctly.\n"
         )
 
         # Emit build overview (high-level phase list) at build start
@@ -768,13 +781,68 @@ async def _run_build(
 
             # Stream agent output for this turn
             turn_text = ""
-            async for chunk in stream_agent(
+            tool_calls_this_turn: list[dict] = []
+            pending_tool_results: list[dict] = []
+
+            async for item in stream_agent(
                 api_key=api_key,
                 model=settings.LLM_BUILDER_MODEL,
                 system_prompt=system_prompt,
                 messages=messages,
                 usage_out=usage,
+                tools=BUILDER_TOOLS if working_dir else None,
             ):
+                if isinstance(item, ToolCall):
+                    # --- Tool call detected ---
+                    tool_result = execute_tool(item.name, item.input, working_dir or "")
+
+                    # Log the tool call
+                    input_summary = json.dumps(item.input)[:200]
+                    result_summary = tool_result[:300]
+                    await build_repo.append_build_log(
+                        build_id,
+                        f"Tool: {item.name}({input_summary}) → {result_summary}",
+                        source="tool", level="info",
+                    )
+
+                    # Broadcast tool_use WS event
+                    await _broadcast_build_event(
+                        user_id, build_id, "tool_use", {
+                            "tool_name": item.name,
+                            "input_summary": input_summary,
+                            "result_summary": result_summary,
+                        }
+                    )
+
+                    # Track write_file calls as files_written
+                    if item.name == "write_file" and tool_result.startswith("OK:"):
+                        rel_path = item.input.get("path", "")
+                        content = item.input.get("content", "")
+                        lang = _detect_language(rel_path)
+                        if rel_path and not any(f["path"] == rel_path for f in files_written):
+                            files_written.append({
+                                "path": rel_path,
+                                "size_bytes": len(content),
+                                "language": lang,
+                            })
+                        # Emit file_created event
+                        await _broadcast_build_event(
+                            user_id, build_id, "file_created", {
+                                "path": rel_path,
+                                "size_bytes": len(content),
+                                "language": lang,
+                            }
+                        )
+
+                    tool_calls_this_turn.append({
+                        "id": item.id,
+                        "name": item.name,
+                        "result": tool_result,
+                    })
+                    continue
+
+                # --- Text chunk ---
+                chunk = item
                 accumulated_text += chunk
                 turn_text += chunk
 
@@ -832,7 +900,37 @@ async def _run_build(
                                 }
                             )
 
-            # Turn complete — add assistant response to conversation history
+            # Turn complete — handle tool calls if any
+            if tool_calls_this_turn:
+                # Build the assistant message with tool_use content blocks
+                assistant_content: list[dict] = []
+                if turn_text:
+                    assistant_content.append({"type": "text", "text": turn_text})
+                for tc in tool_calls_this_turn:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": {},  # original input not needed in history
+                    })
+                messages.append({"role": "assistant", "content": assistant_content})
+
+                # Add tool results as a user message
+                tool_results_content: list[dict] = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc["id"],
+                        "content": tc["result"][:10_000],  # cap result size
+                    }
+                    for tc in tool_calls_this_turn
+                ]
+                messages.append({"role": "user", "content": tool_results_content})
+
+                # Continue to next iteration — the agent will respond to tool results
+                total_tokens_all_turns += usage.input_tokens + usage.output_tokens
+                continue
+
+            # Add assistant response to conversation history
             messages.append({"role": "assistant", "content": turn_text})
 
             # Check for user interjections between turns

@@ -1,5 +1,6 @@
 """Tests for project service -- questionnaire logic and contract generation."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -7,6 +8,7 @@ from uuid import UUID
 import pytest
 
 from app.services.project_service import (
+    ContractCancelled,
     QUESTIONNAIRE_SECTIONS,
     _active_generations,
     _parse_llm_response,
@@ -274,9 +276,10 @@ async def test_cancel_contract_generation_no_active(mock_project):
 @pytest.mark.asyncio
 @patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
 async def test_cancel_contract_generation_success(mock_project):
-    """Cancel removes the project from _active_generations."""
+    """Cancel sets the cancel event."""
     pid = str(PROJECT_ID)
-    _active_generations.add(pid)
+    cancel_event = asyncio.Event()
+    _active_generations[pid] = cancel_event
     mock_project.return_value = {
         "id": PROJECT_ID,
         "user_id": USER_ID,
@@ -286,7 +289,9 @@ async def test_cancel_contract_generation_success(mock_project):
     }
     result = await cancel_contract_generation(USER_ID, PROJECT_ID)
     assert result["status"] == "cancelling"
-    assert pid not in _active_generations
+    assert cancel_event.is_set()
+    # Clean up
+    _active_generations.pop(pid, None)
 
 
 @pytest.mark.asyncio
@@ -298,7 +303,7 @@ async def test_cancel_contract_generation_success(mock_project):
 async def test_generate_contracts_cancelled_mid_generation(
     mock_project, mock_upsert, mock_status, mock_ws, mock_gen
 ):
-    """Cancellation stops generation and raises ValueError."""
+    """Cancellation stops generation and raises ContractCancelled."""
     pid = str(PROJECT_ID)
     call_count = 0
 
@@ -306,7 +311,10 @@ async def test_generate_contracts_cancelled_mid_generation(
         nonlocal call_count
         call_count += 1
         if call_count >= 3:
-            _active_generations.discard(pid)
+            # Simulate cancel being triggered after 3rd contract
+            evt = _active_generations.get(pid)
+            if evt:
+                evt.set()
         return ("# content", {"input_tokens": 10, "output_tokens": 20})
 
     mock_gen.side_effect = fake_gen
@@ -331,11 +339,11 @@ async def test_generate_contracts_cancelled_mid_generation(
         "updated_at": "2025-01-01T00:00:00Z",
     }
 
-    with pytest.raises(ValueError, match="cancelled"):
+    with pytest.raises(ContractCancelled):
         await generate_contracts(USER_ID, PROJECT_ID)
 
-    # Should have only generated 3 contracts before cancelling at the 4th
-    assert mock_upsert.call_count == 3
+    # Cancel fires during the 3rd LLM call, so only 2 contracts are saved
+    assert mock_upsert.call_count == 2
 
 
 # ---------------------------------------------------------------------------
