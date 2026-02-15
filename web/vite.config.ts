@@ -7,7 +7,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/health': 'http://localhost:8000',
-      '/auth': 'http://localhost:8000',
+      '/auth/login': 'http://localhost:8000',
+      '/auth/github': 'http://localhost:8000',
+      '/auth/me': 'http://localhost:8000',
       '/repos': 'http://localhost:8000',
       '/webhooks': 'http://localhost:8000',
       '/ws': {

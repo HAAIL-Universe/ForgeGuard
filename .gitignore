@@ -40,3 +40,8 @@ coverage/
 # Database
 *.db
 *.sqlite3
+
+# Forge IP -- do not commit prompts/directives
+Forge/Contracts/auditor_prompt.md
+Forge/Contracts/builder_contract.md
+Forge/Contracts/builder_directive.md
