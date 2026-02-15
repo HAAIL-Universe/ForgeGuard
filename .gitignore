@@ -44,6 +44,9 @@ coverage/
 # Forge runtime
 .forge_watcher.lock
 
+# Case study
+casestudy.md
+
 # Forge IP -- do not commit prompts/directives
 Forge/Contracts/auditor_prompt.md
 Forge/Contracts/builder_contract.md
