@@ -2,9 +2,15 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-from app.clients.llm_client import chat, chat_anthropic, chat_openai
+from app.clients.llm_client import (
+    _retry_on_transient,
+    chat,
+    chat_anthropic,
+    chat_openai,
+)
 
 
 def _make_mock_client(response_data):
@@ -271,3 +277,159 @@ async def test_chat_defaults_to_anthropic(mock_client_cls):
     call_kwargs = mock_client.post.call_args
     url = call_kwargs.args[0] if call_kwargs.args else call_kwargs[0][0]
     assert "anthropic.com" in url
+
+
+# ---------------------------------------------------------------------------
+# Retry logic tests
+# ---------------------------------------------------------------------------
+
+
+class TestRetryOnTransient:
+    """Tests for _retry_on_transient."""
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_success(self):
+        factory = AsyncMock(return_value="ok")
+        result = await _retry_on_transient(factory)
+        assert result == "ok"
+        assert factory.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_retries_on_timeout(self, mock_sleep):
+        factory = AsyncMock(
+            side_effect=[httpx.ReadTimeout("timeout"), "recovered"]
+        )
+        result = await _retry_on_transient(factory, max_retries=3)
+        assert result == "recovered"
+        assert factory.await_count == 2
+        mock_sleep.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_exhausts_retries_on_timeout(self, mock_sleep):
+        factory = AsyncMock(side_effect=httpx.ReadTimeout("still timing out"))
+        with pytest.raises(httpx.ReadTimeout):
+            await _retry_on_transient(factory, max_retries=2)
+        assert factory.await_count == 3  # initial + 2 retries
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_retries_on_429(self, mock_sleep):
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        factory = AsyncMock(
+            side_effect=[
+                httpx.HTTPStatusError("rate limit", request=MagicMock(), response=resp_429),
+                "ok",
+            ]
+        )
+        result = await _retry_on_transient(factory, max_retries=3)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_retries_on_529(self, mock_sleep):
+        resp_529 = MagicMock()
+        resp_529.status_code = 529
+        factory = AsyncMock(
+            side_effect=[
+                httpx.HTTPStatusError("overloaded", request=MagicMock(), response=resp_529),
+                "ok",
+            ]
+        )
+        result = await _retry_on_transient(factory, max_retries=2)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_400(self):
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        factory = AsyncMock(
+            side_effect=httpx.HTTPStatusError("bad request", request=MagicMock(), response=resp_400)
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await _retry_on_transient(factory, max_retries=3)
+        assert factory.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_retries_on_anthropic_429_valueerror(self, mock_sleep):
+        """Our Anthropic wrapper raises ValueError('Anthropic API 429: ...') for rate limits."""
+        factory = AsyncMock(
+            side_effect=[
+                ValueError("Anthropic API 429: rate limited"),
+                "ok",
+            ]
+        )
+        result = await _retry_on_transient(factory, max_retries=2)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_non_retryable_valueerror(self):
+        factory = AsyncMock(side_effect=ValueError("Empty response from Anthropic API"))
+        with pytest.raises(ValueError, match="Empty response"):
+            await _retry_on_transient(factory, max_retries=3)
+        assert factory.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_exponential_backoff(self, mock_sleep):
+        factory = AsyncMock(
+            side_effect=[
+                httpx.ReadTimeout("t1"),
+                httpx.ReadTimeout("t2"),
+                "ok",
+            ]
+        )
+        result = await _retry_on_transient(factory, max_retries=3, backoff_base=2.0)
+        assert result == "ok"
+        # first retry: 2^0 = 1s, second retry: 2^1 = 2s
+        assert mock_sleep.await_count == 2
+        mock_sleep.assert_any_await(1.0)
+        mock_sleep.assert_any_await(2.0)
+
+
+# ---------------------------------------------------------------------------
+# Timeout configuration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.clients.llm_client.httpx.AsyncClient")
+async def test_anthropic_timeout_is_300s(mock_client_cls):
+    """Verify Anthropic client uses 300s timeout."""
+    mock_client = _make_mock_client({
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    })
+    mock_client_cls.return_value = mock_client
+
+    await chat_anthropic(
+        api_key="test-key",
+        model="claude-sonnet-4-5",
+        system_prompt="System",
+        messages=[{"role": "user", "content": "Hi"}],
+    )
+
+    mock_client_cls.assert_called_with(timeout=300.0)
+
+
+@pytest.mark.asyncio
+@patch("app.clients.llm_client.httpx.AsyncClient")
+async def test_openai_timeout_is_300s(mock_client_cls):
+    """Verify OpenAI client uses 300s timeout."""
+    mock_client = _make_mock_client({
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+    })
+    mock_client_cls.return_value = mock_client
+
+    await chat_openai(
+        api_key="sk-test",
+        model="gpt-4o",
+        system_prompt="System",
+        messages=[{"role": "user", "content": "Hi"}],
+    )
+
+    mock_client_cls.assert_called_with(timeout=300.0)

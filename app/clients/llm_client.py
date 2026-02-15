@@ -1,6 +1,72 @@
 """LLM client -- multi-provider chat wrapper (Anthropic + OpenAI)."""
 
+import asyncio
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retry configuration
+# ---------------------------------------------------------------------------
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2.0  # seconds
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 529})
+
+
+async def _retry_on_transient(
+    coro_factory,
+    *,
+    max_retries: int = MAX_RETRIES,
+    backoff_base: float = RETRY_BACKOFF_BASE,
+):
+    """Retry a coroutine factory on transient HTTP / timeout errors.
+
+    ``coro_factory`` is a zero-arg callable that returns a new awaitable each
+    time (so we can retry fresh).
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_factory()
+        except httpx.TimeoutException as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                wait = backoff_base ** attempt
+                logger.warning(
+                    "LLM request timeout (attempt %d/%d), retrying in %.1fs",
+                    attempt + 1, max_retries + 1, wait,
+                )
+                await asyncio.sleep(wait)
+            else:
+                raise
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            if exc.response.status_code in _RETRYABLE_STATUS_CODES and attempt < max_retries:
+                wait = backoff_base ** attempt
+                logger.warning(
+                    "LLM request %d (attempt %d/%d), retrying in %.1fs",
+                    exc.response.status_code, attempt + 1, max_retries + 1, wait,
+                )
+                await asyncio.sleep(wait)
+            else:
+                raise
+        except ValueError as exc:
+            # Re-raise API-level errors that we parsed ourselves (e.g. 429)
+            msg = str(exc)
+            if any(f"API {code}" in msg for code in _RETRYABLE_STATUS_CODES) and attempt < max_retries:
+                last_exc = exc
+                wait = backoff_base ** attempt
+                logger.warning(
+                    "LLM API error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, max_retries + 1, wait, msg,
+                )
+                await asyncio.sleep(wait)
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]  # pragma: no cover
 
 # ---------------------------------------------------------------------------
 # Anthropic
@@ -27,42 +93,46 @@ async def chat_anthropic(
     max_tokens: int = 2048,
 ) -> str:
     """Send a chat request to the Anthropic Messages API."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            ANTHROPIC_MESSAGES_URL,
-            headers=_anthropic_headers(api_key),
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": messages,
-            },
-        )
-        if response.status_code >= 400:
-            try:
-                err_body = response.json()
-                err_msg = err_body.get("error", {}).get("message", response.text)
-            except Exception:
-                err_msg = response.text
-            raise ValueError(f"Anthropic API {response.status_code}: {err_msg}")
 
-    data = response.json()
-    usage = data.get("usage", {})
-    content_blocks = data.get("content", [])
-    if not content_blocks:
-        raise ValueError("Empty response from Anthropic API")
-
-    for block in content_blocks:
-        if block.get("type") == "text":
-            return {
-                "text": block["text"],
-                "usage": {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
+    async def _call():
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                ANTHROPIC_MESSAGES_URL,
+                headers=_anthropic_headers(api_key),
+                json={
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "system": system_prompt,
+                    "messages": messages,
                 },
-            }
+            )
+            if response.status_code >= 400:
+                try:
+                    err_body = response.json()
+                    err_msg = err_body.get("error", {}).get("message", response.text)
+                except Exception:
+                    err_msg = response.text
+                raise ValueError(f"Anthropic API {response.status_code}: {err_msg}")
 
-    raise ValueError("No text block in Anthropic API response")
+        data = response.json()
+        usage = data.get("usage", {})
+        content_blocks = data.get("content", [])
+        if not content_blocks:
+            raise ValueError("Empty response from Anthropic API")
+
+        for block in content_blocks:
+            if block.get("type") == "text":
+                return {
+                    "text": block["text"],
+                    "usage": {
+                        "input_tokens": usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0),
+                    },
+                }
+
+        raise ValueError("No text block in Anthropic API response")
+
+    return await _retry_on_transient(_call)
 
 
 # ---------------------------------------------------------------------------
@@ -99,34 +169,37 @@ async def chat_openai(
     # older models use max_tokens.  Send the right one to avoid 400 errors.
     body["max_completion_tokens"] = max_tokens
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            OPENAI_CHAT_URL,
-            headers=_openai_headers(api_key),
-            json=body,
-        )
-        if response.status_code == 400:
-            detail = response.json().get("error", {}).get("message", response.text)
-            raise ValueError(f"OpenAI API error: {detail}")
-        response.raise_for_status()
+    async def _call():
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                OPENAI_CHAT_URL,
+                headers=_openai_headers(api_key),
+                json=body,
+            )
+            if response.status_code == 400:
+                detail = response.json().get("error", {}).get("message", response.text)
+                raise ValueError(f"OpenAI API error: {detail}")
+            response.raise_for_status()
 
-    data = response.json()
-    choices = data.get("choices", [])
-    if not choices:
-        raise ValueError("Empty response from OpenAI API")
+        data = response.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise ValueError("Empty response from OpenAI API")
 
-    content = choices[0].get("message", {}).get("content")
-    if not content:
-        raise ValueError("No content in OpenAI API response")
+        content = choices[0].get("message", {}).get("content")
+        if not content:
+            raise ValueError("No content in OpenAI API response")
 
-    usage = data.get("usage", {})
-    return {
-        "text": content,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
-    }
+        usage = data.get("usage", {})
+        return {
+            "text": content,
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
+        }
+
+    return await _retry_on_transient(_call)
 
 
 # ---------------------------------------------------------------------------
