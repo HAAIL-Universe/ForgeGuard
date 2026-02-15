@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
-from app.services.audit_service import get_audit_detail, get_repo_audits
+from app.services.audit_service import backfill_repo_commits, get_audit_detail, get_repo_audits
 from app.services.repo_service import (
     connect_repo,
     disconnect_repo,
@@ -120,6 +120,31 @@ async def disconnect(
         )
 
     return {"status": "disconnected"}
+
+
+@router.post("/{repo_id}/sync")
+async def sync_commits(
+    repo_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Backfill missed commits from GitHub and run audits on them."""
+    try:
+        result = await backfill_repo_commits(
+            repo_id=repo_id,
+            user_id=current_user["id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    except Exception:
+        logger.exception("Failed to sync commits for repo %s", repo_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to sync commits from GitHub",
+        )
+    return result
 
 
 @router.get("/{repo_id}/audits")

@@ -209,3 +209,37 @@ def test_disconnect_repo_not_found(mock_get_repo, mock_dep_user):
 def test_disconnect_repo_requires_auth():
     response = client.delete("/repos/44444444-4444-4444-4444-444444444444/disconnect")
     assert response.status_code == 401
+
+
+# ---------- POST /repos/{repo_id}/sync ----------
+
+
+REPO_ID = "33333333-3333-3333-3333-333333333333"
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.api.routers.repos.backfill_repo_commits", new_callable=AsyncMock)
+def test_sync_commits_success(mock_backfill, mock_dep_user):
+    mock_dep_user.return_value = MOCK_USER
+    mock_backfill.return_value = {"synced": 3, "skipped": 7}
+
+    response = client.post(f"/repos/{REPO_ID}/sync", headers=_auth_header())
+    assert response.status_code == 200
+    data = response.json()
+    assert data["synced"] == 3
+    assert data["skipped"] == 7
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.api.routers.repos.backfill_repo_commits", new_callable=AsyncMock)
+def test_sync_commits_not_found(mock_backfill, mock_dep_user):
+    mock_dep_user.return_value = MOCK_USER
+    mock_backfill.side_effect = ValueError("Repo not found or access denied")
+
+    response = client.post(f"/repos/{REPO_ID}/sync", headers=_auth_header())
+    assert response.status_code == 404
+
+
+def test_sync_commits_requires_auth():
+    response = client.post(f"/repos/{REPO_ID}/sync")
+    assert response.status_code == 401

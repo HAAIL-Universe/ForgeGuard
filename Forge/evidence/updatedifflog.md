@@ -1,55 +1,46 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-15T04:17:23+00:00
+- Timestamp: 2026-02-15T04:42:00+00:00
 - Branch: master
-- HEAD: e40d2ed
-- BASE_HEAD: ef1b753
-- Diff basis: committed (Phase 11 complete)
+- HEAD: pending
+- BASE_HEAD: 63d92ee
+- Diff basis: post-phase enhancement (commit backfill + create project)
 
 ## Cycle Status
 - Status: COMPLETE
 
 ## Summary
-- Added build_costs table (004_build_costs.sql) for per-phase token usage and cost tracking
-- Implemented StreamUsage in agent_client.py to capture input/output tokens from SSE events
-- Added GET /build/summary and GET /build/instructions endpoints with rate limiting (5/hr)
-- Created BuildComplete.tsx frontend page with cost breakdown, status banner, deploy instructions
-- Updated USER_INSTRUCTIONS.md with full build workflow docs and API reference
+- Added offline commit backfill: `list_commits()` GitHub client, `get_existing_commit_shas()` repo layer, `backfill_repo_commits()` service, `POST /repos/{id}/sync` endpoint
+- Added "Create Project" button + modal on Dashboard with name/description form
+- Added "Sync Commits" button on CommitTimeline page to trigger backfill
+- 15 new tests: 5 audit service, 3 GitHub client, 3 repos router sync, 4 frontend CreateProjectModal
 
 ## Files Changed
-- db/migrations/004_build_costs.sql
-- Forge/Contracts/physics.yaml
-- Forge/Contracts/schema.md
-- Forge/evidence/audit_ledger.md
-- Forge/evidence/test_runs.md
+- app/clients/github_client.py (added list_commits)
+- app/repos/audit_repo.py (added get_existing_commit_shas)
+- app/services/audit_service.py (added backfill_repo_commits)
+- app/api/routers/repos.py (added POST sync endpoint)
+- web/src/components/CreateProjectModal.tsx (new)
+- web/src/pages/Dashboard.tsx (added Create Project button + modal)
+- web/src/pages/CommitTimeline.tsx (added Sync Commits button)
+- tests/test_audit_service.py (new, 5 tests)
+- tests/test_github_client.py (new, 3 tests)
+- tests/test_repos_router.py (added 3 sync tests)
+- web/src/__tests__/App.test.tsx (added 4 CreateProjectModal tests)
 - Forge/evidence/test_runs_latest.md
 - Forge/evidence/updatedifflog.md
-- USER_INSTRUCTIONS.md
-- app/api/rate_limit.py
-- app/api/routers/builds.py
-- app/clients/agent_client.py
-- app/repos/build_repo.py
-- app/services/build_service.py
-- tests/test_build_repo.py
-- tests/test_build_service.py
-- tests/test_builds_router.py
-- web/src/App.tsx
-- web/src/__tests__/Build.test.tsx
-- web/src/pages/BuildComplete.tsx
-- web/src/pages/BuildProgress.tsx
 
 ## Verification
 - Static: all files compile (compileall + tsc pass)
-- Runtime: 208 pytest + 35 vitest = 243 tests pass
-- Behavior: cost tracking, summary/instructions endpoints validated
-- Contract: physics.yaml and schema.md updated with new paths and schemas
+- Runtime: 219 pytest + 39 vitest = 258 tests pass (was 243)
+- Behavior: backfill syncs missing commits, Create Project modal submits to backend
+- Contract: no phase contract changes needed (post-phase enhancement)
 
 ## Notes (optional)
-- W1 secrets warning is expected (test fixtures contain token patterns)
-- Removed from __future__ import annotations in agent_client.py to fix A9 dependency gate
+- Backfill fetches up to 300 recent commits (3 pages × 100) per sync
+- Backfill continues processing if individual commits error (graceful degradation)
 
 ## Next Steps
-- Phase 11 complete — all phases delivered
-- AUTO-AUTHORIZED at commit e40d2ed
+- Features ready for manual QA with live GitHub repos
 

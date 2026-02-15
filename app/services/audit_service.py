@@ -1,20 +1,24 @@
 """Audit service -- orchestrates audit execution triggered by webhooks."""
 
 import json
+import logging
 import os
 from uuid import UUID
 
 from app.audit.engine import run_all_checks
 from app.audit.runner import AuditResult, run_audit
-from app.clients.github_client import get_commit_files, get_repo_file_content
+from app.clients.github_client import get_commit_files, get_repo_file_content, list_commits
 from app.repos.audit_repo import (
     create_audit_run,
+    get_existing_commit_shas,
     insert_audit_checks,
     update_audit_run,
 )
-from app.repos.repo_repo import get_repo_by_github_id
+from app.repos.repo_repo import get_repo_by_github_id, get_repo_by_id
 from app.repos.user_repo import get_user_by_id
 from app.ws_manager import manager as ws_manager
+
+logger = logging.getLogger(__name__)
 
 
 async def process_push_event(payload: dict) -> dict | None:
@@ -259,3 +263,116 @@ def run_governance_audit(
         project_root=project_root,
         append_ledger=False,
     )
+
+
+async def backfill_repo_commits(
+    repo_id: UUID,
+    user_id: UUID,
+) -> dict:
+    """Fetch commits from GitHub that ForgeGuard missed while offline.
+
+    Compares the GitHub commit list against existing audit_runs and creates
+    new audit runs (with full audit checks) for any gaps.
+
+    Returns { "synced": int, "skipped": int }.
+    """
+    repo = await get_repo_by_id(repo_id)
+    if repo is None or repo["user_id"] != user_id:
+        raise ValueError("Repo not found or access denied")
+
+    user = await get_user_by_id(user_id)
+    if user is None:
+        raise ValueError("User not found")
+
+    access_token = user["access_token"]
+    full_name = repo["full_name"]
+    branch = repo.get("default_branch", "main")
+
+    # Find the latest audit we already have so we only pull newer commits
+    existing_shas = await get_existing_commit_shas(repo_id)
+
+    # Fetch recent commits from GitHub
+    commits = await list_commits(
+        access_token=access_token,
+        full_name=full_name,
+        branch=branch,
+    )
+
+    synced = 0
+    skipped = 0
+
+    # Process oldest-first so timeline ordering is correct
+    for commit in reversed(commits):
+        sha = commit["sha"]
+        if sha in existing_shas:
+            skipped += 1
+            continue
+
+        # Create audit run + run checks for this commit
+        audit_run = await create_audit_run(
+            repo_id=repo_id,
+            commit_sha=sha,
+            commit_message=commit.get("message", ""),
+            commit_author=commit.get("author", ""),
+            branch=branch,
+        )
+
+        await update_audit_run(
+            audit_run_id=audit_run["id"],
+            status="running",
+            overall_result=None,
+            files_checked=0,
+        )
+
+        try:
+            changed_paths = await get_commit_files(access_token, full_name, sha)
+
+            files: dict[str, str] = {}
+            for path in changed_paths:
+                content = await get_repo_file_content(
+                    access_token, full_name, path, sha
+                )
+                if content is not None:
+                    files[path] = content
+
+            boundaries = None
+            boundaries_content = await get_repo_file_content(
+                access_token, full_name, "boundaries.json", sha
+            )
+            if boundaries_content:
+                try:
+                    boundaries = json.loads(boundaries_content)
+                except json.JSONDecodeError:
+                    boundaries = None
+
+            check_results = run_all_checks(files, boundaries)
+            await insert_audit_checks(audit_run["id"], check_results)
+
+            has_fail = any(c["result"] == "FAIL" for c in check_results)
+            has_error = any(c["result"] == "ERROR" for c in check_results)
+            if has_error:
+                overall = "ERROR"
+            elif has_fail:
+                overall = "FAIL"
+            else:
+                overall = "PASS"
+
+            await update_audit_run(
+                audit_run_id=audit_run["id"],
+                status="completed",
+                overall_result=overall,
+                files_checked=len(files),
+            )
+            synced += 1
+
+        except Exception:
+            logger.exception("Backfill failed for commit %s", sha)
+            await update_audit_run(
+                audit_run_id=audit_run["id"],
+                status="error",
+                overall_result="ERROR",
+                files_checked=0,
+            )
+            synced += 1  # still counts as processed
+
+    return {"synced": synced, "skipped": skipped}

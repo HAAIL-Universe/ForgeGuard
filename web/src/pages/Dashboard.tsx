@@ -10,6 +10,7 @@ import RepoPickerModal from '../components/RepoPickerModal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ProjectCard from '../components/ProjectCard';
 import type { Project } from '../components/ProjectCard';
+import CreateProjectModal from '../components/CreateProjectModal';
 import EmptyState from '../components/EmptyState';
 import { SkeletonCard } from '../components/Skeleton';
 
@@ -24,6 +25,7 @@ function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [showPicker, setShowPicker] = useState(false);
+  const [showCreateProject, setShowCreateProject] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<Repo | null>(null);
 
   const fetchRepos = useCallback(async () => {
@@ -164,6 +166,21 @@ function Dashboard() {
           }}
         >
           <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Projects</h2>
+          <button
+            onClick={() => setShowCreateProject(true)}
+            data-testid="create-project-btn"
+            style={{
+              background: '#2563EB',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '8px 16px',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+            }}
+          >
+            Create Project
+          </button>
         </div>
 
         {projectsLoading ? (
@@ -172,7 +189,11 @@ function Dashboard() {
             <SkeletonCard />
           </div>
         ) : projects.length === 0 ? (
-          <EmptyState message="No projects yet." />
+          <EmptyState
+            message='No projects yet. Click "Create Project" to start building.'
+            actionLabel="Create Project"
+            onAction={() => setShowCreateProject(true)}
+          />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {projects.map((project) => (
@@ -181,6 +202,16 @@ function Dashboard() {
           </div>
         )}
       </div>
+
+      {showCreateProject && (
+        <CreateProjectModal
+          onClose={() => setShowCreateProject(false)}
+          onCreated={(project) => {
+            setShowCreateProject(false);
+            navigate(`/projects/${project.id}`);
+          }}
+        />
+      )}
 
       {disconnectTarget && (
         <ConfirmDialog

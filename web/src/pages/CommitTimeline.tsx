@@ -21,6 +21,7 @@ function CommitTimeline() {
   const [audits, setAudits] = useState<AuditRun[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -62,6 +63,27 @@ function CommitTimeline() {
     navigate(`/repos/${repoId}/audits/${audit.id}`);
   };
 
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch(`${API_BASE}/repos/${repoId}/sync`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        addToast(`Synced ${data.synced} commit(s), ${data.skipped} already tracked`);
+        fetchAudits();
+      } else {
+        addToast('Failed to sync commits');
+      }
+    } catch {
+      addToast('Network error syncing commits');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   // Compute health from loaded audits
   const computedHealth = (() => {
     const completed = audits.filter((a) => a.status === 'completed');
@@ -94,6 +116,24 @@ function CommitTimeline() {
           <HealthBadge score={computedHealth} />
           <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Commit Timeline</h2>
           <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>({total} audits)</span>
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            data-testid="sync-commits-btn"
+            style={{
+              marginLeft: 'auto',
+              background: syncing ? '#1E293B' : '#2563EB',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '6px 14px',
+              cursor: syncing ? 'not-allowed' : 'pointer',
+              fontSize: '0.8rem',
+              opacity: syncing ? 0.6 : 1,
+            }}
+          >
+            {syncing ? 'Syncing...' : 'Sync Commits'}
+          </button>
         </div>
 
         {loading ? (

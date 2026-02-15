@@ -183,3 +183,54 @@ async def get_commit_files(
         response.raise_for_status()
         data = response.json()
         return [f["filename"] for f in data.get("files", [])]
+
+
+async def list_commits(
+    access_token: str,
+    full_name: str,
+    branch: str | None = None,
+    since: str | None = None,
+    per_page: int = 100,
+    max_pages: int = 3,
+) -> list[dict]:
+    """List commits from a GitHub repo, newest first.
+
+    Parameters
+    ----------
+    branch : default branch if None
+    since  : ISO-8601 timestamp — only commits after this date
+    per_page / max_pages : pagination caps (default 300 commits max)
+
+    Returns list of dicts with sha, message, author, date, branch.
+    """
+    commits: list[dict] = []
+    page = 1
+    async with httpx.AsyncClient() as client:
+        while page <= max_pages:
+            params: dict[str, str | int] = {"per_page": per_page, "page": page}
+            if branch:
+                params["sha"] = branch
+            if since:
+                params["since"] = since
+            response = await client.get(
+                f"{GITHUB_API_BASE}/repos/{full_name}/commits",
+                params=params,
+                headers=_auth_headers(access_token),
+            )
+            response.raise_for_status()
+            data = response.json()
+            if not data:
+                break
+            for c in data:
+                commit_data = c.get("commit", {})
+                author_data = commit_data.get("author", {})
+                commits.append({
+                    "sha": c["sha"],
+                    "message": commit_data.get("message", ""),
+                    "author": author_data.get("name", ""),
+                    "date": author_data.get("date", ""),
+                })
+            if len(data) < per_page:
+                break
+            page += 1
+    return commits

@@ -30,6 +30,16 @@ async def create_audit_run(
     return dict(row)
 
 
+async def get_existing_commit_shas(repo_id: UUID) -> set[str]:
+    """Return the set of commit SHAs already recorded for a repo."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT DISTINCT commit_sha FROM audit_runs WHERE repo_id = $1",
+        repo_id,
+    )
+    return {r["commit_sha"] for r in rows}
+
+
 async def update_audit_run(
     audit_run_id: UUID,
     status: str,

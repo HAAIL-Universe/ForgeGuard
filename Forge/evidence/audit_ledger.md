@@ -3268,3 +3268,92 @@ Timestamp: 2026-02-15T04:18:57Z
 Commit: 66fbe81
 Note: AEM auto_authorize enabled per builder_directive.md
 
+
+---
+## Audit Entry: Phase 11 -- complete) -- Iteration 71
+Timestamp: 2026-02-15T04:20:39Z
+AEM Cycle: Phase 11 -- complete)
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Claimed but not in diff: app/api/rate_limit.py, app/api/routers/builds.py, app/clients/agent_client.py, app/repos/build_repo.py, app/services/build_service.py, db/migrations/004_build_costs.sql, Forge/Contracts/physics.yaml, Forge/Contracts/schema.md, Forge/evidence/audit_ledger.md, Forge/evidence/test_runs_latest.md, Forge/evidence/test_runs.md, tests/test_build_repo.py, tests/test_build_service.py, tests/test_builds_router.py, USER_INSTRUCTIONS.md, web/src/__tests__/Build.test.tsx, web/src/App.tsx, web/src/pages/BuildComplete.tsx, web/src/pages/BuildProgress.tsx.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Claimed but not in diff: app/api/rate_limit.py, app/api/routers/builds.py, app/clients/agent_client.py, app/repos/build_repo.py, app/services/build_service.py, db/migrations/004_build_costs.sql, Forge/Contracts/physics.yaml, Forge/Contracts/schema.md, Forge/evidence/audit_ledger.md, Forge/evidence/test_runs_latest.md, Forge/evidence/test_runs.md, tests/test_build_repo.py, tests/test_build_service.py, tests/test_builds_router.py, USER_INSTRUCTIONS.md, web/src/__tests__/Build.test.tsx, web/src/App.tsx, web/src/pages/BuildComplete.tsx, web/src/pages/BuildProgress.tsx.
+
+### Files Changed
+- app/api/rate_limit.py
+- app/api/routers/builds.py
+- app/clients/agent_client.py
+- app/repos/build_repo.py
+- app/services/build_service.py
+- db/migrations/004_build_costs.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_build_repo.py
+- tests/test_build_service.py
+- tests/test_builds_router.py
+- USER_INSTRUCTIONS.md
+- web/src/__tests__/Build.test.tsx
+- web/src/App.tsx
+- web/src/pages/BuildComplete.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 72
+Timestamp: 2026-02-15T04:42:00Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/repos.py, app/clients/github_client.py, app/repos/audit_repo.py, app/services/audit_service.py, Forge/evidence/audit_ledger.md, tests/test_repos_router.py, web/src/__tests__/App.test.tsx, web/src/pages/CommitTimeline.tsx, web/src/pages/Dashboard.tsx. Claimed but not in diff: 3 tests), 5 tests), app/api/routers/repos.py (added POST sync endpoint), app/clients/github_client.py (added list_commits), app/repos/audit_repo.py (added get_existing_commit_shas), app/services/audit_service.py (added backfill_repo_commits), tests/test_audit_service.py (new, tests/test_github_client.py (new, tests/test_repos_router.py (added 3 sync tests), web/src/__tests__/App.test.tsx (added 4 CreateProjectModal tests), web/src/components/CreateProjectModal.tsx (new), web/src/pages/CommitTimeline.tsx (added Sync Commits button), web/src/pages/Dashboard.tsx (added Create Project button + modal).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/repos.py, app/clients/github_client.py, app/repos/audit_repo.py, app/services/audit_service.py, Forge/evidence/audit_ledger.md, tests/test_repos_router.py, web/src/__tests__/App.test.tsx, web/src/pages/CommitTimeline.tsx, web/src/pages/Dashboard.tsx. Claimed but not in diff: 3 tests), 5 tests), app/api/routers/repos.py (added POST sync endpoint), app/clients/github_client.py (added list_commits), app/repos/audit_repo.py (added get_existing_commit_shas), app/services/audit_service.py (added backfill_repo_commits), tests/test_audit_service.py (new, tests/test_github_client.py (new, tests/test_repos_router.py (added 3 sync tests), web/src/__tests__/App.test.tsx (added 4 CreateProjectModal tests), web/src/components/CreateProjectModal.tsx (new), web/src/pages/CommitTimeline.tsx (added Sync Commits button), web/src/pages/Dashboard.tsx (added Create Project button + modal).
+
+### Files Changed
+- 3 tests)
+- 5 tests)
+- app/api/routers/repos.py (added POST sync endpoint)
+- app/clients/github_client.py (added list_commits)
+- app/repos/audit_repo.py (added get_existing_commit_shas)
+- app/services/audit_service.py (added backfill_repo_commits)
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- tests/test_audit_service.py (new
+- tests/test_github_client.py (new
+- tests/test_repos_router.py (added 3 sync tests)
+- web/src/__tests__/App.test.tsx (added 4 CreateProjectModal tests)
+- web/src/components/CreateProjectModal.tsx (new)
+- web/src/pages/CommitTimeline.tsx (added Sync Commits button)
+- web/src/pages/Dashboard.tsx (added Create Project button + modal)
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

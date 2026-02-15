@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import Login from '../pages/Login';
 import HealthBadge from '../components/HealthBadge';
@@ -7,6 +7,7 @@ import ResultBadge from '../components/ResultBadge';
 import CheckResultCard from '../components/CheckResultCard';
 import Skeleton, { SkeletonCard, SkeletonRow } from '../components/Skeleton';
 import EmptyState from '../components/EmptyState';
+import CreateProjectModal from '../components/CreateProjectModal';
 
 describe('Login', () => {
   it('renders the sign in button', () => {
@@ -119,5 +120,39 @@ describe('EmptyState', () => {
     const fn = () => {};
     render(<EmptyState message="Empty" actionLabel="Add Item" onAction={fn} />);
     expect(screen.getByText('Add Item')).toBeInTheDocument();
+  });
+});
+
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({ token: 'test-token', user: { id: '1', login: 'test' }, logout: () => {} }),
+}));
+
+describe('CreateProjectModal', () => {
+  it('renders form inputs', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    expect(screen.getByTestId('project-name-input')).toBeInTheDocument();
+    expect(screen.getByTestId('project-desc-input')).toBeInTheDocument();
+    expect(screen.getByTestId('create-project-submit')).toBeInTheDocument();
+  });
+
+  it('shows error when submitting empty name', () => {
+    render(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.click(screen.getByTestId('create-project-submit'));
+    expect(screen.getByTestId('create-error')).toBeInTheDocument();
+    expect(screen.getByText('Project name is required')).toBeInTheDocument();
+  });
+
+  it('calls onClose when cancel is clicked', () => {
+    const onClose = vi.fn();
+    render(<CreateProjectModal onClose={onClose} onCreated={() => {}} />);
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('calls onClose when overlay is clicked', () => {
+    const onClose = vi.fn();
+    render(<CreateProjectModal onClose={onClose} onCreated={() => {}} />);
+    fireEvent.click(screen.getByTestId('create-project-overlay'));
+    expect(onClose).toHaveBeenCalled();
   });
 });
