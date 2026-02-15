@@ -161,6 +161,8 @@ paths:
       messages_from_server:
         type: "audit_update"
         payload: AuditRunSummary
+        type: "file_created"
+        payload: BuildFileEvent
 
   # -- Projects (Phase 8) -------------------------------------------
 
@@ -267,11 +269,16 @@ paths:
     post:
       summary: "Start a build (validates contracts exist, spawns builder)"
       auth: bearer
+      request:
+        target_type: string (required, enum: github_new, github_existing, local_path)
+        target_ref: string (required, repo name / full_name / absolute path)
       response:
         id: uuid
         project_id: uuid
         phase: string
         status: string
+        target_type: string
+        target_ref: string
         started_at: datetime
         created_at: datetime
 
@@ -297,6 +304,23 @@ paths:
         completed_at: datetime | null
         error_detail: string | null
         created_at: datetime
+
+  /projects/{project_id}/build/files:
+    get:
+      summary: "List all files written during the build"
+      auth: bearer
+      response:
+        items: BuildFile[]
+
+  /projects/{project_id}/build/files/{path}:
+    get:
+      summary: "Retrieve content of a specific file written during the build"
+      auth: bearer
+      response:
+        path: string
+        content: string
+        size_bytes: integer
+        language: string
 
   /projects/{project_id}/build/logs:
     get:
@@ -422,12 +446,20 @@ schemas:
     message: string
     created_at: datetime
 
+  BuildFile:
+    path: string
+    size_bytes: integer
+    language: string
+    created_at: datetime
+
   BuildStatus:
     id: uuid
     project_id: uuid
     phase: string
     status: string
     loop_count: integer
+    target_type: string | null
+    target_ref: string | null
     started_at: datetime | null
     completed_at: datetime | null
     error_detail: string | null

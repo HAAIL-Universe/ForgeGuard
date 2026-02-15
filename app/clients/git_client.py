@@ -1,0 +1,165 @@
+"""Git client -- thin wrapper around asyncio.subprocess for git operations.
+
+Handles clone, add, commit, push for build targets. No database access,
+no business logic, no HTTP framework imports.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+async def _run_git(args: list[str], cwd: str | Path, env: dict | None = None) -> str:
+    """Run a git command and return stdout. Raises on non-zero exit."""
+    merged_env = {**os.environ, **(env or {})}
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=merged_env,
+    )
+    stdout, stderr = await proc.communicate()
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+
+    if proc.returncode != 0:
+        logger.error("git %s failed (rc=%d): %s", " ".join(args), proc.returncode, err)
+        raise RuntimeError(f"git {args[0]} failed: {err}")
+
+    return out
+
+
+async def clone_repo(
+    clone_url: str,
+    dest: str | Path,
+    *,
+    branch: str | None = None,
+    shallow: bool = True,
+    access_token: str | None = None,
+) -> str:
+    """Clone a git repository to dest. Returns the dest path.
+
+    For GitHub repos, inject the access token into the URL for auth.
+    """
+    url = clone_url
+    if access_token and "github.com" in clone_url:
+        # Inject token for HTTPS auth: https://TOKEN@github.com/owner/repo.git
+        url = clone_url.replace("https://", f"https://{access_token}@")
+
+    args = ["clone"]
+    if shallow:
+        args.extend(["--depth", "1"])
+    if branch:
+        args.extend(["--branch", branch])
+    args.extend([url, str(dest)])
+
+    parent = Path(dest).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    await _run_git(args, cwd=str(parent))
+    return str(dest)
+
+
+async def init_repo(dest: str | Path) -> str:
+    """Initialize a new git repo at dest. Returns the dest path."""
+    path = Path(dest)
+    path.mkdir(parents=True, exist_ok=True)
+    await _run_git(["init"], cwd=path)
+    # Set default branch to main
+    await _run_git(["checkout", "-b", "main"], cwd=path)
+    return str(path)
+
+
+async def add_all(repo_path: str | Path) -> None:
+    """Stage all changes in the repo."""
+    await _run_git(["add", "-A"], cwd=repo_path)
+
+
+async def commit(repo_path: str | Path, message: str) -> str | None:
+    """Commit staged changes. Returns commit hash or None if nothing to commit."""
+    # Check if there are staged changes
+    try:
+        status = await _run_git(["status", "--porcelain"], cwd=repo_path)
+        if not status.strip():
+            logger.info("Nothing to commit in %s", repo_path)
+            return None
+    except RuntimeError:
+        return None
+
+    # Configure committer identity for the repo
+    try:
+        await _run_git(["config", "user.email", "forge@forgeguard.dev"], cwd=repo_path)
+        await _run_git(["config", "user.name", "ForgeGuard Builder"], cwd=repo_path)
+    except RuntimeError:
+        pass  # May already be configured
+
+    await _run_git(["add", "-A"], cwd=repo_path)
+    await _run_git(["commit", "-m", message], cwd=repo_path)
+    sha = await _run_git(["rev-parse", "HEAD"], cwd=repo_path)
+    return sha
+
+
+async def push(
+    repo_path: str | Path,
+    *,
+    remote: str = "origin",
+    branch: str = "main",
+    access_token: str | None = None,
+) -> None:
+    """Push all commits to the remote."""
+    env = {}
+    if access_token:
+        # Use credential helper to inject token
+        env["GIT_ASKPASS"] = "echo"
+        # Set the remote URL with token for auth
+        try:
+            remote_url = await _run_git(["remote", "get-url", remote], cwd=repo_path)
+            if "github.com" in remote_url and "@" not in remote_url:
+                authed_url = remote_url.replace(
+                    "https://", f"https://{access_token}@"
+                )
+                await _run_git(
+                    ["remote", "set-url", remote, authed_url], cwd=repo_path
+                )
+        except RuntimeError:
+            pass
+
+    await _run_git(["push", "-u", remote, branch], cwd=repo_path, env=env if env else None)
+
+
+async def set_remote(
+    repo_path: str | Path,
+    remote_url: str,
+    *,
+    remote_name: str = "origin",
+) -> None:
+    """Set or update the remote URL for a repo."""
+    try:
+        await _run_git(["remote", "add", remote_name, remote_url], cwd=repo_path)
+    except RuntimeError:
+        # Remote already exists, update it
+        await _run_git(["remote", "set-url", remote_name, remote_url], cwd=repo_path)
+
+
+async def get_file_list(repo_path: str | Path) -> list[str]:
+    """List all tracked + untracked files in the repo (relative paths)."""
+    try:
+        # Get tracked files
+        tracked = await _run_git(["ls-files"], cwd=repo_path)
+        # Get untracked files
+        untracked = await _run_git(
+            ["ls-files", "--others", "--exclude-standard"], cwd=repo_path
+        )
+        files = set()
+        for line in tracked.splitlines():
+            if line.strip():
+                files.add(line.strip())
+        for line in untracked.splitlines():
+            if line.strip():
+                files.add(line.strip())
+        return sorted(files)
+    except RuntimeError:
+        return []

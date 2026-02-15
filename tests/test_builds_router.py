@@ -81,7 +81,10 @@ def test_start_build(mock_get_user, mock_start, client):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "pending"
-    mock_start.assert_called_once_with(_PROJECT_ID, _USER["id"])
+    mock_start.assert_called_once_with(
+        _PROJECT_ID, _USER["id"],
+        target_type=None, target_ref=None,
+    )
 
 
 @patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
@@ -327,3 +330,127 @@ def test_start_build_rate_limited(mock_get_user, mock_start, mock_limiter, clien
 
     assert resp.status_code == 429
     mock_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /projects/{id}/build with target params
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_with_target(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build with target_type and target_ref."""
+    mock_get_user.return_value = _USER
+    mock_start.return_value = _build()
+    mock_limiter.is_allowed.return_value = True
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build",
+        headers=_auth_header(),
+        json={"target_type": "local_path", "target_ref": "/tmp/test"},
+    )
+
+    assert resp.status_code == 200
+    mock_start.assert_called_once()
+    call_kwargs = mock_start.call_args
+    assert call_kwargs.kwargs.get("target_type") == "local_path"
+    assert call_kwargs.kwargs.get("target_ref") == "/tmp/test"
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_with_github_target(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build with github_new target."""
+    mock_get_user.return_value = _USER
+    mock_start.return_value = _build()
+    mock_limiter.is_allowed.return_value = True
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build",
+        headers=_auth_header(),
+        json={"target_type": "github_new", "target_ref": "my-new-repo"},
+    )
+
+    assert resp.status_code == 200
+    mock_start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /projects/{id}/build/files
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.get_build_files", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_files(mock_get_user, mock_files, client):
+    """GET /projects/{id}/build/files returns file list."""
+    mock_get_user.return_value = _USER
+    mock_files.return_value = [
+        {"path": "src/main.py", "size_bytes": 42, "language": "python", "created_at": "2025-01-01T00:00:00Z"},
+        {"path": "package.json", "size_bytes": 200, "language": "json", "created_at": "2025-01-01T00:00:01Z"},
+    ]
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/build/files", headers=_auth_header())
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["items"]) == 2
+    assert data["items"][0]["path"] == "src/main.py"
+
+
+@patch("app.api.routers.builds.build_service.get_build_files", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_files_not_found(mock_get_user, mock_files, client):
+    """GET /projects/{id}/build/files returns 404 for missing project."""
+    mock_get_user.return_value = _USER
+    mock_files.side_effect = ValueError("Project not found")
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/build/files", headers=_auth_header())
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /projects/{id}/build/files/{path}
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.get_build_file_content", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_file_content(mock_get_user, mock_content, client):
+    """GET /projects/{id}/build/files/{path} returns file content."""
+    mock_get_user.return_value = _USER
+    mock_content.return_value = {
+        "path": "src/main.py",
+        "content": "print('hello')\n",
+        "size_bytes": 16,
+        "language": "python",
+    }
+
+    resp = client.get(
+        f"/projects/{_PROJECT_ID}/build/files/src/main.py",
+        headers=_auth_header(),
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["path"] == "src/main.py"
+    assert "print('hello')" in data["content"]
+
+
+@patch("app.api.routers.builds.build_service.get_build_file_content", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_get_build_file_content_not_found(mock_get_user, mock_content, client):
+    """GET /projects/{id}/build/files/{path} returns 404 for missing file."""
+    mock_get_user.return_value = _USER
+    mock_content.side_effect = ValueError("File not found: nonexistent.py")
+
+    resp = client.get(
+        f"/projects/{_PROJECT_ID}/build/files/nonexistent.py",
+        headers=_auth_header(),
+    )
+
+    assert resp.status_code == 404

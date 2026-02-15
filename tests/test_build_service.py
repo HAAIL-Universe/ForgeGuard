@@ -77,7 +77,12 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
     result = await build_service.start_build(_PROJECT_ID, _USER_ID)
 
     assert result["status"] == "pending"
-    mock_build_repo.create_build.assert_called_once_with(_PROJECT_ID)
+    mock_build_repo.create_build.assert_called_once_with(
+        _PROJECT_ID,
+        target_type=None,
+        target_ref=None,
+        working_dir=None,
+    )
     mock_project_repo.update_project_status.assert_called_once_with(
         _PROJECT_ID, "building"
     )
@@ -484,3 +489,318 @@ def test_get_token_rates_model_aware():
     unk_in, unk_out = build_service._get_token_rates("some-unknown-model")
     assert unk_in == Decimal("0.000015")
     assert unk_out == Decimal("0.000075")
+
+
+# ---------------------------------------------------------------------------
+# Tests: _detect_language
+# ---------------------------------------------------------------------------
+
+
+def test_detect_language_python():
+    assert build_service._detect_language("src/main.py") == "python"
+
+
+def test_detect_language_typescript():
+    assert build_service._detect_language("src/App.tsx") == "typescriptreact"
+
+
+def test_detect_language_json():
+    assert build_service._detect_language("package.json") == "json"
+
+
+def test_detect_language_unknown():
+    assert build_service._detect_language("data.xyz") == "plaintext"
+
+
+def test_detect_language_dotenv():
+    assert build_service._detect_language(".env") == "dotenv"
+
+
+def test_detect_language_gitignore():
+    assert build_service._detect_language(".gitignore") == "ignore"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parse_file_blocks
+# ---------------------------------------------------------------------------
+
+
+def test_parse_file_blocks_single():
+    """Single file block parsed correctly."""
+    text = """Some preamble text
+=== FILE: src/main.py ===
+print("hello")
+=== END FILE ===
+Some trailing text"""
+
+    blocks = build_service._parse_file_blocks(text)
+    assert len(blocks) == 1
+    assert blocks[0]["path"] == "src/main.py"
+    assert 'print("hello")' in blocks[0]["content"]
+
+
+def test_parse_file_blocks_multiple():
+    """Multiple consecutive file blocks parsed."""
+    text = """
+=== FILE: file1.py ===
+content1
+=== END FILE ===
+=== FILE: file2.ts ===
+content2
+=== END FILE ===
+"""
+    blocks = build_service._parse_file_blocks(text)
+    assert len(blocks) == 2
+    assert blocks[0]["path"] == "file1.py"
+    assert blocks[1]["path"] == "file2.ts"
+    assert "content1" in blocks[0]["content"]
+    assert "content2" in blocks[1]["content"]
+
+
+def test_parse_file_blocks_with_code_fence():
+    """File block wrapped in code fence gets fence stripped."""
+    text = """=== FILE: test.py ===
+```python
+def hello():
+    pass
+```
+=== END FILE ==="""
+
+    blocks = build_service._parse_file_blocks(text)
+    assert len(blocks) == 1
+    assert "def hello" in blocks[0]["content"]
+    assert "```" not in blocks[0]["content"]
+
+
+def test_parse_file_blocks_no_end_marker():
+    """Missing END FILE marker — block is skipped."""
+    text = """=== FILE: orphan.py ===
+some content without end marker
+"""
+    blocks = build_service._parse_file_blocks(text)
+    assert len(blocks) == 0
+
+
+def test_parse_file_blocks_empty_input():
+    """Empty string returns empty list."""
+    assert build_service._parse_file_blocks("") == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: _strip_code_fence
+# ---------------------------------------------------------------------------
+
+
+def test_strip_code_fence_basic():
+    """Strip a basic code fence wrapper."""
+    text = "```python\nprint('hi')\n```"
+    result = build_service._strip_code_fence(text)
+    assert "print('hi')" in result
+    assert "```" not in result
+
+
+def test_strip_code_fence_no_fence():
+    """No code fence — content passes through."""
+    text = "plain content\n"
+    result = build_service._strip_code_fence(text)
+    assert "plain content" in result
+
+
+def test_strip_code_fence_empty():
+    """Empty string returns empty."""
+    assert build_service._strip_code_fence("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests: _write_file_block
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock)
+@patch("app.services.build_service.build_repo")
+async def test_write_file_block_success(mock_build_repo, mock_broadcast, tmp_path):
+    """_write_file_block writes a file and emits events."""
+    mock_build_repo.append_build_log = AsyncMock()
+    files_written: list[dict] = []
+
+    await build_service._write_file_block(
+        _BUILD_ID, _USER_ID, str(tmp_path),
+        "src/hello.py", "print('hello')\n", files_written,
+    )
+
+    # File should exist on disk
+    written_file = tmp_path / "src" / "hello.py"
+    assert written_file.exists()
+    assert written_file.read_text() == "print('hello')\n"
+
+    # File info should be appended to files_written
+    assert len(files_written) == 1
+    assert files_written[0]["path"] == "src/hello.py"
+    assert files_written[0]["language"] == "python"
+    assert files_written[0]["size_bytes"] == len("print('hello')\n".encode())
+
+    # Build log should be recorded
+    mock_build_repo.append_build_log.assert_called_once()
+
+    # WS event should be broadcast
+    mock_broadcast.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock)
+@patch("app.services.build_service.build_repo")
+async def test_write_file_block_traversal_rejected(mock_build_repo, mock_broadcast, tmp_path):
+    """_write_file_block rejects paths with directory traversal."""
+    files_written: list[dict] = []
+
+    await build_service._write_file_block(
+        _BUILD_ID, _USER_ID, str(tmp_path),
+        "../../../etc/passwd", "bad content", files_written,
+    )
+
+    # No file should be written
+    assert len(files_written) == 0
+    mock_build_repo.append_build_log.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock)
+@patch("app.services.build_service.build_repo")
+async def test_write_file_block_absolute_rejected(mock_build_repo, mock_broadcast, tmp_path):
+    """_write_file_block rejects absolute paths."""
+    files_written: list[dict] = []
+
+    await build_service._write_file_block(
+        _BUILD_ID, _USER_ID, str(tmp_path),
+        "/etc/passwd", "bad content", files_written,
+    )
+
+    assert len(files_written) == 0
+    mock_build_repo.append_build_log.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_build_files
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_files(mock_build_repo, mock_project_repo):
+    """get_build_files returns file list from build logs."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed")
+    )
+    mock_build_repo.get_build_file_logs = AsyncMock(return_value=[
+        {"path": "src/main.py", "size_bytes": 100, "language": "python", "created_at": "2025-01-01T00:00:00Z"},
+    ])
+
+    result = await build_service.get_build_files(_PROJECT_ID, _USER_ID)
+
+    assert len(result) == 1
+    assert result[0]["path"] == "src/main.py"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_files_no_project(mock_build_repo, mock_project_repo):
+    """get_build_files raises ValueError for missing project."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="not found"):
+        await build_service.get_build_files(_PROJECT_ID, _USER_ID)
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_build_file_content
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_file_content(mock_build_repo, mock_project_repo, tmp_path):
+    """get_build_file_content reads file from working directory."""
+    # Write a file to tmp_path
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('hi')\n")
+
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed", working_dir=str(tmp_path))
+    )
+
+    result = await build_service.get_build_file_content(_PROJECT_ID, _USER_ID, "src/app.py")
+
+    assert result["path"] == "src/app.py"
+    assert "print('hi')" in result["content"]
+    assert result["language"] == "python"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_file_content_traversal(mock_build_repo, mock_project_repo, tmp_path):
+    """get_build_file_content rejects directory traversal paths."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed", working_dir=str(tmp_path))
+    )
+
+    with pytest.raises(ValueError, match="Invalid file path"):
+        await build_service.get_build_file_content(_PROJECT_ID, _USER_ID, "../../../etc/passwd")
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_file_content_not_found(mock_build_repo, mock_project_repo, tmp_path):
+    """get_build_file_content raises ValueError for non-existent file."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed", working_dir=str(tmp_path))
+    )
+
+    with pytest.raises(ValueError, match="File not found"):
+        await build_service.get_build_file_content(_PROJECT_ID, _USER_ID, "nonexistent.py")
+
+
+# ---------------------------------------------------------------------------
+# Tests: start_build with target params
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.asyncio.create_task")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+async def test_start_build_invalid_target_type(mock_get_user, mock_build_repo, mock_project_repo, mock_create_task):
+    """start_build rejects invalid target_type."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+    with pytest.raises(ValueError, match="Invalid target_type"):
+        await build_service.start_build(_PROJECT_ID, _USER_ID, target_type="invalid_type")
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.asyncio.create_task")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+async def test_start_build_target_type_without_ref(mock_get_user, mock_build_repo, mock_project_repo, mock_create_task):
+    """start_build raises ValueError when target_type given without target_ref."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+    with pytest.raises(ValueError, match="target_ref is required"):
+        await build_service.start_build(_PROJECT_ID, _USER_ID, target_type="local_path")

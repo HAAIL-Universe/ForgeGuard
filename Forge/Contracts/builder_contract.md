@@ -35,6 +35,26 @@ ProjectRoot/              ← git root, builder's working directory
 - `forge.json` lives at the project root.
 - The `Forge/` folder may be deleted after the project build is complete. No project code may import from or depend on files inside `Forge/`.
 
+### 0.1) File block output format (mandatory for autonomous builds)
+
+When the builder is operating as a ForgeGuard autonomous build agent (not a human-interactive session), all file creation MUST use the following canonical format so the orchestrator can parse and write files to disk:
+
+```
+=== FILE: path/to/file.py ===
+```python
+<file contents>
+```
+=== END FILE ===
+```
+
+**Rules:**
+- The path after `FILE:` is relative to the project root (e.g., `app/main.py`, `tests/test_health.py`).
+- One file per block. Multiple files = multiple blocks.
+- The code fence inside the block (` ```lang `) is optional but recommended for readability.
+- If updating an existing file, emit the full file content (the orchestrator overwrites).
+- Do NOT emit partial files or diffs -- always emit the complete file.
+- The `=== END FILE ===` delimiter MUST appear on its own line after the file content.
+
 ---
 
 ## 1) Contract read gate (mandatory)

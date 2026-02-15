@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from app.api.deps import get_current_user
 from app.api.rate_limit import build_limiter
@@ -11,19 +12,31 @@ from app.services import build_service
 router = APIRouter(prefix="/projects", tags=["builds"])
 
 
+class StartBuildRequest(BaseModel):
+    """Request body for starting a build."""
+    target_type: str | None = None
+    target_ref: str | None = None
+
+
 # ── POST /projects/{project_id}/build ────────────────────────────────────
 
 
 @router.post("/{project_id}/build")
 async def start_build(
     project_id: UUID,
+    body: StartBuildRequest | None = None,
     user: dict = Depends(get_current_user),
 ):
     """Start a build for a project."""
     if not build_limiter.is_allowed(str(user["id"])):
         raise HTTPException(status_code=429, detail="Build rate limit exceeded")
     try:
-        build = await build_service.start_build(project_id, user["id"])
+        build = await build_service.start_build(
+            project_id,
+            user["id"],
+            target_type=body.target_type if body else None,
+            target_ref=body.target_ref if body else None,
+        )
         return build
     except ValueError as exc:
         detail = str(exc)
@@ -44,6 +57,46 @@ async def cancel_build(
     try:
         build = await build_service.cancel_build(project_id, user["id"])
         return build
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GET /projects/{project_id}/build/files ────────────────────────────────
+
+
+@router.get("/{project_id}/build/files")
+async def get_build_files(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """List all files written during the build."""
+    try:
+        files = await build_service.get_build_files(project_id, user["id"])
+        return {"items": files}
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GET /projects/{project_id}/build/files/{path} ─────────────────────────
+
+
+@router.get("/{project_id}/build/files/{path:path}")
+async def get_build_file_content(
+    project_id: UUID,
+    path: str,
+    user: dict = Depends(get_current_user),
+):
+    """Retrieve content of a specific file written during the build."""
+    try:
+        return await build_service.get_build_file_content(
+            project_id, user["id"], path
+        )
     except ValueError as exc:
         detail = str(exc)
         if "not found" in detail.lower():

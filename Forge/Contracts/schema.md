@@ -183,6 +183,9 @@ CREATE TABLE builds (
     project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     phase           VARCHAR(100) NOT NULL DEFAULT 'Phase 0',
     status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+    target_type     VARCHAR(20),
+    target_ref      TEXT,
+    working_dir     TEXT,
     started_at      TIMESTAMPTZ,
     completed_at    TIMESTAMPTZ,
     loop_count      INTEGER NOT NULL DEFAULT 0,
@@ -192,6 +195,7 @@ CREATE TABLE builds (
 ```
 
 `status` values: `pending`, `running`, `completed`, `failed`, `cancelled`
+`target_type` values: `github_new`, `github_existing`, `local_path`, `null` (legacy builds)
 
 ```sql
 CREATE INDEX idx_builds_project_id ON builds(project_id);
@@ -275,4 +279,8 @@ db/migrations/
   002_projects.sql
   003_builds.sql
   004_build_costs.sql
+  005_questionnaire_state.sql
+  006_user_api_key.sql
+  007_audit_llm_toggle.sql
+  008_build_targets.sql
 ```

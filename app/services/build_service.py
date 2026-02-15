@@ -8,14 +8,20 @@ No SQL, no HTTP framework, no direct GitHub API calls.
 """
 
 import asyncio
+import json
 import logging
+import os
 import re
+import shutil
+import tempfile
 from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
 from app.clients.agent_client import StreamUsage, stream_agent
+from app.clients import git_client
+from app.clients import github_client
 from app.config import settings
 from app.repos import build_repo
 from app.repos import project_repo
@@ -35,6 +41,82 @@ BUILD_ERROR_SIGNAL = "RISK_EXCEEDS_SCOPE"
 
 # Universal governance contract (not per-project — loaded from disk)
 FORGE_CONTRACTS_DIR = Path(__file__).resolve().parent.parent.parent / "Forge" / "Contracts"
+
+# File block delimiters for parsing builder output
+FILE_START_PATTERN = re.compile(r"^=== FILE:\s*(.+?)\s*===$", re.MULTILINE)
+FILE_END_PATTERN = re.compile(r"^=== END FILE ===$", re.MULTILINE)
+
+# Valid build target types
+VALID_TARGET_TYPES = {"github_new", "github_existing", "local_path"}
+
+# Language detection by file extension
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".tsx": "typescriptreact", ".jsx": "javascriptreact",
+    ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+    ".md": "markdown", ".html": "html", ".css": "css",
+    ".sql": "sql", ".sh": "shell", ".ps1": "powershell",
+    ".toml": "toml", ".txt": "plaintext", ".env": "dotenv",
+    ".gitignore": "ignore",
+}
+
+
+def _detect_language(file_path: str) -> str:
+    """Detect language from file extension."""
+    ext = Path(file_path).suffix.lower()
+    name = Path(file_path).name.lower()
+    if name in _EXT_TO_LANG:
+        return _EXT_TO_LANG[name]
+    return _EXT_TO_LANG.get(ext, "plaintext")
+
+
+def _parse_file_blocks(text: str) -> list[dict]:
+    """Parse file blocks from builder output.
+
+    Expected format:
+        === FILE: path/to/file.py ===
+        <file contents>
+        === END FILE ===
+
+    Returns list of {path, content} dicts.
+    """
+    blocks: list[dict] = []
+    pos = 0
+    while pos < len(text):
+        start_match = FILE_START_PATTERN.search(text, pos)
+        if not start_match:
+            break
+        file_path = start_match.group(1).strip()
+        content_start = start_match.end()
+
+        end_match = FILE_END_PATTERN.search(text, content_start)
+        if not end_match:
+            # No closing delimiter -- skip this block
+            pos = content_start
+            break
+
+        raw_content = text[content_start:end_match.start()]
+        # Strip optional code fence wrapping (```lang ... ```)
+        content = _strip_code_fence(raw_content)
+
+        blocks.append({"path": file_path, "content": content})
+        pos = end_match.end()
+
+    return blocks
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip optional markdown code fence wrapper from file content."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Remove opening fence (```lang or just ```)
+        first_nl = stripped.find("\n")
+        if first_nl >= 0:
+            stripped = stripped[first_nl + 1:]
+    if stripped.rstrip().endswith("```"):
+        stripped = stripped.rstrip()[:-3]
+    return stripped.rstrip("\n") + "\n" if stripped.strip() else ""
+
 
 # Active build tasks keyed by build_id
 _active_tasks: dict[str, asyncio.Task] = {}
@@ -65,7 +147,13 @@ def _get_token_rates(model: str) -> tuple[Decimal, Decimal]:
 # ---------------------------------------------------------------------------
 
 
-async def start_build(project_id: UUID, user_id: UUID) -> dict:
+async def start_build(
+    project_id: UUID,
+    user_id: UUID,
+    *,
+    target_type: str | None = None,
+    target_ref: str | None = None,
+) -> dict:
     """Start a build for a project.
 
     Validates that contracts exist, creates a build record, and spawns
@@ -74,6 +162,8 @@ async def start_build(project_id: UUID, user_id: UUID) -> dict:
     Args:
         project_id: The project to build.
         user_id: The authenticated user (for ownership check).
+        target_type: Build target -- 'github_new', 'github_existing', or 'local_path'.
+        target_ref: Target reference -- repo name, full_name, or absolute path.
 
     Returns:
         The created build record.
@@ -106,15 +196,43 @@ async def start_build(project_id: UUID, user_id: UUID) -> dict:
 
     audit_llm_enabled = (user or {}).get("audit_llm_enabled", True)
 
+    # Validate target
+    if target_type and target_type not in VALID_TARGET_TYPES:
+        raise ValueError(f"Invalid target_type: {target_type}. Must be one of: {', '.join(VALID_TARGET_TYPES)}")
+    if target_type and not target_ref:
+        raise ValueError("target_ref is required when target_type is specified")
+
+    # Resolve working directory based on target type
+    working_dir: str | None = None
+    if target_type == "local_path":
+        working_dir = str(Path(target_ref).resolve()) if target_ref else None
+        if working_dir:
+            Path(working_dir).mkdir(parents=True, exist_ok=True)
+    elif target_type in ("github_new", "github_existing"):
+        # Use a temp directory; clone/init happens in _run_build
+        working_dir = tempfile.mkdtemp(prefix="forgeguard_build_")
+
     # Create build record
-    build = await build_repo.create_build(project_id)
+    build = await build_repo.create_build(
+        project_id,
+        target_type=target_type,
+        target_ref=target_ref,
+        working_dir=working_dir,
+    )
 
     # Update project status
     await project_repo.update_project_status(project_id, "building")
 
     # Spawn background task
     task = asyncio.create_task(
-        _run_build(build["id"], project_id, user_id, contracts, user_api_key, audit_llm_enabled)
+        _run_build(
+            build["id"], project_id, user_id, contracts,
+            user_api_key, audit_llm_enabled,
+            target_type=target_type,
+            target_ref=target_ref,
+            working_dir=working_dir,
+            access_token=(user or {}).get("access_token", ""),
+        )
     )
     _active_tasks[str(build["id"])] = task
 
@@ -232,11 +350,18 @@ async def _run_build(
     contracts: list[dict],
     api_key: str,
     audit_llm_enabled: bool = True,
+    *,
+    target_type: str | None = None,
+    target_ref: str | None = None,
+    working_dir: str | None = None,
+    access_token: str = "",
 ) -> None:
     """Background task that orchestrates the full build lifecycle.
 
     Streams agent output, detects phase completion signals, runs inline
     audits, handles loopback, and advances through phases.
+    When a build target is configured, parses file blocks from the
+    builder output and writes them to the working directory.
     """
     try:
         now = datetime.now(timezone.utc)
@@ -254,6 +379,66 @@ async def _run_build(
 
         # Build the directive from contracts
         directive = _build_directive(contracts)
+
+        # Set up working directory for file writing
+        if target_type == "github_new" and target_ref and working_dir:
+            try:
+                # Create a new GitHub repo
+                repo_data = await github_client.create_github_repo(
+                    access_token, target_ref,
+                    description=f"Built by ForgeGuard",
+                    private=False,
+                )
+                clone_url = f"https://github.com/{repo_data['full_name']}.git"
+                await git_client.clone_repo(
+                    clone_url, working_dir,
+                    access_token=access_token, shallow=False,
+                )
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Created GitHub repo: {repo_data['full_name']}",
+                    source="system", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"Created GitHub repo: {repo_data['full_name']}",
+                    "source": "system", "level": "info",
+                })
+            except Exception as exc:
+                await _fail_build(build_id, user_id, f"Failed to create GitHub repo: {exc}")
+                return
+        elif target_type == "github_existing" and target_ref and working_dir:
+            try:
+                clone_url = f"https://github.com/{target_ref}.git"
+                await git_client.clone_repo(
+                    clone_url, working_dir,
+                    access_token=access_token, shallow=False,
+                )
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Cloned existing repo: {target_ref}",
+                    source="system", level="info",
+                )
+            except Exception as exc:
+                await _fail_build(build_id, user_id, f"Failed to clone repo: {exc}")
+                return
+        elif target_type == "local_path" and working_dir:
+            try:
+                Path(working_dir).mkdir(parents=True, exist_ok=True)
+                # Initialize git repo if not already one
+                git_dir = Path(working_dir) / ".git"
+                if not git_dir.exists():
+                    await git_client.init_repo(working_dir)
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Using local path: {working_dir}",
+                    source="system", level="info",
+                )
+            except Exception as exc:
+                await _fail_build(build_id, user_id, f"Failed to initialize local path: {exc}")
+                return
+
+        # Track files written during this build
+        files_written: list[dict] = []
 
         # Conversation history for the agent
         messages: list[dict] = [
@@ -288,6 +473,17 @@ async def _run_build(
                         "level": "info",
                     }
                 )
+
+            # Detect and write file blocks
+            new_blocks = _parse_file_blocks(accumulated_text)
+            already_written_count = len(files_written)
+            if len(new_blocks) > already_written_count and working_dir:
+                for block in new_blocks[already_written_count:]:
+                    await _write_file_block(
+                        build_id, user_id, working_dir,
+                        block["path"], block["content"],
+                        files_written,
+                    )
 
             # Detect phase completion
             if PHASE_COMPLETE_SIGNAL in accumulated_text:
@@ -337,6 +533,22 @@ async def _run_build(
                             "phase": current_phase,
                         }
                     )
+
+                    # Git commit after phase audit passes
+                    if working_dir and files_written:
+                        try:
+                            sha = await git_client.commit(
+                                working_dir,
+                                f"forge: {current_phase} complete",
+                            )
+                            if sha:
+                                await build_repo.append_build_log(
+                                    build_id,
+                                    f"Committed {current_phase}: {sha[:8]}",
+                                    source="system", level="info",
+                                )
+                        except Exception as exc:
+                            logger.warning("Git commit failed for %s: %s", current_phase, exc)
                 else:
                     loop_count = await build_repo.increment_loop_count(build_id)
                     await build_repo.append_build_log(
@@ -383,6 +595,35 @@ async def _run_build(
             build_id, "Build completed successfully", source="system", level="info"
         )
 
+        # Final commit + push for GitHub targets
+        if working_dir and files_written:
+            try:
+                sha = await git_client.commit(working_dir, "forge: build complete")
+                if sha:
+                    await build_repo.append_build_log(
+                        build_id, f"Final commit: {sha[:8]}", source="system", level="info",
+                    )
+            except Exception as exc:
+                logger.warning("Final git commit failed: %s", exc)
+
+            if target_type in ("github_new", "github_existing") and access_token:
+                try:
+                    await git_client.push(
+                        working_dir, access_token=access_token,
+                    )
+                    await build_repo.append_build_log(
+                        build_id, "Pushed to GitHub", source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": "Pushed all commits to GitHub",
+                        "source": "system", "level": "info",
+                    })
+                except Exception as exc:
+                    logger.error("Git push failed: %s", exc)
+                    await build_repo.append_build_log(
+                        build_id, f"Git push failed: {exc}", source="system", level="error",
+                    )
+
         # Gather total cost summary for the final event
         cost_summary = await build_repo.get_build_cost_summary(build_id)
         await _broadcast_build_event(user_id, build_id, "build_complete", {
@@ -401,6 +642,120 @@ async def _run_build(
         await _fail_build(build_id, user_id, str(exc))
     finally:
         _active_tasks.pop(str(build_id), None)
+        # Cleanup temp working dir for GitHub targets on failure/cancel
+        # (keep on success so user can inspect; they'll be cleaned up later)
+
+
+# ---------------------------------------------------------------------------
+# File Writing Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _write_file_block(
+    build_id: UUID,
+    user_id: UUID,
+    working_dir: str,
+    file_path: str,
+    content: str,
+    files_written: list[dict],
+) -> None:
+    """Write a file block to the working directory and emit events."""
+    try:
+        # Sanitize path -- prevent directory traversal
+        clean_path = Path(file_path).as_posix()
+        if clean_path.startswith("/") or ".." in clean_path:
+            logger.warning("Skipping suspicious file path: %s", file_path)
+            return
+
+        full_path = Path(working_dir) / clean_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+
+        size_bytes = len(content.encode("utf-8"))
+        language = _detect_language(clean_path)
+
+        file_info = {
+            "path": clean_path,
+            "size_bytes": size_bytes,
+            "language": language,
+        }
+        files_written.append(file_info)
+
+        # Log as structured file entry (source='file' for querying)
+        await build_repo.append_build_log(
+            build_id,
+            json.dumps(file_info),
+            source="file",
+            level="info",
+        )
+
+        # Broadcast file_created event
+        await _broadcast_build_event(user_id, build_id, "file_created", file_info)
+
+        logger.info("Wrote file: %s (%d bytes)", clean_path, size_bytes)
+
+    except Exception as exc:
+        logger.error("Failed to write file %s: %s", file_path, exc)
+        await build_repo.append_build_log(
+            build_id,
+            f"Failed to write file {file_path}: {exc}",
+            source="system",
+            level="error",
+        )
+
+
+async def get_build_files(
+    project_id: UUID, user_id: UUID
+) -> list[dict]:
+    """Get list of files written during the latest build.
+
+    Returns list of {path, size_bytes, language, created_at}.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest:
+        raise ValueError("No builds found for this project")
+
+    return await build_repo.get_build_file_logs(latest["id"])
+
+
+async def get_build_file_content(
+    project_id: UUID, user_id: UUID, file_path: str
+) -> dict:
+    """Get content of a specific file from the build working directory.
+
+    Returns {path, content, size_bytes, language}.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest:
+        raise ValueError("No builds found for this project")
+
+    working_dir = latest.get("working_dir")
+    if not working_dir:
+        raise ValueError("Build has no working directory")
+
+    clean_path = Path(file_path).as_posix()
+    if ".." in clean_path:
+        raise ValueError("Invalid file path")
+
+    full_path = Path(working_dir) / clean_path
+    if not full_path.exists():
+        raise ValueError(f"File not found: {clean_path}")
+
+    content = full_path.read_text(encoding="utf-8")
+    return {
+        "path": clean_path,
+        "content": content,
+        "size_bytes": len(content.encode("utf-8")),
+        "language": _detect_language(clean_path),
+    }
 
 
 # ---------------------------------------------------------------------------

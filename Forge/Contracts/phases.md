@@ -385,3 +385,279 @@ Canonical phase plan. Each phase is self-contained, shippable, and auditable. Th
 - `USER_INSTRUCTIONS.md` covers the full project creation and build workflow
 - All tests pass
 - `run_audit.ps1` passes all checks
+
+---
+
+## Phase 12 -- Build Target & File Writing
+
+**Objective:** The builder actually writes files. Users choose a build target -- a new GitHub repo, an existing GitHub repo, or a local file path -- and the builder's output is parsed into discrete files and written to that target in real time. This replaces the current "stream text only" behaviour.
+
+**Background:** Currently the builder streams its entire output as raw text chunks. No files are created anywhere. The user's intention was always that builds produce real, usable code in a real repository or directory.
+
+**Deliverables:**
+
+- **Build target selection** (backend + frontend):
+  - `build_target_type` enum: `github_new`, `github_existing`, `local_path`
+  - `POST /projects/{id}/build` extended: accepts `target_type` and `target_ref` (repo name for new, repo full_name for existing, absolute path for local)
+  - For `github_new`: call GitHub API to create an empty repo under the user's account, clone it locally to a temp working directory
+  - For `github_existing`: clone the repo to a temp working directory (shallow clone, default branch)
+  - For `local_path`: validate the path exists (or create it), use directly as the working directory
+  - Store target info on the `builds` table: `target_type`, `target_ref`, `working_dir`
+
+- **DB migration 008** -- `build_targets`:
+  - Add columns to `builds`: `target_type VARCHAR(20)`, `target_ref TEXT`, `working_dir TEXT`
+
+- **File parser in build_service.py**:
+  - Builder directive updated to instruct the LLM to emit file blocks in a canonical format:
+    ```
+    === FILE: path/to/file.py ===
+    ```python
+    <file contents>
+    ```
+    === END FILE ===
+    ```
+  - `_parse_file_blocks(accumulated_text)` -- extracts file path + content from builder output
+  - When a file block is detected:
+    1. Write the file to the working directory on disk
+    2. Emit `file_created` WS event with `{ path, size_bytes, language }`
+    3. Log the file write to build_logs
+  - Handle file updates (same path written twice = overwrite with latest)
+
+- **Git operations** (for GitHub targets):
+  - After each phase completes audit, stage + commit all new/modified files with message `"forge: Phase N complete"`
+  - After build completes, push all commits to the remote
+  - `app/clients/git_client.py` -- thin wrapper around `asyncio.subprocess` for git clone, add, commit, push (no heavy git library dependency)
+
+- **Frontend: Build target picker** (shown before build starts):
+  - Three-option card selector: "New GitHub Repo" / "Existing GitHub Repo" / "Local Directory"
+  - For new repo: text input for repo name (validated against GitHub naming rules)
+  - For existing repo: repo picker modal (reuse existing component)
+  - For local: text input for absolute path with validation
+  - Selected target stored in build state and sent with `POST /projects/{id}/build`
+
+- **Frontend: File tree panel** on BuildProgress page:
+  - New collapsible panel (left column, below phase checklist) showing files created so far
+  - Tree structure mirroring directory hierarchy
+  - Each file shows: path, size, language icon
+  - Updates in real-time via `file_created` WS events
+  - Click a file to expand and see a syntax-highlighted preview of its content (read from build logs or a dedicated endpoint)
+
+- **API for file retrieval**:
+  - `GET /projects/{id}/build/files` -- list all files written during the build
+  - `GET /projects/{id}/build/files/{path}` -- retrieve content of a specific file
+
+**Schema coverage:**
+- [x] builds (extended with target columns)
+- [x] build_logs (Phase 9)
+- [ ] No new tables -- file metadata derived from build_logs + filesystem
+
+**Exit criteria:**
+- User can select "New GitHub Repo" and the build creates the repo + writes files into it
+- User can select "Existing GitHub Repo" and the build writes files into the cloned repo
+- User can select "Local Directory" and files are written to that path
+- Files appear in the file tree panel in real-time as the builder creates them
+- After each phase audit pass, files are committed with a phase-specific message
+- After build completion (GitHub targets), all commits are pushed to the remote
+- File content is retrievable via API
+- All existing tests still pass + new tests for file parsing, git operations, and target selection
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 13 -- Multi-Turn Builder & Structured Build Plan
+
+**Objective:** Convert the builder from a single streaming call to a multi-turn conversation. The builder emits a structured plan at the start, and after audit failures the audit feedback is injected back into the conversation so the builder can self-correct. This gives the builder full context of what it's already done, what failed, and why.
+
+**Background:** Currently `_run_build()` creates `messages = [{"role":"user","content": directive}]` and makes one `stream_agent()` call. The audit runs but its feedback is never sent back to the builder. The builder has no ability to self-correct -- it just gets a loop count incremented and the build eventually fails. Real builds took ~7 iterations because the diff log retained TODO placeholders that the auditor kept flagging.
+
+**Deliverables:**
+
+- **Structured build plan emission**:
+  - Update builder directive (system prompt / builder_contract.md) to instruct the LLM:
+    > Before writing any code, emit a `=== BUILD PLAN ===` block listing all tasks you will perform, grouped by phase. Each task should be a single line: `- [ ] Task description`. End the plan with `=== END BUILD PLAN ===`.
+  - `_parse_build_plan(text)` in build_service.py -- extracts task list from the plan block
+  - Emit `build_plan` WS event: `{ tasks: [{ id, description, phase, status }] }`
+  - As the builder works, detect task completion signals (`=== TASK DONE: <id> ===`) and emit `task_complete` WS events
+  - Frontend: Build Plan checklist panel in BuildProgress (right column, above activity feed), showing all tasks with check/pending/fail icons, updating in real-time
+
+- **Multi-turn conversation loop**:
+  - Replace single `stream_agent()` call with a conversation loop:
+    ```
+    messages = [{"role": "user", "content": directive}]
+    while not build_complete:
+        async for chunk in stream_agent(..., messages=messages):
+            # accumulate, parse files, detect signals
+        messages.append({"role": "assistant", "content": accumulated_text})
+        
+        if phase_complete_detected:
+            audit_result = await _run_inline_audit(...)
+            if audit_result == "PASS":
+                # continue to next phase
+                messages.append({"role": "user", "content": f"Audit PASSED for {phase}. Proceed to the next phase."})
+            else:
+                # loopback with audit feedback
+                messages.append({"role": "user", "content": f"Audit FAILED for {phase}.\n\nAudit feedback:\n{audit_detail}\n\nFix the issues identified above and re-submit {phase}."})
+    ```
+  - The conversation grows with each turn -- the builder sees everything it's already produced + audit results
+  - No separate database table for "state" -- the conversation history IS the state
+
+- **Audit feedback forwarding**:
+  - `_run_inline_audit()` updated to return audit detail (not just PASS/FAIL) -- the full auditor response including specific findings
+  - Return type changes from `str` to `AuditResult` dataclass: `{ verdict: str, detail: str, findings: list[str] }`
+  - On FAIL: the audit detail is appended to messages so the builder knows exactly what to fix
+  - Emit `audit_fail` WS event extended with `{ findings: [...] }` so the frontend can show what failed
+
+- **Context window management**:
+  - Track total conversation tokens (input + output across turns)
+  - If conversation approaches model context limit (200K for Opus), truncate earlier turns while preserving: (1) original directive, (2) last 2 turns, (3) all audit feedback messages
+  - `_compact_messages(messages, max_tokens)` helper for intelligent truncation
+  - Log a warning when compaction occurs
+
+- **Builder directive updates**:
+  - Update `Forge/Contracts/builder_contract.md` with file block format instructions
+  - Add task signal format to builder_directive template
+  - Instruct builder to emit `=== PHASE SIGN-OFF: PASS ===` only after ALL tasks for a phase are complete and the code is ready for audit
+
+**Schema coverage:**
+- No new tables -- conversation state is in-memory during build execution
+
+**Exit criteria:**
+- Builder emits a structured plan at the start of the build
+- Plan tasks are shown in the UI and checked off as they're completed
+- After an audit failure, the audit feedback is sent back to the builder as a new conversation turn
+- The builder successfully self-corrects based on audit feedback (verifiable in test with mocked responses)
+- Conversation history grows across turns with full context preservation
+- Context compaction triggers when approaching model limits (tested with mocked large conversations)
+- All existing tests still pass + new tests for plan parsing, multi-turn loop, audit feedback injection, context compaction
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 14 -- Build Pause, Resume & User Interjection
+
+**Objective:** When the builder hits a configurable failure threshold on a single phase, the build pauses instead of dying. The user sees what went wrong and can choose to: retry (with or without a message to the builder), skip the phase, or abort. The user can also proactively interject at any time during the build to send guidance to the builder.
+
+**Background:** Currently at `MAX_LOOP_COUNT = 3`, `_fail_build()` fires with "RISK_EXCEEDS_SCOPE" and the build is dead. The user can only start over. With Option D (multi-turn loopback + pause at threshold), the builder auto-corrects for the first N failures (Phase 13). When it still can't pass, it pauses and asks the human for help. The user can also press a button to interject mid-build at any time.
+
+**Deliverables:**
+
+- **Build pause mechanism** (backend):
+  - New build status: `paused` (joins existing: `pending`, `running`, `completed`, `failed`, `cancelled`)
+  - DB migration 009: add `paused_at TIMESTAMPTZ`, `pause_reason TEXT`, `pause_phase TEXT` to `builds` table
+  - When `loop_count >= PAUSE_THRESHOLD` (configurable, default 3) on a single phase:
+    1. Set build status to `paused` with reason and phase
+    2. Emit `build_paused` WS event: `{ phase, loop_count, audit_findings, options: ["retry", "retry_with_message", "skip_phase", "abort"] }`
+    3. The background task enters an `asyncio.Event` wait state (does not exit, preserving conversation context in memory)
+  - `PAUSE_THRESHOLD` configurable via env var (default 3), replaces the hard `MAX_LOOP_COUNT` constant
+
+- **Resume endpoints** (backend):
+  - `POST /projects/{id}/build/resume` -- resume a paused build
+    - Body: `{ "action": "retry" | "skip" | "abort", "message": "optional user message" }`
+    - `retry`: append user message (if any) + "Please retry this phase, fixing the issues above." to conversation, set event, builder continues
+    - `retry_with_message`: same as retry but user's message is mandatory and is prepended to the retry instruction
+    - `skip`: append "Phase skipped by user. Proceed to the next phase." to conversation, advance phase, set event
+    - `abort`: call `_fail_build()` with "Build aborted by user at {phase}"
+  - The `asyncio.Event` is signalled, the background task wakes up and reads the action
+
+- **Proactive interjection** (backend):
+  - `POST /projects/{id}/build/interject` -- send a message to the builder mid-build (while status is `running`)
+    - Body: `{ "message": "user guidance text" }`
+    - Sets an interjection flag; at the next natural break point (after current chunk batch), the builder pauses streaming, appends the user message to conversation, and resumes with a new `stream_agent()` call that includes the user's guidance
+    - Emit `build_interjection` WS event: `{ message, injected_at }`
+  - Interjection queue: if multiple messages sent before the builder reaches a break point, they're concatenated into a single injection
+
+- **Frontend: Pause UI** on BuildProgress page:
+  - When `build_paused` event received, show a modal/overlay:
+    - Header: "Build paused — audit failed {loop_count} times on {phase}"
+    - Audit findings list (from the last audit failure)
+    - Four action buttons:
+      - **Retry** -- "Let the builder try again"
+      - **Retry with guidance** -- expands a text input where user types a message, then sends `retry_with_message`
+      - **Skip phase** -- "Skip this phase and continue" (with warning that skipped phases may cause issues)
+      - **Abort build** -- "Stop the build entirely" (with confirmation dialog)
+    - The user's typed message is sent as part of the resume request and injected into the builder's conversation
+
+- **Frontend: Interjection button** on BuildProgress page:
+  - Small "Send message to builder" button (or chat input) visible while build is `running`
+  - Opens a text input; on submit, calls `POST /projects/{id}/build/interject`
+  - Activity feed shows "You: {message}" entry when interjection is sent
+  - Activity feed shows "Builder acknowledged interjection" when it's processed
+
+- **Frontend: Paused state styling**:
+  - Build status badge shows "Paused" in amber/yellow
+  - Phase checklist shows the paused phase with a pause icon
+  - Activity feed shows "Build paused — awaiting user input" entry
+
+- **Timeout safeguard**:
+  - If a build is paused for longer than 30 minutes (configurable via `BUILD_PAUSE_TIMEOUT_MINUTES`), automatically abort with "Build timed out while paused"
+  - Background task uses `asyncio.wait_for(event.wait(), timeout=1800)`
+
+**Schema coverage:**
+- [x] builds (extended with pause columns)
+
+**Exit criteria:**
+- Build pauses after 3 audit failures on a single phase instead of dying
+- Pause UI shows audit findings and four action options
+- "Retry" resumes the build and the builder attempts the phase again
+- "Retry with guidance" injects the user's message into the builder's conversation before retrying
+- "Skip phase" advances to the next phase
+- "Abort" stops the build with a clear status message
+- Proactive interjection works mid-build -- user can send guidance at any time
+- Interjection message appears in the builder's next conversation turn
+- Paused build times out after 30 minutes if no action taken
+- Activity feed shows all pause/resume/interjection events
+- All existing tests still pass + new tests for pause/resume, interjection, timeout, and all action types
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 15 -- Builder Intelligence Hardening
+
+**Objective:** End-to-end integration testing and refinement of the multi-turn builder pipeline. Validate that the full flow -- target selection → build plan → file writing → audit → self-correction → pause/resume → push -- works reliably. Harden edge cases, tune prompts, and ensure the builder produces genuinely usable code.
+
+**Deliverables:**
+
+- **Integration test suite** (`tests/test_build_integration.py`):
+  - Full build lifecycle with mocked agent: target selection → plan emission → file blocks → phase sign-off → audit pass → next phase → completion → git push
+  - Audit failure → self-correction loop (mock agent returns fixed output on second turn)
+  - Audit failure → pause threshold → user retry with message → builder succeeds
+  - Audit failure → pause → user skip → next phase
+  - Audit failure → pause → user abort
+  - Proactive interjection mid-build → message appears in conversation → builder adjusts
+  - Context compaction trigger with large conversation
+  - File overwrite (same path written twice)
+  - Build target: local path (file writing verified on disk)
+  - Build target: GitHub new repo (mocked GitHub API + git operations)
+
+- **Prompt tuning**:
+  - Refine builder_contract.md file block format instructions based on real LLM output patterns
+  - Refine auditor_prompt.md to reduce false positives (especially the diff log TODO issue)
+  - Add examples of correct file block format to the builder directive
+  - Tune PAUSE_THRESHOLD default based on testing (may adjust from 3)
+
+- **Edge case hardening**:
+  - Builder emits malformed file blocks → graceful fallback (log warning, don't crash)
+  - Builder never emits PHASE_COMPLETE_SIGNAL → timeout per phase (configurable, default 10 minutes)
+  - Network error during git push → retry with backoff, then pause build with error details
+  - Working directory cleanup on build completion/failure/cancellation
+  - Concurrent builds per user prevention (existing rate limit enforcement)
+  - Large file handling (>1MB file blocks) → warn but still write
+
+- **Observability**:
+  - Build summary endpoint enhanced with: total turns, total audit attempts, files written count, git commits made, interjections received
+  - Build logs searchable/filterable in the frontend (search bar on activity feed)
+
+- **Documentation**:
+  - Update `USER_INSTRUCTIONS.md` with: build target options, how to use interjection, what happens on audit failure, pause/resume flow
+  - Update `Forge/Contracts/builder_contract.md` with finalised file block format and plan format
+
+**Exit criteria:**
+- All integration tests pass with mocked agent responses
+- A real build (manual test) successfully creates a GitHub repo, writes files, passes audits, and pushes
+- No crashes on malformed builder output
+- Phase timeout triggers correctly
+- Git push failures are handled gracefully
+- Working directories are cleaned up
+- `USER_INSTRUCTIONS.md` is comprehensive and accurate
+- All tests pass (backend + frontend)
+- `run_audit.ps1` passes all checks

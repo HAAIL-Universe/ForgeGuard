@@ -11,6 +11,7 @@ import Skeleton from '../components/Skeleton';
 import ConfirmDialog from '../components/ConfirmDialog';
 import QuestionnaireModal from '../components/QuestionnaireModal';
 import ContractProgress from '../components/ContractProgress';
+import BuildTargetModal, { type BuildTarget } from '../components/BuildTargetModal';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -69,6 +70,7 @@ function ProjectDetail() {
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   const [contractsExpanded, setContractsExpanded] = useState(false);
   const [showRegenerate, setShowRegenerate] = useState(false);
+  const [showTargetPicker, setShowTargetPicker] = useState(false);
 
   useEffect(() => {
     const fetchProject = async () => {
@@ -95,14 +97,23 @@ function ProjectDetail() {
       setShowQuestionnaire(true);
       return;
     }
+    /* Show target picker modal */
+    setShowTargetPicker(true);
+  };
 
+  const handleTargetConfirm = async (target: BuildTarget) => {
     setStarting(true);
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(target),
       });
       if (res.ok) {
+        setShowTargetPicker(false);
         addToast('Build started', 'success');
         navigate(`/projects/${projectId}/build`);
       } else {
@@ -479,6 +490,14 @@ function ProjectDetail() {
           projectName={project.name}
           onClose={() => setShowQuestionnaire(false)}
           onContractsGenerated={handleContractsGenerated}
+        />
+      )}
+
+      {showTargetPicker && (
+        <BuildTargetModal
+          onConfirm={handleTargetConfirm}
+          onCancel={() => setShowTargetPicker(false)}
+          starting={starting}
         />
       )}
 

@@ -264,3 +264,90 @@ async def test_get_build_cost_summary(mock_get_pool):
 
     assert summary["total_input_tokens"] == 5000
     assert summary["phase_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_build_file_logs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_build_file_logs(mock_get_pool):
+    """get_build_file_logs returns parsed file entries."""
+    import json
+    pool = _fake_pool()
+    pool.fetch.return_value = [
+        {
+            "message": json.dumps({"path": "src/main.py", "size_bytes": 42, "language": "python"}),
+            "created_at": datetime.now(timezone.utc),
+        },
+        {
+            "message": json.dumps({"path": "package.json", "size_bytes": 200, "language": "json"}),
+            "created_at": datetime.now(timezone.utc),
+        },
+    ]
+    mock_get_pool.return_value = pool
+
+    files = await build_repo.get_build_file_logs(uuid.uuid4())
+
+    assert len(files) == 2
+    assert files[0]["path"] == "src/main.py"
+    assert files[0]["language"] == "python"
+    assert files[1]["path"] == "package.json"
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_build_file_logs_invalid_json(mock_get_pool):
+    """get_build_file_logs skips invalid JSON messages."""
+    pool = _fake_pool()
+    pool.fetch.return_value = [
+        {
+            "message": "not valid json",
+            "created_at": datetime.now(timezone.utc),
+        },
+    ]
+    mock_get_pool.return_value = pool
+
+    files = await build_repo.get_build_file_logs(uuid.uuid4())
+
+    assert len(files) == 0
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_build_file_logs_empty(mock_get_pool):
+    """get_build_file_logs returns empty list when no file logs."""
+    pool = _fake_pool()
+    pool.fetch.return_value = []
+    mock_get_pool.return_value = pool
+
+    files = await build_repo.get_build_file_logs(uuid.uuid4())
+
+    assert files == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: create_build with target params
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_create_build_with_target(mock_get_pool):
+    """create_build passes target params to the query."""
+    pool = _fake_pool()
+    row = _build_row()
+    pool.fetchrow.return_value = row
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.create_build(
+        row["project_id"],
+        target_type="local_path",
+        target_ref="/tmp/test",
+        working_dir="/tmp/test",
+    )
+
+    pool.fetchrow.assert_called_once()
+    assert result["project_id"] == row["project_id"]

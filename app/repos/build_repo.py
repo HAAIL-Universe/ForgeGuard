@@ -13,17 +13,27 @@ from app.repos.db import get_pool
 # ---------------------------------------------------------------------------
 
 
-async def create_build(project_id: UUID) -> dict:
+async def create_build(
+    project_id: UUID,
+    *,
+    target_type: str | None = None,
+    target_ref: str | None = None,
+    working_dir: str | None = None,
+) -> dict:
     """Create a new build record in pending status."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO builds (project_id, phase, status)
-        VALUES ($1, 'Phase 0', 'pending')
-        RETURNING id, project_id, phase, status, started_at, completed_at,
+        INSERT INTO builds (project_id, phase, status, target_type, target_ref, working_dir)
+        VALUES ($1, 'Phase 0', 'pending', $2, $3, $4)
+        RETURNING id, project_id, phase, status, target_type, target_ref,
+                  working_dir, started_at, completed_at,
                   loop_count, error_detail, created_at
         """,
         project_id,
+        target_type,
+        target_ref,
+        working_dir,
     )
     return dict(row)
 
@@ -33,7 +43,8 @@ async def get_build_by_id(build_id: UUID) -> dict | None:
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, project_id, phase, status, started_at, completed_at,
+        SELECT id, project_id, phase, status, target_type, target_ref,
+               working_dir, started_at, completed_at,
                loop_count, error_detail, created_at
         FROM builds WHERE id = $1
         """,
@@ -47,7 +58,8 @@ async def get_latest_build_for_project(project_id: UUID) -> dict | None:
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, project_id, phase, status, started_at, completed_at,
+        SELECT id, project_id, phase, status, target_type, target_ref,
+               working_dir, started_at, completed_at,
                loop_count, error_detail, created_at
         FROM builds WHERE project_id = $1
         ORDER BY created_at DESC LIMIT 1
@@ -240,3 +252,34 @@ async def get_build_cost_summary(build_id: UUID) -> dict:
         "total_cost_usd": Decimal("0"),
         "phase_count": 0,
     }
+
+
+async def get_build_file_logs(build_id: UUID) -> list[dict]:
+    """Fetch all file_created log entries for a build.
+
+    Returns list of dicts with path, size_bytes, language, created_at
+    parsed from build_log messages where source='file'.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT message, created_at
+        FROM build_logs
+        WHERE build_id = $1 AND source = 'file'
+        ORDER BY created_at ASC
+        """,
+        build_id,
+    )
+    files = []
+    for r in rows:
+        try:
+            data = json.loads(r["message"])
+            files.append({
+                "path": data.get("path", ""),
+                "size_bytes": data.get("size_bytes", 0),
+                "language": data.get("language", ""),
+                "created_at": r["created_at"],
+            })
+        except (ValueError, KeyError):
+            continue
+    return files

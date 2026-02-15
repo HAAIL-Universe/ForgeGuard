@@ -79,6 +79,13 @@ interface ActivityEntry {
   level: 'info' | 'warn' | 'error' | 'system';
 }
 
+interface BuildFile {
+  path: string;
+  size_bytes: number;
+  language: string;
+  created_at: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Styles                                                            */
 /* ------------------------------------------------------------------ */
@@ -174,6 +181,8 @@ function BuildProgress() {
   const [noBuild, setNoBuild] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
+  const [buildFiles, setBuildFiles] = useState<BuildFile[]>([]);
+  const [filesExpanded, setFilesExpanded] = useState(true);
   const [startTime] = useState(() => Date.now());
   const [elapsed, setElapsed] = useState(0);
   const feedEndRef = useRef<HTMLDivElement>(null);
@@ -258,6 +267,17 @@ function BuildProgress() {
                 input: costData.cost?.total_input_tokens ?? 0,
                 output: costData.cost?.total_output_tokens ?? 0,
               });
+            }
+          } catch { /* best effort */ }
+
+          /* Seed build files */
+          try {
+            const filesRes = await fetch(`${API_BASE}/projects/${projectId}/build/files`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (filesRes.ok) {
+              const filesData = await filesRes.json();
+              setBuildFiles(filesData.items ?? []);
             }
           } catch { /* best effort */ }
         } else {
@@ -429,6 +449,21 @@ function BuildProgress() {
             const phase = payload.phase as string;
             const loop = payload.loop_count as number;
             addActivity(`Audit FAIL for ${phase} (loop ${loop})`, 'warn');
+            break;
+          }
+
+          case 'file_created': {
+            const filePath = (payload.path ?? '') as string;
+            const sizeBytes = (payload.size_bytes ?? 0) as number;
+            const language = (payload.language ?? '') as string;
+            if (filePath) {
+              setBuildFiles((prev) => {
+                // Avoid duplicates (same path)
+                if (prev.some((f) => f.path === filePath)) return prev;
+                return [...prev, { path: filePath, size_bytes: sizeBytes, language, created_at: new Date().toISOString() }];
+              });
+              addActivity(`File created: ${filePath} (${sizeBytes} bytes)`, 'info');
+            }
             break;
           }
         }
@@ -610,7 +645,8 @@ function BuildProgress() {
         {/* ---- Two-column layout ---- */}
         <div style={twoColStyle}>
 
-          {/* ======== LEFT: Phase Checklist ======== */}
+          {/* ======== LEFT: Phase Checklist + Files ======== */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ ...cardStyle, padding: '12px 16px' }}>
             <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#F8FAFC' }}>
               Phases ({doneCount}/{totalPhases})
@@ -677,6 +713,47 @@ function BuildProgress() {
                 );
               })}
             </div>
+          </div>
+
+          {/* ======== Files Panel ======== */}
+          {buildFiles.length > 0 && (
+            <div style={{ ...cardStyle, padding: '12px 16px' }}>
+              <div
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: filesExpanded ? '10px' : 0 }}
+                onClick={() => setFilesExpanded(!filesExpanded)}
+              >
+                <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
+                  Files ({buildFiles.length})
+                </h3>
+                <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: filesExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+              </div>
+              {filesExpanded && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '260px', overflowY: 'auto' }} data-testid="build-files-panel">
+                  {buildFiles.map((f) => (
+                    <div
+                      key={f.path}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '5px 8px',
+                        borderRadius: '4px',
+                        background: '#0F172A',
+                        fontSize: '0.72rem',
+                      }}
+                    >
+                      <span style={{ color: '#64748B', flexShrink: 0 }}>📄</span>
+                      <span style={{ color: '#F8FAFC', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
+                      <span style={{ color: '#475569', flexShrink: 0, fontSize: '0.65rem' }}>
+                        {f.language && <span style={{ marginRight: '6px', color: '#64748B' }}>{f.language}</span>}
+                        {f.size_bytes > 0 && `${(f.size_bytes / 1024).toFixed(1)}k`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           </div>
 
           {/* ======== RIGHT: Metrics + Activity Feed ======== */}
