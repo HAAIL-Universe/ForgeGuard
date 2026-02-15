@@ -157,3 +157,23 @@ Canonical phase plan. Each phase is self-contained, shippable, and auditable. Th
 - All tests pass
 - `run_audit.ps1` passes all checks
 - Project is deployable to Render
+
+---
+
+## Phase 6 -- Integration Test
+
+**Objective:** Validate the full audit pipeline end-to-end with a minor code change, confirming the builder workflow, test suite, and governance audit all function correctly post-ship.
+
+**Deliverables:**
+- Add `GET /health/version` endpoint returning `{ "version": "0.1.0", "phase": "6" }`
+- Add `VERSION` constant to `app/config.py`
+- Add test for the new endpoint in `tests/test_health.py`
+- Frontend: show version string in the AppShell sidebar footer
+- All existing tests continue to pass (no regressions)
+
+**Exit criteria:**
+- `GET /health/version` returns 200 with correct payload
+- New test passes
+- All 85+ existing tests still pass (pytest + Vitest)
+- Version visible in sidebar footer
+- `run_audit.ps1` passes all checks
