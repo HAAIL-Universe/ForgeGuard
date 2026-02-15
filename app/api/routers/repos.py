@@ -1,9 +1,10 @@
 """Repos router -- connect, disconnect, list repos, and audit results."""
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.services.audit_service import get_audit_detail, get_repo_audits
@@ -14,15 +15,29 @@ from app.services.repo_service import (
     list_connected_repos,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/repos", tags=["repos"])
 
 
 class ConnectRepoRequest(BaseModel):
     """Request body for connecting a GitHub repo."""
 
-    github_repo_id: int
-    full_name: str
-    default_branch: str
+    github_repo_id: int = Field(..., ge=1, description="GitHub repo numeric ID")
+    full_name: str = Field(
+        ...,
+        min_length=3,
+        max_length=200,
+        pattern=r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
+        description="GitHub full name, e.g. owner/repo",
+    )
+    default_branch: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-zA-Z0-9._/-]+$",
+        description="Default branch name, e.g. main",
+    )
 
 
 @router.get("")
@@ -65,6 +80,7 @@ async def connect(
         )
         raise HTTPException(status_code=code, detail=detail)
     except Exception:
+        logger.exception("Failed to register webhook for %s", body.full_name)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to register webhook with GitHub",
@@ -97,6 +113,7 @@ async def disconnect(
         )
         raise HTTPException(status_code=code, detail=detail)
     except Exception:
+        logger.exception("Failed to disconnect repo %s", repo_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to disconnect repo",

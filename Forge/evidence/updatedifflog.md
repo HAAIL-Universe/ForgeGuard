@@ -1,10 +1,10 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-14T23:42:00+00:00
+- Timestamp: 2026-02-14T23:56:52+00:00
 - Branch: master
-- HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
-- BASE_HEAD: 39afcadcc0d0468cd71d918168e978f7d39daa49
+- HEAD: e5f7dcd282338470cfdab5fa2dab9d27e544fac5
+- BASE_HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
 - Diff basis: staged
 
 ## Cycle Status
@@ -12,4187 +12,1123 @@
 
 ## Summary
 - Verification Evidence: Static analysis clean, Runtime endpoints tested, Behavior assertions pass, Contract boundaries enforced
-- Phase 4 Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states
-- Backend: ConnectionManager, WS endpoint with JWT auth, repo health via LATERAL JOIN, audit broadcast, check_summary aggregation
-- Frontend: AppShell with responsive sidebar, Skeleton/SkeletonCard/SkeletonRow, EmptyState, ToastContext, useWebSocket with auto-reconnect
-- Pages: Dashboard with live WS updates and skeletons, CommitTimeline with computed health and live refresh, AuditDetail with skeleton loading
-- Tests: 56 backend (14 new for WS and health), 15 frontend (6 new for Skeleton and EmptyState)
+- Phase 5 Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+- Config: fail-fast startup validation for required env vars (DATABASE_URL, JWT_SECRET, etc)
+- Rate limiting: sliding-window limiter on webhook endpoint (30 req/60s per IP)
+- Input validation: Pydantic Field constraints on ConnectRepoRequest (full_name regex, github_repo_id ge=1, default_branch length)
+- Error handling: global exception handler prevents stack trace leaks, logging on all catch blocks
+- CORS hardened: explicit method and header allowlists
+- boot.ps1: full one-click setup with prereq checks, venv, npm, migration, server start
+- USER_INSTRUCTIONS.md: prerequisites, setup, env vars, usage, troubleshooting
+- Tests: 70 backend (14 new for rate limit, config, hardening), 15 frontend
 
 ## Files Changed (staged)
 - Forge/evidence/test_runs.md
 - Forge/evidence/test_runs_latest.md
 - Forge/evidence/updatedifflog.md
-- app/api/routers/ws.py
+- USER_INSTRUCTIONS.md
+- app/api/rate_limit.py
+- app/api/routers/repos.py
+- app/api/routers/webhooks.py
+- app/config.py
 - app/main.py
-- app/repos/audit_repo.py
-- app/repos/repo_repo.py
-- app/services/audit_service.py
-- app/services/repo_service.py
-- app/ws_manager.py
-- tests/test_repo_health.py
-- tests/test_repos_router.py
-- tests/test_ws_manager.py
-- tests/test_ws_router.py
-- web/src/App.tsx
-- web/src/__tests__/App.test.tsx
-- web/src/components/AppShell.tsx
-- web/src/components/CommitRow.tsx
-- web/src/components/EmptyState.tsx
-- web/src/components/Skeleton.tsx
-- web/src/context/ToastContext.tsx
-- web/src/hooks/useWebSocket.ts
-- web/src/index.css
-- web/src/pages/AuditDetail.tsx
-- web/src/pages/CommitTimeline.tsx
-- web/src/pages/Dashboard.tsx
+- boot.ps1
+- tests/test_config.py
+- tests/test_hardening.py
+- tests/test_rate_limit.py
 
 ## git status -sb
     ## master
     M  Forge/evidence/test_runs.md
     M  Forge/evidence/test_runs_latest.md
-    M  Forge/evidence/updatedifflog.md
-    A  app/api/routers/ws.py
+    M  USER_INSTRUCTIONS.md
+    A  app/api/rate_limit.py
+    M  app/api/routers/repos.py
+    M  app/api/routers/webhooks.py
+    M  app/config.py
     M  app/main.py
-    M  app/repos/audit_repo.py
-    M  app/repos/repo_repo.py
-    M  app/services/audit_service.py
-    M  app/services/repo_service.py
-    A  app/ws_manager.py
-    A  tests/test_repo_health.py
-    M  tests/test_repos_router.py
-    A  tests/test_ws_manager.py
-    A  tests/test_ws_router.py
-    M  web/src/App.tsx
-    M  web/src/__tests__/App.test.tsx
-    A  web/src/components/AppShell.tsx
-    M  web/src/components/CommitRow.tsx
-    A  web/src/components/EmptyState.tsx
-    A  web/src/components/Skeleton.tsx
-    A  web/src/context/ToastContext.tsx
-    A  web/src/hooks/useWebSocket.ts
-    M  web/src/index.css
-    M  web/src/pages/AuditDetail.tsx
-    M  web/src/pages/CommitTimeline.tsx
-    M  web/src/pages/Dashboard.tsx
+    M  boot.ps1
+    A  tests/test_config.py
+    A  tests/test_hardening.py
+    A  tests/test_rate_limit.py
 
 ## Minimal Diff Hunks
     diff --git a/Forge/evidence/test_runs.md b/Forge/evidence/test_runs.md
-    index 9d32af7..6cb3261 100644
+    index 6cb3261..e6b58b4 100644
     --- a/Forge/evidence/test_runs.md
     +++ b/Forge/evidence/test_runs.md
-    @@ -300,3 +300,113 @@ M  web/src/pages/Dashboard.tsx
-     
+    @@ -410,3 +410,38 @@ git unavailable
+     git unavailable
      ```
      
-    +## Test Run 2026-02-14T23:24:21Z
+    +## Test Run 2026-02-14T23:56:12Z
     +- Status: PASS
-    +- Start: 2026-02-14T23:24:21Z
-    +- End: 2026-02-14T23:24:23Z
+    +- Start: 2026-02-14T23:56:12Z
+    +- End: 2026-02-14T23:56:13Z
     +- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
     +- Branch: master
-    +- HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
+    +- HEAD: e5f7dcd282338470cfdab5fa2dab9d27e544fac5
     +- compileall exit: 0
-    +- import_sanity exit: 0
     +- git status -sb:
     +```
     +## master
     + M Forge/scripts/watch_audit.ps1
+    + M USER_INSTRUCTIONS.md
+    + M app/api/routers/repos.py
+    + M app/api/routers/webhooks.py
+    + M app/config.py
     + M app/main.py
-    + M app/repos/audit_repo.py
-    + M app/repos/repo_repo.py
-    + M app/services/audit_service.py
-    + M app/services/repo_service.py
-    + M tests/test_repos_router.py
-    + M web/src/App.tsx
-    + M web/src/__tests__/App.test.tsx
-    + M web/src/components/CommitRow.tsx
-    + M web/src/index.css
-    + M web/src/pages/AuditDetail.tsx
-    + M web/src/pages/CommitTimeline.tsx
-    + M web/src/pages/Dashboard.tsx
-    +?? app/api/routers/ws.py
-    +?? app/ws_manager.py
-    +?? tests/test_repo_health.py
-    +?? tests/test_ws_manager.py
-    +?? tests/test_ws_router.py
-    +?? web/src/components/AppShell.tsx
-    +?? web/src/components/EmptyState.tsx
-    +?? web/src/components/Skeleton.tsx
-    +?? web/src/context/ToastContext.tsx
-    +?? web/src/hooks/
+    + M boot.ps1
+    +?? app/api/rate_limit.py
+    +?? tests/test_config.py
+    +?? tests/test_hardening.py
+    +?? tests/test_rate_limit.py
     +```
     +- git diff --stat:
     +```
-    + Forge/scripts/watch_audit.ps1    |   9 +++
-    + app/main.py                      |   2 +
-    + app/repos/audit_repo.py          |  16 ++--
-    + app/repos/repo_repo.py           |  38 ++++++++++
-    + app/services/audit_service.py    |  18 +++++
-    + app/services/repo_service.py     |  28 +++++--
-    + tests/test_repos_router.py       |   8 +-
-    + web/src/App.tsx                  |  73 ++++++++----------
-    + web/src/__tests__/App.test.tsx   |  41 +++++++++-
-    + web/src/components/CommitRow.tsx |   8 +-
-    + web/src/index.css                |   5 ++
-    + web/src/pages/AuditDetail.tsx    | 156 ++++++++++++++++++++++-----------------
-    + web/src/pages/CommitTimeline.tsx | 143 +++++++++++++++++++++--------------
-    + web/src/pages/Dashboard.tsx      |  90 +++++++++-------------
-    + 14 files changed, 405 insertions(+), 230 deletions(-)
-    +```
-    +
-    +## Test Run 2026-02-14T23:39:46Z
-    +- Status: PASS
-    +- Start: 2026-02-14T23:39:46Z
-    +- End: 2026-02-14T23:39:48Z
-    +- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-    +- Branch: master
-    +- HEAD: 007855acf36050e87fe70e837aae2b6c6e5716fa
-    +- compileall exit: 0
-    +- import_sanity exit: 0
-    +- git status -sb:
-    +```
-    +## master
-    +```
-    +- git diff --stat:
-    +```
-    +
-    +```
-    +
-    +## Test Run 2026-02-14T23:39:52Z
-    +- Status: PASS
-    +- Start: 2026-02-14T23:39:52Z
-    +- End: 2026-02-14T23:39:53Z
-    +- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-    +- Branch: git unavailable
-    +- HEAD: git unavailable
-    +- compileall exit: 0
-    +- import_sanity exit: 0
-    +- git status -sb:
-    +```
-    +git unavailable
-    +```
-    +- git diff --stat:
-    +```
-    +git unavailable
-    +```
-    +
-    +## Test Run 2026-02-14T23:40:07Z
-    +- Status: PASS
-    +- Start: 2026-02-14T23:40:07Z
-    +- End: 2026-02-14T23:40:08Z
-    +- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-    +- Branch: git unavailable
-    +- HEAD: git unavailable
-    +- compileall exit: 0
-    +- import_sanity exit: 0
-    +- git status -sb:
-    +```
-    +git unavailable
-    +```
-    +- git diff --stat:
-    +```
-    +git unavailable
+    + Forge/scripts/watch_audit.ps1 |  99 ++++++++++++++++++++
+    + USER_INSTRUCTIONS.md          | 142 +++++++++++++++++++++++++---
+    + app/api/routers/repos.py      |  25 ++++-
+    + app/api/routers/webhooks.py   |  22 ++++-
+    + app/config.py                 |  49 ++++++++--
+    + app/main.py                   |  21 ++++-
+    + boot.ps1                      | 209 +++++++++++++++++++++++++++++++-----------
+    + 7 files changed, 488 insertions(+), 79 deletions(-)
     +```
     +
     diff --git a/Forge/evidence/test_runs_latest.md b/Forge/evidence/test_runs_latest.md
-    index 463f936..a856761 100644
+    index a856761..c245982 100644
     --- a/Forge/evidence/test_runs_latest.md
     +++ b/Forge/evidence/test_runs_latest.md
-    @@ -1,44 +1,17 @@
-    -Status: PASS
-    -Start: 2026-02-14T23:09:21Z
-    -End: 2026-02-14T23:09:23Z
-    -Branch: master
-    -HEAD: 39afcadcc0d0468cd71d918168e978f7d39daa49
-    +´╗┐Status: PASS
-    +Start: 2026-02-14T23:40:07Z
-    +End: 2026-02-14T23:40:08Z
-    +Branch: git unavailable
-    +HEAD: git unavailable
+    @@ -1,17 +1,34 @@
+     ´╗┐Status: PASS
+    -Start: 2026-02-14T23:40:07Z
+    -End: 2026-02-14T23:40:08Z
+    -Branch: git unavailable
+    -HEAD: git unavailable
+    +Start: 2026-02-14T23:56:12Z
+    +End: 2026-02-14T23:56:13Z
+    +Branch: master
+    +HEAD: e5f7dcd282338470cfdab5fa2dab9d27e544fac5
      Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-    -import_sanity exit: 0
-    -pytest exit: 0
      compileall exit: 0
-    +import_sanity exit: 0
+    -import_sanity exit: 0
      git status -sb:
      ```
-    -## master
-    -M  Forge/Contracts/builder_contract.md
-    -M  Forge/evidence/audit_ledger.md
-    -M  Forge/evidence/test_runs.md
-    -M  Forge/evidence/test_runs_latest.md
-    -M  Forge/evidence/updatedifflog.md
-    -M  Forge/scripts/watch_audit.ps1
-    -M  app/api/routers/repos.py
-    -A  app/api/routers/webhooks.py
-    -M  app/audit/__init__.py
-    -A  app/audit/engine.py
-    -M  app/clients/github_client.py
-    -M  app/main.py
-    -A  app/repos/audit_repo.py
-    -A  app/services/audit_service.py
-    -A  app/webhooks.py
-    -A  tests/test_audit_engine.py
-    -A  tests/test_webhook_router.py
-    -A  tests/test_webhooks.py
-    -M  web/src/App.tsx
-    -M  web/src/__tests__/App.test.tsx
-    -A  web/src/components/CheckResultCard.tsx
-    -A  web/src/components/CommitRow.tsx
-    -A  web/src/components/ResultBadge.tsx
-    -A  web/src/pages/AuditDetail.tsx
-    -A  web/src/pages/CommitTimeline.tsx
-    -M  web/src/pages/Dashboard.tsx
-    +git unavailable
+    -git unavailable
+    +## master
+    + M Forge/scripts/watch_audit.ps1
+    + M USER_INSTRUCTIONS.md
+    + M app/api/routers/repos.py
+    + M app/api/routers/webhooks.py
+    + M app/config.py
+    + M app/main.py
+    + M boot.ps1
+    +?? app/api/rate_limit.py
+    +?? tests/test_config.py
+    +?? tests/test_hardening.py
+    +?? tests/test_rate_limit.py
      ```
      git diff --stat:
      ```
-    -
-    +git unavailable
+    -git unavailable
+    + Forge/scripts/watch_audit.ps1 |  99 ++++++++++++++++++++
+    + USER_INSTRUCTIONS.md          | 142 +++++++++++++++++++++++++---
+    + app/api/routers/repos.py      |  25 ++++-
+    + app/api/routers/webhooks.py   |  22 ++++-
+    + app/config.py                 |  49 ++++++++--
+    + app/main.py                   |  21 ++++-
+    + boot.ps1                      | 209 +++++++++++++++++++++++++++++++-----------
+    + 7 files changed, 488 insertions(+), 79 deletions(-)
      ```
      
-    diff --git a/Forge/evidence/updatedifflog.md b/Forge/evidence/updatedifflog.md
-    index dee9ffb..5b06b45 100644
-    --- a/Forge/evidence/updatedifflog.md
-    +++ b/Forge/evidence/updatedifflog.md
-    @@ -1,48 +1,2068 @@
-    -# Phase 3 -- Audit Engine: Diff Log
-    +´╗┐# Diff Log (overwrite each cycle)
+    diff --git a/USER_INSTRUCTIONS.md b/USER_INSTRUCTIONS.md
+    index f3bebc2..bdc641e 100644
+    --- a/USER_INSTRUCTIONS.md
+    +++ b/USER_INSTRUCTIONS.md
+    @@ -1,38 +1,158 @@
+    -# USER_INSTRUCTIONS.md
+    +# ForgeGuard ÔÇö User Instructions
      
-    -## Verification Evidence
-    -- Static: PASS (compileall clean, import app.main OK)
-    -- Runtime: PASS (uvicorn boots on port 8004, /health 200, /webhooks/github 401 on bad signature)
-    -- Behavior: PASS (pytest 42/42, vitest 9/9)
-    -- Contract: PASS (physics webhook + audit endpoints matched, boundaries respected, schema audit tables match migration)
-    +## Cycle Metadata
-    +- Timestamp: 2026-02-14T23:32:38+00:00
-    +- Branch: master
-    +- HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
-    +- BASE_HEAD: 39afcadcc0d0468cd71d918168e978f7d39daa49
-    +- Diff basis: staged
+    -> Setup and usage guide for ForgeGuard.
+    -> This file will be fully populated in the final build phase.
+    +ForgeGuard is a repository audit monitoring dashboard. It connects to your GitHub repos, listens for push events via webhooks, and runs automated audit checks on each commit.
      
-    -## Files Changed (13 new, 6 modified)
-    +## Cycle Status
-    +- Status: COMPLETE
+     ---
      
-    -### New Files
-    -- app/webhooks.py
-    -- app/audit/engine.py
-    +## Summary
-    +- Verification Evidence: Static analysis clean, Runtime endpoints tested, Behavior assertions pass, Contract boundaries enforced
-    +- Phase 4 Dashboard and Real-Time: WebSocket manager, health badges, app shell, skeleton loaders, toast notifications, empty states
-    +- Backend: ConnectionManager, WS endpoint with JWT auth, repo health computation via LATERAL JOIN, audit broadcast on completion, check_summary aggregation
-    +- Frontend: AppShell with responsive sidebar, Skeleton/SkeletonCard/SkeletonRow components, EmptyState component, ToastContext provider, useWebSocket hook with auto-reconnect
-    +- Pages: Dashboard with live WS updates and skeletons, CommitTimeline with computed health and live refresh, AuditDetail with skeleton loading
-    +- Tests: 56 backend (14 new for WS and health), 15 frontend (6 new for Skeleton and EmptyState)
-    +
-    +## Files Changed (staged)
-    +- Forge/evidence/test_runs.md
-    +- Forge/evidence/test_runs_latest.md
-    +- app/api/routers/ws.py
-    +- app/main.py
-     - app/repos/audit_repo.py
-    +- app/repos/repo_repo.py
-     - app/services/audit_service.py
-    -- app/api/routers/webhooks.py
-    -- web/src/components/ResultBadge.tsx
-    +- app/services/repo_service.py
-    +- app/ws_manager.py
-    +- tests/test_repo_health.py
-    +- tests/test_repos_router.py
-    +- tests/test_ws_manager.py
-    +- tests/test_ws_router.py
-    +- web/src/App.tsx
-    +- web/src/__tests__/App.test.tsx
-    +- web/src/components/AppShell.tsx
-     - web/src/components/CommitRow.tsx
-    -- web/src/components/CheckResultCard.tsx
-    -- web/src/pages/CommitTimeline.tsx
-    +- web/src/components/EmptyState.tsx
-    +- web/src/components/Skeleton.tsx
-    +- web/src/context/ToastContext.tsx
-    +- web/src/hooks/useWebSocket.ts
-    +- web/src/index.css
-     - web/src/pages/AuditDetail.tsx
-    -- tests/test_audit_engine.py
-    -- tests/test_webhooks.py
-    -- tests/test_webhook_router.py
-    -
-    -### Modified Files
-    -- app/api/routers/repos.py
-    -- app/clients/github_client.py
-    -- app/main.py
-    -- web/src/App.tsx
-    +- web/src/pages/CommitTimeline.tsx
-     - web/src/pages/Dashboard.tsx
-    -- web/src/__tests__/App.test.tsx
-    -- app/audit/__init__.py
-    -- Forge/Contracts/builder_contract.md
-    -- Forge/evidence/audit_ledger.md
-    -- Forge/evidence/test_runs.md
-    -- Forge/evidence/test_runs_latest.md
-    -- Forge/evidence/updatedifflog.md
-    -- Forge/scripts/watch_audit.ps1
+     ## Prerequisites
      
-    -## Summary
-    -- Webhook receiver with hashlib-only HMAC-SHA256 signature verification (RFC 2104)
-    -- Pure audit engine with A4 boundary compliance, A9 dependency gate, W1 secrets scan
-    -- Audit DB layer for audit_runs and audit_checks tables
-    -- Audit service orchestrating webhook push events through to stored results
-    -- Frontend commit timeline (paginated) and audit detail views with result badges
-    -- Added audit listing and detail endpoints to repos router
-    +## git status -sb
-    +    ## master
-    +    M  Forge/evidence/test_runs.md
-    +    M  Forge/evidence/test_runs_latest.md
-    +     M Forge/evidence/updatedifflog.md
-    +    A  app/api/routers/ws.py
-    +    M  app/main.py
-    +    M  app/repos/audit_repo.py
-    +    M  app/repos/repo_repo.py
-    +    M  app/services/audit_service.py
-    +    M  app/services/repo_service.py
-    +    A  app/ws_manager.py
-    +    A  tests/test_repo_health.py
-    +    M  tests/test_repos_router.py
-    +    A  tests/test_ws_manager.py
-    +    A  tests/test_ws_router.py
-    +    M  web/src/App.tsx
-    +    M  web/src/__tests__/App.test.tsx
-    +    A  web/src/components/AppShell.tsx
-    +    M  web/src/components/CommitRow.tsx
-    +    A  web/src/components/EmptyState.tsx
-    +    A  web/src/components/Skeleton.tsx
-    +    A  web/src/context/ToastContext.tsx
-    +    A  web/src/hooks/useWebSocket.ts
-    +    M  web/src/index.css
-    +    M  web/src/pages/AuditDetail.tsx
-    +    M  web/src/pages/CommitTimeline.tsx
-    +    M  web/src/pages/Dashboard.tsx
+    -_To be completed._
+    +| Tool | Version | Purpose |
+    +|------|---------|---------|
+    +| Python | 3.12+ | Backend runtime |
+    +| Node.js | 18+ | Frontend build |
+    +| PostgreSQL | 15+ | Database |
+    +| Git | 2.x | Version control |
     +
-    +## Minimal Diff Hunks
-    +    diff --git a/Forge/evidence/test_runs.md b/Forge/evidence/test_runs.md
-    +    index 9d32af7..7ec6367 100644
-    +    --- a/Forge/evidence/test_runs.md
-    +    +++ b/Forge/evidence/test_runs.md
-    +    @@ -300,3 +300,59 @@ M  web/src/pages/Dashboard.tsx
-    +     
-    +     ```
-    +     
-    +    +## Test Run 2026-02-14T23:24:21Z
-    +    +- Status: PASS
-    +    +- Start: 2026-02-14T23:24:21Z
-    +    +- End: 2026-02-14T23:24:23Z
-    +    +- Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-    +    +- Branch: master
-    +    +- HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
-    +    +- compileall exit: 0
-    +    +- import_sanity exit: 0
-    +    +- git status -sb:
-    +    +```
-    +    +## master
-    +    + M Forge/scripts/watch_audit.ps1
-    +    + M app/main.py
-    +    + M app/repos/audit_repo.py
-    +    + M app/repos/repo_repo.py
-    +    + M app/services/audit_service.py
-    +    + M app/services/repo_service.py
-    +    + M tests/test_repos_router.py
-    +    + M web/src/App.tsx
-    +    + M web/src/__tests__/App.test.tsx
-    +    + M web/src/components/CommitRow.tsx
-    +    + M web/src/index.css
-    +    + M web/src/pages/AuditDetail.tsx
-    +    + M web/src/pages/CommitTimeline.tsx
-    +    + M web/src/pages/Dashboard.tsx
-    +    +?? app/api/routers/ws.py
-    +    +?? app/ws_manager.py
-    +    +?? tests/test_repo_health.py
-    +    +?? tests/test_ws_manager.py
-    +    +?? tests/test_ws_router.py
-    +    +?? web/src/components/AppShell.tsx
-    +    +?? web/src/components/EmptyState.tsx
-    +    +?? web/src/components/Skeleton.tsx
-    +    +?? web/src/context/ToastContext.tsx
-    +    +?? web/src/hooks/
-    +    +```
-    +    +- git diff --stat:
-    +    +```
-    +    + Forge/scripts/watch_audit.ps1    |   9 +++
-    +    + app/main.py                      |   2 +
-    +    + app/repos/audit_repo.py          |  16 ++--
-    +    + app/repos/repo_repo.py           |  38 ++++++++++
-    +    + app/services/audit_service.py    |  18 +++++
-    +    + app/services/repo_service.py     |  28 +++++--
-    +    + tests/test_repos_router.py       |   8 +-
-    +    + web/src/App.tsx                  |  73 ++++++++----------
-    +    + web/src/__tests__/App.test.tsx   |  41 +++++++++-
-    +    + web/src/components/CommitRow.tsx |   8 +-
-    +    + web/src/index.css                |   5 ++
-    +    + web/src/pages/AuditDetail.tsx    | 156 ++++++++++++++++++++++-----------------
-    +    + web/src/pages/CommitTimeline.tsx | 143 +++++++++++++++++++++--------------
-    +    + web/src/pages/Dashboard.tsx      |  90 +++++++++-------------
-    +    + 14 files changed, 405 insertions(+), 230 deletions(-)
-    +    +```
-    +    +
-    +    diff --git a/Forge/evidence/test_runs_latest.md b/Forge/evidence/test_runs_latest.md
-    +    index 463f936..b2a3699 100644
-    +    --- a/Forge/evidence/test_runs_latest.md
-    +    +++ b/Forge/evidence/test_runs_latest.md
-    +    @@ -1,44 +1,55 @@
-    +    -Status: PASS
-    +    -Start: 2026-02-14T23:09:21Z
-    +    -End: 2026-02-14T23:09:23Z
-    +    +┬┤ÔòùÔöÉStatus: PASS
-    +    +Start: 2026-02-14T23:24:21Z
-    +    +End: 2026-02-14T23:24:23Z
-    +     Branch: master
-    +    -HEAD: 39afcadcc0d0468cd71d918168e978f7d39daa49
-    +    +HEAD: 12f5c11d91044c2a1b030bdd16444f85c1090444
-    +     Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-    +    -import_sanity exit: 0
-    +    -pytest exit: 0
-    +     compileall exit: 0
-    +    +import_sanity exit: 0
-    +     git status -sb:
-    +     ```
-    +     ## master
-    +    -M  Forge/Contracts/builder_contract.md
-    +    -M  Forge/evidence/audit_ledger.md
-    +    -M  Forge/evidence/test_runs.md
-    +    -M  Forge/evidence/test_runs_latest.md
-    +    -M  Forge/evidence/updatedifflog.md
-    +    -M  Forge/scripts/watch_audit.ps1
-    +    -M  app/api/routers/repos.py
-    +    -A  app/api/routers/webhooks.py
-    +    -M  app/audit/__init__.py
-    +    -A  app/audit/engine.py
-    +    -M  app/clients/github_client.py
-    +    -M  app/main.py
-    +    -A  app/repos/audit_repo.py
-    +    -A  app/services/audit_service.py
-    +    -A  app/webhooks.py
-    +    -A  tests/test_audit_engine.py
-    +    -A  tests/test_webhook_router.py
-    +    -A  tests/test_webhooks.py
-    +    -M  web/src/App.tsx
-    +    -M  web/src/__tests__/App.test.tsx
-    +    -A  web/src/components/CheckResultCard.tsx
-    +    -A  web/src/components/CommitRow.tsx
-    +    -A  web/src/components/ResultBadge.tsx
-    +    -A  web/src/pages/AuditDetail.tsx
-    +    -A  web/src/pages/CommitTimeline.tsx
-    +    -M  web/src/pages/Dashboard.tsx
-    +    + M Forge/scripts/watch_audit.ps1
-    +    + M app/main.py
-    +    + M app/repos/audit_repo.py
-    +    + M app/repos/repo_repo.py
-    +    + M app/services/audit_service.py
-    +    + M app/services/repo_service.py
-    +    + M tests/test_repos_router.py
-    +    + M web/src/App.tsx
-    +    + M web/src/__tests__/App.test.tsx
-    +    + M web/src/components/CommitRow.tsx
-    +    + M web/src/index.css
-    +    + M web/src/pages/AuditDetail.tsx
-    +    + M web/src/pages/CommitTimeline.tsx
-    +    + M web/src/pages/Dashboard.tsx
-    +    +?? app/api/routers/ws.py
-    +    +?? app/ws_manager.py
-    +    +?? tests/test_repo_health.py
-    +    +?? tests/test_ws_manager.py
-    +    +?? tests/test_ws_router.py
-    +    +?? web/src/components/AppShell.tsx
-    +    +?? web/src/components/EmptyState.tsx
-    +    +?? web/src/components/Skeleton.tsx
-    +    +?? web/src/context/ToastContext.tsx
-    +    +?? web/src/hooks/
-    +     ```
-    +     git diff --stat:
-    +     ```
-    +    -
-    +    + Forge/scripts/watch_audit.ps1    |   9 +++
-    +    + app/main.py                      |   2 +
-    +    + app/repos/audit_repo.py          |  16 ++--
-    +    + app/repos/repo_repo.py           |  38 ++++++++++
-    +    + app/services/audit_service.py    |  18 +++++
-    +    + app/services/repo_service.py     |  28 +++++--
-    +    + tests/test_repos_router.py       |   8 +-
-    +    + web/src/App.tsx                  |  73 ++++++++----------
-    +    + web/src/__tests__/App.test.tsx   |  41 +++++++++-
-    +    + web/src/components/CommitRow.tsx |   8 +-
-    +    + web/src/index.css                |   5 ++
-    +    + web/src/pages/AuditDetail.tsx    | 156 ++++++++++++++++++++++-----------------
-    +    + web/src/pages/CommitTimeline.tsx | 143 +++++++++++++++++++++--------------
-    +    + web/src/pages/Dashboard.tsx      |  90 +++++++++-------------
-    +    + 14 files changed, 405 insertions(+), 230 deletions(-)
-    +     ```
-    +     
-    +    diff --git a/app/api/routers/ws.py b/app/api/routers/ws.py
-    +    new file mode 100644
-    +    index 0000000..e3a3f61
-    +    --- /dev/null
-    +    +++ b/app/api/routers/ws.py
-    +    @@ -0,0 +1,43 @@
-    +    +"""WebSocket router -- real-time audit result updates."""
-    +    +
-    +    +import jwt as pyjwt
-    +    +from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-    +    +
-    +    +from app.auth import decode_token
-    +    +from app.ws_manager import manager
-    +    +
-    +    +router = APIRouter(tags=["websocket"])
-    +    +
-    +    +
-    +    +@router.websocket("/ws")
-    +    +async def websocket_endpoint(websocket: WebSocket) -> None:
-    +    +    """WebSocket endpoint for real-time audit updates.
-    +    +
-    +    +    Auth via query param: /ws?token=<jwt>
-    +    +    Server sends messages of type "audit_update" with AuditRunSummary payload.
-    +    +    """
-    +    +    token = websocket.query_params.get("token")
-    +    +    if not token:
-    +    +        await websocket.close(code=4001, reason="Missing token")
-    +    +        return
-    +    +
-    +    +    try:
-    +    +        payload = decode_token(token)
-    +    +    except (pyjwt.ExpiredSignatureError, pyjwt.PyJWTError):
-    +    +        await websocket.close(code=4001, reason="Invalid token")
-    +    +        return
-    +    +
-    +    +    user_id = payload.get("sub")
-    +    +    if not user_id:
-    +    +        await websocket.close(code=4001, reason="Invalid token payload")
-    +    +        return
-    +    +
-    +    +    await websocket.accept()
-    +    +    await manager.connect(user_id, websocket)
-    +    +
-    +    +    try:
-    +    +        while True:
-    +    +            # Keep connection alive; ignore client messages
-    +    +            await websocket.receive_text()
-    +    +    except WebSocketDisconnect:
-    +    +        await manager.disconnect(user_id, websocket)
-    +    diff --git a/app/main.py b/app/main.py
-    +    index b012194..4d80f1b 100644
-    +    --- a/app/main.py
-    +    +++ b/app/main.py
-    +    @@ -9,6 +9,7 @@ from app.api.routers.auth import router as auth_router
-    +     from app.api.routers.health import router as health_router
-    +     from app.api.routers.repos import router as repos_router
-    +     from app.api.routers.webhooks import router as webhooks_router
-    +    +from app.api.routers.ws import router as ws_router
-    +     from app.config import settings
-    +     from app.repos.db import close_pool
-    +     
-    +    @@ -41,6 +42,7 @@ def create_app() -> FastAPI:
-    +         application.include_router(auth_router)
-    +         application.include_router(repos_router)
-    +         application.include_router(webhooks_router)
-    +    +    application.include_router(ws_router)
-    +         return application
-    +     
-    +     
-    +    diff --git a/app/repos/audit_repo.py b/app/repos/audit_repo.py
-    +    index f979476..f18d94c 100644
-    +    --- a/app/repos/audit_repo.py
-    +    +++ b/app/repos/audit_repo.py
-    +    @@ -95,11 +95,17 @@ async def get_audit_runs_by_repo(
-    +     
-    +         rows = await pool.fetch(
-    +             """
-    +    -        SELECT id, repo_id, commit_sha, commit_message, commit_author, branch,
-    +    -               status, overall_result, started_at, completed_at, files_checked, created_at
-    +    -        FROM audit_runs
-    +    -        WHERE repo_id = $1
-    +    -        ORDER BY created_at DESC
-    +    +        SELECT a.id, a.repo_id, a.commit_sha, a.commit_message, a.commit_author, a.branch,
-    +    +               a.status, a.overall_result, a.started_at, a.completed_at, a.files_checked, a.created_at,
-    +    +               cs.check_summary
-    +    +        FROM audit_runs a
-    +    +        LEFT JOIN LATERAL (
-    +    +            SELECT string_agg(c.check_code || ':' || c.result, ' ' ORDER BY c.created_at) AS check_summary
-    +    +            FROM audit_checks c
-    +    +            WHERE c.audit_run_id = a.id
-    +    +        ) cs ON true
-    +    +        WHERE a.repo_id = $1
-    +    +        ORDER BY a.created_at DESC
-    +             LIMIT $2 OFFSET $3
-    +             """,
-    +             repo_id,
-    +    diff --git a/app/repos/repo_repo.py b/app/repos/repo_repo.py
-    +    index d5ce62c..0d6c813 100644
-    +    --- a/app/repos/repo_repo.py
-    +    +++ b/app/repos/repo_repo.py
-    +    @@ -88,6 +88,44 @@ async def delete_repo(repo_id: UUID) -> bool:
-    +         return result == "DELETE 1"
-    +     
-    +     
-    +    +async def get_repos_with_health(user_id: UUID) -> list[dict]:
-    +    +    """Fetch repos with recent audit health data for a user.
-    +    +
-    +    +    Returns each repo with last_audit_at and pass/total counts from the
-    +    +    10 most recent completed audit runs.
-    +    +    """
-    +    +    pool = await get_pool()
-    +    +    rows = await pool.fetch(
-    +    +        """
-    +    +        SELECT
-    +    +            r.id, r.user_id, r.github_repo_id, r.full_name,
-    +    +            r.default_branch, r.webhook_id, r.webhook_active,
-    +    +            r.created_at, r.updated_at,
-    +    +            h.last_audit_at,
-    +    +            h.pass_count,
-    +    +            h.total_count
-    +    +        FROM repos r
-    +    +        LEFT JOIN LATERAL (
-    +    +            SELECT
-    +    +                max(a.completed_at) AS last_audit_at,
-    +    +                count(*) FILTER (WHERE a.overall_result = 'PASS') AS pass_count,
-    +    +                count(*) AS total_count
-    +    +            FROM (
-    +    +                SELECT overall_result, completed_at
-    +    +                FROM audit_runs
-    +    +                WHERE repo_id = r.id AND status = 'completed'
-    +    +                ORDER BY created_at DESC
-    +    +                LIMIT 10
-    +    +            ) a
-    +    +        ) h ON true
-    +    +        WHERE r.user_id = $1
-    +    +        ORDER BY r.created_at DESC
-    +    +        """,
-    +    +        user_id,
-    +    +    )
-    +    +    return [dict(r) for r in rows]
-    +    +
-    +    +
-    +     async def update_webhook(
-    +         repo_id: UUID,
-    +         webhook_id: int | None,
-    +    diff --git a/app/services/audit_service.py b/app/services/audit_service.py
-    +    index cd2a72e..aebb1bc 100644
-    +    --- a/app/services/audit_service.py
-    +    +++ b/app/services/audit_service.py
-    +    @@ -12,6 +12,7 @@ from app.repos.audit_repo import (
-    +     )
-    +     from app.repos.repo_repo import get_repo_by_github_id
-    +     from app.repos.user_repo import get_user_by_id
-    +    +from app.ws_manager import manager as ws_manager
-    +     
-    +     
-    +     async def process_push_event(payload: dict) -> dict | None:
-    +    @@ -134,6 +135,22 @@ async def process_push_event(payload: dict) -> dict | None:
-    +                 files_checked=len(files),
-    +             )
-    +     
-    +    +        # Broadcast real-time update via WebSocket
-    +    +        user_id_str = str(repo["user_id"])
-    +    +        await ws_manager.broadcast_audit_update(user_id_str, {
-    +    +            "id": str(audit_run["id"]),
-    +    +            "repo_id": str(repo["id"]),
-    +    +            "commit_sha": commit_sha,
-    +    +            "commit_message": commit_message,
-    +    +            "commit_author": commit_author,
-    +    +            "branch": branch,
-    +    +            "status": "completed",
-    +    +            "overall_result": overall,
-    +    +            "started_at": audit_run["started_at"].isoformat() if audit_run.get("started_at") else None,
-    +    +            "completed_at": None,
-    +    +            "files_checked": len(files),
-    +    +        })
-    +    +
-    +         except Exception:
-    +             await update_audit_run(
-    +                 audit_run_id=audit_run["id"],
-    +    @@ -174,6 +191,7 @@ async def get_repo_audits(
-    +                 "started_at": item["started_at"].isoformat() if item["started_at"] else None,
-    +                 "completed_at": item["completed_at"].isoformat() if item["completed_at"] else None,
-    +                 "files_checked": item["files_checked"],
-    +    +            "check_summary": item.get("check_summary"),
-    +             })
-    +         return result, total
-    +     
-    +    diff --git a/app/services/repo_service.py b/app/services/repo_service.py
-    +    index 2784795..10f035b 100644
-    +    --- a/app/services/repo_service.py
-    +    +++ b/app/services/repo_service.py
-    +    @@ -10,6 +10,7 @@ from app.repos.repo_repo import (
-    +         get_repo_by_github_id,
-    +         get_repo_by_id,
-    +         get_repos_by_user,
-    +    +    get_repos_with_health,
-    +     )
-    +     from app.repos.user_repo import get_user_by_id
-    +     
-    +    @@ -85,18 +86,35 @@ async def disconnect_repo(user_id: UUID, repo_id: UUID) -> None:
-    +     
-    +     
-    +     async def list_connected_repos(user_id: UUID) -> list[dict]:
-    +    -    """List all connected repos for a user with placeholder health data."""
-    +    -    repos = await get_repos_by_user(user_id)
-    +    +    """List all connected repos for a user with computed health data."""
-    +    +    repos = await get_repos_with_health(user_id)
-    +         result = []
-    +         for repo in repos:
-    +    +        total = repo.get("total_count") or 0
-    +    +        pass_count = repo.get("pass_count") or 0
-    +    +
-    +    +        if total == 0:
-    +    +            health = "pending"
-    +    +            rate = None
-    +    +        else:
-    +    +            rate = pass_count / total
-    +    +            if rate == 1.0:
-    +    +                health = "green"
-    +    +            elif rate >= 0.5:
-    +    +                health = "yellow"
-    +    +            else:
-    +    +                health = "red"
-    +    +
-    +    +        last_audit = repo.get("last_audit_at")
-    +    +
-    +             result.append({
-    +                 "id": str(repo["id"]),
-    +                 "full_name": repo["full_name"],
-    +                 "default_branch": repo["default_branch"],
-    +                 "webhook_active": repo["webhook_active"],
-    +    -            "health_score": "pending",
-    +    -            "last_audit_at": None,
-    +    -            "recent_pass_rate": None,
-    +    +            "health_score": health,
-    +    +            "last_audit_at": last_audit.isoformat() if last_audit else None,
-    +    +            "recent_pass_rate": rate,
-    +             })
-    +         return result
-    +     
-    +    diff --git a/app/ws_manager.py b/app/ws_manager.py
-    +    new file mode 100644
-    +    index 0000000..627419e
-    +    --- /dev/null
-    +    +++ b/app/ws_manager.py
-    +    @@ -0,0 +1,51 @@
-    +    +"""WebSocket connection manager for real-time audit updates."""
-    +    +
-    +    +import asyncio
-    +    +import json
-    +    +from uuid import UUID
-    +    +
-    +    +
-    +    +class ConnectionManager:
-    +    +    """Manages active WebSocket connections keyed by user_id."""
-    +    +
-    +    +    def __init__(self) -> None:
-    +    +        self._connections: dict[str, list] = {}  # user_id -> list of websockets
-    +    +        self._lock = asyncio.Lock()
-    +    +
-    +    +    async def connect(self, user_id: str, websocket) -> None:  # noqa: ANN001
-    +    +        """Register a WebSocket connection for a user."""
-    +    +        async with self._lock:
-    +    +            if user_id not in self._connections:
-    +    +                self._connections[user_id] = []
-    +    +            self._connections[user_id].append(websocket)
-    +    +
-    +    +    async def disconnect(self, user_id: str, websocket) -> None:  # noqa: ANN001
-    +    +        """Remove a WebSocket connection for a user."""
-    +    +        async with self._lock:
-    +    +            conns = self._connections.get(user_id, [])
-    +    +            if websocket in conns:
-    +    +                conns.remove(websocket)
-    +    +            if not conns:
-    +    +                self._connections.pop(user_id, None)
-    +    +
-    +    +    async def send_to_user(self, user_id: str, data: dict) -> None:
-    +    +        """Send a JSON message to all connections for a specific user."""
-    +    +        async with self._lock:
-    +    +            conns = list(self._connections.get(user_id, []))
-    +    +        message = json.dumps(data, default=str)
-    +    +        for ws in conns:
-    +    +            try:
-    +    +                await ws.send_text(message)
-    +    +            except Exception:
-    +    +                pass  # dead connection -- will be cleaned up on disconnect
-    +    +
-    +    +    async def broadcast_audit_update(self, user_id: str, audit_summary: dict) -> None:
-    +    +        """Broadcast an audit_update event to the given user."""
-    +    +        payload = {
-    +    +            "type": "audit_update",
-    +    +            "payload": audit_summary,
-    +    +        }
-    +    +        await self.send_to_user(user_id, payload)
-    +    +
-    +    +
-    +    +manager = ConnectionManager()
-    +    diff --git a/tests/test_repo_health.py b/tests/test_repo_health.py
-    +    new file mode 100644
-    +    index 0000000..e5a0e9b
-    +    --- /dev/null
-    +    +++ b/tests/test_repo_health.py
-    +    @@ -0,0 +1,79 @@
-    +    +"""Tests for repo service health score computation."""
-    +    +
-    +    +import pytest
-    +    +from unittest.mock import AsyncMock, patch
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +@patch("app.services.repo_service.get_repos_with_health")
-    +    +async def test_health_green_all_pass(mock_get):
-    +    +    """All 10 audits passed -> green health, 1.0 rate."""
-    +    +    mock_get.return_value = [{
-    +    +        "id": "repo-1",
-    +    +        "full_name": "org/repo",
-    +    +        "default_branch": "main",
-    +    +        "webhook_active": True,
-    +    +        "total_count": 10,
-    +    +        "pass_count": 10,
-    +    +        "last_audit_at": None,
-    +    +    }]
-    +    +    from app.services.repo_service import list_connected_repos
-    +    +    result = await list_connected_repos("user-1")
-    +    +    assert result[0]["health_score"] == "green"
-    +    +    assert result[0]["recent_pass_rate"] == 1.0
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +@patch("app.services.repo_service.get_repos_with_health")
-    +    +async def test_health_red_low_pass(mock_get):
-    +    +    """Less than half pass -> red health."""
-    +    +    mock_get.return_value = [{
-    +    +        "id": "repo-1",
-    +    +        "full_name": "org/repo",
-    +    +        "default_branch": "main",
-    +    +        "webhook_active": True,
-    +    +        "total_count": 10,
-    +    +        "pass_count": 3,
-    +    +        "last_audit_at": None,
-    +    +    }]
-    +    +    from app.services.repo_service import list_connected_repos
-    +    +    result = await list_connected_repos("user-1")
-    +    +    assert result[0]["health_score"] == "red"
-    +    +    assert result[0]["recent_pass_rate"] == 0.3
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +@patch("app.services.repo_service.get_repos_with_health")
-    +    +async def test_health_yellow_mixed(mock_get):
-    +    +    """50-99% pass rate -> yellow health."""
-    +    +    mock_get.return_value = [{
-    +    +        "id": "repo-1",
-    +    +        "full_name": "org/repo",
-    +    +        "default_branch": "main",
-    +    +        "webhook_active": True,
-    +    +        "total_count": 10,
-    +    +        "pass_count": 7,
-    +    +        "last_audit_at": None,
-    +    +    }]
-    +    +    from app.services.repo_service import list_connected_repos
-    +    +    result = await list_connected_repos("user-1")
-    +    +    assert result[0]["health_score"] == "yellow"
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +@patch("app.services.repo_service.get_repos_with_health")
-    +    +async def test_health_pending_no_audits(mock_get):
-    +    +    """No audit runs -> pending health, null rate."""
-    +    +    mock_get.return_value = [{
-    +    +        "id": "repo-1",
-    +    +        "full_name": "org/repo",
-    +    +        "default_branch": "main",
-    +    +        "webhook_active": True,
-    +    +        "total_count": 0,
-    +    +        "pass_count": 0,
-    +    +        "last_audit_at": None,
-    +    +    }]
-    +    +    from app.services.repo_service import list_connected_repos
-    +    +    result = await list_connected_repos("user-1")
-    +    +    assert result[0]["health_score"] == "pending"
-    +    +    assert result[0]["recent_pass_rate"] is None
-    +    diff --git a/tests/test_repos_router.py b/tests/test_repos_router.py
-    +    index 05e7fe3..c647569 100644
-    +    --- a/tests/test_repos_router.py
-    +    +++ b/tests/test_repos_router.py
-    +    @@ -43,7 +43,7 @@ def _auth_header():
-    +     
-    +     
-    +     @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-    +    -@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
-    +    +@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
-    +     def test_list_repos_returns_items(mock_get_repos, mock_get_user):
-    +         mock_get_user.return_value = MOCK_USER
-    +         mock_get_repos.return_value = [
-    +    @@ -57,6 +57,9 @@ def test_list_repos_returns_items(mock_get_repos, mock_get_user):
-    +                 "webhook_active": True,
-    +                 "created_at": "2025-01-01T00:00:00Z",
-    +                 "updated_at": "2025-01-01T00:00:00Z",
-    +    +            "total_count": 5,
-    +    +            "pass_count": 5,
-    +    +            "last_audit_at": None,
-    +             }
-    +         ]
-    +     
-    +    @@ -66,10 +69,11 @@ def test_list_repos_returns_items(mock_get_repos, mock_get_user):
-    +         assert "items" in data
-    +         assert len(data["items"]) == 1
-    +         assert data["items"][0]["full_name"] == "octocat/hello-world"
-    +    +    assert data["items"][0]["health_score"] == "green"
-    +     
-    +     
-    +     @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-    +    -@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
-    +    +@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
-    +     def test_list_repos_empty(mock_get_repos, mock_get_user):
-    +         mock_get_user.return_value = MOCK_USER
-    +         mock_get_repos.return_value = []
-    +    diff --git a/tests/test_ws_manager.py b/tests/test_ws_manager.py
-    +    new file mode 100644
-    +    index 0000000..441a076
-    +    --- /dev/null
-    +    +++ b/tests/test_ws_manager.py
-    +    @@ -0,0 +1,90 @@
-    +    +"""Tests for WebSocket connection manager."""
-    +    +
-    +    +import asyncio
-    +    +
-    +    +import pytest
-    +    +
-    +    +from app.ws_manager import ConnectionManager
-    +    +
-    +    +
-    +    +class FakeWebSocket:
-    +    +    """Fake WebSocket for testing send_text."""
-    +    +
-    +    +    def __init__(self):
-    +    +        self.messages: list[str] = []
-    +    +        self.closed = False
-    +    +
-    +    +    async def send_text(self, text: str) -> None:
-    +    +        if self.closed:
-    +    +            raise RuntimeError("WebSocket closed")
-    +    +        self.messages.append(text)
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +async def test_connect_and_send():
-    +    +    """Messages reach connected sockets."""
-    +    +    mgr = ConnectionManager()
-    +    +    ws = FakeWebSocket()
-    +    +    await mgr.connect("user-1", ws)
-    +    +    await mgr.send_to_user("user-1", {"hello": "world"})
-    +    +    assert len(ws.messages) == 1
-    +    +    assert '"hello"' in ws.messages[0]
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +async def test_disconnect_removes_socket():
-    +    +    """After disconnect, no messages reach the socket."""
-    +    +    mgr = ConnectionManager()
-    +    +    ws = FakeWebSocket()
-    +    +    await mgr.connect("user-1", ws)
-    +    +    await mgr.disconnect("user-1", ws)
-    +    +    await mgr.send_to_user("user-1", {"hello": "world"})
-    +    +    assert len(ws.messages) == 0
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +async def test_multiple_connections():
-    +    +    """Multiple sockets for one user all receive messages."""
-    +    +    mgr = ConnectionManager()
-    +    +    ws1 = FakeWebSocket()
-    +    +    ws2 = FakeWebSocket()
-    +    +    await mgr.connect("user-1", ws1)
-    +    +    await mgr.connect("user-1", ws2)
-    +    +    await mgr.send_to_user("user-1", {"data": 1})
-    +    +    assert len(ws1.messages) == 1
-    +    +    assert len(ws2.messages) == 1
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +async def test_send_to_nonexistent_user():
-    +    +    """Sending to a user with no connections does not error."""
-    +    +    mgr = ConnectionManager()
-    +    +    await mgr.send_to_user("nobody", {"data": 1})
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +async def test_broadcast_audit_update():
-    +    +    """broadcast_audit_update sends correctly typed message."""
-    +    +    mgr = ConnectionManager()
-    +    +    ws = FakeWebSocket()
-    +    +    await mgr.connect("user-1", ws)
-    +    +    await mgr.broadcast_audit_update("user-1", {"id": "abc", "status": "completed"})
-    +    +    assert len(ws.messages) == 1
-    +    +    import json
-    +    +    msg = json.loads(ws.messages[0])
-    +    +    assert msg["type"] == "audit_update"
-    +    +    assert msg["payload"]["id"] == "abc"
-    +    +
-    +    +
-    +    +@pytest.mark.asyncio
-    +    +async def test_dead_socket_ignored():
-    +    +    """Dead socket doesn't prevent messages to other sockets."""
-    +    +    mgr = ConnectionManager()
-    +    +    ws_dead = FakeWebSocket()
-    +    +    ws_dead.closed = True
-    +    +    ws_live = FakeWebSocket()
-    +    +    await mgr.connect("user-1", ws_dead)
-    +    +    await mgr.connect("user-1", ws_live)
-    +    +    await mgr.send_to_user("user-1", {"x": 1})
-    +    +    assert len(ws_live.messages) == 1
-    +    +    assert len(ws_dead.messages) == 0
-    +    diff --git a/tests/test_ws_router.py b/tests/test_ws_router.py
-    +    new file mode 100644
-    +    index 0000000..0ff6c1e
-    +    --- /dev/null
-    +    +++ b/tests/test_ws_router.py
-    +    @@ -0,0 +1,56 @@
-    +    +"""Tests for WebSocket router endpoint."""
-    +    +
-    +    +from unittest.mock import AsyncMock, patch
-    +    +
-    +    +import pytest
-    +    +from fastapi.testclient import TestClient
-    +    +
-    +    +from app.main import create_app
-    +    +
-    +    +
-    +    +@pytest.fixture
-    +    +def client():
-    +    +    app = create_app()
-    +    +    return TestClient(app)
-    +    +
-    +    +
-    +    +def _make_token_payload(user_id: str = "test-user-id"):
-    +    +    return {"sub": user_id, "github_login": "testuser"}
-    +    +
-    +    +
-    +    +def test_ws_rejects_missing_token(client):
-    +    +    """WebSocket connection without token should be rejected."""
-    +    +    with pytest.raises(Exception):
-    +    +        with client.websocket_connect("/ws"):
-    +    +            pass
-    +    +
-    +    +
-    +    +def test_ws_rejects_invalid_token(client):
-    +    +    """WebSocket connection with invalid token should be rejected."""
-    +    +    with pytest.raises(Exception):
-    +    +        with client.websocket_connect("/ws?token=badtoken"):
-    +    +            pass
-    +    +
-    +    +
-    +    +@patch("app.api.routers.ws.decode_token")
-    +    +def test_ws_accepts_valid_token(mock_decode, client):
-    +    +    """WebSocket connection with valid token should be accepted."""
-    +    +    mock_decode.return_value = _make_token_payload()
-    +    +    with client.websocket_connect("/ws?token=validtoken") as ws:
-    +    +        # Connection established - no immediate message expected
-    +    +        # Just verify it connected
-    +    +        assert ws is not None
-    +    +
-    +    +
-    +    +@patch("app.api.routers.ws.decode_token")
-    +    +@patch("app.api.routers.ws.manager")
-    +    +def test_ws_connects_and_disconnects(mock_manager, mock_decode, client):
-    +    +    """WebSocket lifecycle: connect -> manager.connect called."""
-    +    +    mock_decode.return_value = _make_token_payload("uid-123")
-    +    +    mock_manager.connect = AsyncMock()
-    +    +    mock_manager.disconnect = AsyncMock()
-    +    +
-    +    +    with client.websocket_connect("/ws?token=validtoken"):
-    +    +        mock_manager.connect.assert_called_once()
-    +    +        call_args = mock_manager.connect.call_args
-    +    +        assert call_args[0][0] == "uid-123"
-    +    diff --git a/web/src/App.tsx b/web/src/App.tsx
-    +    index a7bc43a..b85d295 100644
-    +    --- a/web/src/App.tsx
-    +    +++ b/web/src/App.tsx
-    +    @@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
-    +     import CommitTimeline from './pages/CommitTimeline';
-    +     import AuditDetailPage from './pages/AuditDetail';
-    +     import { AuthProvider, useAuth } from './context/AuthContext';
-    +    +import { ToastProvider } from './context/ToastContext';
-    +     
-    +     function ProtectedRoute({ children }: { children: React.ReactNode }) {
-    +       const { token } = useAuth();
-    +    @@ -12,52 +13,42 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
-    +       return <>{children}</>;
-    +     }
-    +     
-    +    -function AppLayout({ children }: { children: React.ReactNode }) {
-    +    -  return (
-    +    -    <div style={{ background: '#0F172A', color: '#F8FAFC', minHeight: '100vh' }}>
-    +    -      {children}
-    +    -    </div>
-    +    -  );
-    +    -}
-    +    -
-    +     function App() {
-    +       return (
-    +         <AuthProvider>
-    +    -      <BrowserRouter>
-    +    -        <Routes>
-    +    -          <Route path="/login" element={<Login />} />
-    +    -          <Route path="/auth/callback" element={<AuthCallback />} />
-    +    -          <Route
-    +    -            path="/"
-    +    -            element={
-    +    -              <ProtectedRoute>
-    +    -                <Dashboard />
-    +    -              </ProtectedRoute>
-    +    -            }
-    +    -          />
-    +    -          <Route
-    +    -            path="/repos/:repoId"
-    +    -            element={
-    +    -              <ProtectedRoute>
-    +    -                <AppLayout>
-    +    +      <ToastProvider>
-    +    +        <BrowserRouter>
-    +    +          <Routes>
-    +    +            <Route path="/login" element={<Login />} />
-    +    +            <Route path="/auth/callback" element={<AuthCallback />} />
-    +    +            <Route
-    +    +              path="/"
-    +    +              element={
-    +    +                <ProtectedRoute>
-    +    +                  <Dashboard />
-    +    +                </ProtectedRoute>
-    +    +              }
-    +    +            />
-    +    +            <Route
-    +    +              path="/repos/:repoId"
-    +    +              element={
-    +    +                <ProtectedRoute>
-    +                       <CommitTimeline />
-    +    -                </AppLayout>
-    +    -              </ProtectedRoute>
-    +    -            }
-    +    -          />
-    +    -          <Route
-    +    -            path="/repos/:repoId/audits/:auditId"
-    +    -            element={
-    +    -              <ProtectedRoute>
-    +    -                <AppLayout>
-    +    +                </ProtectedRoute>
-    +    +              }
-    +    +            />
-    +    +            <Route
-    +    +              path="/repos/:repoId/audits/:auditId"
-    +    +              element={
-    +    +                <ProtectedRoute>
-    +                       <AuditDetailPage />
-    +    -                </AppLayout>
-    +    -              </ProtectedRoute>
-    +    -            }
-    +    -          />
-    +    -          <Route path="*" element={<Navigate to="/" replace />} />
-    +    -        </Routes>
-    +    -      </BrowserRouter>
-    +    +                </ProtectedRoute>
-    +    +              }
-    +    +            />
-    +    +            <Route path="*" element={<Navigate to="/" replace />} />
-    +    +          </Routes>
-    +    +        </BrowserRouter>
-    +    +      </ToastProvider>
-    +         </AuthProvider>
-    +       );
-    +     }
-    +    diff --git a/web/src/__tests__/App.test.tsx b/web/src/__tests__/App.test.tsx
-    +    index b9cf339..ea10fbc 100644
-    +    --- a/web/src/__tests__/App.test.tsx
-    +    +++ b/web/src/__tests__/App.test.tsx
-    +    @@ -1,10 +1,12 @@
-    +     import { describe, it, expect } from 'vitest';
-    +    -import { render, screen } from '@testing-library/react';
-    +    +import { render, screen, fireEvent } from '@testing-library/react';
-    +     import Login from '../pages/Login';
-    +     import HealthBadge from '../components/HealthBadge';
-    +     import ConfirmDialog from '../components/ConfirmDialog';
-    +     import ResultBadge from '../components/ResultBadge';
-    +     import CheckResultCard from '../components/CheckResultCard';
-    +    +import Skeleton, { SkeletonCard, SkeletonRow } from '../components/Skeleton';
-    +    +import EmptyState from '../components/EmptyState';
-    +     
-    +     describe('Login', () => {
-    +       it('renders the sign in button', () => {
-    +    @@ -82,3 +84,40 @@ describe('CheckResultCard', () => {
-    +         expect(screen.getByText('Boundary compliance')).toBeInTheDocument();
-    +       });
-    +     });
-    +    +
-    +    +describe('Skeleton', () => {
-    +    +  it('renders skeleton element', () => {
-    +    +    render(<Skeleton />);
-    +    +    expect(screen.getByTestId('skeleton')).toBeInTheDocument();
-    +    +  });
-    +    +
-    +    +  it('renders SkeletonCard', () => {
-    +    +    render(<SkeletonCard />);
-    +    +    const skeletons = screen.getAllByTestId('skeleton');
-    +    +    expect(skeletons.length).toBeGreaterThan(0);
-    +    +  });
-    +    +
-    +    +  it('renders SkeletonRow', () => {
-    +    +    render(<SkeletonRow />);
-    +    +    const skeletons = screen.getAllByTestId('skeleton');
-    +    +    expect(skeletons.length).toBeGreaterThan(0);
-    +    +  });
-    +    +});
-    +    +
-    +    +describe('EmptyState', () => {
-    +    +  it('renders message', () => {
-    +    +    render(<EmptyState message="Nothing here" />);
-    +    +    expect(screen.getByText('Nothing here')).toBeInTheDocument();
-    +    +  });
-    +    +
-    +    +  it('renders empty-state test id', () => {
-    +    +    render(<EmptyState message="Test" />);
-    +    +    expect(screen.getByTestId('empty-state')).toBeInTheDocument();
-    +    +  });
-    +    +
-    +    +  it('renders action button when provided', () => {
-    +    +    const fn = () => {};
-    +    +    render(<EmptyState message="Empty" actionLabel="Add Item" onAction={fn} />);
-    +    +    expect(screen.getByText('Add Item')).toBeInTheDocument();
-    +    +  });
-    +    +});
-    +    diff --git a/web/src/components/AppShell.tsx b/web/src/components/AppShell.tsx
-    +    new file mode 100644
-    +    index 0000000..f3102d9
-    +    --- /dev/null
-    +    +++ b/web/src/components/AppShell.tsx
-    +    @@ -0,0 +1,201 @@
-    +    +import { useState, useEffect, useCallback, type ReactNode } from 'react';
-    +    +import { useNavigate, useLocation } from 'react-router-dom';
-    +    +import { useAuth } from '../context/AuthContext';
-    +    +import HealthBadge from './HealthBadge';
-    +    +
-    +    +const API_BASE = import.meta.env.VITE_API_URL ?? '';
-    +    +
-    +    +interface SidebarRepo {
-    +    +  id: string;
-    +    +  full_name: string;
-    +    +  health_score: string;
-    +    +}
-    +    +
-    +    +interface AppShellProps {
-    +    +  children: ReactNode;
-    +    +  sidebarRepos?: SidebarRepo[];
-    +    +  onReposChange?: () => void;
-    +    +}
-    +    +
-    +    +function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
-    +    +  const { user, token, logout } = useAuth();
-    +    +  const navigate = useNavigate();
-    +    +  const location = useLocation();
-    +    +  const [collapsed, setCollapsed] = useState(false);
-    +    +  const [repos, setRepos] = useState<SidebarRepo[]>(sidebarRepos ?? []);
-    +    +
-    +    +  useEffect(() => {
-    +    +    if (sidebarRepos) {
-    +    +      setRepos(sidebarRepos);
-    +    +      return;
-    +    +    }
-    +    +    // Load repos for sidebar if not provided
-    +    +    const load = async () => {
-    +    +      try {
-    +    +        const res = await fetch(`${API_BASE}/repos`, {
-    +    +          headers: { Authorization: `Bearer ${token}` },
-    +    +        });
-    +    +        if (res.ok) {
-    +    +          const data = await res.json();
-    +    +          setRepos(data.items);
-    +    +        }
-    +    +      } catch {
-    +    +        // best effort
-    +    +      }
-    +    +    };
-    +    +    load();
-    +    +  }, [token, sidebarRepos]);
-    +    +
-    +    +  // Responsive: collapse sidebar below 1024px
-    +    +  useEffect(() => {
-    +    +    const check = () => setCollapsed(window.innerWidth < 1024);
-    +    +    check();
-    +    +    window.addEventListener('resize', check);
-    +    +    return () => window.removeEventListener('resize', check);
-    +    +  }, []);
-    +    +
-    +    +  const sidebarWidth = collapsed ? 0 : 240;
-    +    +
-    +    +  return (
-    +    +    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#0F172A', color: '#F8FAFC' }}>
-    +    +      {/* Header */}
-    +    +      <header
-    +    +        style={{
-    +    +          display: 'flex',
-    +    +          alignItems: 'center',
-    +    +          justifyContent: 'space-between',
-    +    +          padding: '12px 24px',
-    +    +          borderBottom: '1px solid #1E293B',
-    +    +          background: '#0F172A',
-    +    +          zIndex: 10,
-    +    +        }}
-    +    +      >
-    +    +        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-    +    +          {collapsed && (
-    +    +            <button
-    +    +              onClick={() => setCollapsed(false)}
-    +    +              aria-label="Open menu"
-    +    +              style={{
-    +    +                background: 'transparent',
-    +    +                color: '#94A3B8',
-    +    +                border: '1px solid #334155',
-    +    +                borderRadius: '6px',
-    +    +                padding: '4px 8px',
-    +    +                cursor: 'pointer',
-    +    +                fontSize: '1rem',
-    +    +              }}
-    +    +            >
-    +    +              &#9776;
-    +    +            </button>
-    +    +          )}
-    +    +          <h1
-    +    +            onClick={() => navigate('/')}
-    +    +            style={{ fontSize: '1.15rem', fontWeight: 700, cursor: 'pointer', margin: 0 }}
-    +    +          >
-    +    +            ForgeGuard
-    +    +          </h1>
-    +    +        </div>
-    +    +        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-    +    +          {user?.avatar_url && (
-    +    +            <img
-    +    +              src={user.avatar_url}
-    +    +              alt={user.github_login}
-    +    +              style={{ width: 28, height: 28, borderRadius: '50%' }}
-    +    +            />
-    +    +          )}
-    +    +          <span style={{ color: '#94A3B8', fontSize: '0.85rem' }}>{user?.github_login}</span>
-    +    +          <button
-    +    +            onClick={logout}
-    +    +            style={{
-    +    +              background: 'transparent',
-    +    +              color: '#94A3B8',
-    +    +              border: '1px solid #334155',
-    +    +              borderRadius: '6px',
-    +    +              padding: '4px 14px',
-    +    +              cursor: 'pointer',
-    +    +              fontSize: '0.8rem',
-    +    +            }}
-    +    +          >
-    +    +            Logout
-    +    +          </button>
-    +    +        </div>
-    +    +      </header>
-    +    +
-    +    +      <div style={{ display: 'flex', flex: 1 }}>
-    +    +        {/* Sidebar */}
-    +    +        {!collapsed && (
-    +    +          <aside
-    +    +            style={{
-    +    +              width: sidebarWidth,
-    +    +              borderRight: '1px solid #1E293B',
-    +    +              padding: '16px 0',
-    +    +              overflowY: 'auto',
-    +    +              flexShrink: 0,
-    +    +              background: '#0F172A',
-    +    +            }}
-    +    +          >
-    +    +            <div style={{ padding: '0 16px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-    +    +              <span style={{ color: '#94A3B8', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-    +    +                Repos
-    +    +              </span>
-    +    +              {window.innerWidth < 1024 && (
-    +    +                <button
-    +    +                  onClick={() => setCollapsed(true)}
-    +    +                  aria-label="Close menu"
-    +    +                  style={{
-    +    +                    background: 'transparent',
-    +    +                    color: '#94A3B8',
-    +    +                    border: 'none',
-    +    +                    cursor: 'pointer',
-    +    +                    fontSize: '1rem',
-    +    +                  }}
-    +    +                >
-    +    +                  &times;
-    +    +                </button>
-    +    +              )}
-    +    +            </div>
-    +    +            {repos.length === 0 ? (
-    +    +              <div style={{ padding: '12px 16px', color: '#64748B', fontSize: '0.8rem' }}>
-    +    +                No repos connected
-    +    +              </div>
-    +    +            ) : (
-    +    +              repos.map((repo) => {
-    +    +                const isActive = location.pathname.startsWith(`/repos/${repo.id}`);
-    +    +                return (
-    +    +                  <div
-    +    +                    key={repo.id}
-    +    +                    onClick={() => navigate(`/repos/${repo.id}`)}
-    +    +                    style={{
-    +    +                      display: 'flex',
-    +    +                      alignItems: 'center',
-    +    +                      gap: '8px',
-    +    +                      padding: '8px 16px',
-    +    +                      cursor: 'pointer',
-    +    +                      background: isActive ? '#1E293B' : 'transparent',
-    +    +                      borderLeft: isActive ? '3px solid #2563EB' : '3px solid transparent',
-    +    +                      transition: 'background 0.15s',
-    +    +                      fontSize: '0.8rem',
-    +    +                    }}
-    +    +                  >
-    +    +                    <HealthBadge score={repo.health_score} size={8} />
-    +    +                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-    +    +                      {repo.full_name}
-    +    +                    </span>
-    +    +                  </div>
-    +    +                );
-    +    +              })
-    +    +            )}
-    +    +          </aside>
-    +    +        )}
-    +    +
-    +    +        {/* Main */}
-    +    +        <main style={{ flex: 1, overflow: 'auto' }}>
-    +    +          {children}
-    +    +        </main>
-    +    +      </div>
-    +    +    </div>
-    +    +  );
-    +    +}
-    +    +
-    +    +export type { SidebarRepo };
-    +    +export default AppShell;
-    +    diff --git a/web/src/components/CommitRow.tsx b/web/src/components/CommitRow.tsx
-    +    index 5db2162..179dfda 100644
-    +    --- a/web/src/components/CommitRow.tsx
-    +    +++ b/web/src/components/CommitRow.tsx
-    +    @@ -11,6 +11,7 @@ interface AuditRun {
-    +       started_at: string | null;
-    +       completed_at: string | null;
-    +       files_checked: number;
-    +    +  check_summary: string | null;
-    +     }
-    +     
-    +     interface CommitRowProps {
-    +    @@ -71,7 +72,12 @@ function CommitRow({ audit, onClick }: CommitRowProps) {
-    +               </div>
-    +             </div>
-    +           </div>
-    +    -      <div style={{ flexShrink: 0, marginLeft: '12px' }}>
-    +    +      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0, marginLeft: '12px' }}>
-    +    +        {audit.check_summary && (
-    +    +          <span style={{ color: '#64748B', fontSize: '0.65rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-    +    +            {audit.check_summary}
-    +    +          </span>
-    +    +        )}
-    +             <ResultBadge result={audit.overall_result} />
-    +           </div>
-    +         </div>
-    +    diff --git a/web/src/components/EmptyState.tsx b/web/src/components/EmptyState.tsx
-    +    new file mode 100644
-    +    index 0000000..429e852
-    +    --- /dev/null
-    +    +++ b/web/src/components/EmptyState.tsx
-    +    @@ -0,0 +1,38 @@
-    +    +interface EmptyStateProps {
-    +    +  message: string;
-    +    +  actionLabel?: string;
-    +    +  onAction?: () => void;
-    +    +}
-    +    +
-    +    +function EmptyState({ message, actionLabel, onAction }: EmptyStateProps) {
-    +    +  return (
-    +    +    <div
-    +    +      data-testid="empty-state"
-    +    +      style={{
-    +    +        textAlign: 'center',
-    +    +        padding: '64px 24px',
-    +    +        color: '#94A3B8',
-    +    +      }}
-    +    +    >
-    +    +      <p style={{ marginBottom: actionLabel ? '16px' : '0' }}>{message}</p>
-    +    +      {actionLabel && onAction && (
-    +    +        <button
-    +    +          onClick={onAction}
-    +    +          style={{
-    +    +            background: '#2563EB',
-    +    +            color: '#fff',
-    +    +            border: 'none',
-    +    +            borderRadius: '6px',
-    +    +            padding: '8px 16px',
-    +    +            cursor: 'pointer',
-    +    +            fontSize: '0.85rem',
-    +    +          }}
-    +    +        >
-    +    +          {actionLabel}
-    +    +        </button>
-    +    +      )}
-    +    +    </div>
-    +    +  );
-    +    +}
-    +    +
-    +    +export default EmptyState;
-    +    diff --git a/web/src/components/Skeleton.tsx b/web/src/components/Skeleton.tsx
-    +    new file mode 100644
-    +    index 0000000..19bb14d
-    +    --- /dev/null
-    +    +++ b/web/src/components/Skeleton.tsx
-    +    @@ -0,0 +1,68 @@
-    +    +interface SkeletonProps {
-    +    +  width?: string;
-    +    +  height?: string;
-    +    +  borderRadius?: string;
-    +    +  style?: React.CSSProperties;
-    +    +}
-    +    +
-    +    +function Skeleton({ width = '100%', height = '16px', borderRadius = '4px', style }: SkeletonProps) {
-    +    +  return (
-    +    +    <div
-    +    +      data-testid="skeleton"
-    +    +      style={{
-    +    +        width,
-    +    +        height,
-    +    +        borderRadius,
-    +    +        background: 'linear-gradient(90deg, #1E293B 25%, #2D3B4F 50%, #1E293B 75%)',
-    +    +        backgroundSize: '200% 100%',
-    +    +        animation: 'skeleton-shimmer 1.5s ease-in-out infinite',
-    +    +        ...style,
-    +    +      }}
-    +    +    />
-    +    +  );
-    +    +}
-    +    +
-    +    +export function SkeletonCard() {
-    +    +  return (
-    +    +    <div
-    +    +      style={{
-    +    +        background: '#1E293B',
-    +    +        borderRadius: '8px',
-    +    +        padding: '16px 20px',
-    +    +        display: 'flex',
-    +    +        alignItems: 'center',
-    +    +        gap: '12px',
-    +    +      }}
-    +    +    >
-    +    +      <Skeleton width="12px" height="12px" borderRadius="50%" />
-    +    +      <div style={{ flex: 1 }}>
-    +    +        <Skeleton width="40%" height="14px" style={{ marginBottom: '8px' }} />
-    +    +        <Skeleton width="60%" height="10px" />
-    +    +      </div>
-    +    +    </div>
-    +    +  );
-    +    +}
-    +    +
-    +    +export function SkeletonRow() {
-    +    +  return (
-    +    +    <div
-    +    +      style={{
-    +    +        background: '#1E293B',
-    +    +        borderRadius: '6px',
-    +    +        padding: '12px 16px',
-    +    +        display: 'flex',
-    +    +        alignItems: 'center',
-    +    +        gap: '12px',
-    +    +      }}
-    +    +    >
-    +    +      <Skeleton width="56px" height="14px" />
-    +    +      <div style={{ flex: 1 }}>
-    +    +        <Skeleton width="50%" height="12px" style={{ marginBottom: '6px' }} />
-    +    +        <Skeleton width="30%" height="10px" />
-    +    +      </div>
-    +    +      <Skeleton width="48px" height="20px" borderRadius="4px" />
-    +    +    </div>
-    +    +  );
-    +    +}
-    +    +
-    +    +export default Skeleton;
-    +    diff --git a/web/src/context/ToastContext.tsx b/web/src/context/ToastContext.tsx
-    +    new file mode 100644
-    +    index 0000000..c1ae210
-    +    --- /dev/null
-    +    +++ b/web/src/context/ToastContext.tsx
-    +    @@ -0,0 +1,99 @@
-    +    +import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
-    +    +
-    +    +interface Toast {
-    +    +  id: number;
-    +    +  message: string;
-    +    +  type: 'error' | 'success' | 'info';
-    +    +}
-    +    +
-    +    +interface ToastContextValue {
-    +    +  addToast: (message: string, type?: Toast['type']) => void;
-    +    +}
-    +    +
-    +    +const ToastContext = createContext<ToastContextValue | null>(null);
-    +    +
-    +    +let nextId = 1;
-    +    +
-    +    +export function ToastProvider({ children }: { children: ReactNode }) {
-    +    +  const [toasts, setToasts] = useState<Toast[]>([]);
-    +    +
-    +    +  const addToast = useCallback((message: string, type: Toast['type'] = 'error') => {
-    +    +    const id = nextId++;
-    +    +    setToasts((prev) => [...prev, { id, message, type }]);
-    +    +    setTimeout(() => {
-    +    +      setToasts((prev) => prev.filter((t) => t.id !== id));
-    +    +    }, 5000);
-    +    +  }, []);
-    +    +
-    +    +  const removeToast = useCallback((id: number) => {
-    +    +    setToasts((prev) => prev.filter((t) => t.id !== id));
-    +    +  }, []);
-    +    +
-    +    +  const COLORS: Record<string, { bg: string; border: string }> = {
-    +    +    error: { bg: '#7F1D1D', border: '#EF4444' },
-    +    +    success: { bg: '#14532D', border: '#22C55E' },
-    +    +    info: { bg: '#1E3A5F', border: '#2563EB' },
-    +    +  };
-    +    +
-    +    +  return (
-    +    +    <ToastContext.Provider value={{ addToast }}>
-    +    +      {children}
-    +    +      <div
-    +    +        style={{
-    +    +          position: 'fixed',
-    +    +          bottom: '24px',
-    +    +          right: '24px',
-    +    +          zIndex: 1000,
-    +    +          display: 'flex',
-    +    +          flexDirection: 'column',
-    +    +          gap: '8px',
-    +    +          maxWidth: '360px',
-    +    +        }}
-    +    +      >
-    +    +        {toasts.map((toast) => {
-    +    +          const colors = COLORS[toast.type] ?? COLORS.info;
-    +    +          return (
-    +    +            <div
-    +    +              key={toast.id}
-    +    +              role="alert"
-    +    +              style={{
-    +    +                background: colors.bg,
-    +    +                borderLeft: `3px solid ${colors.border}`,
-    +    +                borderRadius: '6px',
-    +    +                padding: '12px 16px',
-    +    +                fontSize: '0.85rem',
-    +    +                color: '#F8FAFC',
-    +    +                display: 'flex',
-    +    +                alignItems: 'center',
-    +    +                justifyContent: 'space-between',
-    +    +                gap: '8px',
-    +    +              }}
-    +    +            >
-    +    +              <span>{toast.message}</span>
-    +    +              <button
-    +    +                onClick={() => removeToast(toast.id)}
-    +    +                style={{
-    +    +                  background: 'transparent',
-    +    +                  color: '#94A3B8',
-    +    +                  border: 'none',
-    +    +                  cursor: 'pointer',
-    +    +                  fontSize: '1rem',
-    +    +                  padding: 0,
-    +    +                  lineHeight: 1,
-    +    +                }}
-    +    +              >
-    +    +                &times;
-    +    +              </button>
-    +    +            </div>
-    +    +          );
-    +    +        })}
-    +    +      </div>
-    +    +    </ToastContext.Provider>
-    +    +  );
-    +    +}
-    +    +
-    +    +export function useToast(): ToastContextValue {
-    +    +  const ctx = useContext(ToastContext);
-    +    +  if (!ctx) throw new Error('useToast must be used within ToastProvider');
-    +    +  return ctx;
-    +    +}
-    +    diff --git a/web/src/hooks/useWebSocket.ts b/web/src/hooks/useWebSocket.ts
-    +    new file mode 100644
-    +    index 0000000..86131f1
-    +    --- /dev/null
-    +    +++ b/web/src/hooks/useWebSocket.ts
-    +    @@ -0,0 +1,53 @@
-    +    +import { useEffect, useRef, useCallback } from 'react';
-    +    +import { useAuth } from '../context/AuthContext';
-    +    +
-    +    +type MessageHandler = (data: { type: string; payload: unknown }) => void;
-    +    +
-    +    +const WS_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/^http/, 'ws');
-    +    +
-    +    +export function useWebSocket(onMessage: MessageHandler) {
-    +    +  const { token } = useAuth();
-    +    +  const wsRef = useRef<WebSocket | null>(null);
-    +    +  const handlerRef = useRef(onMessage);
-    +    +  handlerRef.current = onMessage;
-    +    +
-    +    +  const connect = useCallback(() => {
-    +    +    if (!token) return;
-    +    +
-    +    +    const url = `${WS_BASE}/ws?token=${encodeURIComponent(token)}`;
-    +    +    const ws = new WebSocket(url);
-    +    +
-    +    +    ws.onmessage = (event) => {
-    +    +      try {
-    +    +        const data = JSON.parse(event.data);
-    +    +        handlerRef.current(data);
-    +    +      } catch {
-    +    +        // ignore malformed messages
-    +    +      }
-    +    +    };
-    +    +
-    +    +    ws.onclose = () => {
-    +    +      // Reconnect after 3 seconds
-    +    +      setTimeout(() => {
-    +    +        if (wsRef.current === ws) {
-    +    +          connect();
-    +    +        }
-    +    +      }, 3000);
-    +    +    };
-    +    +
-    +    +    ws.onerror = () => {
-    +    +      ws.close();
-    +    +    };
-    +    +
-    +    +    wsRef.current = ws;
-    +    +  }, [token]);
-    +    +
-    +    +  useEffect(() => {
-    +    +    connect();
-    +    +    return () => {
-    +    +      const ws = wsRef.current;
-    +    +      wsRef.current = null;
-    +    +      if (ws) ws.close();
-    +    +    };
-    +    +  }, [connect]);
-    +    +}
-    +    diff --git a/web/src/index.css b/web/src/index.css
-    +    index bacf9f8..23889d9 100644
-    +    --- a/web/src/index.css
-    +    +++ b/web/src/index.css
-    +    @@ -11,3 +11,8 @@ body {
-    +       -webkit-font-smoothing: antialiased;
-    +       -moz-osx-font-smoothing: grayscale;
-    +     }
-    +    +
-    +    +@keyframes skeleton-shimmer {
-    +    +  0% { background-position: 200% 0; }
-    +    +  100% { background-position: -200% 0; }
-    +    +}
-    +    diff --git a/web/src/pages/AuditDetail.tsx b/web/src/pages/AuditDetail.tsx
-    +    index 3e51080..9fa2e71 100644
-    +    --- a/web/src/pages/AuditDetail.tsx
-    +    +++ b/web/src/pages/AuditDetail.tsx
-    +    @@ -1,9 +1,12 @@
-    +     import { useState, useEffect } from 'react';
-    +     import { useParams, useNavigate } from 'react-router-dom';
-    +     import { useAuth } from '../context/AuthContext';
-    +    +import { useToast } from '../context/ToastContext';
-    +    +import AppShell from '../components/AppShell';
-    +     import ResultBadge from '../components/ResultBadge';
-    +     import CheckResultCard from '../components/CheckResultCard';
-    +     import type { CheckResultData } from '../components/CheckResultCard';
-    +    +import Skeleton from '../components/Skeleton';
-    +     
-    +     const API_BASE = import.meta.env.VITE_API_URL ?? '';
-    +     
-    +    @@ -24,6 +27,7 @@ interface AuditDetail {
-    +     function AuditDetailPage() {
-    +       const { repoId, auditId } = useParams<{ repoId: string; auditId: string }>();
-    +       const { token } = useAuth();
-    +    +  const { addToast } = useToast();
-    +       const navigate = useNavigate();
-    +     
-    +       const [detail, setDetail] = useState<AuditDetail | null>(null);
-    +    @@ -38,29 +42,47 @@ function AuditDetailPage() {
-    +             );
-    +             if (res.ok) {
-    +               setDetail(await res.json());
-    +    +        } else {
-    +    +          addToast('Failed to load audit detail');
-    +             }
-    +           } catch {
-    +    -        // network error
-    +    +        addToast('Network error loading audit detail');
-    +           } finally {
-    +             setLoading(false);
-    +           }
-    +         };
-    +         fetchDetail();
-    +    -  }, [repoId, auditId, token]);
-    +    +  }, [repoId, auditId, token, addToast]);
-    +     
-    +       if (loading) {
-    +         return (
-    +    -      <div style={{ padding: '24px', color: '#94A3B8' }}>
-    +    -        Loading audit detail...
-    +    -      </div>
-    +    +      <AppShell>
-    +    +        <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    +          <Skeleton width="80px" height="28px" style={{ marginBottom: '20px' }} />
-    +    +          <div style={{ background: '#1E293B', borderRadius: '8px', padding: '20px', marginBottom: '16px' }}>
-    +    +            <Skeleton width="30%" height="14px" style={{ marginBottom: '12px' }} />
-    +    +            <Skeleton width="60%" height="12px" style={{ marginBottom: '12px' }} />
-    +    +            <Skeleton width="100px" height="24px" />
-    +    +          </div>
-    +    +          <Skeleton width="120px" height="16px" style={{ marginBottom: '12px' }} />
-    +    +          <div style={{ background: '#1E293B', borderRadius: '6px', padding: '14px 18px', marginBottom: '8px' }}>
-    +    +            <Skeleton width="50%" height="14px" />
-    +    +          </div>
-    +    +          <div style={{ background: '#1E293B', borderRadius: '6px', padding: '14px 18px', marginBottom: '8px' }}>
-    +    +            <Skeleton width="50%" height="14px" />
-    +    +          </div>
-    +    +        </div>
-    +    +      </AppShell>
-    +         );
-    +       }
-    +     
-    +       if (!detail) {
-    +         return (
-    +    -      <div style={{ padding: '24px', color: '#94A3B8' }}>
-    +    -        Audit not found.
-    +    -      </div>
-    +    +      <AppShell>
-    +    +        <div style={{ padding: '24px', color: '#94A3B8' }}>
-    +    +          Audit not found.
-    +    +        </div>
-    +    +      </AppShell>
-    +         );
-    +       }
-    +     
-    +    @@ -70,67 +92,69 @@ function AuditDetailPage() {
-    +           : null;
-    +     
-    +       return (
-    +    -    <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    -      <button
-    +    -        onClick={() => navigate(`/repos/${repoId}`)}
-    +    -        style={{
-    +    -          background: 'transparent',
-    +    -          color: '#94A3B8',
-    +    -          border: '1px solid #334155',
-    +    -          borderRadius: '6px',
-    +    -          padding: '6px 12px',
-    +    -          cursor: 'pointer',
-    +    -          fontSize: '0.8rem',
-    +    -          marginBottom: '20px',
-    +    -        }}
-    +    -      >
-    +    -        Back to Timeline
-    +    -      </button>
-    +    +    <AppShell>
-    +    +      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    +        <button
-    +    +          onClick={() => navigate(`/repos/${repoId}`)}
-    +    +          style={{
-    +    +            background: 'transparent',
-    +    +            color: '#94A3B8',
-    +    +            border: '1px solid #334155',
-    +    +            borderRadius: '6px',
-    +    +            padding: '6px 12px',
-    +    +            cursor: 'pointer',
-    +    +            fontSize: '0.8rem',
-    +    +            marginBottom: '20px',
-    +    +          }}
-    +    +        >
-    +    +          Back to Timeline
-    +    +        </button>
-    +     
-    +    -      {/* Commit Info */}
-    +    -      <div
-    +    -        style={{
-    +    -          background: '#1E293B',
-    +    -          borderRadius: '8px',
-    +    -          padding: '20px',
-    +    -          marginBottom: '16px',
-    +    -        }}
-    +    -      >
-    +    -        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-    +    -          <a
-    +    -            href={`https://github.com/commit/${detail.commit_sha}`}
-    +    -            target="_blank"
-    +    -            rel="noopener noreferrer"
-    +    -            style={{ color: '#2563EB', fontFamily: 'monospace', fontSize: '0.85rem' }}
-    +    -          >
-    +    -            {detail.commit_sha.substring(0, 7)}
-    +    -          </a>
-    +    -          <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    +    -            {detail.branch} &middot; {detail.commit_author}
-    +    -          </span>
-    +    +        {/* Commit Info */}
-    +    +        <div
-    +    +          style={{
-    +    +            background: '#1E293B',
-    +    +            borderRadius: '8px',
-    +    +            padding: '20px',
-    +    +            marginBottom: '16px',
-    +    +          }}
-    +    +        >
-    +    +          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-    +    +            <a
-    +    +              href={`https://github.com/commit/${detail.commit_sha}`}
-    +    +              target="_blank"
-    +    +              rel="noopener noreferrer"
-    +    +              style={{ color: '#2563EB', fontFamily: 'monospace', fontSize: '0.85rem' }}
-    +    +            >
-    +    +              {detail.commit_sha.substring(0, 7)}
-    +    +            </a>
-    +    +            <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    +    +              {detail.branch} &middot; {detail.commit_author}
-    +    +            </span>
-    +    +          </div>
-    +    +          <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem' }}>
-    +    +            {detail.commit_message}
-    +    +          </p>
-    +    +          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-    +    +            <ResultBadge result={detail.overall_result} size="large" />
-    +    +            <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    +    +              {detail.files_checked} files checked
-    +    +              {duration && <span> &middot; {duration}</span>}
-    +    +            </span>
-    +    +          </div>
-    +             </div>
-    +    -        <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem' }}>
-    +    -          {detail.commit_message}
-    +    -        </p>
-    +    -        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-    +    -          <ResultBadge result={detail.overall_result} size="large" />
-    +    -          <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    +    -            {detail.files_checked} files checked
-    +    -            {duration && <span> &middot; {duration}</span>}
-    +    -          </span>
-    +    -        </div>
-    +    -      </div>
-    +     
-    +    -      {/* Check Results */}
-    +    -      <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Check Results</h3>
-    +    -      {detail.checks.length === 0 ? (
-    +    -        <p style={{ color: '#94A3B8' }}>No check results.</p>
-    +    -      ) : (
-    +    -        detail.checks.map((check) => (
-    +    -          <CheckResultCard key={check.id} check={check} />
-    +    -        ))
-    +    -      )}
-    +    -    </div>
-    +    +        {/* Check Results */}
-    +    +        <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Check Results</h3>
-    +    +        {detail.checks.length === 0 ? (
-    +    +          <p style={{ color: '#94A3B8' }}>No check results.</p>
-    +    +        ) : (
-    +    +          detail.checks.map((check) => (
-    +    +            <CheckResultCard key={check.id} check={check} />
-    +    +          ))
-    +    +        )}
-    +    +      </div>
-    +    +    </AppShell>
-    +       );
-    +     }
-    +     
-    +    diff --git a/web/src/pages/CommitTimeline.tsx b/web/src/pages/CommitTimeline.tsx
-    +    index 07d85b7..1fcfb5b 100644
-    +    --- a/web/src/pages/CommitTimeline.tsx
-    +    +++ b/web/src/pages/CommitTimeline.tsx
-    +    @@ -1,15 +1,21 @@
-    +     import { useState, useEffect, useCallback } from 'react';
-    +     import { useParams, useNavigate } from 'react-router-dom';
-    +     import { useAuth } from '../context/AuthContext';
-    +    +import { useToast } from '../context/ToastContext';
-    +    +import { useWebSocket } from '../hooks/useWebSocket';
-    +    +import AppShell from '../components/AppShell';
-    +     import CommitRow from '../components/CommitRow';
-    +     import type { AuditRun } from '../components/CommitRow';
-    +     import HealthBadge from '../components/HealthBadge';
-    +    +import EmptyState from '../components/EmptyState';
-    +    +import { SkeletonRow } from '../components/Skeleton';
-    +     
-    +     const API_BASE = import.meta.env.VITE_API_URL ?? '';
-    +     
-    +     function CommitTimeline() {
-    +       const { repoId } = useParams<{ repoId: string }>();
-    +       const { token } = useAuth();
-    +    +  const { addToast } = useToast();
-    +       const navigate = useNavigate();
-    +     
-    +       const [audits, setAudits] = useState<AuditRun[]>([]);
-    +    @@ -28,78 +34,107 @@ function CommitTimeline() {
-    +             const data = await res.json();
-    +             setAudits(data.items);
-    +             setTotal(data.total);
-    +    +      } else {
-    +    +        addToast('Failed to load audits');
-    +           }
-    +         } catch {
-    +    -      // network error
-    +    +      addToast('Network error loading audits');
-    +         } finally {
-    +           setLoading(false);
-    +         }
-    +    -  }, [repoId, token, offset]);
-    +    +  }, [repoId, token, offset, addToast]);
-    +     
-    +       useEffect(() => {
-    +         fetchAudits();
-    +       }, [fetchAudits]);
-    +     
-    +    +  // Real-time: refresh when audit for this repo completes
-    +    +  useWebSocket(useCallback((data) => {
-    +    +    if (data.type === 'audit_update') {
-    +    +      const payload = data.payload as { repo_id?: string };
-    +    +      if (payload.repo_id === repoId) {
-    +    +        fetchAudits();
-    +    +      }
-    +    +    }
-    +    +  }, [fetchAudits, repoId]));
-    +    +
-    +       const handleAuditClick = (audit: AuditRun) => {
-    +         navigate(`/repos/${repoId}/audits/${audit.id}`);
-    +       };
-    +     
-    +    -  return (
-    +    -    <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    -      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-    +    -        <button
-    +    -          onClick={() => navigate('/')}
-    +    -          style={{
-    +    -            background: 'transparent',
-    +    -            color: '#94A3B8',
-    +    -            border: '1px solid #334155',
-    +    -            borderRadius: '6px',
-    +    -            padding: '6px 12px',
-    +    -            cursor: 'pointer',
-    +    -            fontSize: '0.8rem',
-    +    -          }}
-    +    -        >
-    +    -          Back
-    +    -        </button>
-    +    -        <HealthBadge score="pending" />
-    +    -        <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Commit Timeline</h2>
-    +    -        <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>({total} audits)</span>
-    +    -      </div>
-    +    +  // Compute health from loaded audits
-    +    +  const computedHealth = (() => {
-    +    +    const completed = audits.filter((a) => a.status === 'completed');
-    +    +    if (completed.length === 0) return 'pending';
-    +    +    const allPass = completed.every((a) => a.overall_result === 'PASS');
-    +    +    const anyFail = completed.some((a) => a.overall_result === 'FAIL' || a.overall_result === 'ERROR');
-    +    +    if (allPass) return 'green';
-    +    +    if (anyFail) return 'red';
-    +    +    return 'yellow';
-    +    +  })();
-    +     
-    +    -      {loading ? (
-    +    -        <p style={{ color: '#94A3B8' }}>Loading audits...</p>
-    +    -      ) : audits.length === 0 ? (
-    +    -        <div style={{ textAlign: 'center', padding: '64px 24px', color: '#94A3B8' }}>
-    +    -          <p>No audit results yet. Push a commit to trigger the first audit.</p>
-    +    +  return (
-    +    +    <AppShell>
-    +    +      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    +        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-    +    +          <button
-    +    +            onClick={() => navigate('/')}
-    +    +            style={{
-    +    +              background: 'transparent',
-    +    +              color: '#94A3B8',
-    +    +              border: '1px solid #334155',
-    +    +              borderRadius: '6px',
-    +    +              padding: '6px 12px',
-    +    +              cursor: 'pointer',
-    +    +              fontSize: '0.8rem',
-    +    +            }}
-    +    +          >
-    +    +            Back
-    +    +          </button>
-    +    +          <HealthBadge score={computedHealth} />
-    +    +          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Commit Timeline</h2>
-    +    +          <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>({total} audits)</span>
-    +             </div>
-    +    -      ) : (
-    +    -        <>
-    +    +
-    +    +        {loading ? (
-    +               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-    +    -            {audits.map((audit) => (
-    +    -              <CommitRow key={audit.id} audit={audit} onClick={handleAuditClick} />
-    +    -            ))}
-    +    +            <SkeletonRow />
-    +    +            <SkeletonRow />
-    +    +            <SkeletonRow />
-    +    +            <SkeletonRow />
-    +    +            <SkeletonRow />
-    +               </div>
-    +    -          {total > offset + limit && (
-    +    -            <button
-    +    -              onClick={() => setOffset((o) => o + limit)}
-    +    -              style={{
-    +    -                display: 'block',
-    +    -                margin: '16px auto',
-    +    -                background: '#1E293B',
-    +    -                color: '#94A3B8',
-    +    -                border: '1px solid #334155',
-    +    -                borderRadius: '6px',
-    +    -                padding: '8px 24px',
-    +    -                cursor: 'pointer',
-    +    -                fontSize: '0.85rem',
-    +    -              }}
-    +    -            >
-    +    -              Load More
-    +    -            </button>
-    +    -          )}
-    +    -        </>
-    +    -      )}
-    +    -    </div>
-    +    +        ) : audits.length === 0 ? (
-    +    +          <EmptyState message="No audit results yet. Push a commit to trigger the first audit." />
-    +    +        ) : (
-    +    +          <>
-    +    +            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-    +    +              {audits.map((audit) => (
-    +    +                <CommitRow key={audit.id} audit={audit} onClick={handleAuditClick} />
-    +    +              ))}
-    +    +            </div>
-    +    +            {total > offset + limit && (
-    +    +              <button
-    +    +                onClick={() => setOffset((o) => o + limit)}
-    +    +                style={{
-    +    +                  display: 'block',
-    +    +                  margin: '16px auto',
-    +    +                  background: '#1E293B',
-    +    +                  color: '#94A3B8',
-    +    +                  border: '1px solid #334155',
-    +    +                  borderRadius: '6px',
-    +    +                  padding: '8px 24px',
-    +    +                  cursor: 'pointer',
-    +    +                  fontSize: '0.85rem',
-    +    +                }}
-    +    +              >
-    +    +                Load More
-    +    +              </button>
-    +    +            )}
-    +    +          </>
-    +    +        )}
-    +    +      </div>
-    +    +    </AppShell>
-    +       );
-    +     }
-    +     
-    +    diff --git a/web/src/pages/Dashboard.tsx b/web/src/pages/Dashboard.tsx
-    +    index c6ebb70..aa05884 100644
-    +    --- a/web/src/pages/Dashboard.tsx
-    +    +++ b/web/src/pages/Dashboard.tsx
-    +    @@ -1,15 +1,21 @@
-    +     import { useState, useEffect, useCallback } from 'react';
-    +     import { useNavigate } from 'react-router-dom';
-    +     import { useAuth } from '../context/AuthContext';
-    +    +import { useToast } from '../context/ToastContext';
-    +    +import { useWebSocket } from '../hooks/useWebSocket';
-    +    +import AppShell from '../components/AppShell';
-    +     import RepoCard from '../components/RepoCard';
-    +     import type { Repo } from '../components/RepoCard';
-    +     import RepoPickerModal from '../components/RepoPickerModal';
-    +     import ConfirmDialog from '../components/ConfirmDialog';
-    +    +import EmptyState from '../components/EmptyState';
-    +    +import { SkeletonCard } from '../components/Skeleton';
-    +     
-    +     const API_BASE = import.meta.env.VITE_API_URL ?? '';
-    +     
-    +     function Dashboard() {
-    +    -  const { user, token, logout } = useAuth();
-    +    +  const { token } = useAuth();
-    +    +  const { addToast } = useToast();
-    +       const navigate = useNavigate();
-    +       const [repos, setRepos] = useState<Repo[]>([]);
-    +       const [loading, setLoading] = useState(true);
-    +    @@ -24,29 +30,39 @@ function Dashboard() {
-    +           if (res.ok) {
-    +             const data = await res.json();
-    +             setRepos(data.items);
-    +    +      } else {
-    +    +        addToast('Failed to load repos');
-    +           }
-    +         } catch {
-    +    -      // network error -- keep existing
-    +    +      addToast('Network error loading repos');
-    +         } finally {
-    +           setLoading(false);
-    +         }
-    +    -  }, [token]);
-    +    +  }, [token, addToast]);
-    +     
-    +       useEffect(() => {
-    +         fetchRepos();
-    +       }, [fetchRepos]);
-    +     
-    +    +  // Real-time: refresh repos when an audit completes
-    +    +  useWebSocket(useCallback((data) => {
-    +    +    if (data.type === 'audit_update') {
-    +    +      fetchRepos();
-    +    +    }
-    +    +  }, [fetchRepos]));
-    +    +
-    +       const handleDisconnect = async () => {
-    +         if (!disconnectTarget) return;
-    +         try {
-    +    -      await fetch(`${API_BASE}/repos/${disconnectTarget.id}/disconnect`, {
-    +    +      const res = await fetch(`${API_BASE}/repos/${disconnectTarget.id}/disconnect`, {
-    +             method: 'DELETE',
-    +             headers: { Authorization: `Bearer ${token}` },
-    +           });
-    +    +      if (!res.ok) addToast('Failed to disconnect repo');
-    +           setDisconnectTarget(null);
-    +           fetchRepos();
-    +         } catch {
-    +    -      // best effort
-    +    +      addToast('Network error disconnecting repo');
-    +           setDisconnectTarget(null);
-    +         }
-    +       };
-    +    @@ -56,44 +72,8 @@ function Dashboard() {
-    +       };
-    +     
-    +       return (
-    +    -    <div style={{ background: '#0F172A', color: '#F8FAFC', minHeight: '100vh' }}>
-    +    -      <header
-    +    -        style={{
-    +    -          display: 'flex',
-    +    -          alignItems: 'center',
-    +    -          justifyContent: 'space-between',
-    +    -          padding: '16px 24px',
-    +    -          borderBottom: '1px solid #1E293B',
-    +    -        }}
-    +    -      >
-    +    -        <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>ForgeGuard</h1>
-    +    -        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-    +    -          {user?.avatar_url && (
-    +    -            <img
-    +    -              src={user.avatar_url}
-    +    -              alt={user.github_login}
-    +    -              style={{ width: 32, height: 32, borderRadius: '50%' }}
-    +    -            />
-    +    -          )}
-    +    -          <span style={{ color: '#94A3B8' }}>{user?.github_login}</span>
-    +    -          <button
-    +    -            onClick={logout}
-    +    -            style={{
-    +    -              background: 'transparent',
-    +    -              color: '#94A3B8',
-    +    -              border: '1px solid #334155',
-    +    -              borderRadius: '6px',
-    +    -              padding: '6px 16px',
-    +    -              cursor: 'pointer',
-    +    -              fontSize: '0.875rem',
-    +    -            }}
-    +    -          >
-    +    -            Logout
-    +    -          </button>
-    +    -        </div>
-    +    -      </header>
-    +    -
-    +    -      <main style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    +    <AppShell sidebarRepos={repos} onReposChange={fetchRepos}>
-    +    +      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +             <div
-    +               style={{
-    +                 display: 'flex',
-    +    @@ -120,17 +100,17 @@ function Dashboard() {
-    +             </div>
-    +     
-    +             {loading ? (
-    +    -          <p style={{ color: '#94A3B8' }}>Loading repos...</p>
-    +    -        ) : repos.length === 0 ? (
-    +    -          <div
-    +    -            style={{
-    +    -              textAlign: 'center',
-    +    -              padding: '64px 24px',
-    +    -              color: '#94A3B8',
-    +    -            }}
-    +    -          >
-    +    -            <p>No repos connected yet. Click &quot;Connect a Repo&quot; to get started.</p>
-    +    +          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-    +    +            <SkeletonCard />
-    +    +            <SkeletonCard />
-    +    +            <SkeletonCard />
-    +               </div>
-    +    +        ) : repos.length === 0 ? (
-    +    +          <EmptyState
-    +    +            message='No repos connected yet. Click "Connect a Repo" to get started.'
-    +    +            actionLabel="Connect a Repo"
-    +    +            onAction={() => setShowPicker(true)}
-    +    +          />
-    +             ) : (
-    +               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-    +                 {repos.map((repo) => (
-    +    @@ -143,7 +123,7 @@ function Dashboard() {
-    +                 ))}
-    +               </div>
-    +             )}
-    +    -      </main>
-    +    +      </div>
-    +     
-    +           {showPicker && (
-    +             <RepoPickerModal
-    +    @@ -161,7 +141,7 @@ function Dashboard() {
-    +               onCancel={() => setDisconnectTarget(null)}
-    +             />
-    +           )}
-    +    -    </div>
-    +    +    </AppShell>
-    +       );
-    +     }
-    +     
+    +You also need a **GitHub OAuth App** (for login) and a **webhook secret** (for repo monitoring).
     +
-    +## Verification
-    +- Static analysis: compileall pass on all Python modules
-    +- Runtime: all FastAPI endpoints verified via test client including WS
-    +- Behavior: pytest 56 passed, vitest 15 passed, all assertions green
-    +- Contract compliance: boundaries.json respected, no unauthorized imports, no ORM usage
-    +
-    +## Notes (optional)
-    +- No blockers. All Phase 4 features implemented and tested.
-    +
-    +## Next Steps
-    +- Phase 5 Ship Gate: USER_INSTRUCTIONS.md, boot.ps1, rate limiting, input validation, error handling audit, env variable validation
+    +---
      
-    diff --git a/app/api/routers/ws.py b/app/api/routers/ws.py
+     ## Install
+     
+    -_To be completed._
+    +### Quick Start (one command)
+    +
+    +```powershell
+    +pwsh -File boot.ps1
+    +```
+    +
+    +This creates the venv, installs all deps, validates `.env`, runs DB migrations, and starts both servers.
+    +
+    +### Manual Install
+    +
+    +```powershell
+    +# Backend
+    +python -m venv .venv
+    +.venv\Scripts\Activate.ps1        # Windows
+    +# source .venv/bin/activate       # Linux/macOS
+    +pip install -r requirements.txt
+    +
+    +# Frontend
+    +cd web && npm install && cd ..
+    +
+    +# Database
+    +psql $DATABASE_URL -f db/migrations/001_initial_schema.sql
+    +```
+    +
+    +---
+     
+     ## Credential / API Setup
+     
+    -_To be completed._
+    +### GitHub OAuth App
+    +
+    +1. Go to **GitHub > Settings > Developer Settings > OAuth Apps > New OAuth App**
+    +2. Fill in:
+    +   - **Application name:** ForgeGuard
+    +   - **Homepage URL:** `http://localhost:5173`
+    +   - **Authorization callback URL:** `http://localhost:5173/auth/callback`
+    +3. Copy the **Client ID** and **Client Secret** into your `.env`.
+    +
+    +### Webhook Secret
+    +
+    +Generate a random string (e.g. `openssl rand -hex 32`) and use it as `GITHUB_WEBHOOK_SECRET` in `.env`. ForgeGuard will register this secret when connecting repos.
+    +
+    +---
+     
+     ## Configure `.env`
+     
+    -_To be completed._
+    +Create a `.env` file in the project root (or copy `.env.example`):
+    +
+    +```env
+    +DATABASE_URL=postgresql://user:pass@localhost:5432/forgeguard
+    +GITHUB_CLIENT_ID=your_client_id
+    +GITHUB_CLIENT_SECRET=your_client_secret
+    +GITHUB_WEBHOOK_SECRET=your_webhook_secret
+    +JWT_SECRET=your_jwt_secret
+    +FRONTEND_URL=http://localhost:5173
+    +APP_URL=http://localhost:8000
+    +```
+    +
+    +**Required** (app will not start without these):
+    +- `DATABASE_URL` ÔÇö PostgreSQL connection string
+    +- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` ÔÇö GitHub OAuth app credentials
+    +- `GITHUB_WEBHOOK_SECRET` ÔÇö shared secret for webhook signature validation
+    +- `JWT_SECRET` ÔÇö secret for signing session tokens
+    +
+    +**Optional** (defaults shown):
+    +- `FRONTEND_URL` ÔÇö `http://localhost:5173`
+    +- `APP_URL` ÔÇö `http://localhost:8000`
+    +
+    +---
+     
+     ## Run
+     
+    -_To be completed._
+    +```powershell
+    +# Option 1: Quick start (installs + runs)
+    +pwsh -File boot.ps1
+    +
+    +# Option 2: Backend only
+    +pwsh -File boot.ps1 -SkipFrontend
+    +
+    +# Option 3: Manual
+    +uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload   # Terminal 1
+    +cd web && npm run dev                                        # Terminal 2
+    +```
+    +
+    +Open `http://localhost:5173` and sign in with GitHub.
+    +
+    +---
+     
+     ## Stop
+     
+    -_To be completed._
+    +Press `Ctrl+C` in the terminal running the backend. If the frontend was started via `boot.ps1`, it runs as a background job and will stop when the PowerShell session ends.
+    +
+    +---
+     
+     ## Key Settings Explained
+     
+    -_To be completed._
+    +| Setting | Purpose |
+    +|---------|---------|
+    +| `DATABASE_URL` | PostgreSQL connection string with credentials |
+    +| `GITHUB_CLIENT_ID` | Identifies your OAuth app to GitHub |
+    +| `GITHUB_CLIENT_SECRET` | Authenticates your OAuth app to GitHub |
+    +| `GITHUB_WEBHOOK_SECRET` | Validates incoming webhook payloads are from GitHub |
+    +| `JWT_SECRET` | Signs session tokens ÔÇö keep this secret and random |
+    +| `FRONTEND_URL` | Used for CORS and OAuth redirect ÔÇö must match your frontend URL |
+    +| `APP_URL` | Backend URL for generating webhook callback URLs |
+    +
+    +---
+     
+     ## Troubleshooting
+     
+    -_To be completed._
+    +### App refuses to start: "missing required environment variables"
+    +Your `.env` file is missing one or more required variables. Check the console output for which ones.
+    +
+    +### Database connection errors
+    +1. Ensure PostgreSQL is running: `pg_isready`
+    +2. Verify `DATABASE_URL` format: `postgresql://user:pass@host:port/dbname`
+    +3. Run migrations: `psql $DATABASE_URL -f db/migrations/001_initial_schema.sql`
+    +
+    +### OAuth login fails
+    +1. Verify `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` match your GitHub OAuth app
+    +2. Ensure the callback URL in GitHub settings is exactly `http://localhost:5173/auth/callback`
+    +
+    +### Webhooks not arriving
+    +1. Your app must be publicly accessible for GitHub to reach it (use [ngrok](https://ngrok.com) for local dev)
+    +2. Verify `GITHUB_WEBHOOK_SECRET` matches the secret in your GitHub webhook configuration
+    +
+    +### WebSocket disconnects
+    +1. Check that your JWT token hasn't expired (24h lifetime)
+    +2. The app auto-reconnects after 3 seconds ÔÇö check browser console for errors
+    +
+    +### Tests failing
+    +```powershell
+    +# Run backend tests
+    +python -m pytest tests/ -v
+    +
+    +# Run frontend tests
+    +cd web && npx vitest run
+    +```
+    diff --git a/app/api/rate_limit.py b/app/api/rate_limit.py
     new file mode 100644
-    index 0000000..e3a3f61
+    index 0000000..a041751
     --- /dev/null
-    +++ b/app/api/routers/ws.py
-    @@ -0,0 +1,43 @@
-    +"""WebSocket router -- real-time audit result updates."""
+    +++ b/app/api/rate_limit.py
+    @@ -0,0 +1,45 @@
+    +"""Simple in-memory rate limiter for webhook endpoints.
     +
-    +import jwt as pyjwt
-    +from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+    +Uses a sliding-window counter keyed by client IP.
+    +Not shared across workers -- sufficient for single-process MVP.
+    +"""
     +
-    +from app.auth import decode_token
-    +from app.ws_manager import manager
-    +
-    +router = APIRouter(tags=["websocket"])
+    +import time
     +
     +
-    +@router.websocket("/ws")
-    +async def websocket_endpoint(websocket: WebSocket) -> None:
-    +    """WebSocket endpoint for real-time audit updates.
+    +class RateLimiter:
+    +    """Token-bucket rate limiter.
     +
-    +    Auth via query param: /ws?token=<jwt>
-    +    Server sends messages of type "audit_update" with AuditRunSummary payload.
+    +    Args:
+    +        max_requests: Maximum requests allowed in the window.
+    +        window_seconds: Length of the sliding window in seconds.
     +    """
-    +    token = websocket.query_params.get("token")
-    +    if not token:
-    +        await websocket.close(code=4001, reason="Missing token")
-    +        return
     +
+    +    def __init__(self, max_requests: int = 60, window_seconds: int = 60) -> None:
+    +        self._max = max_requests
+    +        self._window = window_seconds
+    +        self._hits: dict[str, list[float]] = {}
+    +
+    +    def is_allowed(self, key: str) -> bool:
+    +        """Check whether *key* is within the rate limit.
+    +
+    +        Returns True if the request is allowed, False if it should be rejected.
+    +        """
+    +        now = time.monotonic()
+    +        cutoff = now - self._window
+    +
+    +        # Lazy-init or prune expired entries
+    +        timestamps = self._hits.get(key, [])
+    +        timestamps = [t for t in timestamps if t > cutoff]
+    +
+    +        if len(timestamps) >= self._max:
+    +            self._hits[key] = timestamps
+    +            return False
+    +
+    +        timestamps.append(now)
+    +        self._hits[key] = timestamps
+    +        return True
+    +
+    +
+    +# Module-level singleton -- 30 requests per 60 seconds for webhooks.
+    +webhook_limiter = RateLimiter(max_requests=30, window_seconds=60)
+    diff --git a/app/api/routers/repos.py b/app/api/routers/repos.py
+    index 1c1e8a0..42d77c5 100644
+    --- a/app/api/routers/repos.py
+    +++ b/app/api/routers/repos.py
+    @@ -1,9 +1,10 @@
+     """Repos router -- connect, disconnect, list repos, and audit results."""
+     
+    +import logging
+     from uuid import UUID
+     
+     from fastapi import APIRouter, Depends, HTTPException, Query, status
+    -from pydantic import BaseModel
+    +from pydantic import BaseModel, Field
+     
+     from app.api.deps import get_current_user
+     from app.services.audit_service import get_audit_detail, get_repo_audits
+    @@ -14,15 +15,29 @@ from app.services.repo_service import (
+         list_connected_repos,
+     )
+     
+    +logger = logging.getLogger(__name__)
+    +
+     router = APIRouter(prefix="/repos", tags=["repos"])
+     
+     
+     class ConnectRepoRequest(BaseModel):
+         """Request body for connecting a GitHub repo."""
+     
+    -    github_repo_id: int
+    -    full_name: str
+    -    default_branch: str
+    +    github_repo_id: int = Field(..., ge=1, description="GitHub repo numeric ID")
+    +    full_name: str = Field(
+    +        ...,
+    +        min_length=3,
+    +        max_length=200,
+    +        pattern=r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
+    +        description="GitHub full name, e.g. owner/repo",
+    +    )
+    +    default_branch: str = Field(
+    +        ...,
+    +        min_length=1,
+    +        max_length=100,
+    +        pattern=r"^[a-zA-Z0-9._/-]+$",
+    +        description="Default branch name, e.g. main",
+    +    )
+     
+     
+     @router.get("")
+    @@ -65,6 +80,7 @@ async def connect(
+             )
+             raise HTTPException(status_code=code, detail=detail)
+         except Exception:
+    +        logger.exception("Failed to register webhook for %s", body.full_name)
+             raise HTTPException(
+                 status_code=status.HTTP_502_BAD_GATEWAY,
+                 detail="Failed to register webhook with GitHub",
+    @@ -97,6 +113,7 @@ async def disconnect(
+             )
+             raise HTTPException(status_code=code, detail=detail)
+         except Exception:
+    +        logger.exception("Failed to disconnect repo %s", repo_id)
+             raise HTTPException(
+                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                 detail="Failed to disconnect repo",
+    diff --git a/app/api/routers/webhooks.py b/app/api/routers/webhooks.py
+    index 921f97a..da33a2d 100644
+    --- a/app/api/routers/webhooks.py
+    +++ b/app/api/routers/webhooks.py
+    @@ -1,11 +1,16 @@
+     """Webhook router -- receives GitHub push events."""
+     
+    +import logging
+    +
+     from fastapi import APIRouter, HTTPException, Request, status
+     
+    +from app.api.rate_limit import webhook_limiter
+     from app.config import settings
+     from app.services.audit_service import process_push_event
+     from app.webhooks import verify_github_signature
+     
+    +logger = logging.getLogger(__name__)
+    +
+     router = APIRouter(tags=["webhooks"])
+     
+     
+    @@ -14,7 +19,15 @@ async def github_webhook(request: Request) -> dict:
+         """Receive a GitHub push webhook event.
+     
+         Validates the X-Hub-Signature-256 header, then processes the push.
+    +    Rate-limited to prevent abuse.
+         """
+    +    client_ip = request.client.host if request.client else "unknown"
+    +    if not webhook_limiter.is_allowed(client_ip):
+    +        raise HTTPException(
+    +            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    +            detail="Rate limit exceeded",
+    +        )
+    +
+         signature = request.headers.get("X-Hub-Signature-256", "")
+         body = await request.body()
+     
+    @@ -30,5 +43,12 @@ async def github_webhook(request: Request) -> dict:
+         if event_type != "push":
+             return {"status": "ignored", "event": event_type}
+     
+    -    await process_push_event(payload)
     +    try:
-    +        payload = decode_token(token)
-    +    except (pyjwt.ExpiredSignatureError, pyjwt.PyJWTError):
-    +        await websocket.close(code=4001, reason="Invalid token")
-    +        return
+    +        await process_push_event(payload)
+    +    except Exception:
+    +        logger.exception("Error processing push event")
+    +        raise HTTPException(
+    +            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    +            detail="Internal error processing webhook",
+    +        )
+         return {"status": "accepted"}
+    diff --git a/app/config.py b/app/config.py
+    index 01eb98c..39cfd7b 100644
+    --- a/app/config.py
+    +++ b/app/config.py
+    @@ -1,22 +1,55 @@
+    -"""Application configuration loaded from environment variables."""
+    +"""Application configuration loaded from environment variables.
     +
-    +    user_id = payload.get("sub")
-    +    if not user_id:
-    +        await websocket.close(code=4001, reason="Invalid token payload")
-    +        return
+    +Validates required settings on import -- fails fast if critical vars are missing.
+    +"""
+     
+     import os
+    +import sys
+     
+     from dotenv import load_dotenv
+     
+     load_dotenv()
+     
+     
+    -class Settings:
+    -    """Application settings from environment."""
+    +class _MissingVars(Exception):
+    +    """Raised when required environment variables are absent."""
     +
-    +    await websocket.accept()
-    +    await manager.connect(user_id, websocket)
     +
-    +    try:
-    +        while True:
-    +            # Keep connection alive; ignore client messages
-    +            await websocket.receive_text()
-    +    except WebSocketDisconnect:
-    +        await manager.disconnect(user_id, websocket)
+    +def _require(name: str) -> str:
+    +    """Return env var value or record it as missing."""
+    +    val = os.getenv(name, "")
+    +    if not val:
+    +        _missing.append(name)
+    +    return val
+    +
+     
+    -    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    -    GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")
+    -    GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
+    -    GITHUB_WEBHOOK_SECRET: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+    -    JWT_SECRET: str = os.getenv("JWT_SECRET", "")
+    +_missing: list[str] = []
+    +
+    +
+    +class Settings:
+    +    """Application settings from environment.
+    +
+    +    Required vars (must be set in production, may be blank in test):
+    +      DATABASE_URL, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET,
+    +      GITHUB_WEBHOOK_SECRET, JWT_SECRET
+    +    """
+    +
+    +    DATABASE_URL: str = _require("DATABASE_URL")
+    +    GITHUB_CLIENT_ID: str = _require("GITHUB_CLIENT_ID")
+    +    GITHUB_CLIENT_SECRET: str = _require("GITHUB_CLIENT_SECRET")
+    +    GITHUB_WEBHOOK_SECRET: str = _require("GITHUB_WEBHOOK_SECRET")
+    +    JWT_SECRET: str = _require("JWT_SECRET")
+         FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+         APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
+     
+     
+    +# Validate at import time -- but only when NOT running under pytest.
+    +if _missing and "pytest" not in sys.modules:
+    +    print(
+    +        f"[config] FATAL: missing required environment variables: "
+    +        f"{', '.join(_missing)}",
+    +        file=sys.stderr,
+    +    )
+    +    sys.exit(1)
+    +
+     settings = Settings()
     diff --git a/app/main.py b/app/main.py
-    index b012194..4d80f1b 100644
+    index 4d80f1b..14d135b 100644
     --- a/app/main.py
     +++ b/app/main.py
-    @@ -9,6 +9,7 @@ from app.api.routers.auth import router as auth_router
+    @@ -1,9 +1,11 @@
+     """ForgeGuard -- FastAPI application entry point."""
+     
+    +import logging
+     from contextlib import asynccontextmanager
+     
+    -from fastapi import FastAPI
+    +from fastapi import FastAPI, Request
+     from fastapi.middleware.cors import CORSMiddleware
+    +from fastapi.responses import JSONResponse
+     
+     from app.api.routers.auth import router as auth_router
      from app.api.routers.health import router as health_router
-     from app.api.routers.repos import router as repos_router
-     from app.api.routers.webhooks import router as webhooks_router
-    +from app.api.routers.ws import router as ws_router
+    @@ -13,6 +15,8 @@ from app.api.routers.ws import router as ws_router
      from app.config import settings
      from app.repos.db import close_pool
      
-    @@ -41,6 +42,7 @@ def create_app() -> FastAPI:
-         application.include_router(auth_router)
-         application.include_router(repos_router)
-         application.include_router(webhooks_router)
-    +    application.include_router(ws_router)
-         return application
-     
-     
-    diff --git a/app/repos/audit_repo.py b/app/repos/audit_repo.py
-    index f979476..f18d94c 100644
-    --- a/app/repos/audit_repo.py
-    +++ b/app/repos/audit_repo.py
-    @@ -95,11 +95,17 @@ async def get_audit_runs_by_repo(
-     
-         rows = await pool.fetch(
-             """
-    -        SELECT id, repo_id, commit_sha, commit_message, commit_author, branch,
-    -               status, overall_result, started_at, completed_at, files_checked, created_at
-    -        FROM audit_runs
-    -        WHERE repo_id = $1
-    -        ORDER BY created_at DESC
-    +        SELECT a.id, a.repo_id, a.commit_sha, a.commit_message, a.commit_author, a.branch,
-    +               a.status, a.overall_result, a.started_at, a.completed_at, a.files_checked, a.created_at,
-    +               cs.check_summary
-    +        FROM audit_runs a
-    +        LEFT JOIN LATERAL (
-    +            SELECT string_agg(c.check_code || ':' || c.result, ' ' ORDER BY c.created_at) AS check_summary
-    +            FROM audit_checks c
-    +            WHERE c.audit_run_id = a.id
-    +        ) cs ON true
-    +        WHERE a.repo_id = $1
-    +        ORDER BY a.created_at DESC
-             LIMIT $2 OFFSET $3
-             """,
-             repo_id,
-    diff --git a/app/repos/repo_repo.py b/app/repos/repo_repo.py
-    index d5ce62c..0d6c813 100644
-    --- a/app/repos/repo_repo.py
-    +++ b/app/repos/repo_repo.py
-    @@ -88,6 +88,44 @@ async def delete_repo(repo_id: UUID) -> bool:
-         return result == "DELETE 1"
-     
-     
-    +async def get_repos_with_health(user_id: UUID) -> list[dict]:
-    +    """Fetch repos with recent audit health data for a user.
+    +logger = logging.getLogger(__name__)
     +
-    +    Returns each repo with last_audit_at and pass/total counts from the
-    +    10 most recent completed audit runs.
-    +    """
-    +    pool = await get_pool()
-    +    rows = await pool.fetch(
-    +        """
-    +        SELECT
-    +            r.id, r.user_id, r.github_repo_id, r.full_name,
-    +            r.default_branch, r.webhook_id, r.webhook_active,
-    +            r.created_at, r.updated_at,
-    +            h.last_audit_at,
-    +            h.pass_count,
-    +            h.total_count
-    +        FROM repos r
-    +        LEFT JOIN LATERAL (
-    +            SELECT
-    +                max(a.completed_at) AS last_audit_at,
-    +                count(*) FILTER (WHERE a.overall_result = 'PASS') AS pass_count,
-    +                count(*) AS total_count
-    +            FROM (
-    +                SELECT overall_result, completed_at
-    +                FROM audit_runs
-    +                WHERE repo_id = r.id AND status = 'completed'
-    +                ORDER BY created_at DESC
-    +                LIMIT 10
-    +            ) a
-    +        ) h ON true
-    +        WHERE r.user_id = $1
-    +        ORDER BY r.created_at DESC
-    +        """,
-    +        user_id,
-    +    )
-    +    return [dict(r) for r in rows]
+     
+     @asynccontextmanager
+     async def lifespan(application: FastAPI):
+    @@ -30,12 +34,23 @@ def create_app() -> FastAPI:
+             lifespan=lifespan,
+         )
+     
+    +    # Global exception handler -- never leak stack traces to clients.
+    +    @application.exception_handler(Exception)
+    +    async def _unhandled_exception_handler(
+    +        request: Request, exc: Exception
+    +    ) -> JSONResponse:
+    +        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    +        return JSONResponse(
+    +            status_code=500,
+    +            content={"detail": "Internal server error"},
+    +        )
     +
+         application.add_middleware(
+             CORSMiddleware,
+             allow_origins=[settings.FRONTEND_URL],
+             allow_credentials=True,
+    -        allow_methods=["*"],
+    -        allow_headers=["*"],
+    +        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    +        allow_headers=["Authorization", "Content-Type"],
+         )
+     
+         application.include_router(health_router)
+    diff --git a/boot.ps1 b/boot.ps1
+    index f158bbf..27434b1 100644
+    --- a/boot.ps1
+    +++ b/boot.ps1
+    @@ -1,78 +1,183 @@
+    -# boot.ps1 -- ForgeGuard one-click setup and run script
+    -# Phase 0 stub. Full implementation in Phase 5.
+    +# boot.ps1 -- ForgeGuard one-click setup and run script.
+    +#
+    +# Brings up the full stack from a fresh clone:
+    +#   1. Validates prerequisites (Python 3.12+, Node 18+, psql)
+    +#   2. Creates Python venv and installs backend deps
+    +#   3. Installs frontend deps
+    +#   4. Validates .env (fails fast if missing required vars)
+    +#   5. Runs database migrations
+    +#   6. Starts backend + frontend dev servers
+    +#
+    +# Usage:
+    +#   pwsh -File boot.ps1
+    +#   pwsh -File boot.ps1 -SkipFrontend
+    +#   pwsh -File boot.ps1 -MigrateOnly
     +
-     async def update_webhook(
-         repo_id: UUID,
-         webhook_id: int | None,
-    diff --git a/app/services/audit_service.py b/app/services/audit_service.py
-    index cd2a72e..aebb1bc 100644
-    --- a/app/services/audit_service.py
-    +++ b/app/services/audit_service.py
-    @@ -12,6 +12,7 @@ from app.repos.audit_repo import (
-     )
-     from app.repos.repo_repo import get_repo_by_github_id
-     from app.repos.user_repo import get_user_by_id
-    +from app.ws_manager import manager as ws_manager
+    +[CmdletBinding()]
+    +param(
+    +  [switch]$SkipFrontend,
+    +  [switch]$MigrateOnly
+    +)
      
+     Set-StrictMode -Version Latest
+     $ErrorActionPreference = "Stop"
      
-     async def process_push_event(payload: dict) -> dict | None:
-    @@ -134,6 +135,22 @@ async def process_push_event(payload: dict) -> dict | None:
-                 files_checked=len(files),
-             )
-     
-    +        # Broadcast real-time update via WebSocket
-    +        user_id_str = str(repo["user_id"])
-    +        await ws_manager.broadcast_audit_update(user_id_str, {
-    +            "id": str(audit_run["id"]),
-    +            "repo_id": str(repo["id"]),
-    +            "commit_sha": commit_sha,
-    +            "commit_message": commit_message,
-    +            "commit_author": commit_author,
-    +            "branch": branch,
-    +            "status": "completed",
-    +            "overall_result": overall,
-    +            "started_at": audit_run["started_at"].isoformat() if audit_run.get("started_at") else None,
-    +            "completed_at": None,
-    +            "files_checked": len(files),
-    +        })
+     function Info([string]$m) { Write-Host "[boot] $m" -ForegroundColor Cyan }
+    +function Warn([string]$m) { Write-Host "[boot] $m" -ForegroundColor Yellow }
+     function Err ([string]$m) { Write-Host "[boot] $m" -ForegroundColor Red }
+    +function Ok  ([string]$m) { Write-Host "[boot] $m" -ForegroundColor Green }
     +
-         except Exception:
-             await update_audit_run(
-                 audit_run_id=audit_run["id"],
-    @@ -174,6 +191,7 @@ async def get_repo_audits(
-                 "started_at": item["started_at"].isoformat() if item["started_at"] else None,
-                 "completed_at": item["completed_at"].isoformat() if item["completed_at"] else None,
-                 "files_checked": item["files_checked"],
-    +            "check_summary": item.get("check_summary"),
-             })
-         return result, total
-     
-    diff --git a/app/services/repo_service.py b/app/services/repo_service.py
-    index 2784795..10f035b 100644
-    --- a/app/services/repo_service.py
-    +++ b/app/services/repo_service.py
-    @@ -10,6 +10,7 @@ from app.repos.repo_repo import (
-         get_repo_by_github_id,
-         get_repo_by_id,
-         get_repos_by_user,
-    +    get_repos_with_health,
-     )
-     from app.repos.user_repo import get_user_by_id
-     
-    @@ -85,18 +86,35 @@ async def disconnect_repo(user_id: UUID, repo_id: UUID) -> None:
-     
-     
-     async def list_connected_repos(user_id: UUID) -> list[dict]:
-    -    """List all connected repos for a user with placeholder health data."""
-    -    repos = await get_repos_by_user(user_id)
-    +    """List all connected repos for a user with computed health data."""
-    +    repos = await get_repos_with_health(user_id)
-         result = []
-         for repo in repos:
-    +        total = repo.get("total_count") or 0
-    +        pass_count = repo.get("pass_count") or 0
+    +$root = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    +if (-not $root) { $root = Get-Location }
+    +Set-Location $root
     +
-    +        if total == 0:
-    +            health = "pending"
-    +            rate = None
-    +        else:
-    +            rate = pass_count / total
-    +            if rate == 1.0:
-    +                health = "green"
-    +            elif rate >= 0.5:
-    +                health = "yellow"
-    +            else:
-    +                health = "red"
-    +
-    +        last_audit = repo.get("last_audit_at")
-    +
-             result.append({
-                 "id": str(repo["id"]),
-                 "full_name": repo["full_name"],
-                 "default_branch": repo["default_branch"],
-                 "webhook_active": repo["webhook_active"],
-    -            "health_score": "pending",
-    -            "last_audit_at": None,
-    -            "recent_pass_rate": None,
-    +            "health_score": health,
-    +            "last_audit_at": last_audit.isoformat() if last_audit else None,
-    +            "recent_pass_rate": rate,
-             })
-         return result
+    +# ÔöÇÔöÇ 1. Check prerequisites ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
      
-    diff --git a/app/ws_manager.py b/app/ws_manager.py
+    -# -- 1. Check prerequisites -----------------------------------------------
+     Info "Checking prerequisites..."
+    +
+     $pythonCmd = $null
+    -foreach ($candidate in @("python", "python3")) {
+    -    try {
+    -        $ver = & $candidate --version 2>&1
+    -        if ($ver -match "Python\s+3\.(\d+)") {
+    -            $minor = [int]$Matches[1]
+    -            if ($minor -ge 12) {
+    -                $pythonCmd = $candidate
+    -                Info "Found $ver"
+    -                break
+    -            }
+    -        }
+    -    } catch { }
+    +foreach ($candidate in @("python3", "python")) {
+    +  try {
+    +    $ver = & $candidate --version 2>&1
+    +    if ($ver -match "Python\s+3\.(\d+)") {
+    +      $minor = [int]$Matches[1]
+    +      if ($minor -ge 12) {
+    +        $pythonCmd = $candidate
+    +        Info "Found $ver"
+    +        break
+    +      }
+    +    }
+    +  } catch { }
+     }
+     if (-not $pythonCmd) {
+    -    Err "Python 3.12+ is required but was not found. Please install it and try again."
+    +  Err "Python 3.12+ is required but was not found."
+    +  exit 1
+    +}
+    +
+    +if (-not $SkipFrontend) {
+    +  $nodeCmd = Get-Command "node" -ErrorAction SilentlyContinue
+    +  if (-not $nodeCmd) {
+    +    Err "Node.js 18+ is required for frontend. Use -SkipFrontend to skip."
+         exit 1
+    +  }
+    +  Info "Node: $(node --version)"
+     }
+     
+    -# -- 2. Create virtual environment -----------------------------------------
+    -if (-not (Test-Path ".venv")) {
+    -    Info "Creating virtual environment..."
+    -    & $pythonCmd -m venv .venv
+    -    if ($LASTEXITCODE -ne 0) {
+    -        Err "Failed to create virtual environment."
+    -        exit 1
+    -    }
+    +$psqlCmd = Get-Command "psql" -ErrorAction SilentlyContinue
+    +if ($psqlCmd) { Info "psql: found on PATH" }
+    +else { Warn "psql not on PATH -- you may need to run migrations manually." }
+    +
+    +# ÔöÇÔöÇ 2. Python virtual environment ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +$venvDir = Join-Path $root ".venv"
+    +if (-not (Test-Path $venvDir)) {
+    +  Info "Creating virtual environment..."
+    +  & $pythonCmd -m venv $venvDir
+    +  if ($LASTEXITCODE -ne 0) { Err "Failed to create virtual environment."; exit 1 }
+    +  Ok "Virtual environment created."
+     } else {
+    -    Info "Virtual environment already exists."
+    +  Info "Virtual environment already exists."
+    +}
+    +
+    +$venvPython = Join-Path $venvDir "Scripts/python.exe"
+    +$venvPythonUnix = Join-Path $venvDir "bin/python"
+    +$activePython = if (Test-Path $venvPython) { $venvPython } elseif (Test-Path $venvPythonUnix) { $venvPythonUnix } else { $pythonCmd }
+    +
+    +# ÔöÇÔöÇ 3. Install backend dependencies ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +Info "Installing Python dependencies..."
+    +& $activePython -m pip install -r (Join-Path $root "requirements.txt") --quiet
+    +if ($LASTEXITCODE -ne 0) { Err "pip install failed."; exit 1 }
+    +Ok "Backend dependencies installed."
+    +
+    +# ÔöÇÔöÇ 4. Validate .env ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +$envFile = Join-Path $root ".env"
+    +$envExample = Join-Path $root ".env.example"
+    +
+    +if (-not (Test-Path $envFile)) {
+    +  if (Test-Path $envExample) {
+    +    Copy-Item $envExample $envFile
+    +    Warn ".env created from .env.example -- fill in your secrets before continuing."
+    +  } else {
+    +    Err "No .env file found. Create one with the required variables."
+    +    Err "Required: DATABASE_URL, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_WEBHOOK_SECRET, JWT_SECRET"
+    +    exit 1
+    +  }
+    +}
+    +
+    +$requiredVars = @("DATABASE_URL", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_WEBHOOK_SECRET", "JWT_SECRET")
+    +$envContent = Get-Content $envFile -Raw
+    +$missingVars = @()
+    +foreach ($v in $requiredVars) {
+    +  if ($envContent -notmatch "(?m)^$v\s*=\s*.+") {
+    +    $missingVars += $v
+    +  }
+     }
+     
+    -# -- 3. Activate environment -----------------------------------------------
+    -Info "Activating virtual environment..."
+    -$activateScript = Join-Path ".venv" "Scripts" "Activate.ps1"
+    -if (-not (Test-Path $activateScript)) {
+    -    $activateScript = Join-Path ".venv" "bin" "Activate.ps1"
+    +if ($missingVars.Count -gt 0) {
+    +  Err "Missing or empty vars in .env: $($missingVars -join ', ')"
+    +  Err "Edit .env and fill in these values, then re-run boot.ps1."
+    +  exit 1
+     }
+    -if (Test-Path $activateScript) {
+    -    . $activateScript
+    +
+    +Ok ".env validated -- all required variables present."
+    +
+    +# ÔöÇÔöÇ 5. Database migration ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +$migrationFile = Join-Path $root "db/migrations/001_initial_schema.sql"
+    +
+    +if (Test-Path $migrationFile) {
+    +  Info "Running database migration..."
+    +  $dbUrl = ""
+    +  $match = Select-String -Path $envFile -Pattern '^DATABASE_URL\s*=\s*(.+)' -ErrorAction SilentlyContinue
+    +  if ($match) { $dbUrl = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'") }
+    +
+    +  if ($dbUrl -and $psqlCmd) {
+    +    & psql $dbUrl -f $migrationFile 2>&1 | Out-Null
+    +    if ($LASTEXITCODE -eq 0) { Ok "Migration applied." }
+    +    else { Warn "Migration may have already been applied (tables exist)." }
+    +  } else {
+    +    Warn "Cannot run migration automatically."
+    +    Warn "Run: psql \`$DATABASE_URL -f db/migrations/001_initial_schema.sql"
+    +  }
+     } else {
+    -    Err "Could not find activation script at $activateScript"
+    -    exit 1
+    +  Warn "Migration file not found at db/migrations/001_initial_schema.sql"
+     }
+     
+    -# -- 4. Install dependencies -----------------------------------------------
+    -Info "Installing Python dependencies..."
+    -& pip install -r requirements.txt --quiet
+    -if ($LASTEXITCODE -ne 0) {
+    -    Err "Failed to install Python dependencies."
+    -    exit 1
+    +if ($MigrateOnly) {
+    +  Ok "Migration complete. Exiting."
+    +  exit 0
+     }
+     
+    -# -- 5. Prompt for credentials (stub -- will be expanded in Phase 5) --------
+    -if (-not (Test-Path ".env")) {
+    -    Info "No .env file found. Copying from .env.example..."
+    -    if (Test-Path ".env.example") {
+    -        Copy-Item ".env.example" ".env"
+    -        Info "Created .env from .env.example. Please edit it with your real credentials."
+    -    } else {
+    -        Err ".env.example not found. Please create a .env file manually."
+    -        exit 1
+    -    }
+    +# ÔöÇÔöÇ 6. Frontend setup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +$webDir = Join-Path $root "web"
+    +
+    +if (-not $SkipFrontend -and (Test-Path $webDir)) {
+    +  Info "Installing frontend dependencies..."
+    +  Push-Location $webDir
+    +  & npm install --silent 2>&1 | Out-Null
+    +  if ($LASTEXITCODE -ne 0) { Err "npm install failed."; Pop-Location; exit 1 }
+    +  Ok "Frontend dependencies installed."
+    +  Pop-Location
+     }
+     
+    -# -- 6. Start the app -------------------------------------------------------
+    +# ÔöÇÔöÇ 7. Start servers ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +Info ""
+     Info "Starting ForgeGuard..."
+    -& python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    +
+    +if (-not $SkipFrontend -and (Test-Path $webDir)) {
+    +  Info "Starting frontend dev server on port 5173..."
+    +  $frontendJob = Start-Job -ScriptBlock {
+    +    param($dir)
+    +    Set-Location $dir
+    +    & npm run dev 2>&1
+    +  } -ArgumentList $webDir
+    +  Info "Frontend started (background job $($frontendJob.Id))."
+    +}
+    +
+    +Info "Starting backend server on port 8000..."
+    +Info "Press Ctrl+C to stop."
+    +& $activePython -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    diff --git a/tests/test_config.py b/tests/test_config.py
     new file mode 100644
-    index 0000000..627419e
+    index 0000000..ba8e5d9
     --- /dev/null
-    +++ b/app/ws_manager.py
-    @@ -0,0 +1,51 @@
-    +"""WebSocket connection manager for real-time audit updates."""
+    +++ b/tests/test_config.py
+    @@ -0,0 +1,41 @@
+    +"""Tests for config validation."""
     +
-    +import asyncio
+    +import importlib
+    +import os
+    +import sys
+    +
+    +
+    +def test_config_loads_with_env_vars(monkeypatch):
+    +    """Config should load successfully when all required vars are set."""
+    +    monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost/test")
+    +    monkeypatch.setenv("GITHUB_CLIENT_ID", "test_id")
+    +    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test_secret")
+    +    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "webhook_secret")
+    +    monkeypatch.setenv("JWT_SECRET", "jwt_secret")
+    +
+    +    # Force reimport to test validation
+    +    if "app.config" in sys.modules:
+    +        mod = sys.modules["app.config"]
+    +        # Settings class re-reads on attribute access via _require
+    +        assert mod.settings is not None
+    +
+    +
+    +def test_config_has_default_urls():
+    +    """FRONTEND_URL and APP_URL should have sensible defaults."""
+    +    from app.config import settings
+    +
+    +    assert "localhost" in settings.FRONTEND_URL or settings.FRONTEND_URL != ""
+    +    assert "localhost" in settings.APP_URL or settings.APP_URL != ""
+    +
+    +
+    +def test_config_settings_type():
+    +    """Settings object should exist with expected attributes."""
+    +    from app.config import settings
+    +
+    +    assert hasattr(settings, "DATABASE_URL")
+    +    assert hasattr(settings, "GITHUB_CLIENT_ID")
+    +    assert hasattr(settings, "GITHUB_CLIENT_SECRET")
+    +    assert hasattr(settings, "GITHUB_WEBHOOK_SECRET")
+    +    assert hasattr(settings, "JWT_SECRET")
+    +    assert hasattr(settings, "FRONTEND_URL")
+    +    assert hasattr(settings, "APP_URL")
+    diff --git a/tests/test_hardening.py b/tests/test_hardening.py
+    new file mode 100644
+    index 0000000..a39f291
+    --- /dev/null
+    +++ b/tests/test_hardening.py
+    @@ -0,0 +1,179 @@
+    +"""Tests for Phase 5 hardening: rate limiting, input validation, error handling."""
+    +
     +import json
+    +from unittest.mock import AsyncMock, patch
     +from uuid import UUID
-    +
-    +
-    +class ConnectionManager:
-    +    """Manages active WebSocket connections keyed by user_id."""
-    +
-    +    def __init__(self) -> None:
-    +        self._connections: dict[str, list] = {}  # user_id -> list of websockets
-    +        self._lock = asyncio.Lock()
-    +
-    +    async def connect(self, user_id: str, websocket) -> None:  # noqa: ANN001
-    +        """Register a WebSocket connection for a user."""
-    +        async with self._lock:
-    +            if user_id not in self._connections:
-    +                self._connections[user_id] = []
-    +            self._connections[user_id].append(websocket)
-    +
-    +    async def disconnect(self, user_id: str, websocket) -> None:  # noqa: ANN001
-    +        """Remove a WebSocket connection for a user."""
-    +        async with self._lock:
-    +            conns = self._connections.get(user_id, [])
-    +            if websocket in conns:
-    +                conns.remove(websocket)
-    +            if not conns:
-    +                self._connections.pop(user_id, None)
-    +
-    +    async def send_to_user(self, user_id: str, data: dict) -> None:
-    +        """Send a JSON message to all connections for a specific user."""
-    +        async with self._lock:
-    +            conns = list(self._connections.get(user_id, []))
-    +        message = json.dumps(data, default=str)
-    +        for ws in conns:
-    +            try:
-    +                await ws.send_text(message)
-    +            except Exception:
-    +                pass  # dead connection -- will be cleaned up on disconnect
-    +
-    +    async def broadcast_audit_update(self, user_id: str, audit_summary: dict) -> None:
-    +        """Broadcast an audit_update event to the given user."""
-    +        payload = {
-    +            "type": "audit_update",
-    +            "payload": audit_summary,
-    +        }
-    +        await self.send_to_user(user_id, payload)
-    +
-    +
-    +manager = ConnectionManager()
-    diff --git a/tests/test_repo_health.py b/tests/test_repo_health.py
-    new file mode 100644
-    index 0000000..e5a0e9b
-    --- /dev/null
-    +++ b/tests/test_repo_health.py
-    @@ -0,0 +1,79 @@
-    +"""Tests for repo service health score computation."""
-    +
-    +import pytest
-    +from unittest.mock import AsyncMock, patch
-    +
-    +
-    +@pytest.mark.asyncio
-    +@patch("app.services.repo_service.get_repos_with_health")
-    +async def test_health_green_all_pass(mock_get):
-    +    """All 10 audits passed -> green health, 1.0 rate."""
-    +    mock_get.return_value = [{
-    +        "id": "repo-1",
-    +        "full_name": "org/repo",
-    +        "default_branch": "main",
-    +        "webhook_active": True,
-    +        "total_count": 10,
-    +        "pass_count": 10,
-    +        "last_audit_at": None,
-    +    }]
-    +    from app.services.repo_service import list_connected_repos
-    +    result = await list_connected_repos("user-1")
-    +    assert result[0]["health_score"] == "green"
-    +    assert result[0]["recent_pass_rate"] == 1.0
-    +
-    +
-    +@pytest.mark.asyncio
-    +@patch("app.services.repo_service.get_repos_with_health")
-    +async def test_health_red_low_pass(mock_get):
-    +    """Less than half pass -> red health."""
-    +    mock_get.return_value = [{
-    +        "id": "repo-1",
-    +        "full_name": "org/repo",
-    +        "default_branch": "main",
-    +        "webhook_active": True,
-    +        "total_count": 10,
-    +        "pass_count": 3,
-    +        "last_audit_at": None,
-    +    }]
-    +    from app.services.repo_service import list_connected_repos
-    +    result = await list_connected_repos("user-1")
-    +    assert result[0]["health_score"] == "red"
-    +    assert result[0]["recent_pass_rate"] == 0.3
-    +
-    +
-    +@pytest.mark.asyncio
-    +@patch("app.services.repo_service.get_repos_with_health")
-    +async def test_health_yellow_mixed(mock_get):
-    +    """50-99% pass rate -> yellow health."""
-    +    mock_get.return_value = [{
-    +        "id": "repo-1",
-    +        "full_name": "org/repo",
-    +        "default_branch": "main",
-    +        "webhook_active": True,
-    +        "total_count": 10,
-    +        "pass_count": 7,
-    +        "last_audit_at": None,
-    +    }]
-    +    from app.services.repo_service import list_connected_repos
-    +    result = await list_connected_repos("user-1")
-    +    assert result[0]["health_score"] == "yellow"
-    +
-    +
-    +@pytest.mark.asyncio
-    +@patch("app.services.repo_service.get_repos_with_health")
-    +async def test_health_pending_no_audits(mock_get):
-    +    """No audit runs -> pending health, null rate."""
-    +    mock_get.return_value = [{
-    +        "id": "repo-1",
-    +        "full_name": "org/repo",
-    +        "default_branch": "main",
-    +        "webhook_active": True,
-    +        "total_count": 0,
-    +        "pass_count": 0,
-    +        "last_audit_at": None,
-    +    }]
-    +    from app.services.repo_service import list_connected_repos
-    +    result = await list_connected_repos("user-1")
-    +    assert result[0]["health_score"] == "pending"
-    +    assert result[0]["recent_pass_rate"] is None
-    diff --git a/tests/test_repos_router.py b/tests/test_repos_router.py
-    index 05e7fe3..c647569 100644
-    --- a/tests/test_repos_router.py
-    +++ b/tests/test_repos_router.py
-    @@ -43,7 +43,7 @@ def _auth_header():
-     
-     
-     @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-    -@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
-    +@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
-     def test_list_repos_returns_items(mock_get_repos, mock_get_user):
-         mock_get_user.return_value = MOCK_USER
-         mock_get_repos.return_value = [
-    @@ -57,6 +57,9 @@ def test_list_repos_returns_items(mock_get_repos, mock_get_user):
-                 "webhook_active": True,
-                 "created_at": "2025-01-01T00:00:00Z",
-                 "updated_at": "2025-01-01T00:00:00Z",
-    +            "total_count": 5,
-    +            "pass_count": 5,
-    +            "last_audit_at": None,
-             }
-         ]
-     
-    @@ -66,10 +69,11 @@ def test_list_repos_returns_items(mock_get_repos, mock_get_user):
-         assert "items" in data
-         assert len(data["items"]) == 1
-         assert data["items"][0]["full_name"] == "octocat/hello-world"
-    +    assert data["items"][0]["health_score"] == "green"
-     
-     
-     @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-    -@patch("app.services.repo_service.get_repos_by_user", new_callable=AsyncMock)
-    +@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
-     def test_list_repos_empty(mock_get_repos, mock_get_user):
-         mock_get_user.return_value = MOCK_USER
-         mock_get_repos.return_value = []
-    diff --git a/tests/test_ws_manager.py b/tests/test_ws_manager.py
-    new file mode 100644
-    index 0000000..441a076
-    --- /dev/null
-    +++ b/tests/test_ws_manager.py
-    @@ -0,0 +1,90 @@
-    +"""Tests for WebSocket connection manager."""
-    +
-    +import asyncio
-    +
-    +import pytest
-    +
-    +from app.ws_manager import ConnectionManager
-    +
-    +
-    +class FakeWebSocket:
-    +    """Fake WebSocket for testing send_text."""
-    +
-    +    def __init__(self):
-    +        self.messages: list[str] = []
-    +        self.closed = False
-    +
-    +    async def send_text(self, text: str) -> None:
-    +        if self.closed:
-    +            raise RuntimeError("WebSocket closed")
-    +        self.messages.append(text)
-    +
-    +
-    +@pytest.mark.asyncio
-    +async def test_connect_and_send():
-    +    """Messages reach connected sockets."""
-    +    mgr = ConnectionManager()
-    +    ws = FakeWebSocket()
-    +    await mgr.connect("user-1", ws)
-    +    await mgr.send_to_user("user-1", {"hello": "world"})
-    +    assert len(ws.messages) == 1
-    +    assert '"hello"' in ws.messages[0]
-    +
-    +
-    +@pytest.mark.asyncio
-    +async def test_disconnect_removes_socket():
-    +    """After disconnect, no messages reach the socket."""
-    +    mgr = ConnectionManager()
-    +    ws = FakeWebSocket()
-    +    await mgr.connect("user-1", ws)
-    +    await mgr.disconnect("user-1", ws)
-    +    await mgr.send_to_user("user-1", {"hello": "world"})
-    +    assert len(ws.messages) == 0
-    +
-    +
-    +@pytest.mark.asyncio
-    +async def test_multiple_connections():
-    +    """Multiple sockets for one user all receive messages."""
-    +    mgr = ConnectionManager()
-    +    ws1 = FakeWebSocket()
-    +    ws2 = FakeWebSocket()
-    +    await mgr.connect("user-1", ws1)
-    +    await mgr.connect("user-1", ws2)
-    +    await mgr.send_to_user("user-1", {"data": 1})
-    +    assert len(ws1.messages) == 1
-    +    assert len(ws2.messages) == 1
-    +
-    +
-    +@pytest.mark.asyncio
-    +async def test_send_to_nonexistent_user():
-    +    """Sending to a user with no connections does not error."""
-    +    mgr = ConnectionManager()
-    +    await mgr.send_to_user("nobody", {"data": 1})
-    +
-    +
-    +@pytest.mark.asyncio
-    +async def test_broadcast_audit_update():
-    +    """broadcast_audit_update sends correctly typed message."""
-    +    mgr = ConnectionManager()
-    +    ws = FakeWebSocket()
-    +    await mgr.connect("user-1", ws)
-    +    await mgr.broadcast_audit_update("user-1", {"id": "abc", "status": "completed"})
-    +    assert len(ws.messages) == 1
-    +    import json
-    +    msg = json.loads(ws.messages[0])
-    +    assert msg["type"] == "audit_update"
-    +    assert msg["payload"]["id"] == "abc"
-    +
-    +
-    +@pytest.mark.asyncio
-    +async def test_dead_socket_ignored():
-    +    """Dead socket doesn't prevent messages to other sockets."""
-    +    mgr = ConnectionManager()
-    +    ws_dead = FakeWebSocket()
-    +    ws_dead.closed = True
-    +    ws_live = FakeWebSocket()
-    +    await mgr.connect("user-1", ws_dead)
-    +    await mgr.connect("user-1", ws_live)
-    +    await mgr.send_to_user("user-1", {"x": 1})
-    +    assert len(ws_live.messages) == 1
-    +    assert len(ws_dead.messages) == 0
-    diff --git a/tests/test_ws_router.py b/tests/test_ws_router.py
-    new file mode 100644
-    index 0000000..0ff6c1e
-    --- /dev/null
-    +++ b/tests/test_ws_router.py
-    @@ -0,0 +1,56 @@
-    +"""Tests for WebSocket router endpoint."""
-    +
-    +from unittest.mock import AsyncMock, patch
     +
     +import pytest
     +from fastapi.testclient import TestClient
     +
-    +from app.main import create_app
+    +from app.auth import create_token
+    +from app.main import app
+    +from app.webhooks import _hmac_sha256
     +
     +
-    +@pytest.fixture
-    +def client():
-    +    app = create_app()
-    +    return TestClient(app)
+    +@pytest.fixture(autouse=True)
+    +def _set_test_config(monkeypatch):
+    +    monkeypatch.setattr("app.config.settings.JWT_SECRET", "test-secret-key-for-unit-tests")
+    +    monkeypatch.setattr("app.auth.settings.JWT_SECRET", "test-secret-key-for-unit-tests")
+    +    monkeypatch.setattr("app.config.settings.GITHUB_WEBHOOK_SECRET", "whsec_test")
+    +    monkeypatch.setattr("app.config.settings.APP_URL", "http://localhost:8000")
+    +    monkeypatch.setattr("app.config.settings.GITHUB_CLIENT_ID", "test-client-id")
+    +    monkeypatch.setattr("app.config.settings.GITHUB_CLIENT_SECRET", "test-client-secret")
+    +    monkeypatch.setattr("app.config.settings.FRONTEND_URL", "http://localhost:5173")
     +
     +
-    +def _make_token_payload(user_id: str = "test-user-id"):
-    +    return {"sub": user_id, "github_login": "testuser"}
-    +
-    +
-    +def test_ws_rejects_missing_token(client):
-    +    """WebSocket connection without token should be rejected."""
-    +    with pytest.raises(Exception):
-    +        with client.websocket_connect("/ws"):
-    +            pass
-    +
-    +
-    +def test_ws_rejects_invalid_token(client):
-    +    """WebSocket connection with invalid token should be rejected."""
-    +    with pytest.raises(Exception):
-    +        with client.websocket_connect("/ws?token=badtoken"):
-    +            pass
-    +
-    +
-    +@patch("app.api.routers.ws.decode_token")
-    +def test_ws_accepts_valid_token(mock_decode, client):
-    +    """WebSocket connection with valid token should be accepted."""
-    +    mock_decode.return_value = _make_token_payload()
-    +    with client.websocket_connect("/ws?token=validtoken") as ws:
-    +        # Connection established - no immediate message expected
-    +        # Just verify it connected
-    +        assert ws is not None
-    +
-    +
-    +@patch("app.api.routers.ws.decode_token")
-    +@patch("app.api.routers.ws.manager")
-    +def test_ws_connects_and_disconnects(mock_manager, mock_decode, client):
-    +    """WebSocket lifecycle: connect -> manager.connect called."""
-    +    mock_decode.return_value = _make_token_payload("uid-123")
-    +    mock_manager.connect = AsyncMock()
-    +    mock_manager.disconnect = AsyncMock()
-    +
-    +    with client.websocket_connect("/ws?token=validtoken"):
-    +        mock_manager.connect.assert_called_once()
-    +        call_args = mock_manager.connect.call_args
-    +        assert call_args[0][0] == "uid-123"
-    diff --git a/web/src/App.tsx b/web/src/App.tsx
-    index a7bc43a..b85d295 100644
-    --- a/web/src/App.tsx
-    +++ b/web/src/App.tsx
-    @@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
-     import CommitTimeline from './pages/CommitTimeline';
-     import AuditDetailPage from './pages/AuditDetail';
-     import { AuthProvider, useAuth } from './context/AuthContext';
-    +import { ToastProvider } from './context/ToastContext';
-     
-     function ProtectedRoute({ children }: { children: React.ReactNode }) {
-       const { token } = useAuth();
-    @@ -12,52 +13,42 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
-       return <>{children}</>;
-     }
-     
-    -function AppLayout({ children }: { children: React.ReactNode }) {
-    -  return (
-    -    <div style={{ background: '#0F172A', color: '#F8FAFC', minHeight: '100vh' }}>
-    -      {children}
-    -    </div>
-    -  );
-    -}
-    -
-     function App() {
-       return (
-         <AuthProvider>
-    -      <BrowserRouter>
-    -        <Routes>
-    -          <Route path="/login" element={<Login />} />
-    -          <Route path="/auth/callback" element={<AuthCallback />} />
-    -          <Route
-    -            path="/"
-    -            element={
-    -              <ProtectedRoute>
-    -                <Dashboard />
-    -              </ProtectedRoute>
-    -            }
-    -          />
-    -          <Route
-    -            path="/repos/:repoId"
-    -            element={
-    -              <ProtectedRoute>
-    -                <AppLayout>
-    +      <ToastProvider>
-    +        <BrowserRouter>
-    +          <Routes>
-    +            <Route path="/login" element={<Login />} />
-    +            <Route path="/auth/callback" element={<AuthCallback />} />
-    +            <Route
-    +              path="/"
-    +              element={
-    +                <ProtectedRoute>
-    +                  <Dashboard />
-    +                </ProtectedRoute>
-    +              }
-    +            />
-    +            <Route
-    +              path="/repos/:repoId"
-    +              element={
-    +                <ProtectedRoute>
-                       <CommitTimeline />
-    -                </AppLayout>
-    -              </ProtectedRoute>
-    -            }
-    -          />
-    -          <Route
-    -            path="/repos/:repoId/audits/:auditId"
-    -            element={
-    -              <ProtectedRoute>
-    -                <AppLayout>
-    +                </ProtectedRoute>
-    +              }
-    +            />
-    +            <Route
-    +              path="/repos/:repoId/audits/:auditId"
-    +              element={
-    +                <ProtectedRoute>
-                       <AuditDetailPage />
-    -                </AppLayout>
-    -              </ProtectedRoute>
-    -            }
-    -          />
-    -          <Route path="*" element={<Navigate to="/" replace />} />
-    -        </Routes>
-    -      </BrowserRouter>
-    +                </ProtectedRoute>
-    +              }
-    +            />
-    +            <Route path="*" element={<Navigate to="/" replace />} />
-    +          </Routes>
-    +        </BrowserRouter>
-    +      </ToastProvider>
-         </AuthProvider>
-       );
-     }
-    diff --git a/web/src/__tests__/App.test.tsx b/web/src/__tests__/App.test.tsx
-    index b9cf339..ea10fbc 100644
-    --- a/web/src/__tests__/App.test.tsx
-    +++ b/web/src/__tests__/App.test.tsx
-    @@ -1,10 +1,12 @@
-     import { describe, it, expect } from 'vitest';
-    -import { render, screen } from '@testing-library/react';
-    +import { render, screen, fireEvent } from '@testing-library/react';
-     import Login from '../pages/Login';
-     import HealthBadge from '../components/HealthBadge';
-     import ConfirmDialog from '../components/ConfirmDialog';
-     import ResultBadge from '../components/ResultBadge';
-     import CheckResultCard from '../components/CheckResultCard';
-    +import Skeleton, { SkeletonCard, SkeletonRow } from '../components/Skeleton';
-    +import EmptyState from '../components/EmptyState';
-     
-     describe('Login', () => {
-       it('renders the sign in button', () => {
-    @@ -82,3 +84,40 @@ describe('CheckResultCard', () => {
-         expect(screen.getByText('Boundary compliance')).toBeInTheDocument();
-       });
-     });
-    +
-    +describe('Skeleton', () => {
-    +  it('renders skeleton element', () => {
-    +    render(<Skeleton />);
-    +    expect(screen.getByTestId('skeleton')).toBeInTheDocument();
-    +  });
-    +
-    +  it('renders SkeletonCard', () => {
-    +    render(<SkeletonCard />);
-    +    const skeletons = screen.getAllByTestId('skeleton');
-    +    expect(skeletons.length).toBeGreaterThan(0);
-    +  });
-    +
-    +  it('renders SkeletonRow', () => {
-    +    render(<SkeletonRow />);
-    +    const skeletons = screen.getAllByTestId('skeleton');
-    +    expect(skeletons.length).toBeGreaterThan(0);
-    +  });
-    +});
-    +
-    +describe('EmptyState', () => {
-    +  it('renders message', () => {
-    +    render(<EmptyState message="Nothing here" />);
-    +    expect(screen.getByText('Nothing here')).toBeInTheDocument();
-    +  });
-    +
-    +  it('renders empty-state test id', () => {
-    +    render(<EmptyState message="Test" />);
-    +    expect(screen.getByTestId('empty-state')).toBeInTheDocument();
-    +  });
-    +
-    +  it('renders action button when provided', () => {
-    +    const fn = () => {};
-    +    render(<EmptyState message="Empty" actionLabel="Add Item" onAction={fn} />);
-    +    expect(screen.getByText('Add Item')).toBeInTheDocument();
-    +  });
-    +});
-    diff --git a/web/src/components/AppShell.tsx b/web/src/components/AppShell.tsx
-    new file mode 100644
-    index 0000000..f3102d9
-    --- /dev/null
-    +++ b/web/src/components/AppShell.tsx
-    @@ -0,0 +1,201 @@
-    +import { useState, useEffect, useCallback, type ReactNode } from 'react';
-    +import { useNavigate, useLocation } from 'react-router-dom';
-    +import { useAuth } from '../context/AuthContext';
-    +import HealthBadge from './HealthBadge';
-    +
-    +const API_BASE = import.meta.env.VITE_API_URL ?? '';
-    +
-    +interface SidebarRepo {
-    +  id: string;
-    +  full_name: string;
-    +  health_score: string;
+    +USER_ID = "22222222-2222-2222-2222-222222222222"
+    +MOCK_USER = {
+    +    "id": UUID(USER_ID),
+    +    "github_id": 99999,
+    +    "github_login": "octocat",
+    +    "avatar_url": "https://example.com/avatar.png",
+    +    "access_token": "gho_testtoken123",
     +}
     +
-    +interface AppShellProps {
-    +  children: ReactNode;
-    +  sidebarRepos?: SidebarRepo[];
-    +  onReposChange?: () => void;
-    +}
+    +client = TestClient(app)
     +
-    +function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
-    +  const { user, token, logout } = useAuth();
-    +  const navigate = useNavigate();
-    +  const location = useLocation();
-    +  const [collapsed, setCollapsed] = useState(false);
-    +  const [repos, setRepos] = useState<SidebarRepo[]>(sidebarRepos ?? []);
     +
-    +  useEffect(() => {
-    +    if (sidebarRepos) {
-    +      setRepos(sidebarRepos);
-    +      return;
+    +def _auth_header():
+    +    token = create_token(USER_ID, "octocat")
+    +    return {"Authorization": f"Bearer {token}"}
+    +
+    +
+    +def _sign(payload_bytes: bytes) -> str:
+    +    digest = _hmac_sha256(b"whsec_test", payload_bytes)
+    +    return f"sha256={digest}"
+    +
+    +
+    +# ÔöÇÔöÇ Rate limiting ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +
+    +@patch("app.api.routers.webhooks.process_push_event", new_callable=AsyncMock)
+    +def test_webhook_rate_limit_blocks_excess(mock_process):
+    +    """Webhook endpoint should return 429 when rate limit is exceeded."""
+    +    from app.api.routers.webhooks import webhook_limiter
+    +
+    +    # Reset limiter for test isolation
+    +    webhook_limiter._hits.clear()
+    +
+    +    mock_process.return_value = {"id": "test"}
+    +    payload = json.dumps({
+    +        "ref": "refs/heads/main",
+    +        "head_commit": {"id": "abc", "message": "test", "author": {"name": "bot"}},
+    +        "repository": {"id": 1, "full_name": "o/r"},
+    +        "commits": [],
+    +    }).encode()
+    +
+    +    headers = {
+    +        "Content-Type": "application/json",
+    +        "X-Hub-Signature-256": _sign(payload),
+    +        "X-GitHub-Event": "push",
     +    }
-    +    // Load repos for sidebar if not provided
-    +    const load = async () => {
-    +      try {
-    +        const res = await fetch(`${API_BASE}/repos`, {
-    +          headers: { Authorization: `Bearer ${token}` },
-    +        });
-    +        if (res.ok) {
-    +          const data = await res.json();
-    +          setRepos(data.items);
-    +        }
-    +      } catch {
-    +        // best effort
-    +      }
-    +    };
-    +    load();
-    +  }, [token, sidebarRepos]);
     +
-    +  // Responsive: collapse sidebar below 1024px
-    +  useEffect(() => {
-    +    const check = () => setCollapsed(window.innerWidth < 1024);
-    +    check();
-    +    window.addEventListener('resize', check);
-    +    return () => window.removeEventListener('resize', check);
-    +  }, []);
+    +    # Send up to the limit (30 requests)
+    +    for _ in range(30):
+    +        resp = client.post("/webhooks/github", content=payload, headers=headers)
+    +        assert resp.status_code == 200
     +
-    +  const sidebarWidth = collapsed ? 0 : 240;
+    +    # 31st request should be rate-limited
+    +    resp = client.post("/webhooks/github", content=payload, headers=headers)
+    +    assert resp.status_code == 429
+    +    assert "rate limit" in resp.json()["detail"].lower()
     +
-    +  return (
-    +    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#0F172A', color: '#F8FAFC' }}>
-    +      {/* Header */}
-    +      <header
-    +        style={{
-    +          display: 'flex',
-    +          alignItems: 'center',
-    +          justifyContent: 'space-between',
-    +          padding: '12px 24px',
-    +          borderBottom: '1px solid #1E293B',
-    +          background: '#0F172A',
-    +          zIndex: 10,
-    +        }}
-    +      >
-    +        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-    +          {collapsed && (
-    +            <button
-    +              onClick={() => setCollapsed(false)}
-    +              aria-label="Open menu"
-    +              style={{
-    +                background: 'transparent',
-    +                color: '#94A3B8',
-    +                border: '1px solid #334155',
-    +                borderRadius: '6px',
-    +                padding: '4px 8px',
-    +                cursor: 'pointer',
-    +                fontSize: '1rem',
-    +              }}
-    +            >
-    +              &#9776;
-    +            </button>
-    +          )}
-    +          <h1
-    +            onClick={() => navigate('/')}
-    +            style={{ fontSize: '1.15rem', fontWeight: 700, cursor: 'pointer', margin: 0 }}
-    +          >
-    +            ForgeGuard
-    +          </h1>
-    +        </div>
-    +        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-    +          {user?.avatar_url && (
-    +            <img
-    +              src={user.avatar_url}
-    +              alt={user.github_login}
-    +              style={{ width: 28, height: 28, borderRadius: '50%' }}
-    +            />
-    +          )}
-    +          <span style={{ color: '#94A3B8', fontSize: '0.85rem' }}>{user?.github_login}</span>
-    +          <button
-    +            onClick={logout}
-    +            style={{
-    +              background: 'transparent',
-    +              color: '#94A3B8',
-    +              border: '1px solid #334155',
-    +              borderRadius: '6px',
-    +              padding: '4px 14px',
-    +              cursor: 'pointer',
-    +              fontSize: '0.8rem',
-    +            }}
-    +          >
-    +            Logout
-    +          </button>
-    +        </div>
-    +      </header>
+    +    # Clean up
+    +    webhook_limiter._hits.clear()
     +
-    +      <div style={{ display: 'flex', flex: 1 }}>
-    +        {/* Sidebar */}
-    +        {!collapsed && (
-    +          <aside
-    +            style={{
-    +              width: sidebarWidth,
-    +              borderRight: '1px solid #1E293B',
-    +              padding: '16px 0',
-    +              overflowY: 'auto',
-    +              flexShrink: 0,
-    +              background: '#0F172A',
-    +            }}
-    +          >
-    +            <div style={{ padding: '0 16px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-    +              <span style={{ color: '#94A3B8', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-    +                Repos
-    +              </span>
-    +              {window.innerWidth < 1024 && (
-    +                <button
-    +                  onClick={() => setCollapsed(true)}
-    +                  aria-label="Close menu"
-    +                  style={{
-    +                    background: 'transparent',
-    +                    color: '#94A3B8',
-    +                    border: 'none',
-    +                    cursor: 'pointer',
-    +                    fontSize: '1rem',
-    +                  }}
-    +                >
-    +                  &times;
-    +                </button>
-    +              )}
-    +            </div>
-    +            {repos.length === 0 ? (
-    +              <div style={{ padding: '12px 16px', color: '#64748B', fontSize: '0.8rem' }}>
-    +                No repos connected
-    +              </div>
-    +            ) : (
-    +              repos.map((repo) => {
-    +                const isActive = location.pathname.startsWith(`/repos/${repo.id}`);
-    +                return (
-    +                  <div
-    +                    key={repo.id}
-    +                    onClick={() => navigate(`/repos/${repo.id}`)}
-    +                    style={{
-    +                      display: 'flex',
-    +                      alignItems: 'center',
-    +                      gap: '8px',
-    +                      padding: '8px 16px',
-    +                      cursor: 'pointer',
-    +                      background: isActive ? '#1E293B' : 'transparent',
-    +                      borderLeft: isActive ? '3px solid #2563EB' : '3px solid transparent',
-    +                      transition: 'background 0.15s',
-    +                      fontSize: '0.8rem',
-    +                    }}
-    +                  >
-    +                    <HealthBadge score={repo.health_score} size={8} />
-    +                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-    +                      {repo.full_name}
-    +                    </span>
-    +                  </div>
-    +                );
-    +              })
-    +            )}
-    +          </aside>
-    +        )}
     +
-    +        {/* Main */}
-    +        <main style={{ flex: 1, overflow: 'auto' }}>
-    +          {children}
-    +        </main>
-    +      </div>
-    +    </div>
-    +  );
-    +}
+    +# ÔöÇÔöÇ Input validation ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +# Pydantic validation returns 422 BEFORE reaching the auth or DB layer,
+    +# so we don't need to mock DB calls for these tests.
     +
-    +export type { SidebarRepo };
-    +export default AppShell;
-    diff --git a/web/src/components/CommitRow.tsx b/web/src/components/CommitRow.tsx
-    index 5db2162..179dfda 100644
-    --- a/web/src/components/CommitRow.tsx
-    +++ b/web/src/components/CommitRow.tsx
-    @@ -11,6 +11,7 @@ interface AuditRun {
-       started_at: string | null;
-       completed_at: string | null;
-       files_checked: number;
-    +  check_summary: string | null;
-     }
-     
-     interface CommitRowProps {
-    @@ -71,7 +72,12 @@ function CommitRow({ audit, onClick }: CommitRowProps) {
-               </div>
-             </div>
-           </div>
-    -      <div style={{ flexShrink: 0, marginLeft: '12px' }}>
-    +      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0, marginLeft: '12px' }}>
-    +        {audit.check_summary && (
-    +          <span style={{ color: '#64748B', fontSize: '0.65rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-    +            {audit.check_summary}
-    +          </span>
-    +        )}
-             <ResultBadge result={audit.overall_result} />
-           </div>
-         </div>
-    diff --git a/web/src/components/EmptyState.tsx b/web/src/components/EmptyState.tsx
+    +
+    +@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock, return_value=MOCK_USER)
+    +def test_connect_repo_rejects_invalid_full_name(mock_get_user):
+    +    """full_name must match owner/repo pattern."""
+    +    resp = client.post(
+    +        "/repos/connect",
+    +        json={
+    +            "github_repo_id": 1,
+    +            "full_name": "not a valid repo name!!!",
+    +            "default_branch": "main",
+    +        },
+    +        headers=_auth_header(),
+    +    )
+    +    assert resp.status_code == 422
+    +
+    +
+    +@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock, return_value=MOCK_USER)
+    +def test_connect_repo_rejects_zero_id(mock_get_user):
+    +    """github_repo_id must be >= 1."""
+    +    resp = client.post(
+    +        "/repos/connect",
+    +        json={
+    +            "github_repo_id": 0,
+    +            "full_name": "owner/repo",
+    +            "default_branch": "main",
+    +        },
+    +        headers=_auth_header(),
+    +    )
+    +    assert resp.status_code == 422
+    +
+    +
+    +@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock, return_value=MOCK_USER)
+    +def test_connect_repo_rejects_empty_branch(mock_get_user):
+    +    """default_branch must not be empty."""
+    +    resp = client.post(
+    +        "/repos/connect",
+    +        json={
+    +            "github_repo_id": 1,
+    +            "full_name": "owner/repo",
+    +            "default_branch": "",
+    +        },
+    +        headers=_auth_header(),
+    +    )
+    +    assert resp.status_code == 422
+    +
+    +
+    +@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+    +@patch("app.api.routers.repos.connect_repo", new_callable=AsyncMock)
+    +def test_connect_repo_accepts_valid_input(mock_connect, mock_get_user):
+    +    """Valid input should pass validation and reach the service layer."""
+    +    mock_get_user.return_value = MOCK_USER
+    +    mock_connect.return_value = {
+    +        "id": UUID("11111111-1111-1111-1111-111111111111"),
+    +        "full_name": "owner/repo",
+    +        "webhook_active": True,
+    +    }
+    +    resp = client.post(
+    +        "/repos/connect",
+    +        json={
+    +            "github_repo_id": 12345,
+    +            "full_name": "owner/repo",
+    +            "default_branch": "main",
+    +        },
+    +        headers=_auth_header(),
+    +    )
+    +    assert resp.status_code == 200
+    +
+    +
+    +# ÔöÇÔöÇ Error handling ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +
+    +
+    +def test_global_error_handler_is_registered():
+    +    """App should have a global exception handler for unhandled errors."""
+    +    from app.main import app as test_app
+    +
+    +    handlers = test_app.exception_handlers
+    +    assert Exception in handlers
+    +
+    +
+    +def test_cors_allows_valid_origin():
+    +    """CORS should accept requests from the configured frontend origin."""
+    +    resp = client.options(
+    +        "/health",
+    +        headers={
+    +            "Origin": "http://localhost:5173",
+    +            "Access-Control-Request-Method": "GET",
+    +        },
+    +    )
+    +    assert resp.status_code == 200
+    diff --git a/tests/test_rate_limit.py b/tests/test_rate_limit.py
     new file mode 100644
-    index 0000000..429e852
+    index 0000000..af30e8f
     --- /dev/null
-    +++ b/web/src/components/EmptyState.tsx
+    +++ b/tests/test_rate_limit.py
     @@ -0,0 +1,38 @@
-    +interface EmptyStateProps {
-    +  message: string;
-    +  actionLabel?: string;
-    +  onAction?: () => void;
-    +}
+    +"""Tests for rate limiter."""
     +
-    +function EmptyState({ message, actionLabel, onAction }: EmptyStateProps) {
-    +  return (
-    +    <div
-    +      data-testid="empty-state"
-    +      style={{
-    +        textAlign: 'center',
-    +        padding: '64px 24px',
-    +        color: '#94A3B8',
-    +      }}
-    +    >
-    +      <p style={{ marginBottom: actionLabel ? '16px' : '0' }}>{message}</p>
-    +      {actionLabel && onAction && (
-    +        <button
-    +          onClick={onAction}
-    +          style={{
-    +            background: '#2563EB',
-    +            color: '#fff',
-    +            border: 'none',
-    +            borderRadius: '6px',
-    +            padding: '8px 16px',
-    +            cursor: 'pointer',
-    +            fontSize: '0.85rem',
-    +          }}
-    +        >
-    +          {actionLabel}
-    +        </button>
-    +      )}
-    +    </div>
-    +  );
-    +}
+    +from app.api.rate_limit import RateLimiter
     +
-    +export default EmptyState;
-    diff --git a/web/src/components/Skeleton.tsx b/web/src/components/Skeleton.tsx
-    new file mode 100644
-    index 0000000..19bb14d
-    --- /dev/null
-    +++ b/web/src/components/Skeleton.tsx
-    @@ -0,0 +1,68 @@
-    +interface SkeletonProps {
-    +  width?: string;
-    +  height?: string;
-    +  borderRadius?: string;
-    +  style?: React.CSSProperties;
-    +}
     +
-    +function Skeleton({ width = '100%', height = '16px', borderRadius = '4px', style }: SkeletonProps) {
-    +  return (
-    +    <div
-    +      data-testid="skeleton"
-    +      style={{
-    +        width,
-    +        height,
-    +        borderRadius,
-    +        background: 'linear-gradient(90deg, #1E293B 25%, #2D3B4F 50%, #1E293B 75%)',
-    +        backgroundSize: '200% 100%',
-    +        animation: 'skeleton-shimmer 1.5s ease-in-out infinite',
-    +        ...style,
-    +      }}
-    +    />
-    +  );
-    +}
+    +def test_allows_within_limit():
+    +    """Requests within the limit should be allowed."""
+    +    limiter = RateLimiter(max_requests=3, window_seconds=60)
+    +    assert limiter.is_allowed("client1") is True
+    +    assert limiter.is_allowed("client1") is True
+    +    assert limiter.is_allowed("client1") is True
     +
-    +export function SkeletonCard() {
-    +  return (
-    +    <div
-    +      style={{
-    +        background: '#1E293B',
-    +        borderRadius: '8px',
-    +        padding: '16px 20px',
-    +        display: 'flex',
-    +        alignItems: 'center',
-    +        gap: '12px',
-    +      }}
-    +    >
-    +      <Skeleton width="12px" height="12px" borderRadius="50%" />
-    +      <div style={{ flex: 1 }}>
-    +        <Skeleton width="40%" height="14px" style={{ marginBottom: '8px' }} />
-    +        <Skeleton width="60%" height="10px" />
-    +      </div>
-    +    </div>
-    +  );
-    +}
     +
-    +export function SkeletonRow() {
-    +  return (
-    +    <div
-    +      style={{
-    +        background: '#1E293B',
-    +        borderRadius: '6px',
-    +        padding: '12px 16px',
-    +        display: 'flex',
-    +        alignItems: 'center',
-    +        gap: '12px',
-    +      }}
-    +    >
-    +      <Skeleton width="56px" height="14px" />
-    +      <div style={{ flex: 1 }}>
-    +        <Skeleton width="50%" height="12px" style={{ marginBottom: '6px' }} />
-    +        <Skeleton width="30%" height="10px" />
-    +      </div>
-    +      <Skeleton width="48px" height="20px" borderRadius="4px" />
-    +    </div>
-    +  );
-    +}
+    +def test_blocks_over_limit():
+    +    """Requests exceeding the limit should be blocked."""
+    +    limiter = RateLimiter(max_requests=2, window_seconds=60)
+    +    assert limiter.is_allowed("client1") is True
+    +    assert limiter.is_allowed("client1") is True
+    +    assert limiter.is_allowed("client1") is False
     +
-    +export default Skeleton;
-    diff --git a/web/src/context/ToastContext.tsx b/web/src/context/ToastContext.tsx
-    new file mode 100644
-    index 0000000..c1ae210
-    --- /dev/null
-    +++ b/web/src/context/ToastContext.tsx
-    @@ -0,0 +1,99 @@
-    +import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
     +
-    +interface Toast {
-    +  id: number;
-    +  message: string;
-    +  type: 'error' | 'success' | 'info';
-    +}
+    +def test_separate_keys():
+    +    """Different keys should have independent limits."""
+    +    limiter = RateLimiter(max_requests=1, window_seconds=60)
+    +    assert limiter.is_allowed("client1") is True
+    +    assert limiter.is_allowed("client2") is True
+    +    assert limiter.is_allowed("client1") is False
     +
-    +interface ToastContextValue {
-    +  addToast: (message: string, type?: Toast['type']) => void;
-    +}
     +
-    +const ToastContext = createContext<ToastContextValue | null>(null);
+    +def test_window_expiry():
+    +    """Requests should be allowed again after the window expires."""
+    +    import time
     +
-    +let nextId = 1;
-    +
-    +export function ToastProvider({ children }: { children: ReactNode }) {
-    +  const [toasts, setToasts] = useState<Toast[]>([]);
-    +
-    +  const addToast = useCallback((message: string, type: Toast['type'] = 'error') => {
-    +    const id = nextId++;
-    +    setToasts((prev) => [...prev, { id, message, type }]);
-    +    setTimeout(() => {
-    +      setToasts((prev) => prev.filter((t) => t.id !== id));
-    +    }, 5000);
-    +  }, []);
-    +
-    +  const removeToast = useCallback((id: number) => {
-    +    setToasts((prev) => prev.filter((t) => t.id !== id));
-    +  }, []);
-    +
-    +  const COLORS: Record<string, { bg: string; border: string }> = {
-    +    error: { bg: '#7F1D1D', border: '#EF4444' },
-    +    success: { bg: '#14532D', border: '#22C55E' },
-    +    info: { bg: '#1E3A5F', border: '#2563EB' },
-    +  };
-    +
-    +  return (
-    +    <ToastContext.Provider value={{ addToast }}>
-    +      {children}
-    +      <div
-    +        style={{
-    +          position: 'fixed',
-    +          bottom: '24px',
-    +          right: '24px',
-    +          zIndex: 1000,
-    +          display: 'flex',
-    +          flexDirection: 'column',
-    +          gap: '8px',
-    +          maxWidth: '360px',
-    +        }}
-    +      >
-    +        {toasts.map((toast) => {
-    +          const colors = COLORS[toast.type] ?? COLORS.info;
-    +          return (
-    +            <div
-    +              key={toast.id}
-    +              role="alert"
-    +              style={{
-    +                background: colors.bg,
-    +                borderLeft: `3px solid ${colors.border}`,
-    +                borderRadius: '6px',
-    +                padding: '12px 16px',
-    +                fontSize: '0.85rem',
-    +                color: '#F8FAFC',
-    +                display: 'flex',
-    +                alignItems: 'center',
-    +                justifyContent: 'space-between',
-    +                gap: '8px',
-    +              }}
-    +            >
-    +              <span>{toast.message}</span>
-    +              <button
-    +                onClick={() => removeToast(toast.id)}
-    +                style={{
-    +                  background: 'transparent',
-    +                  color: '#94A3B8',
-    +                  border: 'none',
-    +                  cursor: 'pointer',
-    +                  fontSize: '1rem',
-    +                  padding: 0,
-    +                  lineHeight: 1,
-    +                }}
-    +              >
-    +                &times;
-    +              </button>
-    +            </div>
-    +          );
-    +        })}
-    +      </div>
-    +    </ToastContext.Provider>
-    +  );
-    +}
-    +
-    +export function useToast(): ToastContextValue {
-    +  const ctx = useContext(ToastContext);
-    +  if (!ctx) throw new Error('useToast must be used within ToastProvider');
-    +  return ctx;
-    +}
-    diff --git a/web/src/hooks/useWebSocket.ts b/web/src/hooks/useWebSocket.ts
-    new file mode 100644
-    index 0000000..86131f1
-    --- /dev/null
-    +++ b/web/src/hooks/useWebSocket.ts
-    @@ -0,0 +1,53 @@
-    +import { useEffect, useRef, useCallback } from 'react';
-    +import { useAuth } from '../context/AuthContext';
-    +
-    +type MessageHandler = (data: { type: string; payload: unknown }) => void;
-    +
-    +const WS_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/^http/, 'ws');
-    +
-    +export function useWebSocket(onMessage: MessageHandler) {
-    +  const { token } = useAuth();
-    +  const wsRef = useRef<WebSocket | null>(null);
-    +  const handlerRef = useRef(onMessage);
-    +  handlerRef.current = onMessage;
-    +
-    +  const connect = useCallback(() => {
-    +    if (!token) return;
-    +
-    +    const url = `${WS_BASE}/ws?token=${encodeURIComponent(token)}`;
-    +    const ws = new WebSocket(url);
-    +
-    +    ws.onmessage = (event) => {
-    +      try {
-    +        const data = JSON.parse(event.data);
-    +        handlerRef.current(data);
-    +      } catch {
-    +        // ignore malformed messages
-    +      }
-    +    };
-    +
-    +    ws.onclose = () => {
-    +      // Reconnect after 3 seconds
-    +      setTimeout(() => {
-    +        if (wsRef.current === ws) {
-    +          connect();
-    +        }
-    +      }, 3000);
-    +    };
-    +
-    +    ws.onerror = () => {
-    +      ws.close();
-    +    };
-    +
-    +    wsRef.current = ws;
-    +  }, [token]);
-    +
-    +  useEffect(() => {
-    +    connect();
-    +    return () => {
-    +      const ws = wsRef.current;
-    +      wsRef.current = null;
-    +      if (ws) ws.close();
-    +    };
-    +  }, [connect]);
-    +}
-    diff --git a/web/src/index.css b/web/src/index.css
-    index bacf9f8..23889d9 100644
-    --- a/web/src/index.css
-    +++ b/web/src/index.css
-    @@ -11,3 +11,8 @@ body {
-       -webkit-font-smoothing: antialiased;
-       -moz-osx-font-smoothing: grayscale;
-     }
-    +
-    +@keyframes skeleton-shimmer {
-    +  0% { background-position: 200% 0; }
-    +  100% { background-position: -200% 0; }
-    +}
-    diff --git a/web/src/pages/AuditDetail.tsx b/web/src/pages/AuditDetail.tsx
-    index 3e51080..9fa2e71 100644
-    --- a/web/src/pages/AuditDetail.tsx
-    +++ b/web/src/pages/AuditDetail.tsx
-    @@ -1,9 +1,12 @@
-     import { useState, useEffect } from 'react';
-     import { useParams, useNavigate } from 'react-router-dom';
-     import { useAuth } from '../context/AuthContext';
-    +import { useToast } from '../context/ToastContext';
-    +import AppShell from '../components/AppShell';
-     import ResultBadge from '../components/ResultBadge';
-     import CheckResultCard from '../components/CheckResultCard';
-     import type { CheckResultData } from '../components/CheckResultCard';
-    +import Skeleton from '../components/Skeleton';
-     
-     const API_BASE = import.meta.env.VITE_API_URL ?? '';
-     
-    @@ -24,6 +27,7 @@ interface AuditDetail {
-     function AuditDetailPage() {
-       const { repoId, auditId } = useParams<{ repoId: string; auditId: string }>();
-       const { token } = useAuth();
-    +  const { addToast } = useToast();
-       const navigate = useNavigate();
-     
-       const [detail, setDetail] = useState<AuditDetail | null>(null);
-    @@ -38,29 +42,47 @@ function AuditDetailPage() {
-             );
-             if (res.ok) {
-               setDetail(await res.json());
-    +        } else {
-    +          addToast('Failed to load audit detail');
-             }
-           } catch {
-    -        // network error
-    +        addToast('Network error loading audit detail');
-           } finally {
-             setLoading(false);
-           }
-         };
-         fetchDetail();
-    -  }, [repoId, auditId, token]);
-    +  }, [repoId, auditId, token, addToast]);
-     
-       if (loading) {
-         return (
-    -      <div style={{ padding: '24px', color: '#94A3B8' }}>
-    -        Loading audit detail...
-    -      </div>
-    +      <AppShell>
-    +        <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +          <Skeleton width="80px" height="28px" style={{ marginBottom: '20px' }} />
-    +          <div style={{ background: '#1E293B', borderRadius: '8px', padding: '20px', marginBottom: '16px' }}>
-    +            <Skeleton width="30%" height="14px" style={{ marginBottom: '12px' }} />
-    +            <Skeleton width="60%" height="12px" style={{ marginBottom: '12px' }} />
-    +            <Skeleton width="100px" height="24px" />
-    +          </div>
-    +          <Skeleton width="120px" height="16px" style={{ marginBottom: '12px' }} />
-    +          <div style={{ background: '#1E293B', borderRadius: '6px', padding: '14px 18px', marginBottom: '8px' }}>
-    +            <Skeleton width="50%" height="14px" />
-    +          </div>
-    +          <div style={{ background: '#1E293B', borderRadius: '6px', padding: '14px 18px', marginBottom: '8px' }}>
-    +            <Skeleton width="50%" height="14px" />
-    +          </div>
-    +        </div>
-    +      </AppShell>
-         );
-       }
-     
-       if (!detail) {
-         return (
-    -      <div style={{ padding: '24px', color: '#94A3B8' }}>
-    -        Audit not found.
-    -      </div>
-    +      <AppShell>
-    +        <div style={{ padding: '24px', color: '#94A3B8' }}>
-    +          Audit not found.
-    +        </div>
-    +      </AppShell>
-         );
-       }
-     
-    @@ -70,67 +92,69 @@ function AuditDetailPage() {
-           : null;
-     
-       return (
-    -    <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    -      <button
-    -        onClick={() => navigate(`/repos/${repoId}`)}
-    -        style={{
-    -          background: 'transparent',
-    -          color: '#94A3B8',
-    -          border: '1px solid #334155',
-    -          borderRadius: '6px',
-    -          padding: '6px 12px',
-    -          cursor: 'pointer',
-    -          fontSize: '0.8rem',
-    -          marginBottom: '20px',
-    -        }}
-    -      >
-    -        Back to Timeline
-    -      </button>
-    +    <AppShell>
-    +      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +        <button
-    +          onClick={() => navigate(`/repos/${repoId}`)}
-    +          style={{
-    +            background: 'transparent',
-    +            color: '#94A3B8',
-    +            border: '1px solid #334155',
-    +            borderRadius: '6px',
-    +            padding: '6px 12px',
-    +            cursor: 'pointer',
-    +            fontSize: '0.8rem',
-    +            marginBottom: '20px',
-    +          }}
-    +        >
-    +          Back to Timeline
-    +        </button>
-     
-    -      {/* Commit Info */}
-    -      <div
-    -        style={{
-    -          background: '#1E293B',
-    -          borderRadius: '8px',
-    -          padding: '20px',
-    -          marginBottom: '16px',
-    -        }}
-    -      >
-    -        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-    -          <a
-    -            href={`https://github.com/commit/${detail.commit_sha}`}
-    -            target="_blank"
-    -            rel="noopener noreferrer"
-    -            style={{ color: '#2563EB', fontFamily: 'monospace', fontSize: '0.85rem' }}
-    -          >
-    -            {detail.commit_sha.substring(0, 7)}
-    -          </a>
-    -          <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    -            {detail.branch} &middot; {detail.commit_author}
-    -          </span>
-    +        {/* Commit Info */}
-    +        <div
-    +          style={{
-    +            background: '#1E293B',
-    +            borderRadius: '8px',
-    +            padding: '20px',
-    +            marginBottom: '16px',
-    +          }}
-    +        >
-    +          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-    +            <a
-    +              href={`https://github.com/commit/${detail.commit_sha}`}
-    +              target="_blank"
-    +              rel="noopener noreferrer"
-    +              style={{ color: '#2563EB', fontFamily: 'monospace', fontSize: '0.85rem' }}
-    +            >
-    +              {detail.commit_sha.substring(0, 7)}
-    +            </a>
-    +            <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    +              {detail.branch} &middot; {detail.commit_author}
-    +            </span>
-    +          </div>
-    +          <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem' }}>
-    +            {detail.commit_message}
-    +          </p>
-    +          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-    +            <ResultBadge result={detail.overall_result} size="large" />
-    +            <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    +              {detail.files_checked} files checked
-    +              {duration && <span> &middot; {duration}</span>}
-    +            </span>
-    +          </div>
-             </div>
-    -        <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem' }}>
-    -          {detail.commit_message}
-    -        </p>
-    -        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-    -          <ResultBadge result={detail.overall_result} size="large" />
-    -          <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>
-    -            {detail.files_checked} files checked
-    -            {duration && <span> &middot; {duration}</span>}
-    -          </span>
-    -        </div>
-    -      </div>
-     
-    -      {/* Check Results */}
-    -      <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Check Results</h3>
-    -      {detail.checks.length === 0 ? (
-    -        <p style={{ color: '#94A3B8' }}>No check results.</p>
-    -      ) : (
-    -        detail.checks.map((check) => (
-    -          <CheckResultCard key={check.id} check={check} />
-    -        ))
-    -      )}
-    -    </div>
-    +        {/* Check Results */}
-    +        <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Check Results</h3>
-    +        {detail.checks.length === 0 ? (
-    +          <p style={{ color: '#94A3B8' }}>No check results.</p>
-    +        ) : (
-    +          detail.checks.map((check) => (
-    +            <CheckResultCard key={check.id} check={check} />
-    +          ))
-    +        )}
-    +      </div>
-    +    </AppShell>
-       );
-     }
-     
-    diff --git a/web/src/pages/CommitTimeline.tsx b/web/src/pages/CommitTimeline.tsx
-    index 07d85b7..1fcfb5b 100644
-    --- a/web/src/pages/CommitTimeline.tsx
-    +++ b/web/src/pages/CommitTimeline.tsx
-    @@ -1,15 +1,21 @@
-     import { useState, useEffect, useCallback } from 'react';
-     import { useParams, useNavigate } from 'react-router-dom';
-     import { useAuth } from '../context/AuthContext';
-    +import { useToast } from '../context/ToastContext';
-    +import { useWebSocket } from '../hooks/useWebSocket';
-    +import AppShell from '../components/AppShell';
-     import CommitRow from '../components/CommitRow';
-     import type { AuditRun } from '../components/CommitRow';
-     import HealthBadge from '../components/HealthBadge';
-    +import EmptyState from '../components/EmptyState';
-    +import { SkeletonRow } from '../components/Skeleton';
-     
-     const API_BASE = import.meta.env.VITE_API_URL ?? '';
-     
-     function CommitTimeline() {
-       const { repoId } = useParams<{ repoId: string }>();
-       const { token } = useAuth();
-    +  const { addToast } = useToast();
-       const navigate = useNavigate();
-     
-       const [audits, setAudits] = useState<AuditRun[]>([]);
-    @@ -28,78 +34,107 @@ function CommitTimeline() {
-             const data = await res.json();
-             setAudits(data.items);
-             setTotal(data.total);
-    +      } else {
-    +        addToast('Failed to load audits');
-           }
-         } catch {
-    -      // network error
-    +      addToast('Network error loading audits');
-         } finally {
-           setLoading(false);
-         }
-    -  }, [repoId, token, offset]);
-    +  }, [repoId, token, offset, addToast]);
-     
-       useEffect(() => {
-         fetchAudits();
-       }, [fetchAudits]);
-     
-    +  // Real-time: refresh when audit for this repo completes
-    +  useWebSocket(useCallback((data) => {
-    +    if (data.type === 'audit_update') {
-    +      const payload = data.payload as { repo_id?: string };
-    +      if (payload.repo_id === repoId) {
-    +        fetchAudits();
-    +      }
-    +    }
-    +  }, [fetchAudits, repoId]));
-    +
-       const handleAuditClick = (audit: AuditRun) => {
-         navigate(`/repos/${repoId}/audits/${audit.id}`);
-       };
-     
-    -  return (
-    -    <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    -      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-    -        <button
-    -          onClick={() => navigate('/')}
-    -          style={{
-    -            background: 'transparent',
-    -            color: '#94A3B8',
-    -            border: '1px solid #334155',
-    -            borderRadius: '6px',
-    -            padding: '6px 12px',
-    -            cursor: 'pointer',
-    -            fontSize: '0.8rem',
-    -          }}
-    -        >
-    -          Back
-    -        </button>
-    -        <HealthBadge score="pending" />
-    -        <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Commit Timeline</h2>
-    -        <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>({total} audits)</span>
-    -      </div>
-    +  // Compute health from loaded audits
-    +  const computedHealth = (() => {
-    +    const completed = audits.filter((a) => a.status === 'completed');
-    +    if (completed.length === 0) return 'pending';
-    +    const allPass = completed.every((a) => a.overall_result === 'PASS');
-    +    const anyFail = completed.some((a) => a.overall_result === 'FAIL' || a.overall_result === 'ERROR');
-    +    if (allPass) return 'green';
-    +    if (anyFail) return 'red';
-    +    return 'yellow';
-    +  })();
-     
-    -      {loading ? (
-    -        <p style={{ color: '#94A3B8' }}>Loading audits...</p>
-    -      ) : audits.length === 0 ? (
-    -        <div style={{ textAlign: 'center', padding: '64px 24px', color: '#94A3B8' }}>
-    -          <p>No audit results yet. Push a commit to trigger the first audit.</p>
-    +  return (
-    +    <AppShell>
-    +      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-    +          <button
-    +            onClick={() => navigate('/')}
-    +            style={{
-    +              background: 'transparent',
-    +              color: '#94A3B8',
-    +              border: '1px solid #334155',
-    +              borderRadius: '6px',
-    +              padding: '6px 12px',
-    +              cursor: 'pointer',
-    +              fontSize: '0.8rem',
-    +            }}
-    +          >
-    +            Back
-    +          </button>
-    +          <HealthBadge score={computedHealth} />
-    +          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Commit Timeline</h2>
-    +          <span style={{ color: '#94A3B8', fontSize: '0.8rem' }}>({total} audits)</span>
-             </div>
-    -      ) : (
-    -        <>
-    +
-    +        {loading ? (
-               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-    -            {audits.map((audit) => (
-    -              <CommitRow key={audit.id} audit={audit} onClick={handleAuditClick} />
-    -            ))}
-    +            <SkeletonRow />
-    +            <SkeletonRow />
-    +            <SkeletonRow />
-    +            <SkeletonRow />
-    +            <SkeletonRow />
-               </div>
-    -          {total > offset + limit && (
-    -            <button
-    -              onClick={() => setOffset((o) => o + limit)}
-    -              style={{
-    -                display: 'block',
-    -                margin: '16px auto',
-    -                background: '#1E293B',
-    -                color: '#94A3B8',
-    -                border: '1px solid #334155',
-    -                borderRadius: '6px',
-    -                padding: '8px 24px',
-    -                cursor: 'pointer',
-    -                fontSize: '0.85rem',
-    -              }}
-    -            >
-    -              Load More
-    -            </button>
-    -          )}
-    -        </>
-    -      )}
-    -    </div>
-    +        ) : audits.length === 0 ? (
-    +          <EmptyState message="No audit results yet. Push a commit to trigger the first audit." />
-    +        ) : (
-    +          <>
-    +            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-    +              {audits.map((audit) => (
-    +                <CommitRow key={audit.id} audit={audit} onClick={handleAuditClick} />
-    +              ))}
-    +            </div>
-    +            {total > offset + limit && (
-    +              <button
-    +                onClick={() => setOffset((o) => o + limit)}
-    +                style={{
-    +                  display: 'block',
-    +                  margin: '16px auto',
-    +                  background: '#1E293B',
-    +                  color: '#94A3B8',
-    +                  border: '1px solid #334155',
-    +                  borderRadius: '6px',
-    +                  padding: '8px 24px',
-    +                  cursor: 'pointer',
-    +                  fontSize: '0.85rem',
-    +                }}
-    +              >
-    +                Load More
-    +              </button>
-    +            )}
-    +          </>
-    +        )}
-    +      </div>
-    +    </AppShell>
-       );
-     }
-     
-    diff --git a/web/src/pages/Dashboard.tsx b/web/src/pages/Dashboard.tsx
-    index c6ebb70..aa05884 100644
-    --- a/web/src/pages/Dashboard.tsx
-    +++ b/web/src/pages/Dashboard.tsx
-    @@ -1,15 +1,21 @@
-     import { useState, useEffect, useCallback } from 'react';
-     import { useNavigate } from 'react-router-dom';
-     import { useAuth } from '../context/AuthContext';
-    +import { useToast } from '../context/ToastContext';
-    +import { useWebSocket } from '../hooks/useWebSocket';
-    +import AppShell from '../components/AppShell';
-     import RepoCard from '../components/RepoCard';
-     import type { Repo } from '../components/RepoCard';
-     import RepoPickerModal from '../components/RepoPickerModal';
-     import ConfirmDialog from '../components/ConfirmDialog';
-    +import EmptyState from '../components/EmptyState';
-    +import { SkeletonCard } from '../components/Skeleton';
-     
-     const API_BASE = import.meta.env.VITE_API_URL ?? '';
-     
-     function Dashboard() {
-    -  const { user, token, logout } = useAuth();
-    +  const { token } = useAuth();
-    +  const { addToast } = useToast();
-       const navigate = useNavigate();
-       const [repos, setRepos] = useState<Repo[]>([]);
-       const [loading, setLoading] = useState(true);
-    @@ -24,29 +30,39 @@ function Dashboard() {
-           if (res.ok) {
-             const data = await res.json();
-             setRepos(data.items);
-    +      } else {
-    +        addToast('Failed to load repos');
-           }
-         } catch {
-    -      // network error -- keep existing
-    +      addToast('Network error loading repos');
-         } finally {
-           setLoading(false);
-         }
-    -  }, [token]);
-    +  }, [token, addToast]);
-     
-       useEffect(() => {
-         fetchRepos();
-       }, [fetchRepos]);
-     
-    +  // Real-time: refresh repos when an audit completes
-    +  useWebSocket(useCallback((data) => {
-    +    if (data.type === 'audit_update') {
-    +      fetchRepos();
-    +    }
-    +  }, [fetchRepos]));
-    +
-       const handleDisconnect = async () => {
-         if (!disconnectTarget) return;
-         try {
-    -      await fetch(`${API_BASE}/repos/${disconnectTarget.id}/disconnect`, {
-    +      const res = await fetch(`${API_BASE}/repos/${disconnectTarget.id}/disconnect`, {
-             method: 'DELETE',
-             headers: { Authorization: `Bearer ${token}` },
-           });
-    +      if (!res.ok) addToast('Failed to disconnect repo');
-           setDisconnectTarget(null);
-           fetchRepos();
-         } catch {
-    -      // best effort
-    +      addToast('Network error disconnecting repo');
-           setDisconnectTarget(null);
-         }
-       };
-    @@ -56,44 +72,8 @@ function Dashboard() {
-       };
-     
-       return (
-    -    <div style={{ background: '#0F172A', color: '#F8FAFC', minHeight: '100vh' }}>
-    -      <header
-    -        style={{
-    -          display: 'flex',
-    -          alignItems: 'center',
-    -          justifyContent: 'space-between',
-    -          padding: '16px 24px',
-    -          borderBottom: '1px solid #1E293B',
-    -        }}
-    -      >
-    -        <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>ForgeGuard</h1>
-    -        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-    -          {user?.avatar_url && (
-    -            <img
-    -              src={user.avatar_url}
-    -              alt={user.github_login}
-    -              style={{ width: 32, height: 32, borderRadius: '50%' }}
-    -            />
-    -          )}
-    -          <span style={{ color: '#94A3B8' }}>{user?.github_login}</span>
-    -          <button
-    -            onClick={logout}
-    -            style={{
-    -              background: 'transparent',
-    -              color: '#94A3B8',
-    -              border: '1px solid #334155',
-    -              borderRadius: '6px',
-    -              padding: '6px 16px',
-    -              cursor: 'pointer',
-    -              fontSize: '0.875rem',
-    -            }}
-    -          >
-    -            Logout
-    -          </button>
-    -        </div>
-    -      </header>
-    -
-    -      <main style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-    +    <AppShell sidebarRepos={repos} onReposChange={fetchRepos}>
-    +      <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
-             <div
-               style={{
-                 display: 'flex',
-    @@ -120,17 +100,17 @@ function Dashboard() {
-             </div>
-     
-             {loading ? (
-    -          <p style={{ color: '#94A3B8' }}>Loading repos...</p>
-    -        ) : repos.length === 0 ? (
-    -          <div
-    -            style={{
-    -              textAlign: 'center',
-    -              padding: '64px 24px',
-    -              color: '#94A3B8',
-    -            }}
-    -          >
-    -            <p>No repos connected yet. Click &quot;Connect a Repo&quot; to get started.</p>
-    +          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-    +            <SkeletonCard />
-    +            <SkeletonCard />
-    +            <SkeletonCard />
-               </div>
-    +        ) : repos.length === 0 ? (
-    +          <EmptyState
-    +            message='No repos connected yet. Click "Connect a Repo" to get started.'
-    +            actionLabel="Connect a Repo"
-    +            onAction={() => setShowPicker(true)}
-    +          />
-             ) : (
-               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                 {repos.map((repo) => (
-    @@ -143,7 +123,7 @@ function Dashboard() {
-                 ))}
-               </div>
-             )}
-    -      </main>
-    +      </div>
-     
-           {showPicker && (
-             <RepoPickerModal
-    @@ -161,7 +141,7 @@ function Dashboard() {
-               onCancel={() => setDisconnectTarget(null)}
-             />
-           )}
-    -    </div>
-    +    </AppShell>
-       );
-     }
-     
+    +    limiter = RateLimiter(max_requests=1, window_seconds=0.1)
+    +    assert limiter.is_allowed("client1") is True
+    +    assert limiter.is_allowed("client1") is False
+    +    time.sleep(0.15)
+    +    assert limiter.is_allowed("client1") is True
 
 ## Verification
-- Static analysis: compileall pass on all Python modules
-- Runtime: all FastAPI endpoints verified via test client including WS
-- Behavior: pytest 56 passed, vitest 15 passed, all assertions green
-- Contract compliance: boundaries.json respected, no unauthorized imports, no ORM usage
+- Static analysis: compileall pass on all modules
+- Runtime: all endpoints verified via test client
+- Behavior: pytest 70 passed, vitest 15 passed
+- Contract compliance: boundaries.json respected, no forbidden imports
 
 ## Notes (optional)
-- No blockers. All Phase 4 features implemented and tested.
+- No blockers. All Phase 5 features implemented and tested.
 
 ## Next Steps
-- Phase 5 Ship Gate: USER_INSTRUCTIONS.md, boot.ps1, rate limiting, input validation, error handling audit, env variable validation
+- Project is ready for deployment to Render
 

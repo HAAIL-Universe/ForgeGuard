@@ -823,3 +823,188 @@ Outcome: SIGNED-OFF (awaiting AUTHORIZED)
 W1: WARN -- Potential secrets found: token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions -- Iteration 14
+Timestamp: 2026-02-15T00:02:30Z
+AEM Cycle: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (13 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/rate_limit.py
+- app/api/routers/repos.py
+- app/api/routers/webhooks.py
+- app/config.py
+- app/main.py
+- boot.ps1
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_config.py
+- tests/test_hardening.py
+- tests/test_rate_limit.py
+- USER_INSTRUCTIONS.md
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions -- Iteration 15
+Timestamp: 2026-02-15T00:02:30Z
+AEM Cycle: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (13 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/rate_limit.py
+- app/api/routers/repos.py
+- app/api/routers/webhooks.py
+- app/config.py
+- app/main.py
+- boot.ps1
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_config.py
+- tests/test_hardening.py
+- tests/test_rate_limit.py
+- USER_INSTRUCTIONS.md
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions -- Iteration 15
+Timestamp: 2026-02-15T00:02:30Z
+AEM Cycle: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (13 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/rate_limit.py
+- app/api/routers/repos.py
+- app/api/routers/webhooks.py
+- app/config.py
+- app/main.py
+- boot.ps1
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_config.py
+- tests/test_hardening.py
+- tests/test_rate_limit.py
+- USER_INSTRUCTIONS.md
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions -- Iteration 16
+Timestamp: 2026-02-15T00:02:30Z
+AEM Cycle: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (13 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/rate_limit.py
+- app/api/routers/repos.py
+- app/api/routers/webhooks.py
+- app/config.py
+- app/main.py
+- boot.ps1
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_config.py
+- tests/test_hardening.py
+- tests/test_rate_limit.py
+- USER_INSTRUCTIONS.md
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions -- Iteration 16
+Timestamp: 2026-02-15T00:02:30Z
+AEM Cycle: Phase 5 -- Ship Gate: env validation, rate limiting, input validation, error handling, boot.ps1, user instructions
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (13 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/rate_limit.py
+- app/api/routers/repos.py
+- app/api/routers/webhooks.py
+- app/config.py
+- app/main.py
+- boot.ps1
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_config.py
+- tests/test_hardening.py
+- tests/test_rate_limit.py
+- USER_INSTRUCTIONS.md
+
+### Notes
+W1: WARN -- Potential secrets found: secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
