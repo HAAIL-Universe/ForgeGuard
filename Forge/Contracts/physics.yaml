@@ -356,11 +356,13 @@ paths:
 
   /projects/{project_id}/build/logs:
     get:
-      summary: "Paginated build logs"
+      summary: "Paginated build logs with optional search"
       auth: bearer
       query:
         limit: integer (default 100)
         offset: integer (default 0)
+        search: string (optional, filters message text)
+        level: string (optional, filters by log level)
       response:
         items: BuildLogEntry[]
         total: integer
@@ -376,6 +378,11 @@ paths:
         cost: BuildCostSummary
         elapsed_seconds: float | null
         loop_count: integer
+        total_turns: integer
+        total_audit_attempts: integer
+        files_written_count: integer
+        git_commits_made: integer
+        interjections_received: integer
 
   /projects/{project_id}/build/instructions:
     get:

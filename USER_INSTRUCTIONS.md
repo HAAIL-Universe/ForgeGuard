@@ -89,6 +89,11 @@ APP_URL=http://localhost:8000
 - `LLM_BUILDER_MODEL` — model for builds (default: `claude-opus-4-6`)
 - `LLM_QUESTIONNAIRE_MODEL` — model for questionnaire / audits / planning (default: `claude-sonnet-4-5`)
 - `LLM_PLANNER_MODEL` — model for inter-phase planning agent (default: `claude-sonnet-4-5`)
+- `PAUSE_THRESHOLD` — consecutive audit failures before pausing (default: `3`)
+- `BUILD_PAUSE_TIMEOUT_MINUTES` — how long a paused build waits before auto-aborting (default: `30`)
+- `PHASE_TIMEOUT_MINUTES` — max time per phase before pause (default: `10`)
+- `LARGE_FILE_WARN_BYTES` — threshold for large file warnings (default: `1048576` = 1 MB)
+- `GIT_PUSH_MAX_RETRIES` — retry attempts for git push failures (default: `3`)
 
 ---
 
@@ -187,28 +192,66 @@ Once the questionnaire is complete, click **Generate Contracts** to produce Forg
 
 ### 4. Start a Build
 
-Click **Start Build** to spawn an autonomous builder agent. The builder:
+Click **Start Build** to spawn an autonomous builder agent. Choose a **build target**:
+
+- **New GitHub Repo** — creates a new repository on GitHub and pushes the generated code
+- **Existing GitHub Repo** — clones an existing repo and builds on top of it
+- **Local Path** — writes files to a directory on your machine
+
+The builder:
 - Works through phases (Phase 0 → Phase N) defined in your contracts
 - Streams real-time progress via WebSocket
 - Runs governance audits after each phase
-- Automatically retries on audit failures (up to 3 times)
-- Stops with `RISK_EXCEEDS_SCOPE` after 3 consecutive failures
+- Automatically retries on audit failures (up to the pause threshold)
+- **Pauses** after too many failures or phase timeout — you decide what to do next
 
 ### 5. Monitor Progress
 
 The **Build Progress** page shows:
-- Phase progress bar (grey=pending, blue=active, green=pass, red=fail)
+- Phase progress bar (grey=pending, blue=active, green=pass, red=fail, amber=paused)
 - Streaming terminal-style logs with color-coded severity
 - Per-phase audit results (A1-A9 checklist)
 - Cancel button with confirmation
 
-### 6. Review Results
+### 6. Pause & Resume
+
+When the builder hits the pause threshold (default: 3 consecutive audit failures on a phase) or a phase times out, the build **pauses** and shows a modal with your options:
+
+- **Retry Phase** — reset the failure counter and try again
+- **Skip Phase** — move to the next phase (use with caution)
+- **Edit & Retry** — provide guidance text that gets injected into the builder's conversation, then retry
+- **Abort Build** — cancel the build entirely
+
+If you don't respond within the pause timeout (default: 30 minutes), the build auto-aborts.
+
+### 7. Interjection
+
+While a build is running, you can send messages to the builder using the **interjection bar** at the bottom of the activity feed. Your message gets injected as a `[User interjection]` block into the builder's next conversation turn.
+
+Use interjections to:
+- Steer the builder's approach ("use SQLite instead of PostgreSQL")
+- Add context ("the API resume` | POST | Resume a paused build |
+| `/projects/{id}/build/interject` | POST | Send message to builder |
+| `/projects/{id}/build/status` | GET | Current build status |
+| `/projects/{id}/build/logs` | GET | Paginated build logs (supports ?search= and ?level=)")
+
+### 8. Review Results
 
 When the build completes, the **Build Complete** page shows:
-- Build summary (phases completed, elapsed time, loopback count)
+- Build summary (phases completed, elapsed time, loopback count, total turns, files written, git commits, interjections received)
 - Cost estimate (input/output tokens per phase, total USD)
 - Deployment instructions tailored to your project's stack
 - Links to the generated code and build logs
+
+### What Happens on Audit Failure
+
+After each phase, the builder runs an inline audit (using an LLM-based auditor). If the audit **fails**:
+
+1. The builder receives the audit findings as feedback
+2. It attempts to fix the issues and re-submit the phase
+3. This repeats up to the pause threshold (default 3 times)
+4. If all retries fail, the build **pauses** for your input (see above)
+5. If the audit **passes**, the builder commits the phase and moves on
 
 ### Rate Limits
 

@@ -98,13 +98,22 @@ def _parse_file_blocks(text: str) -> list[dict]:
 
         end_match = FILE_END_PATTERN.search(text, content_start)
         if not end_match:
-            # No closing delimiter -- skip this block
+            # Malformed block -- missing END delimiter; log warning and skip
+            logger.warning(
+                "Malformed file block (no END delimiter) for: %s", file_path
+            )
             pos = content_start
             break
 
         raw_content = text[content_start:end_match.start()]
         # Strip optional code fence wrapping (```lang ... ```)
         content = _strip_code_fence(raw_content)
+
+        if not file_path:
+            # Malformed: empty path
+            logger.warning("Malformed file block: empty path, skipping")
+            pos = end_match.end()
+            continue
 
         blocks.append({"path": file_path, "content": content})
         pos = end_match.end()
@@ -509,7 +518,8 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
 
 
 async def get_build_logs(
-    project_id: UUID, user_id: UUID, limit: int = 100, offset: int = 0
+    project_id: UUID, user_id: UUID, limit: int = 100, offset: int = 0,
+    *, search: str | None = None, level: str | None = None,
 ) -> tuple[list[dict], int]:
     """Get paginated build logs for a project.
 
@@ -518,6 +528,8 @@ async def get_build_logs(
         user_id: The authenticated user (for ownership check).
         limit: Maximum logs to return.
         offset: Offset for pagination.
+        search: Optional text filter on message content.
+        level: Optional filter by log level.
 
     Returns:
         Tuple of (logs_list, total_count).
@@ -533,7 +545,9 @@ async def get_build_logs(
     if not latest:
         raise ValueError("No builds found for this project")
 
-    return await build_repo.get_build_logs(latest["id"], limit, offset)
+    return await build_repo.get_build_logs(
+        latest["id"], limit, offset, search=search, level=level,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +656,7 @@ async def _run_build(
         # Track files written during this build
         files_written: list[dict] = []
 
+        phase_start_time = datetime.now(timezone.utc)  # Phase timeout tracking
         # Conversation history for the agent (multi-turn)
         messages: list[dict] = [
             {"role": "user", "content": directive},
@@ -677,7 +692,51 @@ async def _run_build(
         # Multi-turn conversation loop
         while True:
             turn_count += 1
+            # Phase timeout check
+            phase_elapsed = (datetime.now(timezone.utc) - phase_start_time).total_seconds()
+            if phase_elapsed > settings.PHASE_TIMEOUT_MINUTES * 60:
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Phase timeout: {current_phase} exceeded {settings.PHASE_TIMEOUT_MINUTES}m",
+                    source="system", level="error",
+                )
+                # Pause instead of failing — let user decide
+                await _pause_build(
+                    build_id, user_id, current_phase,
+                    phase_loop_count,
+                    f"Phase timeout: {current_phase} exceeded {settings.PHASE_TIMEOUT_MINUTES} minutes",
+                )
+                event = _pause_events.get(str(build_id))
+                if event:
+                    try:
+                        await asyncio.wait_for(
+                            event.wait(),
+                            timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                        )
+                    except asyncio.TimeoutError:
+                        await _fail_build(
+                            build_id, user_id,
+                            f"Build timed out on {current_phase} (pause expired)",
+                        )
+                        return
+                action = _resume_actions.pop(str(build_id), "retry")
+                _pause_events.pop(str(build_id), None)
+                await build_repo.resume_build(build_id)
+                if action == "abort":
+                    await _fail_build(build_id, user_id, f"Build aborted after phase timeout on {current_phase}")
+                    return
+                elif action == "skip":
+                    phase_loop_count = 0
+                    accumulated_text = ""
+                    phase_start_time = datetime.now(timezone.utc)
+                    continue
+                else:
+                    phase_loop_count = 0
+                    accumulated_text = ""
+                    phase_start_time = datetime.now(timezone.utc)
+                    continue
 
+            # 
             # Context compaction check
             compacted = False
             if total_tokens_all_turns > CONTEXT_COMPACTION_THRESHOLD and len(messages) > 5:
@@ -867,6 +926,7 @@ async def _run_build(
                             logger.warning("Git commit failed for %s: %s", current_phase, exc)
 
                     # Reset for next phase
+                    phase_start_time = datetime.now(timezone.utc)
                     phase_loop_count = 0
                     accumulated_text = ""
 
@@ -958,20 +1018,15 @@ async def _run_build(
                     await _record_phase_cost(build_id, current_phase, usage)
 
                     # Inject audit feedback as a new user message
-                    feedback_msg = (
-                        f"The audit for {current_phase} FAILED (attempt {phase_loop_count}/{MAX_LOOP_COUNT}).\n\n"
-                        f"Please review the audit findings and fix the issues. "
-                        f"Re-emit the corrected code and the phase sign-off signal when ready.\n"
-                    )
-                    messages.append({"role": "user", "content": feedback_msg})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"[Audit Feedback for {current_phase}]\n{audit_result}\n\n"
+                            "Please address the issues above and try again."
+                        ),
+                    })
 
-                    # Reset accumulated text for the retry
-                    accumulated_text = ""
-
-                    # Continue the loop — stream_agent will be called again
-                    continue
-
-            # Detect build error signals
+            # Check for error signal
             if BUILD_ERROR_SIGNAL in accumulated_text:
                 await _fail_build(
                     build_id, user_id, accumulated_text[-500:]
@@ -981,6 +1036,72 @@ async def _run_build(
             # If no phase was completed and the agent stopped, the build is done
             if not phase_completed:
                 break
+
+            # Push to GitHub after successful phase (with retry + backoff)
+            if (
+                audit_result == "PASS"
+                and working_dir
+                and files_written
+                and target_type in ("github_new", "github_existing")
+                and access_token
+            ):
+                push_succeeded = False
+                for attempt in range(1, settings.GIT_PUSH_MAX_RETRIES + 1):
+                    try:
+                        await git_client.push(
+                            working_dir, access_token=access_token,
+                        )
+                        await build_repo.append_build_log(
+                            build_id, "Pushed to GitHub", source="system", level="info",
+                        )
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": "Pushed all commits to GitHub",
+                            "source": "system", "level": "info",
+                        })
+                        push_succeeded = True
+                        break
+                    except Exception as exc:
+                        logger.warning(
+                            "Git push attempt %d/%d failed: %s",
+                            attempt, settings.GIT_PUSH_MAX_RETRIES, exc,
+                        )
+                        await build_repo.append_build_log(
+                            build_id,
+                            f"Git push attempt {attempt}/{settings.GIT_PUSH_MAX_RETRIES} failed: {exc}",
+                            source="system", level="warn",
+                        )
+                        if attempt < settings.GIT_PUSH_MAX_RETRIES:
+                            await asyncio.sleep(2 ** attempt)
+
+                if not push_succeeded:
+                    await _pause_build(
+                        build_id, user_id, current_phase,
+                        phase_loop_count,
+                        f"Git push failed after {settings.GIT_PUSH_MAX_RETRIES} attempts",
+                    )
+                    event = _pause_events.get(str(build_id))
+                    if event:
+                        try:
+                            await asyncio.wait_for(
+                                event.wait(),
+                                timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                            )
+                        except asyncio.TimeoutError:
+                            await _fail_build(
+                                build_id, user_id,
+                                "Git push failed and pause expired",
+                            )
+                            return
+                    action = _resume_actions.pop(str(build_id), "retry")
+                    _pause_events.pop(str(build_id), None)
+                    await build_repo.resume_build(build_id)
+                    if action == "abort":
+                        await _fail_build(
+                            build_id, user_id,
+                            "Build aborted after git push failure",
+                        )
+                        return
+                    # On retry, loop continues — push retried next phase
 
         # Build completed (agent finished streaming)
         now = datetime.now(timezone.utc)
@@ -1045,6 +1166,14 @@ async def _run_build(
         _interjection_queues.pop(bid, None)
         # Cleanup temp working dir for GitHub targets on failure/cancel
         # (keep on success so user can inspect; they'll be cleaned up later)
+        if working_dir and target_type in ("github_new", "github_existing"):
+            try:
+                build_record = await build_repo.get_build_by_id(build_id)
+                if build_record and build_record["status"] in ("failed", "cancelled"):
+                    shutil.rmtree(working_dir, ignore_errors=True)
+                    logger.info("Cleaned up working directory: %s", working_dir)
+            except Exception:
+                pass  # Best effort cleanup
 
 
 # ---------------------------------------------------------------------------
@@ -1074,6 +1203,18 @@ async def _write_file_block(
 
         size_bytes = len(content.encode("utf-8"))
         language = _detect_language(clean_path)
+
+        # Large file warning
+        if size_bytes > settings.LARGE_FILE_WARN_BYTES:
+            logger.warning(
+                "Large file written: %s (%d bytes > %d threshold)",
+                clean_path, size_bytes, settings.LARGE_FILE_WARN_BYTES,
+            )
+            await build_repo.append_build_log(
+                build_id,
+                f"Warning: large file {clean_path} ({size_bytes} bytes)",
+                source="system", level="warn",
+            )
 
         file_info = {
             "path": clean_path,
@@ -1431,6 +1572,7 @@ async def get_build_summary(project_id: UUID, user_id: UUID) -> dict:
     build_id = latest["id"]
     cost_summary = await build_repo.get_build_cost_summary(build_id)
     cost_entries = await build_repo.get_build_costs(build_id)
+    stats = await build_repo.get_build_stats(build_id)
 
     elapsed_seconds: float | None = None
     if latest.get("started_at") and latest.get("completed_at"):
@@ -1457,6 +1599,11 @@ async def get_build_summary(project_id: UUID, user_id: UUID) -> dict:
         },
         "elapsed_seconds": elapsed_seconds,
         "loop_count": latest["loop_count"],
+        "total_turns": stats["total_turns"],
+        "total_audit_attempts": stats["total_audit_attempts"],
+        "files_written_count": stats["files_written_count"],
+        "git_commits_made": stats["git_commits_made"],
+        "interjections_received": stats["interjections_received"],
     }
 
 

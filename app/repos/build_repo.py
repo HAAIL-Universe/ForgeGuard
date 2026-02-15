@@ -204,27 +204,106 @@ async def get_build_logs(
     build_id: UUID,
     limit: int = 100,
     offset: int = 0,
+    *,
+    search: str | None = None,
+    level: str | None = None,
 ) -> tuple[list[dict], int]:
-    """Fetch paginated build logs and total count."""
+    """Fetch paginated build logs with optional search and level filter."""
     pool = await get_pool()
+
+    where = "build_id = $1"
+    params: list = [build_id]
+    idx = 2
+
+    if search:
+        where += f" AND message ILIKE ${idx}"
+        params.append(f"%{search}%")
+        idx += 1
+    if level:
+        where += f" AND level = ${idx}"
+        params.append(level)
+        idx += 1
+
     count_row = await pool.fetchrow(
-        "SELECT COUNT(*) AS cnt FROM build_logs WHERE build_id = $1",
-        build_id,
+        f"SELECT COUNT(*) AS cnt FROM build_logs WHERE {where}",
+        *params,
     )
     total = count_row["cnt"] if count_row else 0
 
     rows = await pool.fetch(
-        """
+        f"""
         SELECT id, build_id, timestamp, source, level, message, created_at
-        FROM build_logs WHERE build_id = $1
+        FROM build_logs WHERE {where}
         ORDER BY timestamp ASC
-        LIMIT $2 OFFSET $3
+        LIMIT ${idx} OFFSET ${idx + 1}
         """,
-        build_id,
+        *params,
         limit,
         offset,
     )
     return [dict(r) for r in rows], total
+
+
+async def get_build_stats(build_id: UUID) -> dict:
+    """Aggregate observability stats for a build.
+
+    Returns total_turns, total_audit_attempts, files_written_count,
+    git_commits_made, interjections_received.
+    """
+    pool = await get_pool()
+
+    # Count turns (builder log entries = one per streamed chunk, but
+    # we approximate by counting distinct builder turns via system log messages)
+    turns_row = await pool.fetchrow(
+        """
+        SELECT COUNT(*) AS cnt FROM build_logs
+        WHERE build_id = $1 AND source = 'system'
+          AND message LIKE 'Build started%'
+           OR (build_id = $1 AND source = 'system' AND message LIKE 'Context compacted%')
+        """,
+        build_id,
+    )
+
+    audit_row = await pool.fetchrow(
+        """
+        SELECT COUNT(*) AS cnt FROM build_logs
+        WHERE build_id = $1 AND source = 'audit'
+          AND (message LIKE 'Audit PASS%' OR message LIKE 'Audit FAIL%'
+               OR message LIKE 'Auditor report%')
+        """,
+        build_id,
+    )
+
+    files_row = await pool.fetchrow(
+        "SELECT COUNT(*) AS cnt FROM build_logs WHERE build_id = $1 AND source = 'file'",
+        build_id,
+    )
+
+    commits_row = await pool.fetchrow(
+        """
+        SELECT COUNT(*) AS cnt FROM build_logs
+        WHERE build_id = $1 AND source = 'system'
+          AND (message LIKE 'Committed%' OR message LIKE 'Final commit%')
+        """,
+        build_id,
+    )
+
+    interject_row = await pool.fetchrow(
+        """
+        SELECT COUNT(*) AS cnt FROM build_logs
+        WHERE build_id = $1 AND source = 'user'
+          AND message LIKE 'User interjection%'
+        """,
+        build_id,
+    )
+
+    return {
+        "total_turns": (turns_row["cnt"] if turns_row else 0),
+        "total_audit_attempts": (audit_row["cnt"] if audit_row else 0),
+        "files_written_count": (files_row["cnt"] if files_row else 0),
+        "git_commits_made": (commits_row["cnt"] if commits_row else 0),
+        "interjections_received": (interject_row["cnt"] if interject_row else 0),
+    }
 
 
 # ---------------------------------------------------------------------------

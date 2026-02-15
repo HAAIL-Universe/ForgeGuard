@@ -208,6 +208,7 @@ function BuildProgress() {
   const [interjectionText, setInterjectionText] = useState('');
   const [sendingInterject, setSendingInterject] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [logSearch, setLogSearch] = useState('');
   const feedEndRef = useRef<HTMLDivElement>(null);
   const phaseStartRef = useRef<number>(Date.now());
 
@@ -220,7 +221,12 @@ function BuildProgress() {
 
   const parsePhaseNum = (phaseStr: string): number => {
     const m = phaseStr.match(/\d+/);
-    return m ? parseInt(m[0], 10) : 0;
+    
+
+  /* ------ filtered activity for search ------ */
+  const filteredActivity = logSearch
+    ? activity.filter((e) => e.message.toLowerCase().includes(logSearch.toLowerCase()))
+    : activity;return m ? parseInt(m[0], 10) : 0;
   };
 
   /* ------ auto-scroll feed ------ */
@@ -1001,12 +1007,31 @@ function BuildProgress() {
 
             {/* -- Activity Feed -- */}
             <div>
-              <h3 style={{ margin: '0 0 8px', fontSize: '0.85rem', color: '#94A3B8' }}>Activity</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <h3 style={{ margin: 0, fontSize: '0.85rem', color: '#94A3B8' }}>Activity</h3>
+                <input
+                  type="text"
+                  placeholder="Search logs..."
+                  value={logSearch}
+                  onChange={(e) => setLogSearch(e.target.value)}
+                  data-testid="log-search-input"
+                  style={{
+                    background: '#0F172A',
+                    border: '1px solid #334155',
+                    borderRadius: '4px',
+                    padding: '4px 8px',
+                    color: '#F8FAFC',
+                    fontSize: '0.7rem',
+                    outline: 'none',
+                    width: '180px',
+                  }}
+                />
+              </div>
               <div style={feedStyle} data-testid="build-activity-feed">
-                {activity.length === 0 ? (
-                  <div style={{ color: '#475569' }}>Waiting for build output...</div>
+                {filteredActivity.length === 0 ? (
+                  <div style={{ color: '#475569' }}>{logSearch ? 'No matching logs' : 'Waiting for build output...'}</div>
                 ) : (
-                  activity.map((entry, i) => (
+                  filteredActivity.map((entry, i) => (
                     <div key={i} style={{ color: LEVEL_COLOR[entry.level] ?? LEVEL_COLOR.info }}>
                       <span style={{ color: '#475569' }}>{entry.time}</span>{' '}
                       {entry.message}

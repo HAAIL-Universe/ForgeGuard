@@ -54,6 +54,63 @@ When the builder is operating as a ForgeGuard autonomous build agent (not a huma
 - If updating an existing file, emit the full file content (the orchestrator overwrites).
 - Do NOT emit partial files or diffs -- always emit the complete file.
 - The `=== END FILE ===` delimiter MUST appear on its own line after the file content.
+- If the builder omits `=== END FILE ===`, the orchestrator logs a warning and skips the block (graceful fallback).
+- Files larger than 1 MB will trigger a warning but are still written.
+
+**Examples of correct file blocks:**
+
+```
+=== FILE: app/main.py ===
+```python
+from fastapi import FastAPI
+
+app = FastAPI(title="MyApp")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+```
+=== END FILE ===
+
+=== FILE: requirements.txt ===
+fastapi>=0.100
+uvicorn[standard]>=0.20
+=== END FILE ===
+
+=== FILE: tests/test_health.py ===
+```python
+from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
+def test_health():
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+```
+=== END FILE ===
+```
+
+**Common mistakes (avoid these):**
+- Missing `=== END FILE ===` → block is skipped
+- Empty path `=== FILE:  ===` → block is skipped
+- Using diffs or partial updates instead of full file content → file will be incomplete
+
+### 0.2) Build plan format (mandatory)
+
+At the start of the first response, the builder MUST emit a structured plan:
+
+```
+=== PLAN ===
+1. First task description
+2. Second task description
+3. Third task description
+=== END PLAN ===
+```
+
+As tasks are completed, emit: `=== TASK DONE: N ===` where N is the task number.
+The orchestrator broadcasts plan updates to the UI in real time.
 
 ---
 

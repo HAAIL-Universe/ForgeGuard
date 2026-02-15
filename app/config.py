@@ -60,6 +60,15 @@ class Settings:
     BUILD_PAUSE_TIMEOUT_MINUTES: int = int(
         os.getenv("BUILD_PAUSE_TIMEOUT_MINUTES", "30")
     )
+    PHASE_TIMEOUT_MINUTES: int = int(
+        os.getenv("PHASE_TIMEOUT_MINUTES", "10")
+    )
+    LARGE_FILE_WARN_BYTES: int = int(
+        os.getenv("LARGE_FILE_WARN_BYTES", str(1024 * 1024))
+    )
+    GIT_PUSH_MAX_RETRIES: int = int(
+        os.getenv("GIT_PUSH_MAX_RETRIES", "3")
+    )
 
 
 # Validate at import time -- but only when NOT running under pytest.

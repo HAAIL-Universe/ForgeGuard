@@ -184,11 +184,14 @@ async def get_build_logs(
     user: dict = Depends(get_current_user),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
+    level: str | None = Query(default=None),
 ):
-    """Get paginated build logs."""
+    """Get paginated build logs with optional search and level filter."""
     try:
         logs, total = await build_service.get_build_logs(
-            project_id, user["id"], limit, offset
+            project_id, user["id"], limit, offset,
+            search=search, level=level,
         )
         return {"items": logs, "total": total}
     except ValueError as exc:

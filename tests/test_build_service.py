@@ -368,6 +368,13 @@ async def test_get_build_summary(mock_build_repo, mock_project_repo):
             "estimated_cost_usd": Decimal("0.082500"),
         },
     ])
+    mock_build_repo.get_build_stats = AsyncMock(return_value={
+        "total_turns": 3,
+        "total_audit_attempts": 2,
+        "files_written_count": 5,
+        "git_commits_made": 1,
+        "interjections_received": 0,
+    })
 
     result = await build_service.get_build_summary(_PROJECT_ID, _USER_ID)
 
