@@ -163,7 +163,11 @@ paths:
         payload: AuditRunSummary
         type: "file_created"
         payload: BuildFileEvent
+        type: "build_overview"
+        payload: BuildOverview
         type: "build_plan"
+        payload: BuildPlan
+        type: "phase_plan"
         payload: BuildPlan
         type: "plan_task_complete"
         payload: PlanTaskUpdate
@@ -516,6 +520,12 @@ schemas:
     output_tokens: integer
     model: string
     estimated_cost_usd: float
+
+  BuildOverview:
+    phases:
+      - number: integer
+        name: string
+        objective: string
 
   BuildPlan:
     tasks: BuildPlanTask[]

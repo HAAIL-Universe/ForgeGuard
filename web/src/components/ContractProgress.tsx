@@ -117,6 +117,8 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
   const [log, setLog] = useState<LogEntry[]>([]);
   const [generating, setGenerating] = useState(false);
   const [allDone, setAllDone] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [cumulativeTokens, setCumulativeTokens] = useState<TokenUsage>(initialTokenUsage);
   const logEndRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
@@ -144,6 +146,10 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         if (p.status === 'generating') {
           setStatuses((prev) => ({ ...prev, [p.contract_type]: 'generating' }));
           addLog(`Generating ${label}...`);
+        } else if (p.status === 'cancelled') {
+          addLog(`✗ Generation cancelled at ${label}`);
+          setCancelled(true);
+          setGenerating(false);
         } else if (p.status === 'done') {
           setStatuses((prev) => ({ ...prev, [p.contract_type]: 'done' }));
           const inTok = p.input_tokens ?? 0;
@@ -198,10 +204,10 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         setGenerating(false);
       })
       .catch(() => {
-        addLog('✗ Contract generation failed');
+        if (!cancelled) addLog('✗ Contract generation failed');
         setGenerating(false);
       });
-  }, [projectId, token, addLog]);
+  }, [projectId, token, addLog, cancelled]);
 
   /* Derived values */
   const contextWindow = MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
@@ -295,9 +301,63 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
       )}
 
       {generating && !allDone && (
-        <p style={{ textAlign: 'center', color: '#64748B', fontSize: '0.75rem', margin: 0 }}>
-          Generating…
-        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+          <p style={{ textAlign: 'center', color: '#64748B', fontSize: '0.75rem', margin: 0 }}>
+            Generating…
+          </p>
+          <button
+            onClick={async () => {
+              setCancelling(true);
+              try {
+                await fetch(`${API_BASE}/projects/${projectId}/contracts/cancel`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+              } catch {
+                /* WS event will confirm cancellation */
+              }
+            }}
+            disabled={cancelling}
+            data-testid="cancel-generation-btn"
+            style={{
+              background: 'transparent',
+              color: cancelling ? '#475569' : '#EF4444',
+              border: `1px solid ${cancelling ? '#334155' : '#EF4444'}`,
+              borderRadius: '6px',
+              padding: '6px 16px',
+              cursor: cancelling ? 'not-allowed' : 'pointer',
+              fontSize: '0.75rem',
+              fontWeight: 500,
+              opacity: cancelling ? 0.6 : 1,
+            }}
+          >
+            {cancelling ? 'Cancelling…' : 'Cancel Generation'}
+          </button>
+        </div>
+      )}
+
+      {cancelled && !allDone && (
+        <div style={{ textAlign: 'center' }}>
+          <p style={{ color: '#F59E0B', fontSize: '0.8rem', margin: '0 0 8px' }}>
+            Generation cancelled — {Object.values(statuses).filter((s) => s === 'done').length} of {ALL_CONTRACTS.length} contracts were generated.
+          </p>
+          <button
+            onClick={onComplete}
+            data-testid="contracts-cancelled-btn"
+            style={{
+              background: '#334155',
+              color: '#F8FAFC',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '10px 20px',
+              cursor: 'pointer',
+              fontSize: '0.8rem',
+              fontWeight: 600,
+            }}
+          >
+            View Contracts
+          </button>
+        </div>
       )}
     </div>
   );

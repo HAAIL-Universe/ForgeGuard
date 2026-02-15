@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.services.project_service import (
+    cancel_contract_generation,
     create_new_project,
     delete_user_project,
     generate_contracts,
@@ -214,6 +215,25 @@ async def gen_contracts(
         )
         raise HTTPException(status_code=code, detail=detail)
     return {"contracts": contracts}
+
+
+@router.post("/{project_id}/contracts/cancel")
+async def cancel_contracts(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Cancel an in-progress contract generation."""
+    try:
+        result = await cancel_contract_generation(current_user["id"], project_id)
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail)
+    return result
 
 
 @router.get("/{project_id}/contracts")

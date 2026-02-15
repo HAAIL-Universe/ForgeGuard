@@ -376,6 +376,28 @@ def test_generate_contracts_success(
     assert len(data["contracts"]) == 9
 
 
+# ---------- POST /projects/{id}/contracts/cancel ----------
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+def test_cancel_contracts_no_active(mock_project, mock_get_user):
+    mock_get_user.return_value = MOCK_USER
+    mock_project.return_value = {
+        "id": UUID(PROJECT_ID),
+        "user_id": UUID(USER_ID),
+        "name": "My Project",
+        "description": None,
+        "status": "contracts_ready",
+    }
+
+    resp = client.post(
+        f"/projects/{PROJECT_ID}/contracts/cancel", headers=_auth_header()
+    )
+    assert resp.status_code == 400
+    assert "no active" in resp.json()["detail"].lower()
+
+
 # ---------- GET /projects/{id}/contracts ----------
 
 

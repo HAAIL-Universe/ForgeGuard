@@ -92,6 +92,13 @@ interface PlanTask {
   status: 'pending' | 'done';
 }
 
+interface OverviewPhase {
+  number: number;
+  name: string;
+  objective: string;
+  status: 'pending' | 'active' | 'passed' | 'failed' | 'paused';
+}
+
 interface PauseInfo {
   phase: string;
   loop_count: number;
@@ -200,6 +207,8 @@ function BuildProgress() {
   const [filesExpanded, setFilesExpanded] = useState(true);
   const [planTasks, setPlanTasks] = useState<PlanTask[]>([]);
   const [planExpanded, setPlanExpanded] = useState(true);
+  const [overviewPhases, setOverviewPhases] = useState<OverviewPhase[]>([]);
+  const [currentPhaseName, setCurrentPhaseName] = useState('');
   const [turnCount, setTurnCount] = useState(0);
   const [startTime] = useState(() => Date.now());
   const [elapsed, setElapsed] = useState(0);
@@ -471,6 +480,10 @@ function BuildProgress() {
           case 'audit_pass': {
             const phase = payload.phase as string;
             addActivity(`Audit PASS for ${phase}`, 'system');
+            // Mark phase as passed in overview
+            setOverviewPhases((prev) =>
+              prev.map((p) => (p.name === phase ? { ...p, status: 'passed' as const } : p)),
+            );
             break;
           }
 
@@ -478,6 +491,10 @@ function BuildProgress() {
             const phase = payload.phase as string;
             const loop = payload.loop_count as number;
             addActivity(`Audit FAIL for ${phase} (loop ${loop})`, 'warn');
+            // Mark phase as failed in overview
+            setOverviewPhases((prev) =>
+              prev.map((p) => (p.name === phase ? { ...p, status: 'failed' as const } : p)),
+            );
             break;
           }
 
@@ -496,11 +513,32 @@ function BuildProgress() {
             break;
           }
 
-          case 'build_plan': {
+          case 'build_overview': {
+            const phases = (payload.phases ?? []) as OverviewPhase[];
+            if (phases.length > 0) {
+              setOverviewPhases(phases.map((p, i) => ({ ...p, status: i === 0 ? 'active' : 'pending' })));
+              addActivity(`Build overview: ${phases.length} phases`, 'system');
+            }
+            break;
+          }
+
+          case 'build_plan':
+          case 'phase_plan': {
             const tasks = (payload.tasks ?? []) as PlanTask[];
+            const phase = (payload.phase ?? '') as string;
             if (tasks.length > 0) {
               setPlanTasks(tasks);
-              addActivity(`Build plan: ${tasks.length} tasks`, 'system');
+              addActivity(`Phase plan${phase ? ` (${phase})` : ''}: ${tasks.length} tasks`, 'system');
+            }
+            // Update overview bar active phase
+            if (phase) {
+              setCurrentPhaseName(phase);
+              setOverviewPhases((prev) =>
+                prev.map((p) => ({
+                  ...p,
+                  status: p.name === phase ? 'active' : p.status === 'active' ? 'pending' : p.status,
+                })),
+              );
             }
             break;
           }
@@ -543,6 +581,9 @@ function BuildProgress() {
               if (ps) next.set(pausePhaseNum, { ...ps, status: 'paused' });
               return next;
             });
+            setOverviewPhases((prev) =>
+              prev.map((p) => (p.name === phase ? { ...p, status: 'paused' as const } : p)),
+            );
             break;
           }
 
@@ -791,6 +832,49 @@ function BuildProgress() {
             )}
           </div>
         </div>
+
+        {/* ---- Phase Overview Bar ---- */}
+        {overviewPhases.length > 0 && (
+          <div style={{ ...cardStyle, padding: '12px 16px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflowX: 'auto' }}>
+              {overviewPhases.map((op, i) => {
+                const colors: Record<string, string> = {
+                  pending: '#475569', active: '#3B82F6', passed: '#22C55E', failed: '#EF4444', paused: '#F59E0B',
+                };
+                const bg: Record<string, string> = {
+                  pending: '#1E293B', active: '#1E3A5F', passed: '#14532D', failed: '#7F1D1D', paused: '#78350F',
+                };
+                return (
+                  <div key={op.number} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <div
+                      title={`Phase ${op.number}: ${op.name}${op.objective ? ' — ' + op.objective : ''}`}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        color: colors[op.status] ?? '#475569',
+                        background: bg[op.status] ?? '#1E293B',
+                        border: `1px solid ${colors[op.status] ?? '#334155'}`,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {op.number}
+                    </div>
+                    {i < overviewPhases.length - 1 && (
+                      <div style={{ width: '12px', height: '2px', background: '#334155' }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {currentPhaseName && (
+              <div style={{ marginTop: '8px', fontSize: '0.75rem', color: '#94A3B8' }}>
+                Active: <span style={{ color: '#3B82F6', fontWeight: 600 }}>{currentPhaseName}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ---- Two-column layout ---- */}
         <div style={twoColStyle}>

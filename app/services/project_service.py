@@ -23,6 +23,9 @@ from app.repos.project_repo import (
 
 logger = logging.getLogger(__name__)
 
+# Active contract generation tasks — checked between contracts for cancellation
+_active_generations: set[str] = set()
+
 # ---------------------------------------------------------------------------
 # Questionnaire definitions
 # ---------------------------------------------------------------------------
@@ -430,50 +433,94 @@ async def generate_contracts(
         llm_api_key = settings.ANTHROPIC_API_KEY
         llm_model = settings.LLM_QUESTIONNAIRE_MODEL
 
+    pid = str(project_id)
+    _active_generations.add(pid)
+
     generated = []
     total = len(CONTRACT_TYPES)
-    for idx, contract_type in enumerate(CONTRACT_TYPES):
-        # Notify client that generation of this contract has started
-        await manager.send_to_user(str(user_id), {
-            "type": "contract_progress",
-            "payload": {
-                "project_id": str(project_id),
-                "contract_type": contract_type,
-                "status": "generating",
-                "index": idx,
-                "total": total,
-            },
-        })
+    try:
+        for idx, contract_type in enumerate(CONTRACT_TYPES):
+            # Check cancellation between contracts
+            if pid not in _active_generations:
+                logger.info("Contract generation cancelled for project %s", pid)
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": contract_type,
+                        "status": "cancelled",
+                        "index": idx,
+                        "total": total,
+                    },
+                })
+                raise ValueError("Contract generation cancelled")
 
-        content, usage = await _generate_contract_content(
-            contract_type, project, answers_text, llm_api_key, llm_model, provider
-        )
-        row = await upsert_contract(project_id, contract_type, content)
-        generated.append({
-            "id": str(row["id"]),
-            "project_id": str(row["project_id"]),
-            "contract_type": row["contract_type"],
-            "version": row["version"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        })
+            # Notify client that generation of this contract has started
+            await manager.send_to_user(str(user_id), {
+                "type": "contract_progress",
+                "payload": {
+                    "project_id": pid,
+                    "contract_type": contract_type,
+                    "status": "generating",
+                    "index": idx,
+                    "total": total,
+                },
+            })
 
-        # Notify client that this contract is done
-        await manager.send_to_user(str(user_id), {
-            "type": "contract_progress",
-            "payload": {
-                "project_id": str(project_id),
-                "contract_type": contract_type,
-                "status": "done",
-                "index": idx,
-                "total": total,
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-            },
-        })
+            content, usage = await _generate_contract_content(
+                contract_type, project, answers_text, llm_api_key, llm_model, provider
+            )
+            row = await upsert_contract(project_id, contract_type, content)
+            generated.append({
+                "id": str(row["id"]),
+                "project_id": str(row["project_id"]),
+                "contract_type": row["contract_type"],
+                "version": row["version"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
+
+            # Notify client that this contract is done
+            await manager.send_to_user(str(user_id), {
+                "type": "contract_progress",
+                "payload": {
+                    "project_id": pid,
+                    "contract_type": contract_type,
+                    "status": "done",
+                    "index": idx,
+                    "total": total,
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                },
+            })
+    finally:
+        _active_generations.discard(pid)
 
     await update_project_status(project_id, "contracts_ready")
     return generated
+
+
+async def cancel_contract_generation(
+    user_id: UUID,
+    project_id: UUID,
+) -> dict:
+    """Cancel an in-progress contract generation.
+
+    Removes the project from the active set so the generation loop
+    stops at the next contract boundary.
+    """
+    pid = str(project_id)
+    if pid not in _active_generations:
+        raise ValueError("No active contract generation for this project")
+
+    # Verify ownership
+    project = await get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    _active_generations.discard(pid)
+    logger.info("Contract generation cancel requested for project %s", pid)
+    return {"status": "cancelling"}
 
 
 async def list_contracts(

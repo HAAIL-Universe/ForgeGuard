@@ -229,8 +229,6 @@ _MODEL_PRICING: dict[str, tuple[Decimal, Decimal]] = {
     # (input $/token, output $/token)
     "claude-opus-4":       (Decimal("0.000015"),  Decimal("0.000075")),   # $15 / $75 per 1M
     "claude-sonnet-4":     (Decimal("0.000003"),  Decimal("0.000015")),   # $3 / $15 per 1M
-    "claude-haiku-4":      (Decimal("0.000001"),  Decimal("0.000005")),   # $1 / $5 per 1M (legacy)
-    "claude-sonnet-4":     (Decimal("0.000003"),  Decimal("0.000015")),   # $3 / $15 per 1M
     "claude-3-5-sonnet":   (Decimal("0.000003"),  Decimal("0.000015")),   # $3 / $15 per 1M
 }
 # Fallback: Opus pricing (most expensive = safest default)
@@ -679,15 +677,30 @@ async def _run_build(
         # System prompt for the builder agent
         system_prompt = (
             "You are an autonomous software builder operating under the Forge governance framework.\n\n"
-            "At the start of your first response, emit a structured build plan:\n"
+            "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
             "=== PLAN ===\n"
-            "1. First task\n"
-            "2. Second task\n"
+            "1. First task for this phase\n"
+            "2. Second task for this phase\n"
             "...\n"
             "=== END PLAN ===\n\n"
+            "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
             "As you complete each task, emit: === TASK DONE: N ===\n"
-            "where N is the task number from your plan.\n"
+            "where N is the task number from your current phase plan.\n"
         )
+
+        # Emit build overview (high-level phase list) at build start
+        try:
+            phases_contract = await project_repo.get_contract_by_type(project_id, "phases")
+            if phases_contract:
+                overview_phases = _parse_phases_contract(phases_contract["content"])
+                await _broadcast_build_event(user_id, build_id, "build_overview", {
+                    "phases": [
+                        {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                        for p in overview_phases
+                    ],
+                })
+        except Exception:
+            logger.debug("Could not emit build_overview", exc_info=True)
 
         # Multi-turn conversation loop
         while True:
@@ -795,13 +808,14 @@ async def _run_build(
                     if parsed_plan:
                         plan_tasks = parsed_plan
                         await _broadcast_build_event(
-                            user_id, build_id, "build_plan", {
+                            user_id, build_id, "phase_plan", {
+                                "phase": current_phase,
                                 "tasks": plan_tasks,
                             }
                         )
                         await build_repo.append_build_log(
                             build_id,
-                            f"Build plan detected: {len(plan_tasks)} tasks",
+                            f"Phase plan detected for {current_phase}: {len(plan_tasks)} tasks",
                             source="system", level="info",
                         )
 
@@ -929,6 +943,7 @@ async def _run_build(
                     phase_start_time = datetime.now(timezone.utc)
                     phase_loop_count = 0
                     accumulated_text = ""
+                    plan_tasks = []  # Fresh plan for next phase
 
                     # Record cost for this phase
                     await _record_phase_cost(build_id, current_phase, usage)

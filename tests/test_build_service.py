@@ -69,6 +69,7 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
     mock_build_repo.create_build = AsyncMock(return_value=_build())
     mock_create_task.return_value = MagicMock()
@@ -488,9 +489,9 @@ def test_get_token_rates_model_aware():
     assert opus_in == Decimal("0.000015")
     assert opus_out == Decimal("0.000075")
 
-    haiku_in, haiku_out = build_service._get_token_rates("claude-haiku-4-5-20251001")
-    assert haiku_in == Decimal("0.000001")
-    assert haiku_out == Decimal("0.000005")
+    sonnet_in, sonnet_out = build_service._get_token_rates("claude-sonnet-4-5-20251001")
+    assert sonnet_in == Decimal("0.000003")
+    assert sonnet_out == Decimal("0.000015")
 
     # Unknown model falls back to Opus (safest = most expensive)
     unk_in, unk_out = build_service._get_token_rates("some-unknown-model")
@@ -1005,6 +1006,7 @@ async def test_run_build_multi_turn_plan_detected(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     # Mock audit to pass
@@ -1014,10 +1016,10 @@ async def test_run_build_multi_turn_plan_detected(
             "sk-ant-test", audit_llm_enabled=True,
         )
 
-    # Check that build_plan event was broadcast
+    # Check that phase_plan event was broadcast
     plan_calls = [
         c for c in mock_manager.send_to_user.call_args_list
-        if c[0][1].get("type") == "build_plan"
+        if c[0][1].get("type") == "phase_plan"
     ]
     assert len(plan_calls) >= 1
     plan_payload = plan_calls[0][0][1]["payload"]
@@ -1056,6 +1058,7 @@ async def test_run_build_multi_turn_audit_feedback(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     # First audit fails, second passes, then build finishes on turn 3
@@ -1101,6 +1104,7 @@ async def test_run_build_multi_turn_max_failures(
     mock_build_repo.pause_build = AsyncMock(return_value=True)
     mock_build_repo.resume_build = AsyncMock(return_value=True)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     async def _auto_abort():
@@ -1161,6 +1165,7 @@ async def test_run_build_turn_event_broadcast(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
@@ -1198,6 +1203,7 @@ async def test_run_build_task_done_broadcast(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
@@ -1250,6 +1256,7 @@ async def test_run_build_context_compaction(
         "total_input_tokens": 160000, "total_output_tokens": 160000, "total_cost_usd": Decimal("0.50"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     # All audits pass — each turn adds assistant message, growing len(messages) past 5
@@ -1302,6 +1309,7 @@ async def test_run_build_pauses_at_threshold(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     # All audits fail → triggers pause after PAUSE_THRESHOLD
@@ -1371,6 +1379,7 @@ async def test_run_build_pause_resume_retry(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     async def _audit(*a, **k):
@@ -1434,6 +1443,7 @@ async def test_run_build_pause_skip(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     async def _auto_resume():
@@ -1485,6 +1495,7 @@ async def test_run_build_interjection_injected(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
     # Pre-populate interjection queue
@@ -1718,3 +1729,121 @@ def test_build_pause_timeout_default():
     from app.config import settings as s
     assert isinstance(s.BUILD_PAUSE_TIMEOUT_MINUTES, int)
     assert s.BUILD_PAUSE_TIMEOUT_MINUTES >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Per-phase planning & plan_tasks reset (Phase 16)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_plan_tasks_reset_between_phases(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """plan_tasks resets between phases so each phase gets a fresh plan."""
+    call_counter = {"n": 0}
+
+    async def _stream_multi_phase(*args, **kwargs):
+        call_counter["n"] += 1
+        if call_counter["n"] == 1:
+            yield (
+                "=== PLAN ===\n1. Phase 0 task A\n2. Phase 0 task B\n=== END PLAN ===\n"
+                "=== TASK DONE: 1 ===\n=== TASK DONE: 2 ===\n"
+                "Phase: Phase 0 -- Genesis\n=== PHASE SIGN-OFF: PASS ===\n"
+            )
+        elif call_counter["n"] == 2:
+            yield (
+                "=== PLAN ===\n1. Phase 1 task X\n=== END PLAN ===\n"
+                "=== TASK DONE: 1 ===\n"
+                "Phase: Phase 1 -- Scaffold\n=== PHASE SIGN-OFF: PASS ===\n"
+            )
+        else:
+            yield "Build complete."
+
+    mock_stream.side_effect = _stream_multi_phase
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # Should have emitted TWO phase_plan events (one per phase)
+    plan_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "phase_plan"
+    ]
+    assert len(plan_calls) == 2
+
+    # Phase 0 plan had 2 tasks
+    assert len(plan_calls[0][0][1]["payload"]["tasks"]) == 2
+    assert plan_calls[0][0][1]["payload"]["tasks"][0]["title"] == "Phase 0 task A"
+
+    # Phase 1 plan had 1 task (fresh, not carried over)
+    assert len(plan_calls[1][0][1]["payload"]["tasks"]) == 1
+    assert plan_calls[1][0][1]["payload"]["tasks"][0]["title"] == "Phase 1 task X"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.stream_agent")
+async def test_build_overview_emitted(
+    mock_stream, mock_build_repo, mock_project_repo, mock_manager
+):
+    """_run_build emits build_overview event when phases contract is available."""
+    _reset_stream_counter()
+    mock_stream.side_effect = _fake_stream_pass
+    mock_build_repo.update_build_status = AsyncMock()
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_build_repo.record_build_cost = AsyncMock()
+    mock_build_repo.get_build_cost_summary = AsyncMock(return_value={
+        "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
+    })
+    mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
+    mock_project_repo.update_project_status = AsyncMock()
+
+    # Provide a phases contract for build_overview
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value={
+        "content": "## Phase 0 -- Genesis\n**Objective:** Bootstrap\n\n## Phase 1 -- Scaffold\n**Objective:** Build structure",
+    })
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value="PASS"):
+        await build_service._run_build(
+            _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
+            "sk-ant-test", audit_llm_enabled=True,
+        )
+
+    # build_overview event should have been broadcast
+    overview_calls = [
+        c for c in mock_manager.send_to_user.call_args_list
+        if c[0][1].get("type") == "build_overview"
+    ]
+    assert len(overview_calls) == 1
+    phases = overview_calls[0][0][1]["payload"]["phases"]
+    assert len(phases) == 2
+    assert phases[0]["number"] == 0
+    assert phases[0]["name"] == "Genesis"
+    assert phases[1]["number"] == 1
+
+
+def test_no_haiku_references_in_pricing():
+    """No Haiku model entries remain in the pricing table."""
+    for key in build_service._MODEL_PRICING:
+        assert "haiku" not in key.lower(), f"Legacy Haiku entry found: {key}"

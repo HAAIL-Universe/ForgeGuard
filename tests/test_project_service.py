@@ -8,8 +8,10 @@ import pytest
 
 from app.services.project_service import (
     QUESTIONNAIRE_SECTIONS,
+    _active_generations,
     _parse_llm_response,
     _questionnaire_progress,
+    cancel_contract_generation,
     create_new_project,
     generate_contracts,
     get_project_detail,
@@ -252,6 +254,88 @@ async def test_generate_contracts_incomplete(mock_project):
 
     with pytest.raises(ValueError, match="not complete"):
         await generate_contracts(USER_ID, PROJECT_ID)
+
+
+@pytest.mark.asyncio
+@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+async def test_cancel_contract_generation_no_active(mock_project):
+    """Cancel raises when no generation is active."""
+    mock_project.return_value = {
+        "id": PROJECT_ID,
+        "user_id": USER_ID,
+        "name": "My Project",
+        "description": None,
+        "status": "contracts_ready",
+    }
+    with pytest.raises(ValueError, match="No active"):
+        await cancel_contract_generation(USER_ID, PROJECT_ID)
+
+
+@pytest.mark.asyncio
+@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+async def test_cancel_contract_generation_success(mock_project):
+    """Cancel removes the project from _active_generations."""
+    pid = str(PROJECT_ID)
+    _active_generations.add(pid)
+    mock_project.return_value = {
+        "id": PROJECT_ID,
+        "user_id": USER_ID,
+        "name": "My Project",
+        "description": None,
+        "status": "contracts_ready",
+    }
+    result = await cancel_contract_generation(USER_ID, PROJECT_ID)
+    assert result["status"] == "cancelling"
+    assert pid not in _active_generations
+
+
+@pytest.mark.asyncio
+@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
+@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+async def test_generate_contracts_cancelled_mid_generation(
+    mock_project, mock_upsert, mock_status, mock_ws, mock_gen
+):
+    """Cancellation stops generation and raises ValueError."""
+    pid = str(PROJECT_ID)
+    call_count = 0
+
+    async def fake_gen(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 3:
+            _active_generations.discard(pid)
+        return ("# content", {"input_tokens": 10, "output_tokens": 20})
+
+    mock_gen.side_effect = fake_gen
+    mock_project.return_value = {
+        "id": PROJECT_ID,
+        "user_id": USER_ID,
+        "name": "My Project",
+        "description": "A test",
+        "status": "contracts_ready",
+        "questionnaire_state": {
+            "completed_sections": list(QUESTIONNAIRE_SECTIONS),
+            "answers": {s: {"key": "value"} for s in QUESTIONNAIRE_SECTIONS},
+        },
+    }
+    mock_upsert.return_value = {
+        "id": UUID("55555555-5555-5555-5555-555555555555"),
+        "project_id": PROJECT_ID,
+        "contract_type": "blueprint",
+        "content": "# content",
+        "version": 1,
+        "created_at": "2025-01-01T00:00:00Z",
+        "updated_at": "2025-01-01T00:00:00Z",
+    }
+
+    with pytest.raises(ValueError, match="cancelled"):
+        await generate_contracts(USER_ID, PROJECT_ID)
+
+    # Should have only generated 3 contracts before cancelling at the 4th
+    assert mock_upsert.call_count == 3
 
 
 # ---------------------------------------------------------------------------

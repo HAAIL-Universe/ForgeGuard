@@ -4764,3 +4764,41 @@ A5: WARN -- updatedifflog.md contains TODO: placeholders.
 W1: WARN -- Potential secrets found: sk-, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 17 -- Recovery Planner -- Iteration 105
+Timestamp: 2026-02-15T22:12:33Z
+AEM Cycle: Phase 17 -- Recovery Planner
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/updatedifflog.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/updatedifflog.md. 
+- A7: FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/services/build_service.py
+- app/services/project_service.py
+- Forge/Contracts/physics.yaml
+- tests/test_build_service.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- web/src/components/ContractProgress.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
