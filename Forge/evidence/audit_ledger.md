@@ -2557,3 +2557,65 @@ Outcome: SIGNED-OFF (awaiting AUTHORIZED)
 W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## AUTO-AUTHORIZED: Phase 8 -- Project Intake and Questionnaire
+Timestamp: 2026-02-15T03:04:31Z
+Commit: af1618d
+Decision: AUTO-AUTHORIZED (AEM enabled, auto_authorize: true)
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 54
+Timestamp: 2026-02-15T03:04:56Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Claimed but not in diff: app/api/routers/projects.py, app/audit/runner.py, app/clients/llm_client.py, app/config.py, app/main.py, app/repos/project_repo.py, app/services/project_service.py, app/templates/contracts/blueprint.md, app/templates/contracts/boundaries.json, app/templates/contracts/builder_contract.md, app/templates/contracts/builder_directive.md, app/templates/contracts/manifesto.md, app/templates/contracts/phases.md, app/templates/contracts/physics.yaml, app/templates/contracts/schema.md, app/templates/contracts/stack.md, app/templates/contracts/ui.md, db/migrations/002_projects.sql, Forge/Contracts/physics.yaml, Forge/Contracts/schema.md, Forge/evidence/test_runs_latest.md, Forge/evidence/test_runs.md, Forge/evidence/updatedifflog.md, Forge/scripts/run_audit.ps1, tests/test_audit_runner.py, tests/test_llm_client.py, tests/test_project_service.py, tests/test_projects_router.py.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Claimed but not in diff: app/api/routers/projects.py, app/audit/runner.py, app/clients/llm_client.py, app/config.py, app/main.py, app/repos/project_repo.py, app/services/project_service.py, app/templates/contracts/blueprint.md, app/templates/contracts/boundaries.json, app/templates/contracts/builder_contract.md, app/templates/contracts/builder_directive.md, app/templates/contracts/manifesto.md, app/templates/contracts/phases.md, app/templates/contracts/physics.yaml, app/templates/contracts/schema.md, app/templates/contracts/stack.md, app/templates/contracts/ui.md, db/migrations/002_projects.sql, Forge/Contracts/physics.yaml, Forge/Contracts/schema.md, Forge/evidence/test_runs_latest.md, Forge/evidence/test_runs.md, Forge/evidence/updatedifflog.md, Forge/scripts/run_audit.ps1, tests/test_audit_runner.py, tests/test_llm_client.py, tests/test_project_service.py, tests/test_projects_router.py.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/audit/runner.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_runner.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
