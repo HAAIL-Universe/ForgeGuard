@@ -8,8 +8,6 @@ yields incremental text chunks so the build service can persist them.
 No database access, no business logic, no HTTP framework imports.
 """
 
-from __future__ import annotations
-
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
