@@ -29,6 +29,8 @@ param(
   [string[]]$Notes = @(),
   [string[]]$NextSteps = @(),
 
+  [int]$MaxDiffLines = 500,
+
   [switch]$Finalize,
   [switch]$IncludeUnstaged,
   [switch]$OpenInVSCode
@@ -77,8 +79,8 @@ function Bullets([string[]]$items, [string]$todo) {
 }
 
 function Indent4([string[]]$lines) {
-  if ($null -eq $lines -or $lines.Count -eq 0) { return @("    (none)") }
-  return @($lines | ForEach-Object { "    $_" })
+  if ($null -eq $lines -or $lines.Count -eq 0) { return "    (none)" }
+  return ($lines -replace '^', '    ') -join "`n"
 }
 
 try {
@@ -135,6 +137,13 @@ try {
   if ($patchRaw -is [string]) { $patchLines = @($patchRaw -split "`r?`n") }
   else { $patchLines = @($patchRaw | ForEach-Object { "$_" }) }
 
+  $truncated = $false
+  $totalPatchLines = $patchLines.Count
+  if ($MaxDiffLines -gt 0 -and $patchLines.Count -gt $MaxDiffLines) {
+    $patchLines = $patchLines[0..($MaxDiffLines - 1)]
+    $truncated = $true
+  }
+
   if ($stagedOnly -and $changedFiles.Count -eq 0) {
     Warn "No staged changes found. Recommended: git add <scoped files> then re-run."
     Warn "If you truly want unstaged, re-run with -IncludeUnstaged."
@@ -144,6 +153,22 @@ try {
   $verificationTodo = "TODO: verification evidence (static -> runtime -> behavior -> contract)."
   $notesTodo = "TODO: blockers, risks, constraints."
   $nextStepsTodo = "TODO: next actions (small, specific)."
+
+  # When Status is COMPLETE, all section parameters are mandatory.
+  # Refuse to write a COMPLETE diff log with TODO: placeholders.
+  if ($Status -eq "COMPLETE") {
+    $missing = @()
+    if ($null -eq $Summary -or $Summary.Count -eq 0)       { $missing += "-Summary" }
+    if ($null -eq $Verification -or $Verification.Count -eq 0) { $missing += "-Verification" }
+    if ($null -eq $Notes -or $Notes.Count -eq 0)            { $missing += "-Notes" }
+    if ($null -eq $NextSteps -or $NextSteps.Count -eq 0)    { $missing += "-NextSteps" }
+    if ($missing.Count -gt 0) {
+      Err "Status is COMPLETE but required parameters are empty: $($missing -join ', ')"
+      Err "A COMPLETE diff log cannot contain TODO: placeholders. Supply all section parameters."
+      exit 1
+    }
+  }
+
   $summaryLines = Bullets -items $Summary -todo $summaryTodo
   $verificationLines = Bullets -items $Verification -todo $verificationTodo
   $notesLines = Bullets -items $Notes -todo $notesTodo
@@ -155,43 +180,51 @@ try {
   $statusIndented = Indent4 @($statusShort -split "`r?`n")
   $patchIndented = Indent4 $patchLines
 
-  $out = New-Object System.Collections.Generic.List[string]
-  $out.Add("# Diff Log (overwrite each cycle)")
-  $out.Add("")
   $baseHeadLabel = if ([string]::IsNullOrWhiteSpace($baseHead)) { "N/A (no parent)" } else { $baseHead }
-  $out.Add("## Cycle Metadata")
-  $out.Add("- Timestamp: $timestamp")
-  $out.Add("- Branch: $branch")
-  $out.Add("- HEAD: $head")
-  $out.Add("- BASE_HEAD: $baseHeadLabel")
-  $out.Add("- Diff basis: $basis")
-  $out.Add("")
-  $out.Add("## Cycle Status")
-  $out.Add("- Status: $Status")
-  $out.Add("")
-  $out.Add("## Summary")
-  $summaryLines | ForEach-Object { $out.Add($_) }
-  $out.Add("")
-  $out.Add("## Files Changed ($basis)")
-  $filesLines | ForEach-Object { $out.Add($_) }
-  $out.Add("")
-  $out.Add("## git status -sb")
-  $statusIndented | ForEach-Object { $out.Add($_) }
-  $out.Add("")
-  $out.Add("## Verification")
-  $verificationLines | ForEach-Object { $out.Add($_) }
-  $out.Add("")
-  $out.Add("## Notes (optional)")
-  $notesLines | ForEach-Object { $out.Add($_) }
-  $out.Add("")
-  $out.Add("## Next Steps")
-  $nextStepsLines | ForEach-Object { $out.Add($_) }
-  $out.Add("")
-  $out.Add("## Minimal Diff Hunks")
-  $patchIndented | ForEach-Object { $out.Add($_) }
-  $out.Add("")
+  $filesSection = ($filesLines -join "`n")
+  $summarySection = ($summaryLines -join "`n")
+  $verificationSection = ($verificationLines -join "`n")
+  $notesSection = ($notesLines -join "`n")
+  $nextStepsSection = ($nextStepsLines -join "`n")
+  $truncNote = if ($truncated) { "`n    ... ($($totalPatchLines - $MaxDiffLines) lines truncated, $totalPatchLines total)" } else { "" }
 
-  $out | Out-File -LiteralPath $logPath -Encoding utf8
+  $body = @"
+# Diff Log (overwrite each cycle)
+
+## Cycle Metadata
+- Timestamp: $timestamp
+- Branch: $branch
+- HEAD: $head
+- BASE_HEAD: $baseHeadLabel
+- Diff basis: $basis
+
+## Cycle Status
+- Status: $Status
+
+## Summary
+$summarySection
+
+## Files Changed ($basis)
+$filesSection
+
+## git status -sb
+$statusIndented
+
+## Verification
+$verificationSection
+
+## Notes (optional)
+$notesSection
+
+## Next Steps
+$nextStepsSection
+
+## Minimal Diff Hunks
+$patchIndented$truncNote
+
+"@
+
+  [System.IO.File]::WriteAllText($logPath, $body, [System.Text.Encoding]::UTF8)
 
   Info "Wrote diff log (overwritten): $logPath"
   Info ("Files listed: {0}" -f $changedFiles.Count)
