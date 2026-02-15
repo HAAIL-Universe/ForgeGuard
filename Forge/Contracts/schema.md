@@ -122,6 +122,57 @@ CREATE INDEX idx_audit_checks_audit_run_id ON audit_checks(audit_run_id);
 
 ---
 
+### projects
+
+Stores user projects created via the intake questionnaire.
+
+```sql
+CREATE TABLE projects (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name                  VARCHAR(255) NOT NULL,
+    description           TEXT,
+    status                VARCHAR(20) NOT NULL DEFAULT 'draft',
+    repo_id               UUID REFERENCES repos(id) ON DELETE SET NULL,
+    questionnaire_state   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`status` values: `draft`, `questionnaire`, `contracts_ready`, `building`, `completed`
+
+```sql
+CREATE INDEX idx_projects_user_id ON projects(user_id);
+```
+
+---
+
+### project_contracts
+
+Stores generated contract files for a project.
+
+```sql
+CREATE TABLE project_contracts (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    contract_type   VARCHAR(50) NOT NULL,
+    content         TEXT NOT NULL,
+    version         INTEGER NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`contract_type` values: `blueprint`, `manifesto`, `stack`, `schema`, `physics`, `boundaries`, `phases`, `ui`, `builder_contract`, `builder_directive`
+
+```sql
+CREATE UNIQUE INDEX idx_project_contracts_project_type ON project_contracts(project_id, contract_type);
+CREATE INDEX idx_project_contracts_project_id ON project_contracts(project_id);
+```
+
+---
+
 ## Schema -> Phase Traceability
 
 | Table | Repo Created In | Wired To Caller In | Notes |
@@ -130,6 +181,8 @@ CREATE INDEX idx_audit_checks_audit_run_id ON audit_checks(audit_run_id);
 | repos | Phase 2 | Phase 2 | Connect-repo flow creates repo records |
 | audit_runs | Phase 3 | Phase 3 | Webhook handler creates audit runs |
 | audit_checks | Phase 3 | Phase 3 | Audit engine writes check results |
+| projects | Phase 8 | Phase 8 | Project intake & questionnaire |
+| project_contracts | Phase 8 | Phase 8 | Generated contract files |
 
 ---
 
@@ -140,4 +193,5 @@ The builder creates migration files in `db/migrations/` during Phase 0.
 ```
 db/migrations/
   001_initial_schema.sql
+  002_projects.sql
 ```

@@ -43,6 +43,10 @@ class Settings:
     JWT_SECRET: str = _require("JWT_SECRET")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
+    LLM_QUESTIONNAIRE_MODEL: str = os.getenv(
+        "LLM_QUESTIONNAIRE_MODEL", "claude-3-5-haiku-20241022"
+    )
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 # Validate at import time -- but only when NOT running under pytest.

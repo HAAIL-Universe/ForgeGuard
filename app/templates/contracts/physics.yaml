@@ -1,0 +1,13 @@
+# {project_name} -- API Physics (v0.1)
+# Canonical API specification. If it's not here, it doesn't exist.
+
+info:
+  title: "{project_name} API"
+  version: "0.1.0"
+  description: "{project_description}"
+
+paths:
+{api_paths}
+
+schemas:
+{api_schemas}

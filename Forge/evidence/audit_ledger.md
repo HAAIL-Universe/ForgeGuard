@@ -2132,3 +2132,428 @@ Timestamp: 2026-02-15T02:37:10Z
 AEM Cycle: Phase 7 -- Python Audit Runner
 Outcome: AUTO-AUTHORIZED (committed)
 Note: Auto-authorize enabled per directive. Audit iteration 45 passed all checks (A1-A9). Proceeding to commit and push.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire,DB migration 002_projects.sql (projects + project_contracts tables),project_repo.py with CRUD for both tables,llm_client.py Anthropic Messages API wrapper,project_service.py questionnaire chat + contract generation,projects router with 9 endpoints,10 contract templates,42 new tests (154 total) -- Iteration 46
+Timestamp: 2026-02-15T02:50:52Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire,DB migration 002_projects.sql (projects + project_contracts tables),project_repo.py with CRUD for both tables,llm_client.py Anthropic Messages API wrapper,project_service.py questionnaire chat + contract generation,projects router with 9 endpoints,10 contract templates,42 new tests (154 total)
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/updatedifflog.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/updatedifflog.md. 
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 47
+Timestamp: 2026-02-15T02:51:04Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 48
+Timestamp: 2026-02-15T02:51:15Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Verification keywords are out of order.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/audit_ledger.md. 
+- A7: FAIL -- Verification keywords are out of order.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire,DB migration 002_projects.sql (projects + project_contracts tables),project_repo.py with CRUD for both tables,llm_client.py Anthropic Messages API wrapper,project_service.py questionnaire chat + contract generation,projects router with 9 endpoints,10 contract templates,A7 fix: scan only Verification section in run_audit.ps1 and runner.py,42 new tests (154 total) -- Iteration 49
+Timestamp: 2026-02-15T02:55:53Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire,DB migration 002_projects.sql (projects + project_contracts tables),project_repo.py with CRUD for both tables,llm_client.py Anthropic Messages API wrapper,project_service.py questionnaire chat + contract generation,projects router with 9 endpoints,10 contract templates,A7 fix: scan only Verification section in run_audit.ps1 and runner.py,42 new tests (154 total)
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/evidence/updatedifflog.md. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/evidence/updatedifflog.md. 
+
+### Files Changed
+- app/api/routers/projects.py
+- app/audit/runner.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_runner.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 50
+Timestamp: 2026-02-15T02:56:06Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/audit/runner.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_runner.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 51
+Timestamp: 2026-02-15T03:01:27Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/audit/runner.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_runner.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 52
+Timestamp: 2026-02-15T03:01:37Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/audit/runner.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_runner.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 8 -- Project Intake and Questionnaire -- Iteration 53
+Timestamp: 2026-02-15T03:03:46Z
+AEM Cycle: Phase 8 -- Project Intake and Questionnaire
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/audit/runner.py
+- app/clients/llm_client.py
+- app/config.py
+- app/main.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- app/templates/contracts/blueprint.md
+- app/templates/contracts/boundaries.json
+- app/templates/contracts/builder_contract.md
+- app/templates/contracts/builder_directive.md
+- app/templates/contracts/manifesto.md
+- app/templates/contracts/phases.md
+- app/templates/contracts/physics.yaml
+- app/templates/contracts/schema.md
+- app/templates/contracts/stack.md
+- app/templates/contracts/ui.md
+- db/migrations/002_projects.sql
+- Forge/Contracts/physics.yaml
+- Forge/Contracts/schema.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/test_runs.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_audit_runner.py
+- tests/test_llm_client.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+
+### Notes
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

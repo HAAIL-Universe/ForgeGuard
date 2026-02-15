@@ -275,7 +275,17 @@ try {
       $results["A7"] = "FAIL -- updatedifflog.md missing; cannot verify order."
       $anyFail = $true
     } else {
-      $dlText = Get-Content $diffLog -Raw
+      $dlRaw = Get-Content $diffLog -Raw
+      # Only scan the ## Verification section so that keywords appearing
+      # in file names, table names, or diff hunks don't cause false positives.
+      $verIdx = $dlRaw.IndexOf('## Verification')
+      if ($verIdx -lt 0) {
+        $results["A7"] = "FAIL -- No ## Verification section found in updatedifflog.md."
+        $anyFail = $true
+      } else {
+      $verRest = $dlRaw.Substring($verIdx + '## Verification'.Length)
+      $nextHeading = $verRest.IndexOf("`n## ")
+      $dlText = if ($nextHeading -ge 0) { $verRest.Substring(0, $nextHeading) } else { $verRest }
       $keywords = @("Static", "Runtime", "Behavior", "Contract")
       $positions = @()
       $missing = @()
@@ -307,6 +317,7 @@ try {
           $anyFail = $true
         }
       }
+      } # close $verIdx else
     }
   } catch {
     $results["A7"] = "FAIL -- Error checking verification order: $_"

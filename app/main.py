@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.api.routers.audit import router as audit_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.health import router as health_router
+from app.api.routers.projects import router as projects_router
 from app.api.routers.repos import router as repos_router
 from app.api.routers.webhooks import router as webhooks_router
 from app.api.routers.ws import router as ws_router
@@ -50,13 +51,14 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[settings.FRONTEND_URL],
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
     application.include_router(health_router)
     application.include_router(auth_router)
     application.include_router(repos_router)
+    application.include_router(projects_router)
     application.include_router(webhooks_router)
     application.include_router(ws_router)
     application.include_router(audit_router)

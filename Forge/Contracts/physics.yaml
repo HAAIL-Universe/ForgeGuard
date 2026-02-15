@@ -162,6 +162,105 @@ paths:
         type: "audit_update"
         payload: AuditRunSummary
 
+  # -- Projects (Phase 8) -------------------------------------------
+
+  /projects:
+    post:
+      summary: "Create a new project"
+      auth: bearer
+      request:
+        name: string (required, min 1, max 255)
+        description: string (optional)
+      response:
+        id: uuid
+        name: string
+        description: string | null
+        status: string
+        created_at: datetime
+
+    get:
+      summary: "List user's projects"
+      auth: bearer
+      response:
+        items: ProjectSummary[]
+
+  /projects/{project_id}:
+    get:
+      summary: "Get project detail with contract status"
+      auth: bearer
+      response:
+        id: uuid
+        name: string
+        description: string | null
+        status: string
+        repo_id: uuid | null
+        questionnaire_progress: QuestionnaireProgress
+        contracts: ContractSummary[]
+        created_at: datetime
+        updated_at: datetime
+
+  /projects/{project_id}/questionnaire:
+    post:
+      summary: "Send a message to the questionnaire chat"
+      auth: bearer
+      request:
+        message: string (required, min 1)
+      response:
+        reply: string
+        section: string
+        completed_sections: string[]
+        remaining_sections: string[]
+        is_complete: boolean
+
+  /projects/{project_id}/questionnaire/state:
+    get:
+      summary: "Current questionnaire progress"
+      auth: bearer
+      response:
+        current_section: string | null
+        completed_sections: string[]
+        remaining_sections: string[]
+        is_complete: boolean
+
+  /projects/{project_id}/contracts/generate:
+    post:
+      summary: "Generate all contract files from completed questionnaire answers"
+      auth: bearer
+      response:
+        contracts: ContractSummary[]
+
+  /projects/{project_id}/contracts:
+    get:
+      summary: "List generated contracts"
+      auth: bearer
+      response:
+        items: ContractSummary[]
+
+  /projects/{project_id}/contracts/{contract_type}:
+    get:
+      summary: "View a single contract"
+      auth: bearer
+      response:
+        id: uuid
+        project_id: uuid
+        contract_type: string
+        content: string
+        version: integer
+        created_at: datetime
+        updated_at: datetime
+
+    put:
+      summary: "Edit a contract before build"
+      auth: bearer
+      request:
+        content: string (required)
+      response:
+        id: uuid
+        contract_type: string
+        content: string
+        version: integer
+        updated_at: datetime
+
 # -- Schemas --------------------------------------------------------
 
 schemas:
@@ -223,3 +322,25 @@ schemas:
     name: string
     result: string
     detail: string | null
+
+  ProjectSummary:
+    id: uuid
+    name: string
+    description: string | null
+    status: string
+    created_at: datetime
+    updated_at: datetime
+
+  QuestionnaireProgress:
+    current_section: string | null
+    completed_sections: string[]
+    remaining_sections: string[]
+    is_complete: boolean
+
+  ContractSummary:
+    id: uuid
+    project_id: uuid
+    contract_type: string
+    version: integer
+    created_at: datetime
+    updated_at: datetime

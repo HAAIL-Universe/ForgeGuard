@@ -404,7 +404,22 @@ def check_a7_verification_order(gov_root: str) -> GovernanceCheckResult:
         }
 
     with open(diff_log, encoding="utf-8") as f:
-        text = f.read()
+        full_text = f.read()
+
+    # Only scan the ## Verification section so that keywords appearing
+    # in file names, table names, or diff hunks don't cause false positives.
+    ver_start = full_text.find("## Verification")
+    if ver_start < 0:
+        return {
+            "code": "A7",
+            "name": "Verification hierarchy order",
+            "result": "FAIL",
+            "detail": "No ## Verification section found in updatedifflog.md.",
+        }
+    # The section runs until the next ## heading or end of file.
+    rest = full_text[ver_start + len("## Verification"):]
+    next_heading = rest.find("\n## ")
+    text = rest[:next_heading] if next_heading >= 0 else rest
 
     keywords = ["Static", "Runtime", "Behavior", "Contract"]
     positions: list[int] = []

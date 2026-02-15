@@ -357,7 +357,7 @@ class TestA7VerificationOrder:
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / "updatedifflog.md").write_text(
-            "# Diff Log\n"
+            "# Diff Log\n\n## Verification\n"
             "- Contract: PASS\n"
             "- Behavior: PASS\n"
             "- Runtime: PASS\n"
@@ -372,7 +372,7 @@ class TestA7VerificationOrder:
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / "updatedifflog.md").write_text(
-            "# Diff Log\n- Static: PASS\n- Runtime: PASS\n"
+            "# Diff Log\n\n## Verification\n- Static: PASS\n- Runtime: PASS\n"
         )
         gov_root = str(tmp_project / "Forge")
         result = check_a7_verification_order(gov_root)
