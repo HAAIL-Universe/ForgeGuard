@@ -77,6 +77,14 @@ class Settings:
     COLD_START_TURNS: int = int(
         os.getenv("COLD_START_TURNS", "12")
     )
+    # Anthropic per-minute token limits (Build tier for Opus).
+    # Set these to match your API tier to enable proactive self-throttling.
+    ANTHROPIC_INPUT_TPM: int = int(
+        os.getenv("ANTHROPIC_INPUT_TPM", "30000")
+    )
+    ANTHROPIC_OUTPUT_TPM: int = int(
+        os.getenv("ANTHROPIC_OUTPUT_TPM", "8000")
+    )
 
 
 # Validate at import time -- but only when NOT running under pytest.

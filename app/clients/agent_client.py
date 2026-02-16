@@ -11,6 +11,8 @@ No database access, no business logic, no HTTP framework imports.
 import asyncio
 import json
 import logging
+import time
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Union
@@ -27,12 +29,118 @@ MAX_RETRIES = 6
 BASE_BACKOFF = 2.0            # seconds — exponential: 2, 4, 8, 16, 32, 64
 _RETRYABLE_CODES = frozenset({429, 500, 502, 503, 529})
 
+# Default per-minute token limits (Anthropic Build tier for Opus)
+DEFAULT_INPUT_TPM = 30_000
+DEFAULT_OUTPUT_TPM = 8_000
+
+
+# ---------------------------------------------------------------------------
+# Token Budget Rate Limiter
+# ---------------------------------------------------------------------------
+
+
+class TokenBudgetLimiter:
+    """Sliding-window rate limiter tracking tokens per minute.
+
+    Before each API call, call ``await limiter.wait_for_budget(est_input)``
+    to block until enough budget is available.  After each call, call
+    ``limiter.record(input_tokens, output_tokens)`` to log actual usage.
+    """
+
+    def __init__(
+        self,
+        input_tpm: int = DEFAULT_INPUT_TPM,
+        output_tpm: int = DEFAULT_OUTPUT_TPM,
+    ) -> None:
+        self.input_tpm = input_tpm
+        self.output_tpm = output_tpm
+        # Deque of (timestamp, input_tokens, output_tokens)
+        self._history: deque[tuple[float, int, int]] = deque()
+        self._lock = asyncio.Lock()
+
+    def _purge_old(self) -> None:
+        """Remove entries older than 60 seconds."""
+        cutoff = time.monotonic() - 60.0
+        while self._history and self._history[0][0] < cutoff:
+            self._history.popleft()
+
+    def _current_usage(self) -> tuple[int, int]:
+        """Return (input_tokens, output_tokens) consumed in the last 60s."""
+        self._purge_old()
+        inp = sum(e[1] for e in self._history)
+        out = sum(e[2] for e in self._history)
+        return inp, out
+
+    async def wait_for_budget(
+        self,
+        estimated_input: int = 0,
+        on_wait: "Callable[[float, int, int, int, int], Any] | None" = None,
+    ) -> None:
+        """Block until the minute-window has budget for another API call.
+
+        Args:
+            estimated_input: Rough estimate of input tokens for the next call.
+            on_wait: Optional callback(wait_secs, inp_used, inp_limit, out_used, out_limit)
+                     fired when throttling is needed.
+        """
+        async with self._lock:
+            while True:
+                inp_used, out_used = self._current_usage()
+                # Check both budgets — leave 10% headroom
+                inp_ok = (inp_used + estimated_input) < self.input_tpm * 0.90
+                out_ok = out_used < self.output_tpm * 0.90
+
+                if inp_ok and out_ok:
+                    return
+
+                # Find when the oldest entry expires to reclaim budget
+                if self._history:
+                    oldest_ts = self._history[0][0]
+                    wait = max(oldest_ts + 60.0 - time.monotonic(), 1.0)
+                else:
+                    wait = 5.0  # Shouldn't happen, but safe default
+
+                # Cap wait so we re-check periodically
+                wait = min(wait, 15.0)
+
+                if on_wait:
+                    try:
+                        on_wait(wait, inp_used, self.input_tpm, out_used, self.output_tpm)
+                    except Exception:
+                        pass
+
+                logger.info(
+                    "Token budget limiter: waiting %.1fs "
+                    "(input %d/%d, output %d/%d)",
+                    wait, inp_used, self.input_tpm, out_used, self.output_tpm,
+                )
+                await asyncio.sleep(wait)
+
+    def record(self, input_tokens: int, output_tokens: int) -> None:
+        """Record actual token usage from a completed API call."""
+        self._history.append((time.monotonic(), input_tokens, output_tokens))
+
+
+# Global limiter instance — shared across all builds for the same process.
+# Replaced at startup if config provides different limits.
+_global_limiter: TokenBudgetLimiter | None = None
+
+
+def get_limiter(input_tpm: int = DEFAULT_INPUT_TPM, output_tpm: int = DEFAULT_OUTPUT_TPM) -> TokenBudgetLimiter:
+    """Get or create the global token budget limiter."""
+    global _global_limiter
+    if _global_limiter is None:
+        _global_limiter = TokenBudgetLimiter(input_tpm, output_tpm)
+    return _global_limiter
+
 
 @dataclass
 class StreamUsage:
     """Accumulates token usage from a streaming session."""
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     model: str = ""
 
 
@@ -49,6 +157,7 @@ def _headers(api_key: str) -> dict:
     return {
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_API_VERSION,
+        "anthropic-beta": "prompt-caching-2024-07-31",
         "Content-Type": "application/json",
     }
 
@@ -78,6 +187,7 @@ async def stream_agent(
     usage_out: StreamUsage | None = None,
     tools: list[dict] | None = None,
     on_retry: "Callable[[int, int, float], Any] | None" = None,
+    token_limiter: TokenBudgetLimiter | None = None,
 ) -> AsyncIterator[Union[str, ToolCall]]:
     """Stream a builder agent session, yielding text chunks or tool calls.
 
@@ -94,6 +204,7 @@ async def stream_agent(
         tools: Optional list of tool definitions in Anthropic format.
         on_retry: Optional callback(status_code, attempt, wait_seconds) called
                   before each retry sleep so the caller can log / broadcast.
+        token_limiter: Optional TokenBudgetLimiter for proactive rate control.
 
     Yields:
         str: Incremental text chunks from the builder agent.
@@ -103,15 +214,48 @@ async def stream_agent(
         httpx.HTTPStatusError: On non-retryable API errors.
         ValueError: On unexpected stream format.
     """
+    # Use prompt caching: system prompt as a cacheable block
+    system_blocks = [
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
     payload: dict = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": system_prompt,
+        "system": system_blocks,
         "messages": messages,
         "stream": True,
     }
     if tools:
         payload["tools"] = tools
+
+    # Rough estimate of input tokens (~4 chars per token)
+    est_input = len(system_prompt) // 4
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            est_input += len(content) // 4
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    est_input += len(str(block.get("text", "") or block.get("content", ""))) // 4
+
+    # Proactive token budget check — wait if approaching per-minute limits
+    if token_limiter:
+        await token_limiter.wait_for_budget(
+            estimated_input=est_input,
+            on_wait=lambda w, iu, il, ou, ol: (
+                on_retry(0, 0, w) if on_retry else None
+            ) if on_retry else None,
+        )
+
+    # Track tokens for this specific call (to record with limiter after)
+    call_input_tokens = 0
+    call_output_tokens = 0
 
     last_exc: Exception | None = None
 
@@ -157,14 +301,22 @@ async def stream_agent(
                             # Capture usage from message_start
                             if etype == "message_start" and usage_out is not None:
                                 msg = event.get("message", {})
-                                usage = msg.get("usage", {})
-                                usage_out.input_tokens += usage.get("input_tokens", 0)
+                                u = msg.get("usage", {})
+                                inp = u.get("input_tokens", 0)
+                                cache_read = u.get("cache_read_input_tokens", 0)
+                                cache_create = u.get("cache_creation_input_tokens", 0)
+                                usage_out.input_tokens += inp
+                                usage_out.cache_read_input_tokens += cache_read
+                                usage_out.cache_creation_input_tokens += cache_create
                                 usage_out.model = msg.get("model", model)
+                                call_input_tokens += inp + cache_read + cache_create
 
                             # Capture usage from message_delta (output tokens)
                             if etype == "message_delta" and usage_out is not None:
-                                usage = event.get("usage", {})
-                                usage_out.output_tokens += usage.get("output_tokens", 0)
+                                u = event.get("usage", {})
+                                out = u.get("output_tokens", 0)
+                                usage_out.output_tokens += out
+                                call_output_tokens += out
 
                             # Content block start — detect tool_use blocks
                             if etype == "content_block_start":
@@ -208,6 +360,8 @@ async def stream_agent(
                             # Skip malformed events
                             continue
             # If we get here, streaming completed successfully
+            if token_limiter:
+                token_limiter.record(call_input_tokens, call_output_tokens)
             return
 
         except httpx.HTTPStatusError as exc:

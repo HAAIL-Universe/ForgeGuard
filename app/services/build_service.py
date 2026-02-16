@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from app.clients.agent_client import StreamUsage, ToolCall, stream_agent
+from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, get_limiter
 from app.clients import git_client
 from app.clients import github_client
 from app.config import settings
@@ -935,6 +935,12 @@ async def _run_build(
                     })
                 )
 
+            # Token budget limiter — proactive self-throttle before API calls
+            limiter = get_limiter(
+                input_tpm=settings.ANTHROPIC_INPUT_TPM,
+                output_tpm=settings.ANTHROPIC_OUTPUT_TPM,
+            )
+
             async for item in stream_agent(
                 api_key=api_key,
                 model=settings.LLM_BUILDER_MODEL,
@@ -943,6 +949,7 @@ async def _run_build(
                 usage_out=usage,
                 tools=BUILDER_TOOLS if working_dir else None,
                 on_retry=_on_rate_limit,
+                token_limiter=limiter,
             ):
                 if isinstance(item, ToolCall):
                     # --- Tool call detected ---

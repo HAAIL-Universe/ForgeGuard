@@ -39,3 +39,13 @@ def test_config_settings_type():
     assert hasattr(settings, "JWT_SECRET")
     assert hasattr(settings, "FRONTEND_URL")
     assert hasattr(settings, "APP_URL")
+
+
+def test_config_has_tpm_settings():
+    """Settings include Anthropic TPM rate-limit settings."""
+    from app.config import settings
+
+    assert hasattr(settings, "ANTHROPIC_INPUT_TPM")
+    assert hasattr(settings, "ANTHROPIC_OUTPUT_TPM")
+    assert settings.ANTHROPIC_INPUT_TPM > 0
+    assert settings.ANTHROPIC_OUTPUT_TPM > 0
