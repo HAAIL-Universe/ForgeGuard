@@ -639,6 +639,13 @@ function BuildProgress() {
             break;
           }
 
+          case 'token_update': {
+            const inTok = (payload.input_tokens ?? 0) as number;
+            const outTok = (payload.output_tokens ?? 0) as number;
+            setTotalTokens({ input: inTok, output: outTok });
+            break;
+          }
+
           case 'build_paused': {
             const phase = payload.phase as string;
             const loop = (payload.loop_count ?? 0) as number;

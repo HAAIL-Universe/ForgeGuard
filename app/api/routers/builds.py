@@ -16,6 +16,7 @@ class StartBuildRequest(BaseModel):
     """Request body for starting a build."""
     target_type: str | None = None
     target_ref: str | None = None
+    branch: str = "main"
 
 
 class ResumeRequest(BaseModel):
@@ -46,8 +47,28 @@ async def start_build(
             user["id"],
             target_type=body.target_type if body else None,
             target_ref=body.target_ref if body else None,
+            branch=body.branch if body else "main",
         )
         return build
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GET /projects/{project_id}/builds ─────────────────────────────────────
+
+
+@router.get("/{project_id}/builds")
+async def list_builds(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """List all builds for a project, newest first."""
+    try:
+        builds = await build_service.list_builds(project_id, user["id"])
+        return {"items": builds}
     except ValueError as exc:
         detail = str(exc)
         if "not found" in detail.lower():

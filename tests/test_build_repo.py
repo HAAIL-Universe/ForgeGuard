@@ -434,3 +434,83 @@ async def test_cancel_build_includes_paused(mock_get_pool):
     assert result is True
     query = pool.execute.call_args[0][0]
     assert "'paused'" in query
+
+
+# ---------------------------------------------------------------------------
+# Tests: create_build with branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_create_build_with_branch(mock_get_pool):
+    """create_build passes branch parameter to INSERT."""
+    pool = _fake_pool()
+    row = _build_row(branch="forge/v2")
+    pool.fetchrow.return_value = row
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.create_build(
+        row["project_id"],
+        target_type="github_existing",
+        target_ref="user/repo",
+        branch="forge/v2",
+    )
+
+    pool.fetchrow.assert_called_once()
+    query = pool.fetchrow.call_args[0][0]
+    assert "branch" in query
+    # branch param should be 5th positional arg
+    args = pool.fetchrow.call_args[0]
+    assert args[4] == "forge/v2"
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_create_build_default_branch(mock_get_pool):
+    """create_build defaults to 'main' branch."""
+    pool = _fake_pool()
+    row = _build_row()
+    pool.fetchrow.return_value = row
+    mock_get_pool.return_value = pool
+
+    await build_repo.create_build(row["project_id"])
+
+    args = pool.fetchrow.call_args[0]
+    assert args[4] == "main"
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_builds_for_project
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_builds_for_project(mock_get_pool):
+    """get_builds_for_project returns list of builds."""
+    pool = _fake_pool()
+    pid = uuid.uuid4()
+    rows = [_build_row(project_id=pid), _build_row(project_id=pid)]
+    pool.fetch.return_value = rows
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.get_builds_for_project(pid)
+
+    assert len(result) == 2
+    pool.fetch.assert_called_once()
+    query = pool.fetch.call_args[0][0]
+    assert "ORDER BY created_at DESC" in query
+
+
+@pytest.mark.asyncio
+@patch("app.repos.build_repo.get_pool")
+async def test_get_builds_for_project_empty(mock_get_pool):
+    """get_builds_for_project returns empty list when no builds."""
+    pool = _fake_pool()
+    pool.fetch.return_value = []
+    mock_get_pool.return_value = pool
+
+    result = await build_repo.get_builds_for_project(uuid.uuid4())
+
+    assert result == []

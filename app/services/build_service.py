@@ -250,12 +250,35 @@ def _get_token_rates(model: str) -> tuple[Decimal, Decimal]:
 # ---------------------------------------------------------------------------
 
 
+async def list_builds(project_id: UUID, user_id: UUID) -> list[dict]:
+    """List all builds for a project. Validates ownership."""
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+    builds = await build_repo.get_builds_for_project(project_id)
+    return [
+        {
+            "id": str(b["id"]),
+            "phase": b["phase"],
+            "status": b["status"],
+            "branch": b.get("branch", "main"),
+            "loop_count": b["loop_count"],
+            "started_at": b["started_at"],
+            "completed_at": b["completed_at"],
+            "created_at": b["created_at"],
+            "error_detail": b.get("error_detail"),
+        }
+        for b in builds
+    ]
+
+
 async def start_build(
     project_id: UUID,
     user_id: UUID,
     *,
     target_type: str | None = None,
     target_ref: str | None = None,
+    branch: str = "main",
 ) -> dict:
     """Start a build for a project.
 
@@ -299,6 +322,14 @@ async def start_build(
 
     audit_llm_enabled = (user or {}).get("audit_llm_enabled", True)
 
+    # Auto-detect target from project's connected repo if not provided
+    if not target_type and project.get("repo_full_name"):
+        target_type = "github_existing"
+        target_ref = project["repo_full_name"]
+    elif not target_type and project.get("local_path"):
+        target_type = "local_path"
+        target_ref = project["local_path"]
+
     # Validate target
     if target_type and target_type not in VALID_TARGET_TYPES:
         raise ValueError(f"Invalid target_type: {target_type}. Must be one of: {', '.join(VALID_TARGET_TYPES)}")
@@ -321,6 +352,7 @@ async def start_build(
         target_type=target_type,
         target_ref=target_ref,
         working_dir=working_dir,
+        branch=branch,
     )
 
     # Update project status
@@ -335,6 +367,7 @@ async def start_build(
             target_ref=target_ref,
             working_dir=working_dir,
             access_token=(user or {}).get("access_token", ""),
+            branch=branch,
         )
     )
     _active_tasks[str(build["id"])] = task
@@ -566,6 +599,7 @@ async def _run_build(
     target_ref: str | None = None,
     working_dir: str | None = None,
     access_token: str = "",
+    branch: str = "main",
 ) -> None:
     """Background task that orchestrates the full build lifecycle.
 
@@ -657,6 +691,30 @@ async def _run_build(
                 await _fail_build(build_id, user_id, f"Failed to initialize local path: {exc}")
                 return
 
+        # Create/checkout branch if not main
+        if working_dir and branch and branch != "main":
+            try:
+                await git_client.create_branch(working_dir, branch)
+                await build_repo.append_build_log(
+                    build_id, f"Created branch: {branch}",
+                    source="system", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"Building on branch: {branch}",
+                    "source": "system", "level": "info",
+                })
+            except Exception:
+                # Branch may already exist — try checkout instead
+                try:
+                    await git_client.checkout_branch(working_dir, branch)
+                    await build_repo.append_build_log(
+                        build_id, f"Checked out branch: {branch}",
+                        source="system", level="info",
+                    )
+                except Exception as exc2:
+                    await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
+                    return
+
         # Track files written during this build
         files_written: list[dict] = []
 
@@ -679,10 +737,44 @@ async def _run_build(
 
         # Total token accumulator (across all turns, for compaction check)
         total_tokens_all_turns = 0
+        # Tokens recorded before the current usage window (after phase cost resets)
+        recorded_input_baseline = 0
+        recorded_output_baseline = 0
 
         # System prompt for the builder agent
+        # Build working directory snapshot for builder orientation
+        workspace_info = ""
+        if working_dir:
+            try:
+                file_list = await git_client.get_file_list(working_dir)
+                if file_list:
+                    workspace_info = (
+                        "\n\n## Working Directory\n"
+                        "The target repo already contains these files:\n"
+                        + "\n".join(f"- {f}" for f in file_list[:50])
+                        + ("\n- ... (truncated)" if len(file_list) > 50 else "")
+                        + "\n\nYou do NOT need to run list_directory on the root — "
+                        "the listing above is current. Jump straight into Phase 0.\n"
+                    )
+                else:
+                    workspace_info = (
+                        "\n\n## Working Directory\n"
+                        "The target repo is empty. No existing files. "
+                        "Start building from scratch — skip exploring and jump straight into Phase 0.\n"
+                    )
+            except Exception:
+                workspace_info = (
+                    "\n\n## Working Directory\n"
+                    "The target repo is empty or freshly initialized. "
+                    "Start building from scratch — skip exploring and jump straight into Phase 0.\n"
+                )
+
         system_prompt = (
             "You are an autonomous software builder operating under the Forge governance framework.\n\n"
+            "## Important\n"
+            "Your contracts and build instructions are provided in the first user message below. "
+            "Do NOT search the filesystem for contracts — they are NOT on disk. "
+            "Read your directive and start building immediately.\n\n"
             "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
             "=== PLAN ===\n"
             "1. First task for this phase\n"
@@ -710,8 +802,18 @@ async def _run_build(
             "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
             "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
             "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
-            "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n"
-        )
+            "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
+            "## README\n"
+            "Before the final phase sign-off, generate a comprehensive README.md that includes:\n"
+            "- Project name and description\n"
+            "- Key features\n"
+            "- Tech stack\n"
+            "- Setup / installation instructions\n"
+            "- Environment variables\n"
+            "- Usage examples\n"
+            "- API reference (if applicable)\n"
+            "- License placeholder\n"
+        ) + workspace_info
 
         # Emit build overview (high-level phase list) at build start
         try:
@@ -730,6 +832,16 @@ async def _run_build(
         # Multi-turn conversation loop
         while True:
             turn_count += 1
+
+            # Cold-start pacing: add a decaying delay for the first N turns
+            # to avoid hammering the API and triggering 429s at build start.
+            if turn_count <= settings.COLD_START_TURNS and settings.COLD_START_DELAY > 0:
+                pacing = settings.COLD_START_DELAY * (
+                    1.0 - (turn_count - 1) / settings.COLD_START_TURNS
+                )
+                if pacing > 0.1:
+                    await asyncio.sleep(pacing)
+
             # Phase timeout check
             phase_elapsed = (datetime.now(timezone.utc) - phase_start_time).total_seconds()
             if phase_elapsed > settings.PHASE_TIMEOUT_MINUTES * 60:
@@ -945,8 +1057,9 @@ async def _run_build(
                                 }
                             )
 
-            # Turn complete — handle tool calls if any
-            if tool_calls_this_turn:
+            # Turn complete — append messages to conversation history
+            had_tool_calls = bool(tool_calls_this_turn)
+            if had_tool_calls:
                 # Build the assistant message with tool_use content blocks
                 assistant_content: list[dict] = []
                 if turn_text:
@@ -970,43 +1083,50 @@ async def _run_build(
                     for tc in tool_calls_this_turn
                 ]
                 messages.append({"role": "user", "content": tool_results_content})
+            else:
+                # Text-only response
+                messages.append({"role": "assistant", "content": turn_text})
 
-                # Continue to next iteration — the agent will respond to tool results
-                total_tokens_all_turns += usage.input_tokens + usage.output_tokens
-                continue
+                # Check for user interjections between text-only turns
+                queue = _interjection_queues.get(str(build_id))
+                if queue and not queue.empty():
+                    interjections: list[str] = []
+                    while not queue.empty():
+                        try:
+                            interjections.append(queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    if interjections:
+                        combined = "\n".join(interjections)
+                        messages.append({
+                            "role": "user",
+                            "content": f"[User interjection]\n{combined}\n\nPlease incorporate this feedback and continue.",
+                        })
+                        await build_repo.append_build_log(
+                            build_id,
+                            f"User interjection: {combined[:200]}",
+                            source="user", level="info",
+                        )
+                        await _broadcast_build_event(
+                            user_id, build_id, "build_interjection", {
+                                "message": combined,
+                                "injected_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
 
-            # Add assistant response to conversation history
-            messages.append({"role": "assistant", "content": turn_text})
+            # --- Common code for ALL turns (tool and text) ---
 
-            # Check for user interjections between turns
-            queue = _interjection_queues.get(str(build_id))
-            if queue and not queue.empty():
-                interjections: list[str] = []
-                while not queue.empty():
-                    try:
-                        interjections.append(queue.get_nowait())
-                    except asyncio.QueueEmpty:
-                        break
-                if interjections:
-                    combined = "\n".join(interjections)
-                    messages.append({
-                        "role": "user",
-                        "content": f"[User interjection]\n{combined}\n\nPlease incorporate this feedback and continue.",
-                    })
-                    await build_repo.append_build_log(
-                        build_id,
-                        f"User interjection: {combined[:200]}",
-                        source="user", level="info",
-                    )
-                    await _broadcast_build_event(
-                        user_id, build_id, "build_interjection", {
-                            "message": combined,
-                            "injected_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
+            # Update total token count (baseline + current window usage)
+            all_input = recorded_input_baseline + usage.input_tokens
+            all_output = recorded_output_baseline + usage.output_tokens
+            total_tokens_all_turns = all_input + all_output
 
-            # Update total token count
-            total_tokens_all_turns += usage.input_tokens + usage.output_tokens
+            # Broadcast token update so the frontend shows real-time metrics
+            await _broadcast_build_event(user_id, build_id, "token_update", {
+                "input_tokens": all_input,
+                "output_tokens": all_output,
+                "total_tokens": total_tokens_all_turns,
+            })
 
             if not compacted:
                 await _broadcast_build_event(user_id, build_id, "build_turn", {
@@ -1015,7 +1135,7 @@ async def _run_build(
                     "compacted": False,
                 })
 
-            # Detect phase completion
+            # Detect phase completion (runs on EVERY turn, not just text-only)
             phase_completed = False
             if PHASE_COMPLETE_SIGNAL in accumulated_text:
                 phase_completed = True
@@ -1088,7 +1208,9 @@ async def _run_build(
                     accumulated_text = ""
                     plan_tasks = []  # Fresh plan for next phase
 
-                    # Record cost for this phase
+                    # Record cost for this phase (update baseline before reset)
+                    recorded_input_baseline += usage.input_tokens
+                    recorded_output_baseline += usage.output_tokens
                     await _record_phase_cost(build_id, current_phase, usage)
                 else:
                     # Audit failed — inject feedback and loop back
@@ -1172,7 +1294,9 @@ async def _run_build(
                             accumulated_text = ""
                             continue
 
-                    # Record cost for this failed attempt
+                    # Record cost for this failed attempt (update baseline before reset)
+                    recorded_input_baseline += usage.input_tokens
+                    recorded_output_baseline += usage.output_tokens
                     await _record_phase_cost(build_id, current_phase, usage)
 
                     # --- Recovery Planner ---
@@ -1228,7 +1352,11 @@ async def _run_build(
                 )
                 return
 
-            # If no phase was completed and the agent stopped, the build is done
+            # If tool calls were made, agent needs to respond to results
+            if had_tool_calls:
+                continue
+
+            # Text-only turn: if no phase completed, the agent is done
             if not phase_completed:
                 break
 
@@ -1244,7 +1372,7 @@ async def _run_build(
                 for attempt in range(1, settings.GIT_PUSH_MAX_RETRIES + 1):
                     try:
                         await git_client.push(
-                            working_dir, access_token=access_token,
+                            working_dir, branch=branch, access_token=access_token,
                         )
                         await build_repo.append_build_log(
                             build_id, "Pushed to GitHub", source="system", level="info",
@@ -1308,6 +1436,12 @@ async def _run_build(
             build_id, "Build completed successfully", source="system", level="info"
         )
 
+        # Record any remaining unrecorded token usage as a final cost entry
+        if usage.input_tokens > 0 or usage.output_tokens > 0:
+            recorded_input_baseline += usage.input_tokens
+            recorded_output_baseline += usage.output_tokens
+            await _record_phase_cost(build_id, current_phase or "final", usage)
+
         # Final commit + push for GitHub targets
         if working_dir and files_written:
             try:
@@ -1322,7 +1456,7 @@ async def _run_build(
             if target_type in ("github_new", "github_existing") and access_token:
                 try:
                     await git_client.push(
-                        working_dir, access_token=access_token,
+                        working_dir, branch=branch, access_token=access_token,
                     )
                     await build_repo.append_build_log(
                         build_id, "Pushed to GitHub", source="system", level="info",
@@ -1336,6 +1470,11 @@ async def _run_build(
                     await build_repo.append_build_log(
                         build_id, f"Git push failed: {exc}", source="system", level="error",
                     )
+                    # Broadcast push failure so the user sees it in the activity feed
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"Git push failed: {exc}",
+                        "source": "system", "level": "error",
+                    })
 
         # Gather total cost summary for the final event
         cost_summary = await build_repo.get_build_cost_summary(build_id)

@@ -175,3 +175,26 @@ async def test_get_file_list_empty(mock_run):
     result = await git_client.get_file_list("/tmp/test")
 
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: create_branch / checkout_branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_create_branch(mock_run):
+    """create_branch runs git checkout -b."""
+    await git_client.create_branch("/tmp/test", "forge/v2")
+
+    mock_run.assert_called_once_with(["checkout", "-b", "forge/v2"], cwd="/tmp/test")
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_checkout_branch(mock_run):
+    """checkout_branch runs git checkout."""
+    await git_client.checkout_branch("/tmp/test", "develop")
+
+    mock_run.assert_called_once_with(["checkout", "develop"], cwd="/tmp/test")

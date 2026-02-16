@@ -21,6 +21,7 @@ from app.repos.project_repo import (
     update_questionnaire_state,
     upsert_contract,
 )
+from app.repos import build_repo
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,22 @@ async def get_project_detail(user_id: UUID, project_id: UUID) -> dict:
         }
         for c in contracts
     ]
+
+    # Attach latest build info
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if latest:
+        project["latest_build"] = {
+            "id": str(latest["id"]),
+            "phase": latest["phase"],
+            "status": latest["status"],
+            "branch": latest.get("branch", "main"),
+            "loop_count": latest["loop_count"],
+            "started_at": latest["started_at"],
+            "completed_at": latest["completed_at"],
+        }
+    else:
+        project["latest_build"] = None
+
     return project
 
 
@@ -786,7 +803,9 @@ Each phase MUST include:
 - Exit criteria (bullet list of concrete, testable conditions)
 
 Phase 0 is always Genesis (project scaffold, config, tooling).
-The final phase should be Ship & Deploy.
+The final phase should be Ship & Deploy, and MUST include a deliverable to generate a comprehensive
+README.md covering: project description, features, tech stack, setup/install instructions,
+environment variables, usage examples, and API reference (if applicable).
 Phases should be ordered by dependency — earlier phases provide foundations for later ones.""",
 
     "ui": """\

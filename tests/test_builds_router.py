@@ -232,6 +232,7 @@ def test_build_endpoints_require_auth(client):
         ("GET", f"/projects/{pid}/build/logs"),
         ("GET", f"/projects/{pid}/build/summary"),
         ("GET", f"/projects/{pid}/build/instructions"),
+        ("GET", f"/projects/{pid}/builds"),
     ]
     for method, url in endpoints:
         resp = client.request(method, url)
@@ -590,3 +591,107 @@ def test_interject_build_not_found(mock_get_user, mock_interject, client):
     )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /projects/{id}/builds (list builds)
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.list_builds", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_list_builds(mock_get_user, mock_list, client):
+    """GET /projects/{id}/builds returns build history."""
+    mock_get_user.return_value = _USER
+    mock_list.return_value = [
+        {
+            "id": str(_BUILD_ID),
+            "phase": "Phase 2",
+            "status": "completed",
+            "branch": "main",
+            "loop_count": 12,
+            "started_at": None,
+            "completed_at": None,
+            "created_at": "2025-01-01T00:00:00Z",
+            "error_detail": None,
+        }
+    ]
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/builds", headers=_auth_header())
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data
+    assert len(data["items"]) == 1
+    assert data["items"][0]["branch"] == "main"
+
+
+@patch("app.api.routers.builds.build_service.list_builds", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_list_builds_not_found(mock_get_user, mock_list, client):
+    """GET /projects/{id}/builds returns 404 for missing project."""
+    mock_get_user.return_value = _USER
+    mock_list.side_effect = ValueError("Project not found")
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/builds", headers=_auth_header())
+
+    assert resp.status_code == 404
+
+
+@patch("app.api.routers.builds.build_service.list_builds", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_list_builds_empty(mock_get_user, mock_list, client):
+    """GET /projects/{id}/builds returns empty list."""
+    mock_get_user.return_value = _USER
+    mock_list.return_value = []
+
+    resp = client.get(f"/projects/{_PROJECT_ID}/builds", headers=_auth_header())
+
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /projects/{id}/build with branch
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_with_branch(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build passes branch parameter."""
+    mock_get_user.return_value = _USER
+    mock_limiter.is_allowed.return_value = True
+    mock_start.return_value = _build()
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build",
+        headers=_auth_header(),
+        json={"target_type": "github_existing", "target_ref": "user/repo", "branch": "forge/v2"},
+    )
+
+    assert resp.status_code == 200
+    mock_start.assert_called_once()
+    call_kwargs = mock_start.call_args
+    assert call_kwargs.kwargs["branch"] == "forge/v2"
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_default_branch(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build defaults to main branch."""
+    mock_get_user.return_value = _USER
+    mock_limiter.is_allowed.return_value = True
+    mock_start.return_value = _build()
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build",
+        headers=_auth_header(),
+        json={"target_type": "github_existing", "target_ref": "user/repo"},
+    )
+
+    assert resp.status_code == 200
+    call_kwargs = mock_start.call_args
+    assert call_kwargs.kwargs["branch"] == "main"

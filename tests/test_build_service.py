@@ -2281,3 +2281,81 @@ async def test_run_build_tool_result_in_messages(
         any(b.get("type") == "tool_result" for b in m["content"])
         for m in user_msgs
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests: list_builds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.project_repo")
+async def test_list_builds_success(mock_project_repo, mock_build_repo):
+    """list_builds returns formatted build list."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_builds_for_project = AsyncMock(return_value=[
+        _build(branch="main"),
+        _build(id=uuid.uuid4(), branch="forge/v2"),
+    ])
+
+    result = await build_service.list_builds(_PROJECT_ID, _USER_ID)
+
+    assert len(result) == 2
+    assert result[0]["branch"] == "main"
+    assert result[1]["branch"] == "forge/v2"
+    assert "id" in result[0]
+    assert "phase" in result[0]
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+async def test_list_builds_not_found(mock_project_repo):
+    """list_builds raises ValueError for missing project."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="Project not found"):
+        await build_service.list_builds(_PROJECT_ID, _USER_ID)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+async def test_list_builds_wrong_user(mock_project_repo):
+    """list_builds raises ValueError if user doesn't own project."""
+    mock_project_repo.get_project_by_id = AsyncMock(
+        return_value=_project(user_id=uuid.uuid4())
+    )
+
+    with pytest.raises(ValueError, match="Project not found"):
+        await build_service.list_builds(_PROJECT_ID, _USER_ID)
+
+
+# ---------------------------------------------------------------------------
+# Tests: start_build with branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.asyncio.create_task")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+async def test_start_build_with_branch(mock_get_user, mock_build_repo, mock_project_repo, mock_create_task):
+    """start_build passes branch to create_build."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.create_build = AsyncMock(return_value=_build())
+    mock_create_task.return_value = MagicMock()
+    mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+    result = await build_service.start_build(
+        _PROJECT_ID, _USER_ID, branch="forge/v2"
+    )
+
+    assert result["status"] == "pending"
+    mock_build_repo.create_build.assert_called_once()
+    call_kwargs = mock_build_repo.create_build.call_args.kwargs
+    assert call_kwargs["branch"] == "forge/v2"

@@ -81,6 +81,16 @@ async def init_repo(dest: str | Path) -> str:
     return str(path)
 
 
+async def create_branch(repo_path: str | Path, branch_name: str) -> None:
+    """Create and checkout a new branch."""
+    await _run_git(["checkout", "-b", branch_name], cwd=repo_path)
+
+
+async def checkout_branch(repo_path: str | Path, branch_name: str) -> None:
+    """Checkout an existing branch."""
+    await _run_git(["checkout", branch_name], cwd=repo_path)
+
+
 async def add_all(repo_path: str | Path) -> None:
     """Stage all changes in the repo."""
     await _run_git(["add", "-A"], cwd=repo_path)

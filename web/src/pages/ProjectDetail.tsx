@@ -12,6 +12,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import QuestionnaireModal from '../components/QuestionnaireModal';
 import ContractProgress from '../components/ContractProgress';
 import BuildTargetModal, { type BuildTarget } from '../components/BuildTargetModal';
+import BranchPickerModal, { type BranchChoice } from '../components/BranchPickerModal';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const BG_TOTAL_CONTRACTS = 9;
@@ -75,11 +76,27 @@ function ProjectDetail() {
   const [contractsExpanded, setContractsExpanded] = useState(false);
   const [showRegenerate, setShowRegenerate] = useState(false);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
+  const [showBranchPicker, setShowBranchPicker] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState('main');
 
   /* Background contract generation tracking */
   const [bgGenActive, setBgGenActive] = useState(false);
   const [bgGenDone, setBgGenDone] = useState<string[]>([]);
   const genStartedRef = useRef(false);
+
+  /* Build history */
+  interface BuildHistoryItem {
+    id: string;
+    phase: string;
+    status: string;
+    branch: string;
+    loop_count: number;
+    started_at: string | null;
+    completed_at: string | null;
+    created_at: string;
+    error_detail: string | null;
+  }
+  const [buildHistory, setBuildHistory] = useState<BuildHistoryItem[]>([]);
 
   useEffect(() => {
     const fetchProject = async () => {
@@ -97,6 +114,22 @@ function ProjectDetail() {
     };
     fetchProject();
   }, [projectId, token, addToast]);
+
+  /* Fetch build history */
+  useEffect(() => {
+    const fetchBuilds = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/projects/${projectId}/builds`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setBuildHistory(data.items || []);
+        }
+      } catch { /* ignore */ }
+    };
+    if (projectId && token) fetchBuilds();
+  }, [projectId, token]);
 
   const hasContracts = (project?.contracts?.length ?? 0) > 0;
 
@@ -146,16 +179,26 @@ function ProjectDetail() {
       setShowQuestionnaire(true);
       return;
     }
-    /* If a repo is already connected, build straight into it — no modal */
+    /* Show branch picker first */
+    setShowBranchPicker(true);
+  };
+
+  const handleBranchConfirm = async (choice: BranchChoice) => {
+    setSelectedBranch(choice.branch);
+    setShowBranchPicker(false);
+    /* If a repo is already connected, build straight into it */
     if (project?.repo_id && project?.repo_full_name) {
-      await handleTargetConfirm({ target_type: 'github_existing', target_ref: project.repo_full_name });
+      await handleTargetConfirm({
+        target_type: 'github_existing',
+        target_ref: project.repo_full_name,
+      }, choice.branch);
       return;
     }
     /* No repo connected — show target picker modal */
     setShowTargetPicker(true);
   };
 
-  const handleTargetConfirm = async (target: BuildTarget) => {
+  const handleTargetConfirm = async (target: BuildTarget, branch?: string) => {
     setStarting(true);
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
@@ -164,7 +207,7 @@ function ProjectDetail() {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(target),
+        body: JSON.stringify({ ...target, branch: branch ?? selectedBranch }),
       });
       if (res.ok) {
         setShowTargetPicker(false);
@@ -373,9 +416,9 @@ function ProjectDetail() {
               gap: '8px',
             }}
           >
-            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Created</span>
+            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Builds</span>
             <span style={{ color: '#94A3B8', fontSize: '0.7rem' }}>
-              {new Date(project.created_at).toLocaleDateString()}
+              {buildHistory.length} total
             </span>
           </div>
         </div>
@@ -532,29 +575,72 @@ function ProjectDetail() {
           )}
         </div>
 
-        {/* Latest Build Summary */}
-        {project.latest_build && (
+        {/* Build History */}
+        {buildHistory.length > 0 && (
           <div style={{ background: '#1E293B', borderRadius: '8px', padding: '16px 20px' }}>
-            <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem' }}>Latest Build</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '0.8rem' }}>
-              <div>
-                <span style={{ color: '#94A3B8' }}>Phase: </span>
-                {project.latest_build.phase}
-              </div>
-              <div>
-                <span style={{ color: '#94A3B8' }}>Status: </span>
-                {project.latest_build.status}
-              </div>
-              <div>
-                <span style={{ color: '#94A3B8' }}>Loops: </span>
-                {project.latest_build.loop_count}
-              </div>
-              {project.latest_build.started_at && (
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Started: </span>
-                  {new Date(project.latest_build.started_at).toLocaleString()}
-                </div>
-              )}
+            <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem' }}>Build History</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {buildHistory.map((b, idx) => {
+                const statusColors: Record<string, string> = {
+                  completed: '#22C55E',
+                  running: '#3B82F6',
+                  pending: '#F59E0B',
+                  failed: '#EF4444',
+                  cancelled: '#94A3B8',
+                  paused: '#A855F7',
+                };
+                const statusColor = statusColors[b.status] || '#94A3B8';
+                return (
+                  <div
+                    key={b.id}
+                    onClick={() => navigate(`/projects/${projectId}/build?buildId=${b.id}`)}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'auto 1fr auto',
+                      gap: '12px',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      background: '#0F172A',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.78rem',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#1A2740')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = '#0F172A')}
+                  >
+                    <span style={{ color: '#64748B', fontWeight: 600, fontSize: '0.7rem', minWidth: '24px' }}>
+                      #{buildHistory.length - idx}
+                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: '7px',
+                            height: '7px',
+                            borderRadius: '50%',
+                            background: statusColor,
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span style={{ color: '#F8FAFC', fontWeight: 500 }}>{b.phase}</span>
+                        <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
+                          {b.status}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', color: '#64748B', fontSize: '0.7rem' }}>
+                        <span>🌿 {b.branch || 'main'}</span>
+                        <span>{b.loop_count} loops</span>
+                      </div>
+                    </div>
+                    <span style={{ color: '#64748B', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
+                      {new Date(b.created_at).toLocaleDateString()}{' '}
+                      {new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -597,6 +683,15 @@ function ProjectDetail() {
         <BuildTargetModal
           onConfirm={handleTargetConfirm}
           onCancel={() => setShowTargetPicker(false)}
+          starting={starting}
+        />
+      )}
+
+      {showBranchPicker && (
+        <BranchPickerModal
+          onConfirm={handleBranchConfirm}
+          onCancel={() => setShowBranchPicker(false)}
+          repoConnected={!!(project?.repo_id && project?.repo_full_name)}
           starting={starting}
         />
       )}
