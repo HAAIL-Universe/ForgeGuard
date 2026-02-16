@@ -252,6 +252,7 @@ _interjection_queues: dict[str, asyncio.Queue] = {}
 # Slash-command signals for plan-execute loop
 _cancel_flags: set[str] = set()   # build IDs that should cancel ASAP
 _pause_flags: set[str] = set()    # build IDs that should pause after current file
+_compact_flags: set[str] = set()  # build IDs that should compact context ASAP
 
 # Cost-per-token estimates (USD) keyed by model prefix -- updated as pricing changes
 _MODEL_PRICING: dict[str, tuple[Decimal, Decimal]] = {
@@ -585,6 +586,26 @@ async def interject_build(
         from app.services.build_service import start_build
         result = await start_build(project_id, user_id)
         return {"status": "started", "build_id": str(result["id"]), "message": "Build started via /start"}
+
+    # --- /compact ----------------------------------------------------
+    if stripped == "/compact":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest or latest["status"] != "running":
+            raise ValueError("No running build to compact")
+        build_id = latest["id"]
+        _compact_flags.add(str(build_id))
+        await build_repo.append_build_log(
+            build_id, "Context compaction requested via /compact",
+            source="user", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": "Context compaction requested — will compact before next file",
+            "source": "user", "level": "info",
+        })
+        return {"status": "compact_requested", "build_id": str(build_id), "message": "Context compaction requested via /compact"}
 
     # --- /pause ------------------------------------------------------
     if stripped == "/pause":
@@ -1121,7 +1142,10 @@ async def _run_build_conversation(
             # 
             # Context compaction check
             compacted = False
-            if total_tokens_all_turns > CONTEXT_COMPACTION_THRESHOLD and len(messages) > 5:
+            force_compact = str(build_id) in _compact_flags
+            if force_compact:
+                _compact_flags.discard(str(build_id))
+            if (total_tokens_all_turns > CONTEXT_COMPACTION_THRESHOLD or force_compact) and len(messages) > 5:
                 messages = _compact_conversation(
                     messages,
                     files_written=files_written,
@@ -2446,6 +2470,7 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     bid = str(build_id)
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)
+    _compact_flags.discard(bid)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail
@@ -3699,6 +3724,21 @@ async def _run_build_plan_execute(
                     await _fail_build(build_id, user_id, "Build aborted after /pause")
                     return
 
+            # Check /compact flag — shed context from prior phases
+            if bid in _compact_flags:
+                _compact_flags.discard(bid)
+                dropped = len(all_files_written) - len(phase_files_written)
+                all_files_written = dict(phase_files_written)
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Context compacted via /compact — dropped {dropped} prior-phase files from context cache",
+                    source="system", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"Context compacted — dropped {dropped} prior-phase files",
+                    "source": "system", "level": "info",
+                })
+
             # Resolve context files from disk
             context = {}
             for ctx_path in file_entry.get("context_files", []):
@@ -3959,6 +3999,7 @@ async def _run_build_plan_execute(
     bid = str(build_id)
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)
+    _compact_flags.discard(bid)
 
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(

@@ -936,7 +936,7 @@ function BuildProgress() {
     setSendingInterject(true);
 
     // Slash commands route through the same interject endpoint (backend handles routing)
-    const isSlashCmd = ['/stop', '/pause', '/start'].includes(trimmed);
+    const isSlashCmd = ['/stop', '/pause', '/start', '/compact'].includes(trimmed);
 
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
@@ -953,6 +953,7 @@ function BuildProgress() {
             resumed: 'Build resumed',
             started: 'Build started',
             already_running: 'Build is already running',
+            compact_requested: 'Context compaction requested \u2014 will compact before next file',
           };
           addToast(msgs[data.status] || data.message || 'Command sent', 'success');
           // Refresh build state after /stop or /start
@@ -1498,7 +1499,7 @@ function BuildProgress() {
               <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }} data-testid="interjection-bar">
                 <input
                   type="text"
-                  placeholder={isActive ? 'Send feedback or /stop /pause /start...' : '/start to begin a new build...'}
+                  placeholder={isActive ? 'Send feedback or /stop /pause /start /compact...' : '/start to begin a new build...'}
                   value={interjectionText}
                   onChange={(e) => setInterjectionText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleInterject(); }}
@@ -1520,6 +1521,7 @@ function BuildProgress() {
                     background: interjectionText.trim().toLowerCase() === '/stop' ? '#DC2626'
                       : interjectionText.trim().toLowerCase() === '/pause' ? '#F59E0B'
                       : interjectionText.trim().toLowerCase() === '/start' ? '#16A34A'
+                      : interjectionText.trim().toLowerCase() === '/compact' ? '#7C3AED'
                       : '#2563EB',
                     color: '#fff',
                     border: 'none',
@@ -1535,6 +1537,7 @@ function BuildProgress() {
                     : interjectionText.trim().toLowerCase() === '/stop' ? '\u23F9 Stop'
                     : interjectionText.trim().toLowerCase() === '/pause' ? '\u23F8 Pause'
                     : interjectionText.trim().toLowerCase() === '/start' ? '\u25B6 Start'
+                    : interjectionText.trim().toLowerCase() === '/compact' ? '\u267B Compact'
                     : 'Interject'}
                 </button>
               </div>
