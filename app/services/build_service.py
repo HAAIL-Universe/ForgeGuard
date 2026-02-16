@@ -638,7 +638,8 @@ async def _run_build(
                     source="system", level="info",
                 )
             except Exception as exc:
-                await _fail_build(build_id, user_id, f"Failed to clone repo: {exc}")
+                logger.exception("Clone failed for %s -> %s (workdir=%s)", target_type, target_ref, working_dir)
+                await _fail_build(build_id, user_id, f"Failed to clone repo: {type(exc).__name__}: {exc}")
                 return
         elif target_type == "local_path" and working_dir:
             try:
