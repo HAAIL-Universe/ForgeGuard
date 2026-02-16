@@ -254,6 +254,9 @@ _cancel_flags: set[str] = set()   # build IDs that should cancel ASAP
 _pause_flags: set[str] = set()    # build IDs that should pause after current file
 _compact_flags: set[str] = set()  # build IDs that should compact context ASAP
 
+# Tracks which file is currently being generated per build (for audit trail)
+_current_generating: dict[str, str] = {}  # build_id -> file path
+
 # Cost-per-token estimates (USD) keyed by model prefix -- updated as pricing changes
 _MODEL_PRICING: dict[str, tuple[Decimal, Decimal]] = {
     # (input $/token, output $/token)
@@ -549,6 +552,16 @@ async def resume_build(
     return updated
 
 
+def _interrupted_file_log(build_id: UUID, command: str) -> str:
+    """Build a log message that records which file was being generated when a command fired."""
+    bid = str(build_id)
+    current = _current_generating.get(bid)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if current:
+        return f"{command} at {ts} while generating: {current}"
+    return f"{command} at {ts} (no file in progress)"
+
+
 async def interject_build(
     project_id: UUID,
     user_id: UUID,
@@ -569,6 +582,15 @@ async def interject_build(
 
     # --- /stop -------------------------------------------------------
     if stripped == "/stop":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if latest:
+            await build_repo.append_build_log(
+                latest["id"], _interrupted_file_log(latest["id"], "/stop"),
+                source="user", level="warn",
+            )
         result = await cancel_build(project_id, user_id)
         return {"status": "stopped", "build_id": str(result["id"]), "message": "Build stopped via /stop"}
 
@@ -580,6 +602,10 @@ async def interject_build(
             raise ValueError("Project not found")
         latest = await build_repo.get_latest_build_for_project(project_id)
         if latest and latest["status"] in ("running", "paused", "pending"):
+            await build_repo.append_build_log(
+                latest["id"], _interrupted_file_log(latest["id"], "/clear"),
+                source="user", level="warn",
+            )
             try:
                 await cancel_build(project_id, user_id)
             except ValueError:
@@ -616,6 +642,10 @@ async def interject_build(
         build_id = latest["id"]
         _compact_flags.add(str(build_id))
         await build_repo.append_build_log(
+            build_id, _interrupted_file_log(build_id, "/compact"),
+            source="user", level="info",
+        )
+        await build_repo.append_build_log(
             build_id, "Context compaction requested via /compact",
             source="user", level="info",
         )
@@ -635,6 +665,10 @@ async def interject_build(
             raise ValueError("No running build to pause")
         build_id = latest["id"]
         _pause_flags.add(str(build_id))
+        await build_repo.append_build_log(
+            build_id, _interrupted_file_log(build_id, "/pause"),
+            source="user", level="info",
+        )
         await build_repo.append_build_log(
             build_id, "Pause requested via /pause — will pause after current file",
             source="user", level="info",
@@ -2489,6 +2523,7 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)
     _compact_flags.discard(bid)
+    _current_generating.pop(bid, None)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail
@@ -3757,6 +3792,38 @@ async def _run_build_plan_execute(
                     "source": "system", "level": "info",
                 })
 
+            # --- Skip files that already exist on disk (restart resilience) ---
+            # After a /clear restart, the planner may re-list files that were
+            # already fully generated in the cancelled run.  Skip them.
+            if file_entry.get("action", "create") == "create":
+                existing_path = Path(working_dir) / file_path
+                if existing_path.exists() and existing_path.stat().st_size > 0:
+                    existing_content = existing_path.read_text(encoding="utf-8", errors="replace")
+                    phase_files_written[file_path] = existing_content
+                    all_files_written[file_path] = existing_content
+                    await build_repo.append_build_log(
+                        build_id,
+                        f"Skipped {file_path} — already exists on disk ({existing_path.stat().st_size} bytes)",
+                        source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "file_generated", {
+                        "path": file_path,
+                        "size_bytes": existing_path.stat().st_size,
+                        "language": _detect_language(file_path),
+                        "tokens_in": 0,
+                        "tokens_out": 0,
+                        "duration_ms": 0,
+                        "skipped": True,
+                    })
+                    await _broadcast_build_event(user_id, build_id, "plan_task_complete", {
+                        "task_id": i + 1,
+                        "status": "done",
+                    })
+                    continue
+
+            # Track which file is being generated (for audit trail on /stop etc.)
+            _current_generating[bid] = file_path
+
             # Resolve context files from disk
             context = {}
             for ctx_path in file_entry.get("context_files", []):
@@ -3787,6 +3854,7 @@ async def _run_build_plan_execute(
                     file_entry, contracts, context,
                     phase_deliverables, working_dir,
                 )
+                _current_generating.pop(bid, None)
                 phase_files_written[file_path] = content
                 all_files_written[file_path] = content
 
@@ -3805,6 +3873,7 @@ async def _run_build_plan_execute(
                 })
 
             except Exception as exc:
+                _current_generating.pop(bid, None)
                 logger.error("Failed to generate %s: %s", file_path, exc)
                 await build_repo.append_build_log(
                     build_id,
@@ -4033,6 +4102,7 @@ async def _run_build_plan_execute(
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)
     _compact_flags.discard(bid)
+    _current_generating.pop(bid, None)
 
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
