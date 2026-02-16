@@ -460,9 +460,9 @@ async def test_create_build_with_branch(mock_get_pool):
     pool.fetchrow.assert_called_once()
     query = pool.fetchrow.call_args[0][0]
     assert "branch" in query
-    # branch param should be 5th positional arg
+    # branch param should be 6th positional arg (query, project_id, type, ref, dir, branch)
     args = pool.fetchrow.call_args[0]
-    assert args[4] == "forge/v2"
+    assert args[5] == "forge/v2"
 
 
 @pytest.mark.asyncio
@@ -477,7 +477,7 @@ async def test_create_build_default_branch(mock_get_pool):
     await build_repo.create_build(row["project_id"])
 
     args = pool.fetchrow.call_args[0]
-    assert args[4] == "main"
+    assert args[5] == "main"
 
 
 # ---------------------------------------------------------------------------

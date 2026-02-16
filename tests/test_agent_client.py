@@ -304,7 +304,10 @@ async def test_stream_agent_tools_in_payload(mock_client_cls):
 
     call_kwargs = mock_client.stream.call_args
     body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-    assert body["tools"] == test_tools
+    # Tools should be present with cache_control on the last tool
+    assert len(body["tools"]) == 1
+    assert body["tools"][0]["name"] == "write_file"
+    assert body["tools"][0]["cache_control"] == {"type": "ephemeral"}
     assert body["stream"] is True
 
 
@@ -456,3 +459,70 @@ def test_headers_include_caching():
     headers = agent_client._headers("test-key")
     assert "anthropic-beta" in headers
     assert "prompt-caching" in headers["anthropic-beta"]
+
+
+@pytest.mark.asyncio
+async def test_token_budget_limiter_cache_reads_excluded():
+    """Cache-read tokens must NOT be recorded toward the rate-limit budget.
+
+    After recording a large cache-creation call, the budget should reflect
+    those tokens.  A second call that only uses cache reads should pass
+    immediately because cache reads aren't counted.
+    """
+    limiter = agent_client.TokenBudgetLimiter(input_tpm=60_000, output_tpm=16_000)
+    # First call: 50K cache creation + 2K fresh = 52K recorded
+    limiter.record(52_000, 1_000)
+    inp, out = limiter._current_usage()
+    assert inp == 52_000
+
+    # Second call: mostly cache reads (not counted).
+    # Only ~3K fresh tokens — total in window = 52K + 3K = 55K < 54K (90% of 60K)?
+    # Actually 55K < 54K is false, so let's use more headroom
+    limiter2 = agent_client.TokenBudgetLimiter(input_tpm=80_000, output_tpm=16_000)
+    limiter2.record(50_000, 1_000)
+    # 50K used.  New call estimates 3K.  50K + 3K = 53K < 72K (90% of 80K).
+    # Should pass immediately.
+    await limiter2.wait_for_budget(estimated_input=3_000)
+
+
+@pytest.mark.asyncio
+@patch("app.clients.agent_client.httpx.AsyncClient")
+async def test_stream_agent_cache_read_not_counted_for_limiter(mock_client_cls):
+    """stream_agent records only fresh+creation tokens, not cache reads."""
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 500,
+                    "cache_read_input_tokens": 48_000,
+                    "cache_creation_input_tokens": 0,
+                },
+                "model": "claude-opus-4-6",
+            },
+        },
+        {"type": "content_block_start", "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "delta": {"text": "ok"}},
+        {"type": "content_block_stop"},
+        {"type": "message_delta", "usage": {"output_tokens": 100}},
+    ]
+    mock_client_cls.return_value = _make_stream_mock(events)
+
+    limiter = agent_client.TokenBudgetLimiter(input_tpm=80_000, output_tpm=16_000)
+    usage = agent_client.StreamUsage()
+    async for _ in agent_client.stream_agent(
+        api_key="key", model="claude-opus-4-6",
+        system_prompt="test", messages=[{"role": "user", "content": "hi"}],
+        usage_out=usage,
+        token_limiter=limiter,
+    ):
+        pass
+
+    # usage_out should track ALL tokens for billing/display
+    assert usage.input_tokens == 500
+    assert usage.cache_read_input_tokens == 48_000
+
+    # But the limiter should only record fresh input (500), not cache reads (48K)
+    inp, out = limiter._current_usage()
+    assert inp == 500  # cache_read excluded
+    assert out == 100

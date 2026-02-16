@@ -116,7 +116,7 @@ def _mock_stream_agent(responses: list[str]):
     """
     call_count = 0
 
-    async def mock_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None, on_retry=None):
+    async def mock_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None, on_retry=None, token_limiter=None):
         nonlocal call_count
         idx = call_count
         call_count += 1
@@ -187,6 +187,9 @@ def _setup_mocks(mocks, working_dir=None, audit_result="PASS"):
     gc.push = AsyncMock()
     gc.clone_repo = AsyncMock()
     gc.init_repo = AsyncMock()
+    gc.get_file_list = AsyncMock(return_value=[])
+    gc.create_branch = AsyncMock()
+    gc.checkout_branch = AsyncMock()
 
     ghc = mocks["github_client"]
     ghc.create_github_repo = AsyncMock(return_value={
@@ -468,7 +471,7 @@ class TestInterjection:
 
             original_mock = _mock_stream_agent([output, output])
 
-            async def capturing_stream(*, api_key, model, system_prompt, messages, usage_out):
+            async def capturing_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None, on_retry=None, token_limiter=None):
                 captured_messages.append([m.copy() for m in messages])
                 async for chunk in original_mock(api_key=api_key, model=model,
                                                   system_prompt=system_prompt,

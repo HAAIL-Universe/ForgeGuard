@@ -70,12 +70,13 @@ class Settings:
         os.getenv("GIT_PUSH_MAX_RETRIES", "3")
     )
     # Anthropic per-minute token limits (Build tier for Opus).
-    # Set these to match your API tier to enable proactive self-throttling.
+    # These cover fresh input + cache-creation tokens only (cache reads
+    # are NOT rate-limited).  Set via env vars to match your API tier.
     ANTHROPIC_INPUT_TPM: int = int(
-        os.getenv("ANTHROPIC_INPUT_TPM", "30000")
+        os.getenv("ANTHROPIC_INPUT_TPM", "80000")
     )
     ANTHROPIC_OUTPUT_TPM: int = int(
-        os.getenv("ANTHROPIC_OUTPUT_TPM", "8000")
+        os.getenv("ANTHROPIC_OUTPUT_TPM", "16000")
     )
 
 

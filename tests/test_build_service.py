@@ -83,6 +83,7 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
         target_type=None,
         target_ref=None,
         working_dir=None,
+        branch="main",
     )
     mock_project_repo.update_project_status.assert_called_once_with(
         _PROJECT_ID, "building"

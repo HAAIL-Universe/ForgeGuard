@@ -84,6 +84,7 @@ def test_start_build(mock_get_user, mock_start, client):
     mock_start.assert_called_once_with(
         _PROJECT_ID, _USER["id"],
         target_type=None, target_ref=None,
+        branch="main",
     )
 
 
