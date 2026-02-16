@@ -224,6 +224,8 @@ function BuildProgress() {
   const [devConsoleOpen, setDevConsoleOpen] = useState(false);
   const [devSteps, setDevSteps] = useState<DevStep[]>(createInitialSteps);
   const feedEndRef = useRef<HTMLDivElement>(null);
+  const feedContainerRef = useRef<HTMLDivElement>(null);
+  const userScrolledUp = useRef(false);
   const phaseStartRef = useRef<number>(Date.now());
 
   /* ------ helpers ------ */
@@ -243,10 +245,22 @@ function BuildProgress() {
     ? activity.filter((e) => e.message.toLowerCase().includes(logSearch.toLowerCase()))
     : activity;
 
-  /* ------ auto-scroll feed ------ */
+  /* ------ auto-scroll feed (only when user is near bottom) ------ */
   useEffect(() => {
-    feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (userScrolledUp.current) return;
+    const el = feedContainerRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [activity]);
+
+  const handleFeedScroll = useCallback(() => {
+    const el = feedContainerRef.current;
+    if (!el) return;
+    // If user is within 60px of bottom, consider them "at bottom"
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    userScrolledUp.current = !atBottom;
+  }, []);
 
   /* ------ elapsed timer ------ */
   useEffect(() => {
@@ -974,46 +988,43 @@ function BuildProgress() {
           </div>
         </div>
 
-        {/* ---- Phase Overview Bar ---- */}
+        {/* ---- Phase Overview Grid ---- */}
         {overviewPhases.length > 0 && (
           <div style={{ ...cardStyle, padding: '12px 16px', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflowX: 'auto' }}>
-              {overviewPhases.map((op, i) => {
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '6px' }}>
+              {overviewPhases.map((op) => {
                 const colors: Record<string, string> = {
                   pending: '#475569', active: '#3B82F6', passed: '#22C55E', failed: '#EF4444', paused: '#F59E0B',
                 };
                 const bg: Record<string, string> = {
                   pending: '#1E293B', active: '#1E3A5F', passed: '#14532D', failed: '#7F1D1D', paused: '#78350F',
                 };
+                const c = colors[op.status] ?? '#475569';
+                const b = bg[op.status] ?? '#1E293B';
+                const isActivePhase = op.status === 'active';
                 return (
-                  <div key={op.number} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <div
-                      title={`Phase ${op.number}: ${op.name}${op.objective ? ' — ' + op.objective : ''}`}
-                      style={{
-                        padding: '4px 10px',
-                        borderRadius: '12px',
-                        fontSize: '0.7rem',
-                        fontWeight: 600,
-                        color: colors[op.status] ?? '#475569',
-                        background: bg[op.status] ?? '#1E293B',
-                        border: `1px solid ${colors[op.status] ?? '#334155'}`,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {op.number}
-                    </div>
-                    {i < overviewPhases.length - 1 && (
-                      <div style={{ width: '12px', height: '2px', background: '#334155' }} />
-                    )}
+                  <div
+                    key={op.number}
+                    title={op.objective || op.name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '4px 8px',
+                      borderRadius: '6px',
+                      background: b,
+                      border: `1px solid ${c}`,
+                      ...(isActivePhase ? { boxShadow: `0 0 6px ${c}40` } : {}),
+                    }}
+                  >
+                    <span style={{ fontSize: '0.65rem', fontWeight: 700, color: c, minWidth: '14px' }}>{op.number}</span>
+                    <span style={{ fontSize: '0.65rem', color: c, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {op.name}
+                    </span>
                   </div>
                 );
               })}
             </div>
-            {currentPhaseName && (
-              <div style={{ marginTop: '8px', fontSize: '0.75rem', color: '#94A3B8' }}>
-                Active: <span style={{ color: '#3B82F6', fontWeight: 600 }}>{currentPhaseName}</span>
-              </div>
-            )}
           </div>
         )}
 
@@ -1252,7 +1263,7 @@ function BuildProgress() {
                   }}
                 />
               </div>
-              <div style={feedStyle} data-testid="build-activity-feed">
+              <div ref={feedContainerRef} onScroll={handleFeedScroll} style={feedStyle} data-testid="build-activity-feed">
                 {filteredActivity.length === 0 ? (
                   <div style={{ color: '#475569' }}>{logSearch ? 'No matching logs' : 'Waiting for build output...'}</div>
                 ) : (
