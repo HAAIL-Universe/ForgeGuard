@@ -130,9 +130,11 @@ class TokenBudgetLimiter:
     def record(self, input_tokens: int, output_tokens: int) -> None:
         """Record actual token usage from a completed API call.
 
-        ``input_tokens`` should only include tokens that count toward
-        Anthropic's ITPM: fresh ``input_tokens`` + ``cache_creation_input_tokens``.
-        ``cache_read_input_tokens`` are NOT rate-limited and must be excluded.
+        ``input_tokens`` should only include *fresh* tokens from
+        ``usage.input_tokens``.  Cache-creation tokens are a one-time
+        cost that won't recur once the prefix is cached, and cache-read
+        tokens are discounted — both are excluded so the sliding-window
+        limiter doesn't self-block after the initial cache warm-up call.
         """
         self._history.append((time.monotonic(), input_tokens, output_tokens))
 

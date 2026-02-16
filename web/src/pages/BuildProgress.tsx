@@ -520,10 +520,11 @@ function BuildProgress() {
 
           case 'audit_pass': {
             const phase = payload.phase as string;
+            const auditPassNum = parsePhaseNum(phase);
             addActivity(`Audit PASS for ${phase}`, 'system');
             // Mark phase as passed in overview
             setOverviewPhases((prev) =>
-              prev.map((p) => (p.name === phase ? { ...p, status: 'passed' as const } : p)),
+              prev.map((p) => (p.number === auditPassNum ? { ...p, status: 'passed' as const } : p)),
             );
             break;
           }
@@ -531,10 +532,11 @@ function BuildProgress() {
           case 'audit_fail': {
             const phase = payload.phase as string;
             const loop = payload.loop_count as number;
+            const auditFailNum = parsePhaseNum(phase);
             addActivity(`Audit FAIL for ${phase} (loop ${loop})`, 'warn');
             // Mark phase as failed in overview
             setOverviewPhases((prev) =>
-              prev.map((p) => (p.name === phase ? { ...p, status: 'failed' as const } : p)),
+              prev.map((p) => (p.number === auditFailNum ? { ...p, status: 'failed' as const } : p)),
             );
             break;
           }
@@ -606,13 +608,14 @@ function BuildProgress() {
               setPlanTasks(tasks);
               addActivity(`Phase plan${phase ? ` (${phase})` : ''}: ${tasks.length} tasks`, 'system');
             }
-            // Update overview bar active phase
+            // Update overview bar active phase (match by number, not name)
             if (phase) {
+              const planPhaseNum = parsePhaseNum(phase);
               setCurrentPhaseName(phase);
               setOverviewPhases((prev) =>
                 prev.map((p) => ({
                   ...p,
-                  status: p.name === phase ? 'active' : p.status === 'active' ? 'pending' : p.status,
+                  status: p.number === planPhaseNum ? 'active' : p.status === 'active' ? 'pending' : p.status,
                 })),
               );
             }
@@ -665,7 +668,7 @@ function BuildProgress() {
               return next;
             });
             setOverviewPhases((prev) =>
-              prev.map((p) => (p.name === phase ? { ...p, status: 'paused' as const } : p)),
+              prev.map((p) => (p.number === pausePhaseNum ? { ...p, status: 'paused' as const } : p)),
             );
             break;
           }
