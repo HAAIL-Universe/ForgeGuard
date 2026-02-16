@@ -605,6 +605,8 @@ async def _run_build(
                     private=False,
                 )
                 clone_url = f"https://github.com/{repo_data['full_name']}.git"
+                # Remove empty tempdir so git clone can create it
+                shutil.rmtree(working_dir, ignore_errors=True)
                 await git_client.clone_repo(
                     clone_url, working_dir,
                     access_token=access_token, shallow=False,
@@ -624,6 +626,8 @@ async def _run_build(
         elif target_type == "github_existing" and target_ref and working_dir:
             try:
                 clone_url = f"https://github.com/{target_ref}.git"
+                # Remove empty tempdir so git clone can create it
+                shutil.rmtree(working_dir, ignore_errors=True)
                 await git_client.clone_repo(
                     clone_url, working_dir,
                     access_token=access_token, shallow=False,

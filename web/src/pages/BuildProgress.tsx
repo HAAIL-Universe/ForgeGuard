@@ -233,13 +233,13 @@ function BuildProgress() {
 
   const parsePhaseNum = (phaseStr: string): number => {
     const m = phaseStr.match(/\d+/);
-    
+    return m ? parseInt(m[0], 10) : 0;
+  };
 
   /* ------ filtered activity for search ------ */
   const filteredActivity = logSearch
     ? activity.filter((e) => e.message.toLowerCase().includes(logSearch.toLowerCase()))
-    : activity;return m ? parseInt(m[0], 10) : 0;
-  };
+    : activity;
 
   /* ------ auto-scroll feed ------ */
   useEffect(() => {
