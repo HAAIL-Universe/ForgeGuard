@@ -78,15 +78,27 @@ class TokenBudgetLimiter:
     ) -> None:
         """Block until the minute-window has budget for another API call.
 
+        Only throttles based on *actual recorded usage* from prior calls in the
+        sliding window.  If there's no history (first call), always proceeds
+        immediately — we never block on estimates alone.
+
         Args:
-            estimated_input: Rough estimate of input tokens for the next call.
+            estimated_input: Rough estimate of input tokens for the next call
+                             (used only when there IS prior history to compare).
             on_wait: Optional callback(wait_secs, inp_used, inp_limit, out_used, out_limit)
                      fired when throttling is needed.
         """
         async with self._lock:
             while True:
                 inp_used, out_used = self._current_usage()
-                # Check both budgets — leave 10% headroom
+
+                # No history → first call in the window, always proceed
+                if not self._history:
+                    return
+
+                # Check both budgets — leave 10% headroom.
+                # Only consider the estimate when there are already recorded
+                # tokens in the window (prevents deadlock on first call).
                 inp_ok = (inp_used + estimated_input) < self.input_tpm * 0.90
                 out_ok = out_used < self.output_tpm * 0.90
 
@@ -94,11 +106,8 @@ class TokenBudgetLimiter:
                     return
 
                 # Find when the oldest entry expires to reclaim budget
-                if self._history:
-                    oldest_ts = self._history[0][0]
-                    wait = max(oldest_ts + 60.0 - time.monotonic(), 1.0)
-                else:
-                    wait = 5.0  # Shouldn't happen, but safe default
+                oldest_ts = self._history[0][0]
+                wait = max(oldest_ts + 60.0 - time.monotonic(), 1.0)
 
                 # Cap wait so we re-check periodically
                 wait = min(wait, 15.0)
@@ -251,11 +260,19 @@ async def stream_agent(
 
     # Proactive token budget check — wait if approaching per-minute limits
     if token_limiter:
+        def _on_budget_wait(wait_s: float, inp_used: int, inp_lim: int, out_used: int, out_lim: int):
+            if on_retry:
+                on_retry(
+                    429, 0,  # use 429 so the UI shows a rate-limit message
+                    wait_s,
+                )
+            logger.info(
+                "Budget wait: %.0fs (in=%d/%d out=%d/%d)",
+                wait_s, inp_used, inp_lim, out_used, out_lim,
+            )
         await token_limiter.wait_for_budget(
             estimated_input=est_input,
-            on_wait=lambda w, iu, il, ou, ol: (
-                on_retry(0, 0, w) if on_retry else None
-            ) if on_retry else None,
+            on_wait=_on_budget_wait,
         )
 
     # Track tokens for this specific call (to record with limiter after)

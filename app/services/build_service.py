@@ -860,17 +860,6 @@ async def _run_build(
         while True:
             turn_count += 1
 
-            # Cold-start pacing: add a decaying delay for the first N turns
-            # to avoid hammering the API and triggering 429s at build start.
-            # Applies to EVERY turn (including tool-result continuations) so the
-            # API is not hit back-to-back when fast local tool calls respond.
-            if turn_count <= settings.COLD_START_TURNS and settings.COLD_START_DELAY > 0:
-                pacing = settings.COLD_START_DELAY * (
-                    1.0 - (turn_count - 1) / settings.COLD_START_TURNS
-                )
-                pacing = max(pacing, 1.0)  # minimum 1s gap per API call during cold start
-                await asyncio.sleep(pacing)
-
             # Phase timeout check
             phase_elapsed = (datetime.now(timezone.utc) - phase_start_time).total_seconds()
             if phase_elapsed > settings.PHASE_TIMEOUT_MINUTES * 60:

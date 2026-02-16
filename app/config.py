@@ -69,14 +69,6 @@ class Settings:
     GIT_PUSH_MAX_RETRIES: int = int(
         os.getenv("GIT_PUSH_MAX_RETRIES", "3")
     )
-    # Cold-start pacing: initial delay (seconds) between turns at build start.
-    # Decays linearly over COLD_START_TURNS turns, with a 1s floor.
-    COLD_START_DELAY: float = float(
-        os.getenv("COLD_START_DELAY", "5.0")
-    )
-    COLD_START_TURNS: int = int(
-        os.getenv("COLD_START_TURNS", "12")
-    )
     # Anthropic per-minute token limits (Build tier for Opus).
     # Set these to match your API tier to enable proactive self-throttling.
     ANTHROPIC_INPUT_TPM: int = int(
