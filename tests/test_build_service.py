@@ -2360,3 +2360,90 @@ async def test_start_build_with_branch(mock_get_user, mock_build_repo, mock_proj
     mock_build_repo.create_build.assert_called_once()
     call_kwargs = mock_build_repo.create_build.call_args.kwargs
     assert call_kwargs["branch"] == "forge/v2"
+
+
+# ---------------------------------------------------------------------------
+# Tests: delete_builds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.project_repo")
+async def test_delete_builds_success(mock_project_repo, mock_build_repo):
+    """delete_builds deletes eligible builds and returns count."""
+    bid1 = uuid.uuid4()
+    bid2 = uuid.uuid4()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_builds_for_project = AsyncMock(return_value=[
+        _build(id=bid1, status="completed"),
+        _build(id=bid2, status="failed"),
+    ])
+    mock_build_repo.delete_builds = AsyncMock(return_value=2)
+
+    result = await build_service.delete_builds(
+        _PROJECT_ID, _USER_ID, [str(bid1), str(bid2)]
+    )
+
+    assert result == 2
+    mock_build_repo.delete_builds.assert_called_once()
+    deleted_ids = mock_build_repo.delete_builds.call_args[0][0]
+    assert set(deleted_ids) == {bid1, bid2}
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.project_repo")
+async def test_delete_builds_skips_active(mock_project_repo, mock_build_repo):
+    """delete_builds skips running/pending builds."""
+    bid_done = uuid.uuid4()
+    bid_running = uuid.uuid4()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_builds_for_project = AsyncMock(return_value=[
+        _build(id=bid_done, status="completed"),
+        _build(id=bid_running, status="running"),
+    ])
+    mock_build_repo.delete_builds = AsyncMock(return_value=1)
+
+    result = await build_service.delete_builds(
+        _PROJECT_ID, _USER_ID, [str(bid_done), str(bid_running)]
+    )
+
+    assert result == 1
+    deleted_ids = mock_build_repo.delete_builds.call_args[0][0]
+    assert deleted_ids == [bid_done]
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.project_repo")
+async def test_delete_builds_all_active_raises(mock_project_repo, mock_build_repo):
+    """delete_builds raises ValueError when all builds are active."""
+    bid = uuid.uuid4()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_builds_for_project = AsyncMock(return_value=[
+        _build(id=bid, status="running"),
+    ])
+
+    with pytest.raises(ValueError, match="No eligible builds"):
+        await build_service.delete_builds(_PROJECT_ID, _USER_ID, [str(bid)])
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+async def test_delete_builds_not_found(mock_project_repo):
+    """delete_builds raises ValueError for missing project."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="Project not found"):
+        await build_service.delete_builds(_PROJECT_ID, _USER_ID, ["some-id"])
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+async def test_delete_builds_empty_ids(mock_project_repo):
+    """delete_builds raises ValueError for empty build_ids list."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+
+    with pytest.raises(ValueError, match="No build IDs"):
+        await build_service.delete_builds(_PROJECT_ID, _USER_ID, [])

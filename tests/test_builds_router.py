@@ -696,3 +696,62 @@ def test_start_build_default_branch(mock_get_user, mock_start, mock_limiter, cli
     assert resp.status_code == 200
     call_kwargs = mock_start.call_args
     assert call_kwargs.kwargs["branch"] == "main"
+
+
+# ---------------------------------------------------------------------------
+# Tests: DELETE /projects/{id}/builds (delete builds)
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.delete_builds", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_delete_builds_success(mock_get_user, mock_delete, client):
+    """DELETE /projects/{id}/builds deletes selected builds."""
+    mock_get_user.return_value = _USER
+    mock_delete.return_value = 2
+
+    resp = client.request(
+        "DELETE",
+        f"/projects/{_PROJECT_ID}/builds",
+        headers=_auth_header(),
+        json={"build_ids": [str(uuid.uuid4()), str(uuid.uuid4())]},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deleted"] == 2
+
+
+@patch("app.api.routers.builds.build_service.delete_builds", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_delete_builds_not_found(mock_get_user, mock_delete, client):
+    """DELETE /projects/{id}/builds returns 404 for missing project."""
+    mock_get_user.return_value = _USER
+    mock_delete.side_effect = ValueError("Project not found")
+
+    resp = client.request(
+        "DELETE",
+        f"/projects/{_PROJECT_ID}/builds",
+        headers=_auth_header(),
+        json={"build_ids": [str(uuid.uuid4())]},
+    )
+
+    assert resp.status_code == 404
+
+
+@patch("app.api.routers.builds.build_service.delete_builds", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_delete_builds_no_eligible(mock_get_user, mock_delete, client):
+    """DELETE /projects/{id}/builds returns 400 when all builds are active."""
+    mock_get_user.return_value = _USER
+    mock_delete.side_effect = ValueError("No eligible builds to delete (active builds cannot be deleted)")
+
+    resp = client.request(
+        "DELETE",
+        f"/projects/{_PROJECT_ID}/builds",
+        headers=_auth_header(),
+        json={"build_ids": [str(uuid.uuid4())]},
+    )
+
+    assert resp.status_code == 400
+    assert "active builds" in resp.json()["detail"]

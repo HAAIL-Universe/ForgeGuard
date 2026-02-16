@@ -97,6 +97,10 @@ function ProjectDetail() {
     error_detail: string | null;
   }
   const [buildHistory, setBuildHistory] = useState<BuildHistoryItem[]>([]);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedBuilds, setSelectedBuilds] = useState<Set<string>>(new Set());
+  const [deletingBuilds, setDeletingBuilds] = useState(false);
+  const [showDeleteBuildsConfirm, setShowDeleteBuildsConfirm] = useState(false);
 
   useEffect(() => {
     const fetchProject = async () => {
@@ -257,6 +261,33 @@ function ProjectDetail() {
       addToast('Network error cancelling build');
     }
     setShowCancelConfirm(false);
+  };
+
+  const handleDeleteBuilds = async () => {
+    if (selectedBuilds.size === 0) return;
+    setDeletingBuilds(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/builds`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ build_ids: Array.from(selectedBuilds) }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        addToast(`Deleted ${data.deleted} build${data.deleted === 1 ? '' : 's'}`, 'success');
+        setBuildHistory((prev) => prev.filter((b) => !selectedBuilds.has(b.id)));
+        setSelectedBuilds(new Set());
+        setSelectMode(false);
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to delete builds' }));
+        addToast(data.detail || 'Failed to delete builds');
+      }
+    } catch {
+      addToast('Network error deleting builds');
+    } finally {
+      setDeletingBuilds(false);
+      setShowDeleteBuildsConfirm(false);
+    }
   };
 
   const handleDeleteProject = async () => {
@@ -578,7 +609,70 @@ function ProjectDetail() {
         {/* Build History */}
         {buildHistory.length > 0 && (
           <div style={{ background: '#1E293B', borderRadius: '8px', padding: '16px 20px' }}>
-            <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem' }}>Build History</h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '0.9rem' }}>Build History</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {selectMode && selectedBuilds.size > 0 && (
+                  <button
+                    onClick={() => setShowDeleteBuildsConfirm(true)}
+                    disabled={deletingBuilds}
+                    style={{
+                      background: '#7F1D1D',
+                      border: '1px solid #EF4444',
+                      borderRadius: '4px',
+                      color: '#FCA5A5',
+                      padding: '3px 10px',
+                      fontSize: '0.7rem',
+                      cursor: deletingBuilds ? 'wait' : 'pointer',
+                      opacity: deletingBuilds ? 0.6 : 1,
+                      fontWeight: 500,
+                    }}
+                  >
+                    {deletingBuilds ? 'Deleting...' : `Delete ${selectedBuilds.size}`}
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setSelectMode((prev) => !prev);
+                    setSelectedBuilds(new Set());
+                  }}
+                  style={{
+                    background: selectMode ? '#1E3A5F' : 'transparent',
+                    border: selectMode ? '1px solid #3B82F6' : '1px solid #334155',
+                    borderRadius: '4px',
+                    color: selectMode ? '#93C5FD' : '#94A3B8',
+                    padding: '3px 10px',
+                    fontSize: '0.7rem',
+                    cursor: 'pointer',
+                    fontWeight: 500,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {selectMode ? 'Done' : 'Select'}
+                </button>
+              </div>
+            </div>
+            {selectMode && buildHistory.filter((b) => b.status !== 'running' && b.status !== 'pending').length > 1 && (
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                <button
+                  onClick={() => {
+                    const eligible = buildHistory.filter((b) => b.status !== 'running' && b.status !== 'pending');
+                    setSelectedBuilds(new Set(eligible.map((b) => b.id)));
+                  }}
+                  style={{ background: 'transparent', border: 'none', color: '#60A5FA', fontSize: '0.68rem', cursor: 'pointer', padding: 0 }}
+                >
+                  Select all
+                </button>
+                {selectedBuilds.size > 0 && (
+                  <button
+                    onClick={() => setSelectedBuilds(new Set())}
+                    style={{ background: 'transparent', border: 'none', color: '#64748B', fontSize: '0.68rem', cursor: 'pointer', padding: 0 }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {buildHistory.map((b, idx) => {
                 const statusColors: Record<string, string> = {
@@ -590,25 +684,60 @@ function ProjectDetail() {
                   paused: '#A855F7',
                 };
                 const statusColor = statusColors[b.status] || '#94A3B8';
+                const isActive = b.status === 'running' || b.status === 'pending';
+                const isSelected = selectedBuilds.has(b.id);
                 return (
                   <div
                     key={b.id}
-                    onClick={() => navigate(`/projects/${projectId}/build?buildId=${b.id}`)}
+                    onClick={() => {
+                      if (selectMode) {
+                        if (isActive) return; // can't select active builds
+                        setSelectedBuilds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(b.id)) next.delete(b.id);
+                          else next.add(b.id);
+                          return next;
+                        });
+                      } else {
+                        navigate(`/projects/${projectId}/build?buildId=${b.id}`);
+                      }
+                    }}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: 'auto 1fr auto',
+                      gridTemplateColumns: selectMode ? 'auto auto 1fr auto' : 'auto 1fr auto',
                       gap: '12px',
                       alignItems: 'center',
                       padding: '10px 12px',
-                      background: '#0F172A',
+                      background: isSelected ? '#1E293B' : '#0F172A',
                       borderRadius: '6px',
-                      cursor: 'pointer',
+                      cursor: selectMode && isActive ? 'not-allowed' : 'pointer',
                       fontSize: '0.78rem',
                       transition: 'background 0.15s',
+                      opacity: selectMode && isActive ? 0.5 : 1,
+                      border: isSelected ? '1px solid #3B82F6' : '1px solid transparent',
                     }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#1A2740')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = '#0F172A')}
+                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#1A2740'; }}
+                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = '#0F172A'; }}
                   >
+                    {selectMode && (
+                      <span
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: '16px',
+                          height: '16px',
+                          borderRadius: '3px',
+                          border: isActive ? '1px solid #334155' : isSelected ? '1px solid #3B82F6' : '1px solid #475569',
+                          background: isSelected ? '#3B82F6' : 'transparent',
+                          fontSize: '0.6rem',
+                          color: '#fff',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isSelected && '✓'}
+                      </span>
+                    )}
                     <span style={{ color: '#64748B', fontWeight: 600, fontSize: '0.7rem', minWidth: '24px' }}>
                       #{buildHistory.length - idx}
                     </span>
@@ -653,6 +782,16 @@ function ProjectDetail() {
           confirmLabel="Cancel Build"
           onConfirm={handleCancelBuild}
           onCancel={() => setShowCancelConfirm(false)}
+        />
+      )}
+
+      {showDeleteBuildsConfirm && (
+        <ConfirmDialog
+          title="Delete Builds"
+          message={`Delete ${selectedBuilds.size} selected build${selectedBuilds.size === 1 ? '' : 's'}? All logs and cost data will be permanently removed.`}
+          confirmLabel={deletingBuilds ? 'Deleting...' : `Delete ${selectedBuilds.size}`}
+          onConfirm={handleDeleteBuilds}
+          onCancel={() => setShowDeleteBuildsConfirm(false)}
         />
       )}
 

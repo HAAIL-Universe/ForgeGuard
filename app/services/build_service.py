@@ -272,6 +272,39 @@ async def list_builds(project_id: UUID, user_id: UUID) -> list[dict]:
     ]
 
 
+async def delete_builds(
+    project_id: UUID, user_id: UUID, build_ids: list[str]
+) -> int:
+    """Delete selected builds for a project.  Validates ownership and
+    prevents deleting currently running/pending builds."""
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+    if not build_ids:
+        raise ValueError("No build IDs provided")
+
+    # Fetch the builds to validate they belong to this project
+    all_builds = await build_repo.get_builds_for_project(project_id)
+    project_build_ids = {str(b["id"]) for b in all_builds}
+    active_build_ids = {
+        str(b["id"]) for b in all_builds if b["status"] in ("running", "pending")
+    }
+
+    to_delete: list[UUID] = []
+    for bid in build_ids:
+        if bid not in project_build_ids:
+            continue  # skip IDs that don't belong to this project
+        if bid in active_build_ids:
+            continue  # skip active builds
+        to_delete.append(UUID(bid))
+
+    if not to_delete:
+        raise ValueError("No eligible builds to delete (active builds cannot be deleted)")
+
+    deleted = await build_repo.delete_builds(to_delete)
+    return deleted
+
+
 async def start_build(
     project_id: UUID,
     user_id: UUID,

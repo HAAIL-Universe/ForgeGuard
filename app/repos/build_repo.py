@@ -140,6 +140,23 @@ async def increment_loop_count(build_id: UUID) -> int:
     return row["loop_count"] if row else 0
 
 
+async def delete_builds(build_ids: list[UUID]) -> int:
+    """Delete builds by ID. Returns count of deleted rows.
+
+    Child rows (build_logs, build_costs) are removed via ON DELETE CASCADE.
+    """
+    if not build_ids:
+        return 0
+    pool = await get_pool()
+    result = await pool.execute(
+        "DELETE FROM builds WHERE id = ANY($1::uuid[])",
+        build_ids,
+    )
+    # result is e.g. "DELETE 3"
+    parts = result.split()
+    return int(parts[1]) if len(parts) == 2 else 0
+
+
 async def cancel_build(build_id: UUID) -> bool:
     """Cancel an active build. Returns True if updated."""
     pool = await get_pool()

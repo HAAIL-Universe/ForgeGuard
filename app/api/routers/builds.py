@@ -19,6 +19,11 @@ class StartBuildRequest(BaseModel):
     branch: str = "main"
 
 
+class DeleteBuildsRequest(BaseModel):
+    """Request body for deleting selected builds."""
+    build_ids: list[str]
+
+
 class ResumeRequest(BaseModel):
     """Request body for resuming a paused build."""
     action: str = "retry"  # "retry" | "skip" | "abort" | "edit"
@@ -69,6 +74,28 @@ async def list_builds(
     try:
         builds = await build_service.list_builds(project_id, user["id"])
         return {"items": builds}
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── DELETE /projects/{project_id}/builds ──────────────────────────────────
+
+
+@router.delete("/{project_id}/builds")
+async def delete_builds(
+    project_id: UUID,
+    body: DeleteBuildsRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Delete selected builds for a project."""
+    try:
+        deleted = await build_service.delete_builds(
+            project_id, user["id"], body.build_ids
+        )
+        return {"deleted": deleted}
     except ValueError as exc:
         detail = str(exc)
         if "not found" in detail.lower():
