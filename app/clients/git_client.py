@@ -181,3 +181,39 @@ async def get_file_list(repo_path: str | Path) -> list[str]:
         return sorted(files)
     except RuntimeError:
         return []
+
+
+async def diff_summary(
+    repo_path: str | Path,
+    *,
+    from_ref: str = "HEAD~1",
+    to_ref: str = "HEAD",
+    max_bytes: int = 4000,
+) -> str:
+    """Return a compact diff --stat + abbreviated diff between two refs.
+
+    Falls back gracefully if the repo has only one commit or the refs
+    don't exist.  Output is capped at *max_bytes* to keep prompts lean.
+    """
+    try:
+        stat = await _run_git(
+            ["diff", "--stat", from_ref, to_ref], cwd=repo_path,
+        )
+    except RuntimeError:
+        return "(no diff available — single commit or refs missing)"
+
+    try:
+        diff = await _run_git(
+            ["diff", "--no-color", "-U2", from_ref, to_ref], cwd=repo_path,
+        )
+    except RuntimeError:
+        diff = ""
+
+    combined = f"--- diff --stat {from_ref}..{to_ref} ---\n{stat}\n"
+    if diff:
+        remaining = max_bytes - len(combined)
+        if remaining > 0:
+            combined += f"\n--- diff (abbreviated) ---\n{diff[:remaining]}"
+            if len(diff) > remaining:
+                combined += "\n... (truncated)"
+    return combined

@@ -264,7 +264,7 @@ async def test_get_build_logs(mock_build_repo, mock_project_repo):
 
 
 def test_build_directive_format():
-    """_build_directive assembles contracts in canonical order with universal governance."""
+    """_build_directive produces a slim directive with governance + contract list."""
     contracts = [
         {"contract_type": "manifesto", "content": "# Manifesto"},
         {"contract_type": "blueprint", "content": "# Blueprint"},
@@ -272,12 +272,98 @@ def test_build_directive_format():
 
     result = build_service._build_directive(contracts)
 
-    # Should include the universal governance heading and per-project contracts
-    assert "Forge Governance" in result or "Project Contracts" in result
-    # Blueprint should come before manifesto in canonical order
-    bp_pos = result.index("blueprint")
-    mf_pos = result.index("manifesto")
-    assert bp_pos < mf_pos
+    # Should include governance heading
+    assert "Forge Governance" in result
+    # Should list contract filenames, NOT inline their content
+    assert "Forge/Contracts/manifesto.md" in result
+    assert "Forge/Contracts/blueprint.md" in result
+    # Full contract content should NOT be inlined
+    assert "# Manifesto" not in result
+    assert "# Blueprint" not in result
+
+
+def test_build_directive_lists_all_contract_types():
+    """_build_directive lists every contract type in the on-disk reference."""
+    contracts = [
+        {"contract_type": "blueprint", "content": "x"},
+        {"contract_type": "schema", "content": "y"},
+        {"contract_type": "phases", "content": "z"},
+    ]
+    result = build_service._build_directive(contracts)
+    assert "blueprint.md" in result
+    assert "schema.md" in result
+    assert "phases.md" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _write_contracts_to_workdir
+# ---------------------------------------------------------------------------
+
+
+def test_write_contracts_to_workdir(tmp_path):
+    """_write_contracts_to_workdir writes contract files and returns paths."""
+    contracts = [
+        {"contract_type": "blueprint", "content": "# Blueprint\ntest"},
+        {"contract_type": "boundaries", "content": '{"layers": []}'},
+        {"contract_type": "physics", "content": "timeout: 60"},
+    ]
+    paths = build_service._write_contracts_to_workdir(str(tmp_path), contracts)
+
+    assert len(paths) == 3
+    assert "Forge/Contracts/blueprint.md" in paths
+    assert "Forge/Contracts/boundaries.json" in paths
+    assert "Forge/Contracts/physics.yaml" in paths
+
+    # Verify files exist on disk with correct content
+    assert (tmp_path / "Forge" / "Contracts" / "blueprint.md").read_text() == "# Blueprint\ntest"
+    assert (tmp_path / "Forge" / "Contracts" / "boundaries.json").read_text() == '{"layers": []}'
+
+
+# ---------------------------------------------------------------------------
+# Tests: _extract_phase_window
+# ---------------------------------------------------------------------------
+
+
+def test_extract_phase_window_current_and_next():
+    """_extract_phase_window returns current + next phase text."""
+    phases_content = (
+        "## Phase 0 -- Genesis\n"
+        "**Objective:** Scaffold the project.\n\n"
+        "**Deliverables:**\n- /health endpoint\n\n---\n\n"
+        "## Phase 1 -- Auth\n"
+        "**Objective:** Add authentication.\n\n"
+        "**Deliverables:**\n- Login flow\n\n---\n\n"
+        "## Phase 2 -- Repos\n"
+        "**Objective:** Repo management.\n"
+    )
+    contracts = [{"contract_type": "phases", "content": phases_content}]
+
+    result = build_service._extract_phase_window(contracts, 0)
+    assert "Phase 0" in result
+    assert "Phase 1" in result
+    assert "Phase 2" not in result
+    assert "Phase Window" in result
+
+
+def test_extract_phase_window_last_phase():
+    """_extract_phase_window handles the last phase (no next phase)."""
+    phases_content = (
+        "## Phase 0 -- Genesis\n**Objective:** Scaffold.\n\n"
+        "## Phase 1 -- Final\n**Objective:** Finish.\n"
+    )
+    contracts = [{"contract_type": "phases", "content": phases_content}]
+
+    result = build_service._extract_phase_window(contracts, 1)
+    assert "Phase 1" in result
+    # No Phase 2, but should still work
+    assert "Phase 0" not in result
+
+
+def test_extract_phase_window_no_phases_contract():
+    """_extract_phase_window returns empty string when no phases contract."""
+    contracts = [{"contract_type": "blueprint", "content": "# Blueprint"}]
+    result = build_service._extract_phase_window(contracts, 0)
+    assert result == ""
 
 
 # ---------------------------------------------------------------------------

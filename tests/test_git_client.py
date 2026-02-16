@@ -198,3 +198,26 @@ async def test_checkout_branch(mock_run):
     await git_client.checkout_branch("/tmp/test", "develop")
 
     mock_run.assert_called_once_with(["checkout", "develop"], cwd="/tmp/test")
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_diff_summary(mock_run):
+    """diff_summary returns stat + abbreviated diff."""
+    mock_run.side_effect = [
+        " app/main.py | 10 ++++\n 1 file changed",  # --stat
+        "+from fastapi import FastAPI",               # diff -U2
+    ]
+    result = await git_client.diff_summary("/tmp/test")
+    assert "app/main.py" in result
+    assert "FastAPI" in result
+    assert mock_run.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_diff_summary_single_commit(mock_run):
+    """diff_summary returns fallback for single-commit repos."""
+    mock_run.side_effect = RuntimeError("bad revision")
+    result = await git_client.diff_summary("/tmp/test")
+    assert "no diff available" in result

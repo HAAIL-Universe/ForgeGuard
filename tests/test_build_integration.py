@@ -51,7 +51,10 @@ def _contracts():
         {"contract_type": "schema", "content": "# Schema\nusers table"},
         {"contract_type": "physics", "content": "# Physics\n/health: get"},
         {"contract_type": "boundaries", "content": '{"layers": []}'},
-        {"contract_type": "phases", "content": "## Phase 0 -- Genesis\n**Objective:** Scaffold"},
+        {"contract_type": "phases", "content": (
+            "## Phase 0 -- Genesis\n**Objective:** Scaffold\n\n"
+            "## Phase 1 -- Auth\n**Objective:** Add authentication\n"
+        )},
     ]
 
 
@@ -190,6 +193,7 @@ def _setup_mocks(mocks, working_dir=None, audit_result="PASS"):
     gc.get_file_list = AsyncMock(return_value=[])
     gc.create_branch = AsyncMock()
     gc.checkout_branch = AsyncMock()
+    gc.diff_summary = AsyncMock(return_value="(no diff available)")
 
     ghc = mocks["github_client"]
     ghc.create_github_repo = AsyncMock(return_value={
