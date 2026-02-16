@@ -719,9 +719,45 @@ async def _run_build(
         files_written: list[dict] = []
 
         phase_start_time = datetime.now(timezone.utc)  # Phase timeout tracking
+
+        # Build working directory snapshot for builder orientation.
+        # Appended to directive so the model sees it in the user message.
+        workspace_info = ""
+        if working_dir:
+            try:
+                file_list = await git_client.get_file_list(working_dir)
+                if file_list:
+                    workspace_info = (
+                        "\n\n## Working Directory (ALREADY LISTED — do NOT call list_directory)\n"
+                        "The target repo already contains these files:\n"
+                        + "\n".join(f"- {f}" for f in file_list[:50])
+                        + ("\n- ... (truncated)" if len(file_list) > 50 else "")
+                        + "\n"
+                    )
+                else:
+                    workspace_info = (
+                        "\n\n## Working Directory\n"
+                        "The target repo is empty. No existing files.\n"
+                    )
+            except Exception:
+                workspace_info = (
+                    "\n\n## Working Directory\n"
+                    "The target repo is empty or freshly initialized.\n"
+                )
+        directive += workspace_info
+
         # Conversation history for the agent (multi-turn)
+        # Prepend a strong "start now" instruction and workspace listing to the
+        # user message so the model cannot miss them (system prompts are weaker).
+        first_message = (
+            "## ⚠ IMPORTANT — DO NOT EXPLORE\n"
+            "Everything you need is in this message. Do NOT call list_directory, "
+            "read_file, or any exploratory tool before starting Phase 0.\n"
+            "The workspace file listing is below. Start coding IMMEDIATELY.\n\n"
+            + directive
+        )
         messages: list[dict] = [
-            {"role": "user", "content": directive},
+            {"role": "user", "content": first_message},
         ]
 
         accumulated_text = ""
@@ -740,34 +776,6 @@ async def _run_build(
         # Tokens recorded before the current usage window (after phase cost resets)
         recorded_input_baseline = 0
         recorded_output_baseline = 0
-
-        # System prompt for the builder agent
-        # Build working directory snapshot for builder orientation
-        workspace_info = ""
-        if working_dir:
-            try:
-                file_list = await git_client.get_file_list(working_dir)
-                if file_list:
-                    workspace_info = (
-                        "\n\n## Working Directory\n"
-                        "The target repo already contains these files:\n"
-                        + "\n".join(f"- {f}" for f in file_list[:50])
-                        + ("\n- ... (truncated)" if len(file_list) > 50 else "")
-                        + "\n\nYou do NOT need to run list_directory on the root — "
-                        "the listing above is current. Jump straight into Phase 0.\n"
-                    )
-                else:
-                    workspace_info = (
-                        "\n\n## Working Directory\n"
-                        "The target repo is empty. No existing files. "
-                        "Start building from scratch — skip exploring and jump straight into Phase 0.\n"
-                    )
-            except Exception:
-                workspace_info = (
-                    "\n\n## Working Directory\n"
-                    "The target repo is empty or freshly initialized. "
-                    "Start building from scratch — skip exploring and jump straight into Phase 0.\n"
-                )
 
         system_prompt = (
             "You are an autonomous software builder operating under the Forge governance framework.\n\n"
@@ -805,6 +813,11 @@ async def _run_build(
             "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
             "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
             "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
+            "## First Turn\n"
+            "On your VERY FIRST response, you MUST:\n"
+            "1. Emit === PLAN === for Phase 0\n"
+            "2. Start writing code with write_file\n"
+            "Do NOT call list_directory or read_file on your first turn.\n\n"
             "## README\n"
             "Before the final phase sign-off, generate a comprehensive README.md that includes:\n"
             "- Project name and description\n"
@@ -815,7 +828,7 @@ async def _run_build(
             "- Usage examples\n"
             "- API reference (if applicable)\n"
             "- License placeholder\n"
-        ) + workspace_info
+        )
 
         # Emit build overview (high-level phase list) at build start
         try:
