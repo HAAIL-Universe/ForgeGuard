@@ -480,9 +480,9 @@ async def test_token_budget_limiter_cache_reads_excluded():
 
 @pytest.mark.asyncio
 @patch("app.clients.agent_client.httpx.AsyncClient")
-async def test_stream_agent_only_fresh_tokens_counted_for_limiter(mock_client_cls):
-    """stream_agent records only fresh input_tokens in the limiter,
-    excluding both cache_read and cache_creation tokens."""
+async def test_stream_agent_all_tokens_counted_for_limiter(mock_client_cls):
+    """stream_agent records ALL input tokens (fresh + cache_read + cache_creation)
+    in the limiter, because Anthropic counts them all toward TPM rate limits."""
     events = [
         {
             "type": "message_start",
@@ -512,13 +512,14 @@ async def test_stream_agent_only_fresh_tokens_counted_for_limiter(mock_client_cl
     ):
         pass
 
-    # usage_out tracks ALL tokens for billing/display
+    # usage_out tracks per-category tokens for billing/display
     assert usage.input_tokens == 500
     assert usage.cache_read_input_tokens == 40_000
     assert usage.cache_creation_input_tokens == 8_000
 
-    # Limiter records ONLY fresh input_tokens (500), not cache reads (40K)
-    # or cache creation (8K)
+    # Limiter records ALL input tokens (500 + 40K + 8K = 48500) because
+    # Anthropic counts all tokens toward the TPM rate limit regardless
+    # of caching — caching only reduces cost, not rate-limit consumption.
     inp, out = limiter._current_usage()
-    assert inp == 500  # only fresh input_tokens
+    assert inp == 48_500  # fresh + cache_read + cache_creation
     assert out == 100

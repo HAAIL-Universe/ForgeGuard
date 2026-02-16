@@ -1183,7 +1183,11 @@ async def _run_build(
             # --- Common code for ALL turns (tool and text) ---
 
             # Update total token count (baseline + current window usage)
-            all_input = recorded_input_baseline + usage.input_tokens
+            # Include cache_read + cache_creation to show the REAL token
+            # consumption that Anthropic counts toward rate limits.
+            all_input = (recorded_input_baseline + usage.input_tokens
+                         + usage.cache_read_input_tokens
+                         + usage.cache_creation_input_tokens)
             all_output = recorded_output_baseline + usage.output_tokens
             total_tokens_all_turns = all_input + all_output
 
@@ -1230,7 +1234,10 @@ async def _run_build(
                     level="info",
                 )
                 # Capture token usage BEFORE recording (which resets)
-                phase_input_tokens = usage.input_tokens
+                # Include cache tokens for accurate reporting.
+                phase_input_tokens = (usage.input_tokens
+                                      + usage.cache_read_input_tokens
+                                      + usage.cache_creation_input_tokens)
                 phase_output_tokens = usage.output_tokens
 
                 await _broadcast_build_event(
@@ -1284,7 +1291,9 @@ async def _run_build(
                     plan_tasks = []  # Fresh plan for next phase
 
                     # Record cost for this phase (update baseline before reset)
-                    recorded_input_baseline += usage.input_tokens
+                    recorded_input_baseline += (usage.input_tokens
+                                                + usage.cache_read_input_tokens
+                                                + usage.cache_creation_input_tokens)
                     recorded_output_baseline += usage.output_tokens
                     await _record_phase_cost(build_id, current_phase, usage)
                 else:
@@ -1370,7 +1379,9 @@ async def _run_build(
                             continue
 
                     # Record cost for this failed attempt (update baseline before reset)
-                    recorded_input_baseline += usage.input_tokens
+                    recorded_input_baseline += (usage.input_tokens
+                                                + usage.cache_read_input_tokens
+                                                + usage.cache_creation_input_tokens)
                     recorded_output_baseline += usage.output_tokens
                     await _record_phase_cost(build_id, current_phase, usage)
 
@@ -1513,7 +1524,9 @@ async def _run_build(
 
         # Record any remaining unrecorded token usage as a final cost entry
         if usage.input_tokens > 0 or usage.output_tokens > 0:
-            recorded_input_baseline += usage.input_tokens
+            recorded_input_baseline += (usage.input_tokens
+                                        + usage.cache_read_input_tokens
+                                        + usage.cache_creation_input_tokens)
             recorded_output_baseline += usage.output_tokens
             await _record_phase_cost(build_id, current_phase or "final", usage)
 
@@ -2133,10 +2146,16 @@ async def _record_phase_cost(
     build_id: UUID, phase: str, usage: StreamUsage
 ) -> None:
     """Persist token usage for the current phase and reset counters."""
-    input_t = usage.input_tokens
+    # Total input = fresh + cache-read (10% cost) + cache-creation (125% cost)
+    input_t = (usage.input_tokens
+               + usage.cache_read_input_tokens
+               + usage.cache_creation_input_tokens)
     output_t = usage.output_tokens
     model = usage.model or settings.LLM_BUILDER_MODEL
     input_rate, output_rate = _get_token_rates(model)
+    # Approximate cost: cache_read tokens cost ~10% of base, cache_creation
+    # costs ~125%.  For simplicity we use the base rate for all — this
+    # overstates slightly but is safe / conservative.
     cost = (Decimal(input_t) * input_rate
             + Decimal(output_t) * output_rate)
     await build_repo.record_build_cost(
@@ -2145,6 +2164,8 @@ async def _record_phase_cost(
     # Reset for next phase
     usage.input_tokens = 0
     usage.output_tokens = 0
+    usage.cache_read_input_tokens = 0
+    usage.cache_creation_input_tokens = 0
 
 
 # ---------------------------------------------------------------------------

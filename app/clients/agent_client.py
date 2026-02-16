@@ -256,20 +256,19 @@ async def stream_agent(
             cached_tools[-1]["cache_control"] = {"type": "ephemeral"}
         payload["tools"] = cached_tools
 
-    # Estimate fresh (non-cached) input tokens (~4 chars per token).
-    # The system prompt and any message blocks with cache_control are
-    # served as cache reads and excluded from the limiter's budget, so
-    # we skip them here.  On the very first call the limiter has no
-    # history and always proceeds immediately, so under-estimating is
-    # harmless.
-    est_input = 0  # system prompt is always cached — skip
+    # Estimate TOTAL input tokens (~4 chars per token).
+    # Anthropic counts ALL tokens in the request toward TPM rate limits,
+    # including cache-read and cache-creation tokens.  Caching only
+    # reduces cost — not rate-limit consumption.  We must include the
+    # system prompt and every message block in the estimate.
+    est_input = len(system_prompt) // 4  # system prompt tokens
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):
             est_input += len(content) // 4
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and not block.get("cache_control"):
+                if isinstance(block, dict):
                     text = block.get("text", "") or block.get("content", "")
                     est_input += len(str(text)) // 4
 
@@ -346,13 +345,12 @@ async def stream_agent(
                                 usage_out.cache_read_input_tokens += cache_read
                                 usage_out.cache_creation_input_tokens += cache_create
                                 usage_out.model = msg.get("model", model)
-                                # Record only fresh input_tokens for the limiter.
-                                # Cache creation is a one-time cost (won't recur
-                                # on subsequent calls once the prefix is cached)
-                                # and cache reads are discounted.  Both are
-                                # excluded so the limiter doesn't self-block
-                                # after the initial cache-creation call.
-                                call_input_tokens += inp
+                                # Record ALL input tokens for rate-limit tracking.
+                                # Anthropic counts every token in the request
+                                # toward their TPM rate limit, regardless of
+                                # whether it was served from cache.  Caching only
+                                # reduces cost, not rate-limit consumption.
+                                call_input_tokens += inp + cache_read + cache_create
 
                             # Capture usage from message_delta (output tokens)
                             if etype == "message_delta" and usage_out is not None:
