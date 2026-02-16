@@ -46,6 +46,7 @@ interface ProjectDetailData {
   description: string | null;
   status: string;
   repo_id: string | null;
+  repo_full_name: string | null;
   created_at: string;
   updated_at: string;
   contracts: { contract_type: string; version: number; updated_at: string }[];
@@ -145,7 +146,12 @@ function ProjectDetail() {
       setShowQuestionnaire(true);
       return;
     }
-    /* Show target picker modal */
+    /* If a repo is already connected, build straight into it — no modal */
+    if (project?.repo_id && project?.repo_full_name) {
+      await handleTargetConfirm({ target_type: 'github_existing', target_ref: project.repo_full_name });
+      return;
+    }
+    /* No repo connected — show target picker modal */
     setShowTargetPicker(true);
   };
 

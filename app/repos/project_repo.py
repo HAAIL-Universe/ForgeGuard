@@ -41,10 +41,12 @@ async def get_project_by_id(project_id: UUID) -> dict | None:
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, user_id, name, description, status, repo_id,
-               local_path, questionnaire_state, created_at, updated_at
-        FROM projects
-        WHERE id = $1
+        SELECT p.id, p.user_id, p.name, p.description, p.status, p.repo_id,
+               p.local_path, p.questionnaire_state, p.created_at, p.updated_at,
+               r.full_name AS repo_full_name
+        FROM projects p
+        LEFT JOIN repos r ON r.id = p.repo_id
+        WHERE p.id = $1
         """,
         project_id,
     )
