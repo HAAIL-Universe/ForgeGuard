@@ -30,8 +30,9 @@ BASE_BACKOFF = 2.0            # seconds — exponential: 2, 4, 8, 16, 32, 64
 _RETRYABLE_CODES = frozenset({429, 500, 502, 503, 529})
 
 # Default per-minute token limits (Anthropic Build tier for Opus).
-# Cache-read tokens do NOT count toward Anthropic's ITPM, so these
-# only need to cover fresh + cache-creation input tokens.
+# Anthropic counts ALL input tokens (fresh + cache_read + cache_create)
+# toward the ITPM rate limit.  Caching only reduces *cost*, not the
+# rate-limit footprint, so every call still costs ~48K TPM.
 DEFAULT_INPUT_TPM = 80_000
 DEFAULT_OUTPUT_TPM = 16_000
 
@@ -130,11 +131,12 @@ class TokenBudgetLimiter:
     def record(self, input_tokens: int, output_tokens: int) -> None:
         """Record actual token usage from a completed API call.
 
-        ``input_tokens`` should only include *fresh* tokens from
-        ``usage.input_tokens``.  Cache-creation tokens are a one-time
-        cost that won't recur once the prefix is cached, and cache-read
-        tokens are discounted — both are excluded so the sliding-window
-        limiter doesn't self-block after the initial cache warm-up call.
+        ``input_tokens`` should be the **total** input tokens reported
+        by Anthropic: ``input_tokens + cache_read_input_tokens +
+        cache_creation_input_tokens``.  Anthropic counts every token
+        in the request toward their TPM rate limit regardless of
+        caching — caching only reduces monetary cost (cache_read at
+        10%, cache_create at 125%).
         """
         self._history.append((time.monotonic(), input_tokens, output_tokens))
 
