@@ -38,7 +38,7 @@ async def get_user_by_id(user_id: UUID) -> dict | None:
     """Fetch a user by primary key. Returns None if not found."""
     pool = await get_pool()
     row = await pool.fetchrow(
-        "SELECT id, github_id, github_login, avatar_url, access_token, anthropic_api_key, audit_llm_enabled, created_at, updated_at FROM users WHERE id = $1",
+        "SELECT id, github_id, github_login, avatar_url, access_token, anthropic_api_key, anthropic_api_key_2, audit_llm_enabled, created_at, updated_at FROM users WHERE id = $1",
         user_id,
     )
     return dict(row) if row else None
@@ -49,6 +49,16 @@ async def set_anthropic_api_key(user_id: UUID, api_key: str | None) -> None:
     pool = await get_pool()
     await pool.execute(
         "UPDATE users SET anthropic_api_key = $2, updated_at = now() WHERE id = $1",
+        user_id,
+        api_key,
+    )
+
+
+async def set_anthropic_api_key_2(user_id: UUID, api_key: str | None) -> None:
+    """Store (or clear) the user's second Anthropic API key."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE users SET anthropic_api_key_2 = $2, updated_at = now() WHERE id = $1",
         user_id,
         api_key,
     )

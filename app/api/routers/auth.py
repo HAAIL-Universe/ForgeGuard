@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user
 from app.clients.github_client import GITHUB_OAUTH_URL
 from app.config import settings
-from app.repos.user_repo import set_anthropic_api_key, set_audit_llm_enabled
+from app.repos.user_repo import set_anthropic_api_key, set_anthropic_api_key_2, set_audit_llm_enabled
 from app.services.auth_service import handle_github_callback
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -69,11 +69,13 @@ async def get_current_user_info(
 ) -> dict:
     """Return the current authenticated user info."""
     has_api_key = bool(current_user.get("anthropic_api_key"))
+    has_api_key_2 = bool(current_user.get("anthropic_api_key_2"))
     return {
         "id": str(current_user["id"]),
         "github_login": current_user["github_login"],
         "avatar_url": current_user.get("avatar_url"),
         "has_anthropic_key": has_api_key,
+        "has_anthropic_key_2": has_api_key_2,
         "audit_llm_enabled": current_user.get("audit_llm_enabled", True),
     }
 
@@ -101,6 +103,28 @@ async def remove_api_key(
 ) -> dict:
     """Remove the user's stored Anthropic API key."""
     await set_anthropic_api_key(current_user["id"], None)
+    return {"removed": True}
+
+
+@router.put("/api-key-2")
+async def save_api_key_2(
+    body: ApiKeyBody,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Save the user's second Anthropic API key for key-pool throughput."""
+    key = body.api_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key cannot be empty")
+    await set_anthropic_api_key_2(current_user["id"], key)
+    return {"saved": True}
+
+
+@router.delete("/api-key-2")
+async def remove_api_key_2(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Remove the user's second stored Anthropic API key."""
+    await set_anthropic_api_key_2(current_user["id"], None)
     return {"removed": True}
 
 

@@ -7,6 +7,7 @@ interface User {
   github_login: string;
   avatar_url: string | null;
   has_anthropic_key?: boolean;
+  has_anthropic_key_2?: boolean;
   audit_llm_enabled?: boolean;
 }
 

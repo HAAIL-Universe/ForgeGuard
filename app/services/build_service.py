@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, get_key_pool, ApiKeyPool
+from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, ApiKeyPool
 from app.clients import git_client
 from app.clients import github_client
 from app.config import settings
@@ -348,6 +348,7 @@ async def start_build(
     # BYOK: user must supply their own Anthropic API key for builds
     user = await get_user_by_id(user_id)
     user_api_key = (user or {}).get("anthropic_api_key") or ""
+    user_api_key_2 = (user or {}).get("anthropic_api_key_2") or ""
     if not user_api_key.strip():
         raise ValueError(
             "Anthropic API key required. Add your key in Settings to start a build."
@@ -401,6 +402,7 @@ async def start_build(
             working_dir=working_dir,
             access_token=(user or {}).get("access_token", ""),
             branch=branch,
+            api_key_2=user_api_key_2,
         )
     )
     _active_tasks[str(build["id"])] = task
@@ -633,6 +635,7 @@ async def _run_build(
     working_dir: str | None = None,
     access_token: str = "",
     branch: str = "main",
+    api_key_2: str = "",
 ) -> None:
     """Background task that orchestrates the full build lifecycle.
 
@@ -976,11 +979,11 @@ async def _run_build(
                     })
                 )
 
-            # Build API key pool for multi-key rotation
+            # Build API key pool for multi-key rotation (BYOK keys)
             pool_keys = [api_key]
-            if settings.ANTHROPIC_API_KEY_2:
-                pool_keys.append(settings.ANTHROPIC_API_KEY_2)
-            key_pool = get_key_pool(
+            if api_key_2.strip():
+                pool_keys.append(api_key_2.strip())
+            key_pool = ApiKeyPool(
                 api_keys=pool_keys,
                 input_tpm=settings.ANTHROPIC_INPUT_TPM,
                 output_tpm=settings.ANTHROPIC_OUTPUT_TPM,
