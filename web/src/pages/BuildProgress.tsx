@@ -272,19 +272,24 @@ function BuildProgress() {
 
   /* ------ fetch initial data ------ */
   useEffect(() => {
+    const ac = new AbortController();
     const load = async () => {
       try {
+        const hdr = { Authorization: `Bearer ${token}` };
+        const sig = ac.signal;
         const [statusRes, phasesRes, logsRes] = await Promise.all([
           fetch(`${API_BASE}/projects/${projectId}/build/status`, {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: hdr, signal: sig,
           }),
           fetch(`${API_BASE}/projects/${projectId}/build/phases`, {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: hdr, signal: sig,
           }),
           fetch(`${API_BASE}/projects/${projectId}/build/logs?limit=500`, {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: hdr, signal: sig,
           }),
         ]);
+
+        if (ac.signal.aborted) return;
 
         if (statusRes.status === 400) {
           setNoBuild(true);
@@ -316,9 +321,9 @@ function BuildProgress() {
           /* Seed token totals from cost summary */
           try {
             const costRes = await fetch(`${API_BASE}/projects/${projectId}/build/summary`, {
-              headers: { Authorization: `Bearer ${token}` },
+              headers: hdr, signal: sig,
             });
-            if (costRes.ok) {
+            if (!ac.signal.aborted && costRes.ok) {
               const costData = await costRes.json();
               setTotalTokens({
                 input: costData.cost?.total_input_tokens ?? 0,
@@ -330,9 +335,9 @@ function BuildProgress() {
           /* Seed build files */
           try {
             const filesRes = await fetch(`${API_BASE}/projects/${projectId}/build/files`, {
-              headers: { Authorization: `Bearer ${token}` },
+              headers: hdr, signal: sig,
             });
-            if (filesRes.ok) {
+            if (!ac.signal.aborted && filesRes.ok) {
               const filesData = await filesRes.json();
               setBuildFiles(filesData.items ?? []);
             }
@@ -372,12 +377,13 @@ function BuildProgress() {
           setPhaseStates(map);
         }
       } catch {
-        addToast('Network error loading build');
+        if (!ac.signal.aborted) addToast('Network error loading build');
       } finally {
-        setLoading(false);
+        if (!ac.signal.aborted) setLoading(false);
       }
     };
     load();
+    return () => ac.abort();
   }, [projectId, token, addToast]);
 
   /* ------ WebSocket handler ------ */

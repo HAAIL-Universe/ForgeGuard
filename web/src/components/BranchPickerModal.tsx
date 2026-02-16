@@ -206,10 +206,44 @@ export default function BranchPickerModal({
             padding: '14px 20px',
             borderTop: '1px solid #334155',
             display: 'flex',
-            justifyContent: 'flex-end',
+            flexDirection: 'column',
             gap: '10px',
           }}
         >
+          {/* Git sync status banner — visible once user clicks Start Build */}
+          {starting && (
+            <div
+              data-testid="git-sync-status"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 14px',
+                background: '#0C1425',
+                border: '1px solid #1E3A5F',
+                borderRadius: '6px',
+                fontSize: '0.78rem',
+                color: '#93C5FD',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: '14px',
+                  height: '14px',
+                  border: '2px solid #3B82F6',
+                  borderTopColor: 'transparent',
+                  borderRadius: '50%',
+                  animation: 'forgeSpin 0.8s linear infinite',
+                  flexShrink: 0,
+                }}
+              />
+              <span>Syncing contracts to Git&nbsp;&mdash;&nbsp;cloning repo, writing Forge/Contracts/, preparing workspace…</span>
+            </div>
+          )}
+          <style>{`@keyframes forgeSpin { to { transform: rotate(360deg); } }`}</style>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
           <button
             onClick={onCancel}
             style={{
@@ -243,6 +277,7 @@ export default function BranchPickerModal({
           >
             {starting ? 'Starting...' : 'Start Build'}
           </button>
+          </div>
         </div>
       </div>
     </div>

@@ -177,11 +177,17 @@ def _parse_build_plan(text: str) -> list[dict]:
     return tasks
 
 
-def _compact_conversation(messages: list[dict]) -> list[dict]:
+def _compact_conversation(
+    messages: list[dict],
+    files_written: list[dict] | None = None,
+    current_phase: str = "",
+) -> list[dict]:
     """Compact a conversation by summarizing older turns.
 
     Keeps the first message (directive) and last 2 assistant/user pairs
-    intact.  Middle turns are replaced with a summary message.
+    intact.  Middle turns are replaced with a progress summary that
+    includes the files written so far and current phase, so the builder
+    doesn't lose track of what it already did.
 
     Returns a new compacted message list.
     """
@@ -195,19 +201,37 @@ def _compact_conversation(messages: list[dict]) -> list[dict]:
     # Keep the last 4 messages (2 turns: user+assistant pairs)
     tail = messages[-4:]
 
-    # Summarize the middle
-    middle = messages[1:-4]
-    if not middle:
-        return list(messages)
+    # Build a concise progress summary instead of truncated raw messages
+    summary_parts = [
+        "[Context compacted — progress summary]\n",
+        f"Current phase: {current_phase}\n",
+    ]
 
-    summary_parts = ["[Context compacted — summary of earlier conversation turns]\n"]
-    for msg in middle:
+    if files_written:
+        summary_parts.append(f"\nFiles written so far ({len(files_written)}):\n")
+        for f in files_written:
+            summary_parts.append(f"  - {f['path']} ({f['size_bytes']} bytes)\n")
+        summary_parts.append(
+            "\nThese files are ALREADY written to disk. "
+            "Do NOT re-write them. Continue with the NEXT unwritten file.\n"
+        )
+    else:
+        summary_parts.append("\nNo files written yet.\n")
+
+    # Extract tool calls from middle messages for brief context
+    for msg in messages[1:-4]:
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
-        # Truncate each message to 500 chars for summary
-        if len(content) > 500:
-            content = content[:500] + "..."
-        summary_parts.append(f"[{role}]: {content}\n")
+        if isinstance(content, list):
+            # Tool result or multi-block content — extract tool names only
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    summary_parts.append(
+                        f"[tool_use]: {block.get('name', '?')}\n"
+                    )
+        elif isinstance(content, str) and len(content) > 200:
+            content = content[:200] + "..."
+            summary_parts.append(f"[{role}]: {content}\n")
 
     summary_msg = {
         "role": "user",
@@ -756,26 +780,55 @@ async def _run_build(
 
         phase_start_time = datetime.now(timezone.utc)  # Phase timeout tracking
 
-        # Write per-project contracts to the working directory so the
-        # builder can read them on-demand via the read_file tool instead
-        # of bloating every API call's cached prefix (~35K token saving).
+        # Write contracts to the working directory as a backup reference.
+        # The builder has them in-prompt, but after context compaction it
+        # can re-read them from disk via read_file if needed.
         if working_dir:
             try:
-                contract_paths = _write_contracts_to_workdir(working_dir, contracts)
-                await build_repo.append_build_log(
-                    build_id,
-                    f"Wrote {len(contract_paths)} contract files to Forge/Contracts/",
-                    source="system", level="info",
-                )
+                _write_contracts_to_workdir(working_dir, contracts)
             except Exception as exc:
                 logger.warning("Failed to write contracts to workdir: %s", exc)
+
+        # Commit + push contracts so the GitHub repo is populated before
+        # the builder starts coding.  This ensures the user can see the
+        # Forge/Contracts/ folder in their repo immediately.
+        if (
+            working_dir
+            and target_type in ("github_new", "github_existing")
+            and access_token
+        ):
+            try:
+                await git_client.add_all(working_dir)
+                sha = await git_client.commit(
+                    working_dir, "forge: seed Forge/Contracts/"
+                )
+                if sha:
+                    await git_client.push(
+                        working_dir, branch=branch, access_token=access_token,
+                    )
+                    await build_repo.append_build_log(
+                        build_id,
+                        "Pushed Forge/Contracts/ to GitHub",
+                        source="system", level="info",
+                    )
+            except Exception as exc:
+                logger.warning("Initial contracts push failed (non-fatal): %s", exc)
+
+        # Signal the frontend that the workspace is ready (repo cloned,
+        # branch checked out, contracts written).  The UI waits for this
+        # event before navigating to the build view.
+        await _broadcast_build_event(user_id, build_id, "workspace_ready", {
+            "id": str(build_id),
+            "working_dir": working_dir or "",
+            "branch": branch,
+        })
 
         # Build working directory snapshot for builder orientation.
         workspace_info = ""
         if working_dir:
             try:
                 file_list = await git_client.get_file_list(working_dir)
-                # Exclude Forge/Contracts/ from listing — builder knows they're there
+                # Exclude Forge/Contracts/ from listing — builder already has them
                 file_list = [f for f in file_list if not f.startswith("Forge/Contracts/")]
                 if file_list:
                     workspace_info = (
@@ -800,16 +853,20 @@ async def _run_build(
         current_phase_num = 0
         phase_window = _extract_phase_window(contracts, current_phase_num)
 
-        # Assemble a lean first user message:
-        # governance directive + phase window + workspace listing
+        # Assemble first user message:
+        # governance + per-project contracts + workspace listing + phase window
         first_message = (
-            directive
+            "## ⚠ IMPORTANT — DO NOT EXPLORE\n"
+            "Everything you need is in this message. Do NOT call list_directory, "
+            "read_file, or any exploratory tool before starting Phase 0.\n"
+            "The workspace file listing is below. Start coding IMMEDIATELY.\n\n"
+            + directive
             + workspace_info
             + ("\n\n" + phase_window if phase_window else "")
         )
 
         # Use content-block format with cache_control so Anthropic caches
-        # the governance + phase window across turns (prefix caching).
+        # the contracts across turns (prefix caching — 10% cost on turns 2+).
         messages: list[dict] = [
             {
                 "role": "user",
@@ -842,15 +899,17 @@ async def _run_build(
 
         system_prompt = (
             "You are an autonomous software builder operating under the Forge governance framework.\n\n"
-            "## Context Layout\n"
-            "- The **builder_contract** (universal governance rules) is in the first user message.\n"
-            "- Your **current phase + next phase** definitions are also in the first user message.\n"
-            "- All other per-project contracts (blueprint, schema, stack, ui, etc.) are in\n"
-            "  `Forge/Contracts/` in the working directory.  Use `read_file` to consult them\n"
-            "  **only when you need them** for the current phase — do NOT read them all upfront.\n"
-            "- When you advance to a new phase, a new message will provide the updated phase\n"
-            "  window and a diff summary of what was built in the previous phase.\n\n"
+            "## CRITICAL — Read This First\n"
+            "1. Your contracts and build instructions are ALREADY provided in the first user message below.\n"
+            "2. Do NOT search the filesystem for contracts, README, config files, or any existing files.\n"
+            "3. Do NOT read_file or list_directory before starting Phase 0.\n"
+            "4. The working directory listing (if any) is already provided below — you have it.\n"
+            "5. Start Phase 0 (Genesis) IMMEDIATELY by emitting your plan, then writing code.\n\n"
             "## Phase Workflow\n"
+            "Your **current phase + next phase** are shown in the Phase Window section.\n"
+            "When you finish a phase, a new message will provide the next phase window\n"
+            "and a diff summary of what was built.  Contracts are also saved in\n"
+            "`Forge/Contracts/` if you need to re-read one after context compaction.\n\n"
             "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
             "=== PLAN ===\n"
             "1. First task for this phase\n"
@@ -860,16 +919,9 @@ async def _run_build(
             "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
             "As you complete each task, emit: === TASK DONE: N ===\n"
             "where N is the task number from your current phase plan.\n\n"
-            "## Reading Contracts\n"
-            "When starting a new phase, read the specific contracts you need:\n"
-            "- For schema work → `read_file Forge/Contracts/schema.md`\n"
-            "- For UI work → `read_file Forge/Contracts/ui.md`\n"
-            "- For architecture → `read_file Forge/Contracts/blueprint.md`\n"
-            "- For constraints → `read_file Forge/Contracts/physics.yaml` or `boundaries.json`\n"
-            "Only read what's relevant to your current phase.\n\n"
             "## Tools\n"
             "You have access to the following tools for interacting with the project:\n"
-            "- **read_file**: Read a file to check existing code, verify your work, or consult contracts.\n"
+            "- **read_file**: Read a file to check existing code or verify your work.\n"
             "- **list_directory**: List files/folders to understand project structure.\n"
             "- **search_code**: Search for patterns across files to find implementations or imports.\n"
             "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n"
@@ -877,19 +929,20 @@ async def _run_build(
             "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
             "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
             "Guidelines for tool use:\n"
-            "1. On Phase 0, start writing code immediately — read contracts only if needed.\n"
-            "2. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
-            "3. Use search_code to find existing patterns, imports, or implementations.\n"
-            "4. After writing files, use check_syntax to catch syntax errors immediately.\n"
-            "5. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
-            "6. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
-            "7. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
-            "8. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
+            "1. Do NOT explore the filesystem at the start — the workspace listing is already above.\n"
+            "2. Start writing code immediately in Phase 0. Use read_file only when modifying existing files.\n"
+            "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
+            "4. Use search_code to find existing patterns, imports, or implementations.\n"
+            "5. After writing files, use check_syntax to catch syntax errors immediately.\n"
+            "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
+            "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
+            "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
+            "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
             "## First Turn\n"
             "On your VERY FIRST response, you MUST:\n"
             "1. Emit === PLAN === for Phase 0\n"
             "2. Start writing code with write_file\n"
-            "Do NOT call list_directory on your first turn — the workspace listing is already provided.\n\n"
+            "Do NOT call list_directory or read_file on your first turn.\n\n"
             "## README\n"
             "Before the final phase sign-off, generate a comprehensive README.md that includes:\n"
             "- Project name and description\n"
@@ -968,7 +1021,11 @@ async def _run_build(
             # Context compaction check
             compacted = False
             if total_tokens_all_turns > CONTEXT_COMPACTION_THRESHOLD and len(messages) > 5:
-                messages = _compact_conversation(messages)
+                messages = _compact_conversation(
+                    messages,
+                    files_written=files_written,
+                    current_phase=current_phase,
+                )
                 compacted = True
                 await build_repo.append_build_log(
                     build_id,
@@ -985,6 +1042,7 @@ async def _run_build(
             turn_text = ""
             tool_calls_this_turn: list[dict] = []
             pending_tool_results: list[dict] = []
+            _text_buffer = ""  # Accumulates builder text for batched emission
 
             def _on_rate_limit(status_code: int, attempt: int, wait: float):
                 """Fire-and-forget WS notification on rate-limit retry."""
@@ -1066,6 +1124,31 @@ async def _run_build(
                             }
                         )
 
+                        # Commit + push immediately so GitHub stays in sync.
+                        # Non-fatal: if push fails we'll catch it at phase end.
+                        if (
+                            working_dir
+                            and target_type in ("github_new", "github_existing")
+                            and access_token
+                        ):
+                            try:
+                                await git_client.add_all(working_dir)
+                                sha = await git_client.commit(
+                                    working_dir,
+                                    f"forge: write {rel_path}",
+                                )
+                                if sha:
+                                    await git_client.push(
+                                        working_dir,
+                                        branch=branch,
+                                        access_token=access_token,
+                                    )
+                            except Exception as exc:
+                                logger.debug(
+                                    "Incremental push failed for %s (non-fatal): %s",
+                                    rel_path, exc,
+                                )
+
                     # Track run_tests calls — emit test_run event
                     if item.name == "run_tests":
                         exit_code_str = tool_result.split("\n")[0] if tool_result else ""
@@ -1088,6 +1171,14 @@ async def _run_build(
                             source="test", level="info" if exit_code == 0 else "warn",
                         )
 
+                    # Append a progress manifest to write_file results so the
+                    # builder always knows what's been written (prevents repeats).
+                    if item.name == "write_file" and files_written:
+                        manifest = "\n\nFiles written so far: " + ", ".join(
+                            f["path"] for f in files_written
+                        )
+                        tool_result = tool_result + manifest
+
                     tool_calls_this_turn.append({
                         "id": item.id,
                         "name": item.name,
@@ -1100,14 +1191,25 @@ async def _run_build(
                 accumulated_text += chunk
                 turn_text += chunk
 
-                # Log chunks in batches (every ~500 chars)
-                if len(chunk) >= 10:
+                # Buffer builder text and emit in readable segments.
+                # Instead of firing a WS event for every 10-char fragment,
+                # accumulate into `_text_buffer` and flush when we hit a
+                # sentence boundary or the buffer exceeds ~120 chars.
+                _text_buffer += chunk
+                _should_flush = (
+                    len(_text_buffer) >= 120
+                    or _text_buffer.rstrip().endswith((".", "!", "?", ":", "\n"))
+                    or "===" in _text_buffer
+                )
+                if _should_flush and _text_buffer.strip():
+                    flushed = _text_buffer.strip()
+                    _text_buffer = ""
                     await build_repo.append_build_log(
-                        build_id, chunk, source="builder", level="info"
+                        build_id, flushed, source="builder", level="info"
                     )
                     await _broadcast_build_event(
                         user_id, build_id, "build_log", {
-                            "message": chunk,
+                            "message": flushed,
                             "source": "builder",
                             "level": "info",
                         }
@@ -1153,6 +1255,21 @@ async def _run_build(
                                     "status": "done",
                                 }
                             )
+
+            # Flush any remaining buffered text
+            if _text_buffer.strip():
+                flushed = _text_buffer.strip()
+                _text_buffer = ""
+                await build_repo.append_build_log(
+                    build_id, flushed, source="builder", level="info"
+                )
+                await _broadcast_build_event(
+                    user_id, build_id, "build_log", {
+                        "message": flushed,
+                        "source": "builder",
+                        "level": "info",
+                    }
+                )
 
             # Turn complete — append messages to conversation history
             had_tool_calls = bool(tool_calls_this_turn)
@@ -1794,17 +1911,17 @@ async def get_build_file_content(
 
 
 def _build_directive(contracts: list[dict]) -> str:
-    """Assemble a slim builder directive.
+    """Assemble the builder directive from project contracts.
 
-    Includes only the universal builder_contract.md (governance) in-line.
-    Per-project contracts are written to ``Forge/Contracts/`` in the
-    working directory and the builder reads them via the ``read_file``
-    tool on demand.  This keeps the cached prompt prefix small (~13K
-    instead of ~48K), dramatically reducing TPM usage.
+    Includes the universal builder_contract.md and all per-project
+    contracts **except** ``phases`` (which uses a sliding window —
+    only current + next phase are injected separately).  This keeps
+    the cached prefix at ~33K instead of ~48K while ensuring the
+    builder has everything it needs without expensive tool reads.
     """
-    parts = ["# Forge Governance\n"]
+    parts = ["# Forge Governance & Project Contracts\n"]
 
-    # 1. Load universal builder_contract.md from disk (stays in-prompt)
+    # 1. Universal builder_contract.md (governance framework)
     builder_contract_path = FORGE_CONTRACTS_DIR / "builder_contract.md"
     if builder_contract_path.exists():
         parts.append("\n---\n## builder_contract (universal governance)\n")
@@ -1813,18 +1930,27 @@ def _build_directive(contracts: list[dict]) -> str:
     else:
         logger.warning("builder_contract.md not found at %s", builder_contract_path)
 
-    # 2. Tell the builder where the per-project contracts live
-    contract_names = [c["contract_type"] for c in contracts]
-    parts.append("\n---\n## Per-Project Contracts (on disk — read via tool)\n")
-    parts.append(
-        "Your per-project contracts are available in `Forge/Contracts/` in the "
-        "working directory.  **Do NOT read them all at once.**  Read only the "
-        "contract you need for the current phase.\n\n"
-        "Available contracts:\n"
+    # 2. Per-project contracts in canonical order — EXCLUDING phases
+    #    (phases use a sliding window injected separately)
+    parts.append("\n---\n# Per-Project Contracts\n")
+    type_order = [
+        "blueprint", "manifesto", "stack", "schema", "physics",
+        "boundaries", "ui", "builder_directive",
+    ]
+    sorted_contracts = sorted(
+        contracts,
+        key=lambda c: (
+            type_order.index(c["contract_type"])
+            if c["contract_type"] in type_order
+            else len(type_order)
+        ),
     )
-    for name in contract_names:
-        parts.append(f"- `Forge/Contracts/{name}.md`\n")
-
+    for contract in sorted_contracts:
+        if contract["contract_type"] == "phases":
+            continue  # Handled by _extract_phase_window
+        parts.append(f"\n---\n## {contract['contract_type']}\n")
+        parts.append(contract["content"])
+        parts.append("\n")
     return "\n".join(parts)
 
 

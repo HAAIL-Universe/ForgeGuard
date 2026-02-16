@@ -30,12 +30,14 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
       return;
     }
     // Load repos for sidebar if not provided
+    const ac = new AbortController();
     const load = async () => {
       try {
         const res = await fetch(`${API_BASE}/repos`, {
           headers: { Authorization: `Bearer ${token}` },
+          signal: ac.signal,
         });
-        if (res.ok) {
+        if (!ac.signal.aborted && res.ok) {
           const data = await res.json();
           setRepos(data.items);
         }
@@ -44,6 +46,7 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
       }
     };
     load();
+    return () => ac.abort();
   }, [token, sidebarRepos]);
 
   // Responsive: collapse sidebar below 1024px

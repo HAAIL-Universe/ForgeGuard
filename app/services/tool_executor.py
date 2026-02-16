@@ -286,6 +286,18 @@ def _exec_write_file(inp: dict, working_dir: str) -> str:
     if len(content) > MAX_WRITE_FILE_BYTES:
         return f"Error: Content exceeds {MAX_WRITE_FILE_BYTES} byte limit ({len(content)} bytes)"
 
+    # Duplicate detection: skip write if target already has identical content
+    if target.exists() and target.is_file():
+        try:
+            existing = target.read_text(encoding="utf-8", errors="replace")
+            if existing == content:
+                return (
+                    f"SKIP: {rel_path} already exists with identical content "
+                    f"({len(content)} bytes). Move on to the next file."
+                )
+        except Exception:
+            pass  # If we can't read it, overwrite
+
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

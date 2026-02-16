@@ -264,7 +264,7 @@ async def test_get_build_logs(mock_build_repo, mock_project_repo):
 
 
 def test_build_directive_format():
-    """_build_directive produces a slim directive with governance + contract list."""
+    """_build_directive inlines all contracts except phases."""
     contracts = [
         {"contract_type": "manifesto", "content": "# Manifesto"},
         {"contract_type": "blueprint", "content": "# Blueprint"},
@@ -274,25 +274,23 @@ def test_build_directive_format():
 
     # Should include governance heading
     assert "Forge Governance" in result
-    # Should list contract filenames, NOT inline their content
-    assert "Forge/Contracts/manifesto.md" in result
-    assert "Forge/Contracts/blueprint.md" in result
-    # Full contract content should NOT be inlined
-    assert "# Manifesto" not in result
-    assert "# Blueprint" not in result
+    # Full contract content SHOULD be inlined
+    assert "# Manifesto" in result
+    assert "# Blueprint" in result
 
 
-def test_build_directive_lists_all_contract_types():
-    """_build_directive lists every contract type in the on-disk reference."""
+def test_build_directive_excludes_phases():
+    """_build_directive inlines all contracts but excludes phases (uses window)."""
     contracts = [
-        {"contract_type": "blueprint", "content": "x"},
-        {"contract_type": "schema", "content": "y"},
-        {"contract_type": "phases", "content": "z"},
+        {"contract_type": "blueprint", "content": "blueprint-content"},
+        {"contract_type": "schema", "content": "schema-content"},
+        {"contract_type": "phases", "content": "phase-content-should-not-appear"},
     ]
     result = build_service._build_directive(contracts)
-    assert "blueprint.md" in result
-    assert "schema.md" in result
-    assert "phases.md" in result
+    assert "blueprint-content" in result
+    assert "schema-content" in result
+    # phases excluded — handled by _extract_phase_window
+    assert "phase-content-should-not-appear" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +990,7 @@ def test_compact_conversation_short():
 
 
 def test_compact_conversation_compacts_middle():
-    """_compact_conversation summarizes middle messages."""
+    """_compact_conversation summarizes middle messages with progress."""
     messages = [
         {"role": "user", "content": "directive"},
         {"role": "assistant", "content": "response 1"},
@@ -1003,12 +1001,17 @@ def test_compact_conversation_compacts_middle():
         {"role": "user", "content": "feedback 3"},
         {"role": "assistant", "content": "response 4"},
     ]
-    result = build_service._compact_conversation(messages)
+    files = [{"path": "app.py", "size_bytes": 100, "language": "python"}]
+    result = build_service._compact_conversation(
+        messages, files_written=files, current_phase="Phase 0",
+    )
 
     # First message (directive) + summary + last 4 messages
     assert len(result) == 6
     assert result[0]["content"] == "directive"
     assert "[Context compacted" in result[1]["content"]
+    assert "app.py" in result[1]["content"]  # files manifest present
+    assert "Phase 0" in result[1]["content"]  # current phase present
     # Last 4 messages intact
     assert result[2]["content"] == "feedback 2"
     assert result[3]["content"] == "response 3"
@@ -1027,7 +1030,9 @@ def test_compact_conversation_truncates_long_content():
         {"role": "user", "content": "feedback 2"},
         {"role": "assistant", "content": "response 3"},
     ]
-    result = build_service._compact_conversation(messages)
+    result = build_service._compact_conversation(
+        messages, files_written=[], current_phase="Phase 1",
+    )
 
     # The summary message should have truncated the long content
     summary = result[1]["content"]

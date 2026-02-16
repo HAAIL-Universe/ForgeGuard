@@ -301,6 +301,29 @@ class TestWriteFile:
         assert result.startswith("OK:")
         assert (tmp_path / "empty.txt").read_text() == ""
 
+    def test_skip_duplicate_write(self, tmp_path):
+        """write_file skips if target already has identical content."""
+        content = "print('hello')"
+        (tmp_path / "dup.py").write_text(content, encoding="utf-8")
+        result = execute_tool(
+            "write_file",
+            {"path": "dup.py", "content": content},
+            str(tmp_path),
+        )
+        assert result.startswith("SKIP:")
+        assert "identical" in result.lower()
+
+    def test_overwrite_different_content(self, tmp_path):
+        """write_file overwrites when content is different."""
+        (tmp_path / "change.py").write_text("old", encoding="utf-8")
+        result = execute_tool(
+            "write_file",
+            {"path": "change.py", "content": "new"},
+            str(tmp_path),
+        )
+        assert result.startswith("OK:")
+        assert (tmp_path / "change.py").read_text() == "new"
+
 
 # ---------------------------------------------------------------------------
 # execute_tool dispatcher

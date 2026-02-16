@@ -84,6 +84,9 @@ function ProjectDetail() {
   const [bgGenDone, setBgGenDone] = useState<string[]>([]);
   const genStartedRef = useRef(false);
 
+  /* Workspace-ready gate: holds the build ID we're waiting on before navigating */
+  const pendingBuildIdRef = useRef<string | null>(null);
+
   /* Build history */
   interface BuildHistoryItem {
     id: string;
@@ -137,10 +140,25 @@ function ProjectDetail() {
 
   const hasContracts = (project?.contracts?.length ?? 0) > 0;
 
-  /* Listen for contract_progress WS events (for background tracking) */
+  /* Listen for WS events: contract_progress + workspace_ready */
   useWebSocket(
     useCallback(
       (data: { type: string; payload: any }) => {
+        /* ── workspace_ready: contracts are in git, safe to navigate ── */
+        if (data.type === 'workspace_ready') {
+          const pending = pendingBuildIdRef.current;
+          if (pending && data.payload?.id === pending) {
+            pendingBuildIdRef.current = null;
+            setStarting(false);
+            setShowBranchPicker(false);
+            setShowTargetPicker(false);
+            addToast('Workspace ready — entering build view', 'success');
+            navigate(`/projects/${projectId}/build`);
+          }
+          return;
+        }
+
+        /* ── contract_progress (background tracking) ── */
         if (data.type !== 'contract_progress') return;
         const p = data.payload;
         if (p.project_id !== projectId) return;
@@ -154,7 +172,7 @@ function ProjectDetail() {
           setBgGenActive(false);
         }
       },
-      [projectId],
+      [projectId, addToast, navigate],
     ),
   );
 
@@ -189,7 +207,7 @@ function ProjectDetail() {
 
   const handleBranchConfirm = async (choice: BranchChoice) => {
     setSelectedBranch(choice.branch);
-    setShowBranchPicker(false);
+    /* Keep BranchPicker open — it shows the sync spinner while starting=true */
     /* If a repo is already connected, build straight into it */
     if (project?.repo_id && project?.repo_full_name) {
       await handleTargetConfirm({
@@ -198,7 +216,8 @@ function ProjectDetail() {
       }, choice.branch);
       return;
     }
-    /* No repo connected — show target picker modal */
+    /* No repo connected — close picker, show target picker modal */
+    setShowBranchPicker(false);
     setShowTargetPicker(true);
   };
 
@@ -214,9 +233,30 @@ function ProjectDetail() {
         body: JSON.stringify({ ...target, branch: branch ?? selectedBranch }),
       });
       if (res.ok) {
-        setShowTargetPicker(false);
-        addToast('Build started', 'success');
-        navigate(`/projects/${projectId}/build`);
+        const build = await res.json().catch(() => null);
+        if (build?.id) {
+          // Don't navigate yet — wait for workspace_ready WS event.
+          // Keep starting=true so the BranchPicker shows the sync spinner.
+          pendingBuildIdRef.current = build.id;
+          addToast('Build queued — syncing workspace…', 'success');
+          // Safety timeout: navigate after 30s even if WS event is lost
+          setTimeout(() => {
+            if (pendingBuildIdRef.current === build.id) {
+              pendingBuildIdRef.current = null;
+              setStarting(false);
+              setShowBranchPicker(false);
+              setShowTargetPicker(false);
+              navigate(`/projects/${projectId}/build`);
+            }
+          }, 30_000);
+          return; // skip finally's setStarting(false)
+        } else {
+          // Fallback: navigate immediately if we can't parse the build ID
+          setShowTargetPicker(false);
+          setShowBranchPicker(false);
+          addToast('Build started', 'success');
+          navigate(`/projects/${projectId}/build`);
+        }
       } else {
         const data = await res.json().catch(() => ({ detail: 'Failed to start build' }));
         addToast(data.detail || 'Failed to start build');
