@@ -498,6 +498,20 @@ function BuildProgress() {
               return next;
             });
 
+            /* Also update overview phases */
+            setOverviewPhases((prev) =>
+              prev.map((p) => ({
+                ...p,
+                status: p.number === phaseNum ? 'passed' as const
+                  : p.number === phaseNum + 1 && p.status === 'pending' ? 'active' as const
+                  : p.status,
+              })),
+            );
+
+            /* Reset manifest for next phase */
+            setManifestFiles([]);
+            setVerification(null);
+
             setBuild((prev) => prev ? { ...prev, phase: phase } : prev);
             phaseStartRef.current = Date.now();
             break;
@@ -700,7 +714,7 @@ function BuildProgress() {
               setPlanTasks(tasks);
               addActivity(`Phase plan${phase ? ` (${phase})` : ''}: ${tasks.length} tasks`, 'system');
             }
-            // Update overview bar active phase (match by number, not name)
+            // Update overview bar + phase states active phase
             if (phase) {
               const planPhaseNum = parsePhaseNum(phase);
               setCurrentPhaseName(phase);
@@ -710,6 +724,18 @@ function BuildProgress() {
                   status: p.number === planPhaseNum ? 'active' : p.status === 'active' ? 'pending' : p.status,
                 })),
               );
+              /* Also sync the left-column phase states */
+              setPhaseStates((prev) => {
+                const next = new Map(prev);
+                for (const [num, ps] of next) {
+                  if (num === planPhaseNum && ps.status !== 'pass') {
+                    next.set(num, { ...ps, status: 'active' });
+                  } else if (ps.status === 'active' && num !== planPhaseNum) {
+                    next.set(num, { ...ps, status: 'pending' });
+                  }
+                }
+                return next;
+              });
             }
             break;
           }
@@ -1204,7 +1230,7 @@ function BuildProgress() {
           </div>
 
           {/* ======== Build Plan Panel ======== */}
-          {planTasks.length > 0 && (
+          {planTasks.length > 0 && manifestFiles.length === 0 && (
             <div style={{ ...cardStyle, padding: '12px 16px' }}>
               <div
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: planExpanded ? '10px' : 0 }}
