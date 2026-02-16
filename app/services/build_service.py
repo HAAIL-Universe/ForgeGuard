@@ -249,6 +249,10 @@ _pause_events: dict[str, asyncio.Event] = {}
 _resume_actions: dict[str, str] = {}           # "retry" | "skip" | "abort" | "edit"
 _interjection_queues: dict[str, asyncio.Queue] = {}
 
+# Slash-command signals for plan-execute loop
+_cancel_flags: set[str] = set()   # build IDs that should cancel ASAP
+_pause_flags: set[str] = set()    # build IDs that should pause after current file
+
 # Cost-per-token estimates (USD) keyed by model prefix -- updated as pricing changes
 _MODEL_PRICING: dict[str, tuple[Decimal, Decimal]] = {
     # (input $/token, output $/token)
@@ -458,6 +462,10 @@ async def cancel_build(project_id: UUID, user_id: UUID) -> dict:
 
     build_id = latest["id"]
 
+    # Set cancel flag for plan-execute loop to pick up
+    _cancel_flags.add(str(build_id))
+    _pause_flags.discard(str(build_id))
+
     # If paused, signal the pause event to unblock the wait
     event = _pause_events.get(str(build_id))
     if event:
@@ -545,22 +553,60 @@ async def interject_build(
     user_id: UUID,
     message: str,
 ) -> dict:
-    """Inject a user message into an active build.
+    """Inject a user message or slash command into an active build.
 
-    The message will be prepended to the next builder turn as a
-    [User interjection] block.
+    Slash commands:
+        /stop   — cancel the current build immediately
+        /pause  — pause after the current file finishes
+        /start  — resume a paused build (or start a new one)
 
-    Args:
-        project_id: The project whose build to interject.
-        user_id: The authenticated user (ownership check).
-        message: The interjection text.
-
-    Returns:
-        Acknowledgement dict.
-
-    Raises:
-        ValueError: If project not found, not owned, or no active build.
+    Regular messages are queued as interjections.
     """
+    stripped = message.strip().lower()
+
+    # --- /stop -------------------------------------------------------
+    if stripped == "/stop":
+        result = await cancel_build(project_id, user_id)
+        return {"status": "stopped", "build_id": str(result["id"]), "message": "Build stopped via /stop"}
+
+    # --- /start ------------------------------------------------------
+    if stripped == "/start":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if latest and latest["status"] == "paused":
+            result = await resume_build(project_id, user_id, action="retry")
+            return {"status": "resumed", "build_id": str(result["id"]), "message": "Build resumed via /start"}
+        # If running, /start is a no-op
+        if latest and latest["status"] == "running":
+            return {"status": "already_running", "build_id": str(latest["id"]), "message": "Build is already running"}
+        # Otherwise start a new build
+        from app.services.build_service import start_build
+        result = await start_build(project_id, user_id)
+        return {"status": "started", "build_id": str(result["id"]), "message": "Build started via /start"}
+
+    # --- /pause ------------------------------------------------------
+    if stripped == "/pause":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest or latest["status"] != "running":
+            raise ValueError("No running build to pause")
+        build_id = latest["id"]
+        _pause_flags.add(str(build_id))
+        await build_repo.append_build_log(
+            build_id, "Pause requested via /pause — will pause after current file",
+            source="user", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": "Pause requested — will pause after current file",
+            "source": "user", "level": "info",
+        })
+        return {"status": "pause_requested", "build_id": str(build_id), "message": "Pause requested via /pause"}
+
+    # --- Regular interjection ----------------------------------------
     project = await project_repo.get_project_by_id(project_id)
     if not project or str(project["user_id"]) != str(user_id):
         raise ValueError("Project not found")
@@ -2397,6 +2443,9 @@ async def _run_inline_audit(
 
 async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     """Mark a build as failed and broadcast the event."""
+    bid = str(build_id)
+    _cancel_flags.discard(bid)
+    _pause_flags.discard(bid)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail
@@ -3615,6 +3664,41 @@ async def _run_build_plan_execute(
         for i, file_entry in enumerate(manifest):
             file_path = file_entry["path"]
 
+            # --- Check cancel / pause flags before each file ---
+            bid = str(build_id)
+            if bid in _cancel_flags:
+                _cancel_flags.discard(bid)
+                await _fail_build(build_id, user_id, "Build stopped via /stop")
+                return
+            if bid in _pause_flags:
+                _pause_flags.discard(bid)
+                await _pause_build(
+                    build_id, user_id, phase_name,
+                    0, "Build paused via /pause",
+                )
+                event = _pause_events.get(bid)
+                if event:
+                    try:
+                        await asyncio.wait_for(
+                            event.wait(),
+                            timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                        )
+                    except asyncio.TimeoutError:
+                        await _fail_build(
+                            build_id, user_id,
+                            "RISK_EXCEEDS_SCOPE: pause timed out",
+                        )
+                        return
+                action = _resume_actions.pop(bid, "retry")
+                _pause_events.pop(bid, None)
+                await build_repo.resume_build(build_id)
+                await _broadcast_build_event(user_id, build_id, "build_resumed", {
+                    "action": action,
+                })
+                if action == "abort":
+                    await _fail_build(build_id, user_id, "Build aborted after /pause")
+                    return
+
             # Resolve context files from disk
             context = {}
             for ctx_path in file_entry.get("context_files", []):
@@ -3871,7 +3955,11 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 logger.warning("Git push failed for %s: %s", phase_name, exc)
 
-    # Build complete
+    # Build complete — clean up signal flags
+    bid = str(build_id)
+    _cancel_flags.discard(bid)
+    _pause_flags.discard(bid)
+
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "completed", completed_at=now,

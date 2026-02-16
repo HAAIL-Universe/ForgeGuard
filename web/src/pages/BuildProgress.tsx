@@ -932,22 +932,50 @@ function BuildProgress() {
 
   const handleInterject = async () => {
     if (!interjectionText.trim()) return;
+    const trimmed = interjectionText.trim().toLowerCase();
     setSendingInterject(true);
+
+    // Slash commands route through the same interject endpoint (backend handles routing)
+    const isSlashCmd = ['/stop', '/pause', '/start'].includes(trimmed);
+
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: interjectionText }),
+        body: JSON.stringify({ message: interjectionText.trim() }),
       });
       if (res.ok) {
-        addToast('Interjection sent', 'success');
+        const data = await res.json();
+        if (isSlashCmd) {
+          const msgs: Record<string, string> = {
+            stopped: 'Build stopped',
+            pause_requested: 'Pause requested \u2014 will pause after current file',
+            resumed: 'Build resumed',
+            started: 'Build started',
+            already_running: 'Build is already running',
+          };
+          addToast(msgs[data.status] || data.message || 'Command sent', 'success');
+          // Refresh build state after /stop or /start
+          if (['stopped', 'started', 'resumed'].includes(data.status)) {
+            const bres = await fetch(`${API_BASE}/projects/${projectId}/build/status`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (bres.ok) {
+              const updated = await bres.json();
+              setBuild(updated);
+              if (data.status === 'stopped') setNoBuild(false);
+            }
+          }
+        } else {
+          addToast('Interjection sent', 'success');
+        }
         setInterjectionText('');
       } else {
         const data = await res.json().catch(() => ({ detail: 'Failed to send' }));
-        addToast(data.detail || 'Failed to send interjection');
+        addToast(data.detail || 'Failed to send');
       }
     } catch {
-      addToast('Network error sending interjection');
+      addToast('Network error');
     } finally {
       setSendingInterject(false);
     }
@@ -1466,18 +1494,18 @@ function BuildProgress() {
             </div>
 
             {/* -- Interjection Input -- */}
-            {isActive && (
+            {(isActive || build?.status === 'completed' || build?.status === 'failed' || build?.status === 'cancelled') && (
               <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }} data-testid="interjection-bar">
                 <input
                   type="text"
-                  placeholder="Send feedback to the builder..."
+                  placeholder={isActive ? 'Send feedback or /stop /pause /start...' : '/start to begin a new build...'}
                   value={interjectionText}
                   onChange={(e) => setInterjectionText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleInterject(); }}
                   style={{
                     flex: 1,
                     background: '#0F172A',
-                    border: '1px solid #334155',
+                    border: `1px solid ${interjectionText.trim().startsWith('/') ? '#F59E0B' : '#334155'}`,
                     borderRadius: '6px',
                     padding: '8px 12px',
                     color: '#F8FAFC',
@@ -1489,7 +1517,10 @@ function BuildProgress() {
                   onClick={handleInterject}
                   disabled={sendingInterject || !interjectionText.trim()}
                   style={{
-                    background: '#2563EB',
+                    background: interjectionText.trim().toLowerCase() === '/stop' ? '#DC2626'
+                      : interjectionText.trim().toLowerCase() === '/pause' ? '#F59E0B'
+                      : interjectionText.trim().toLowerCase() === '/start' ? '#16A34A'
+                      : '#2563EB',
                     color: '#fff',
                     border: 'none',
                     borderRadius: '6px',
@@ -1500,7 +1531,11 @@ function BuildProgress() {
                     opacity: sendingInterject || !interjectionText.trim() ? 0.5 : 1,
                   }}
                 >
-                  {sendingInterject ? 'Sending...' : 'Interject'}
+                  {sendingInterject ? 'Sending...'
+                    : interjectionText.trim().toLowerCase() === '/stop' ? '\u23F9 Stop'
+                    : interjectionText.trim().toLowerCase() === '/pause' ? '\u23F8 Pause'
+                    : interjectionText.trim().toLowerCase() === '/start' ? '\u25B6 Start'
+                    : 'Interject'}
                 </button>
               </div>
             )}
