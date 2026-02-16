@@ -109,6 +109,24 @@ interface PauseInfo {
   options: string[];
 }
 
+interface ManifestFile {
+  path: string;
+  purpose: string;
+  status: 'pending' | 'generating' | 'done' | 'error';
+  language: string;
+  estimated_lines: number;
+  size_bytes?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+}
+
+interface VerificationResult {
+  syntax_errors: number;
+  tests_passed: number;
+  tests_failed: number;
+  fixes_applied: number;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Styles                                                            */
 /* ------------------------------------------------------------------ */
@@ -223,6 +241,9 @@ function BuildProgress() {
   const [logSearch, setLogSearch] = useState('');
   const [devConsoleOpen, setDevConsoleOpen] = useState(false);
   const [devSteps, setDevSteps] = useState<DevStep[]>(createInitialSteps);
+  const [manifestFiles, setManifestFiles] = useState<ManifestFile[]>([]);
+  const [manifestExpanded, setManifestExpanded] = useState(true);
+  const [verification, setVerification] = useState<VerificationResult | null>(null);
   const feedEndRef = useRef<HTMLDivElement>(null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
@@ -594,6 +615,71 @@ function BuildProgress() {
               });
               addActivity(`File created: ${filePath} (${sizeBytes} bytes)`, 'info');
             }
+            break;
+          }
+
+          /* --- Plan-Execute Architecture Events (Phase 21) --- */
+
+          case 'file_manifest': {
+            const files = (payload.files ?? []) as ManifestFile[];
+            const phase = (payload.phase ?? '') as string;
+            setManifestFiles(files.map((f) => ({ ...f, status: 'pending' })));
+            addActivity(`File manifest for ${phase}: ${files.length} files`, 'system');
+            break;
+          }
+
+          case 'file_generating': {
+            const genPath = (payload.path ?? '') as string;
+            if (genPath) {
+              setManifestFiles((prev) =>
+                prev.map((f) => (f.path === genPath ? { ...f, status: 'generating' as const } : f)),
+              );
+              addActivity(`Generating: ${genPath}`, 'info');
+            }
+            break;
+          }
+
+          case 'file_generated': {
+            const genPath = (payload.path ?? '') as string;
+            const sizeBytes = (payload.size_bytes ?? 0) as number;
+            const language = (payload.language ?? '') as string;
+            const tokensIn = (payload.tokens_in ?? 0) as number;
+            const tokensOut = (payload.tokens_out ?? 0) as number;
+            if (genPath) {
+              setManifestFiles((prev) =>
+                prev.map((f) =>
+                  f.path === genPath
+                    ? { ...f, status: 'done' as const, size_bytes: sizeBytes, tokens_in: tokensIn, tokens_out: tokensOut }
+                    : f,
+                ),
+              );
+              setBuildFiles((prev) => {
+                if (prev.some((f) => f.path === genPath)) return prev;
+                return [...prev, { path: genPath, size_bytes: sizeBytes, language, created_at: new Date().toISOString() }];
+              });
+              setTotalTokens((prev) => ({
+                input: prev.input + tokensIn,
+                output: prev.output + tokensOut,
+              }));
+              addActivity(`Generated: ${genPath} (${sizeBytes} bytes, ${tokensIn + tokensOut} tokens)`, 'info');
+            }
+            break;
+          }
+
+          case 'verification_result': {
+            const result: VerificationResult = {
+              syntax_errors: (payload.syntax_errors ?? 0) as number,
+              tests_passed: (payload.tests_passed ?? 0) as number,
+              tests_failed: (payload.tests_failed ?? 0) as number,
+              fixes_applied: (payload.fixes_applied ?? 0) as number,
+            };
+            setVerification(result);
+            const parts = [];
+            if (result.syntax_errors) parts.push(`${result.syntax_errors} syntax errors`);
+            if (result.tests_passed) parts.push(`${result.tests_passed} tests passed`);
+            if (result.tests_failed) parts.push(`${result.tests_failed} tests failed`);
+            if (result.fixes_applied) parts.push(`${result.fixes_applied} fixes applied`);
+            addActivity(`Verification: ${parts.join(', ') || 'clean'}`, result.syntax_errors || result.tests_failed ? 'warn' : 'system');
             break;
           }
 
@@ -1152,6 +1238,65 @@ function BuildProgress() {
                       </span>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ======== Manifest Panel (Phase 21 — plan-execute) ======== */}
+          {manifestFiles.length > 0 && (
+            <div style={{ ...cardStyle, padding: '12px 16px' }}>
+              <div
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: manifestExpanded ? '10px' : 0 }}
+                onClick={() => setManifestExpanded(!manifestExpanded)}
+              >
+                <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
+                  File Manifest ({manifestFiles.filter((f) => f.status === 'done').length}/{manifestFiles.length})
+                </h3>
+                <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: manifestExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+              </div>
+              {manifestExpanded && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', maxHeight: '280px', overflowY: 'auto' }} data-testid="manifest-panel">
+                  {manifestFiles.map((f) => (
+                    <div
+                      key={f.path}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '5px 8px',
+                        borderRadius: '4px',
+                        background: f.status === 'done' ? '#0D2818' : f.status === 'generating' ? '#1E3A5F' : '#0F172A',
+                        fontSize: '0.72rem',
+                        transition: 'background 0.3s',
+                      }}
+                    >
+                      <span style={{
+                        color: f.status === 'done' ? '#22C55E' : f.status === 'generating' ? '#3B82F6' : f.status === 'error' ? '#EF4444' : '#475569',
+                        flexShrink: 0,
+                        animation: f.status === 'generating' ? 'pulse 1.5s infinite' : 'none',
+                      }}>
+                        {f.status === 'done' ? '✓' : f.status === 'generating' ? '⟳' : f.status === 'error' ? '✗' : '○'}
+                      </span>
+                      <span style={{ color: f.status === 'done' ? '#22C55E' : '#94A3B8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {f.path}
+                      </span>
+                      <span style={{ color: '#475569', flexShrink: 0, fontSize: '0.62rem' }}>
+                        {f.language && <span style={{ marginRight: '4px' }}>{f.language}</span>}
+                        {f.status === 'done' && f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)}k` : `~${f.estimated_lines}L`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {verification && (
+                <div style={{ marginTop: '8px', padding: '8px 10px', background: '#0F172A', borderRadius: '4px', fontSize: '0.72rem' }}>
+                  <span style={{ color: '#64748B', marginRight: '8px' }}>Verification:</span>
+                  {verification.syntax_errors > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{verification.syntax_errors} syntax errors</span>}
+                  {verification.tests_passed > 0 && <span style={{ color: '#22C55E', marginRight: '8px' }}>{verification.tests_passed} tests passed</span>}
+                  {verification.tests_failed > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{verification.tests_failed} tests failed</span>}
+                  {verification.fixes_applied > 0 && <span style={{ color: '#F59E0B', marginRight: '8px' }}>{verification.fixes_applied} fixes applied</span>}
+                  {!verification.syntax_errors && !verification.tests_failed && <span style={{ color: '#22C55E' }}>Clean</span>}
                 </div>
               )}
             </div>

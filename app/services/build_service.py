@@ -411,6 +411,7 @@ async def start_build(
         target_ref=target_ref,
         working_dir=working_dir,
         branch=branch,
+        build_mode=settings.BUILD_MODE,
     )
 
     # Update project status
@@ -642,11 +643,65 @@ async def get_build_logs(
 
 
 # ---------------------------------------------------------------------------
-# Background orchestration
+# Build mode dispatcher
 # ---------------------------------------------------------------------------
 
 
 async def _run_build(
+    build_id: UUID,
+    project_id: UUID,
+    user_id: UUID,
+    contracts: list[dict],
+    api_key: str,
+    audit_llm_enabled: bool = True,
+    *,
+    target_type: str | None = None,
+    target_ref: str | None = None,
+    working_dir: str | None = None,
+    access_token: str = "",
+    branch: str = "main",
+    api_key_2: str = "",
+) -> None:
+    """Dispatch to the appropriate build mode.
+
+    If BUILD_MODE is ``plan_execute``, uses the plan-then-execute architecture
+    (Phase 21): one planning call produces a manifest, then independent per-file
+    calls generate each file.
+
+    If BUILD_MODE is ``conversation``, falls back to the original conversation
+    loop.
+    """
+    mode = settings.BUILD_MODE
+    if mode == "plan_execute" and working_dir:
+        await _run_build_plan_execute(
+            build_id, project_id, user_id, contracts, api_key,
+            audit_llm_enabled,
+            target_type=target_type,
+            target_ref=target_ref,
+            working_dir=working_dir,
+            access_token=access_token,
+            branch=branch,
+            api_key_2=api_key_2,
+        )
+    else:
+        await _run_build_conversation(
+            build_id, project_id, user_id, contracts, api_key,
+            audit_llm_enabled,
+            target_type=target_type,
+            target_ref=target_ref,
+            working_dir=working_dir,
+            access_token=access_token,
+            branch=branch,
+            api_key_2=api_key_2,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Background orchestration (conversation mode)
+# ---------------------------------------------------------------------------
+
+
+async def _run_build_conversation(
     build_id: UUID,
     project_id: UUID,
     user_id: UUID,
@@ -2637,3 +2692,1071 @@ def _generate_deploy_instructions(
     lines.append("| `APP_URL` | No | Backend URL |")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Plan-Then-Execute Architecture (Phase 21)
+# ---------------------------------------------------------------------------
+
+# Contract relevance mapping — which contracts are useful for which file types
+_CONTRACT_RELEVANCE: dict[str, list[str]] = {
+    "app/": ["blueprint", "schema", "stack", "boundaries", "builder_contract"],
+    "tests/": ["blueprint", "schema", "stack"],
+    "web/src/components/": ["ui", "blueprint", "stack"],
+    "web/src/pages/": ["ui", "blueprint", "stack", "schema"],
+    "db/": ["schema"],
+    "config": ["stack", "boundaries"],
+    "doc": ["blueprint", "manifesto"],
+}
+
+# Planner build prompt template path
+_PLANNER_BUILD_PROMPT_PATH = (
+    Path(__file__).resolve().parent.parent / "templates" / "contracts" / "planner_build_prompt.md"
+)
+
+
+def _select_contracts_for_file(
+    file_path: str,
+    contracts: list[dict],
+) -> list[dict]:
+    """Select the subset of contracts relevant to a given file type.
+
+    Uses _CONTRACT_RELEVANCE mapping to avoid sending all contracts
+    when generating each file (saves tokens, improves cache hit rate).
+    """
+    relevant_types: set[str] = set()
+
+    # Match by path prefix
+    for prefix, types in _CONTRACT_RELEVANCE.items():
+        if file_path.startswith(prefix):
+            relevant_types.update(types)
+            break
+
+    # Catch-all: blueprint + stack
+    if not relevant_types:
+        relevant_types = {"blueprint", "stack"}
+
+    # Test files also get the same contracts as their target
+    if file_path.startswith("tests/"):
+        relevant_types.update(["blueprint", "schema", "stack", "boundaries"])
+
+    # SQL migrations only need schema
+    if file_path.endswith(".sql"):
+        relevant_types = {"schema"}
+
+    return [c for c in contracts if c["contract_type"] in relevant_types]
+
+
+def _calculate_context_budget(
+    file_entry: dict,
+    system_prompt_tokens: int,
+    contract_tokens: int,
+    available_context_files: dict[str, str],
+) -> dict:
+    """Calculate how much context to send per file generation call.
+
+    Returns dict with:
+        files_to_include: list of paths to include as context
+        max_tokens: output token limit for this file
+        truncated: list of paths that were truncated
+    """
+    MODEL_CONTEXT_WINDOW = 200_000
+    SAFETY_MARGIN = 5_000
+
+    # Output budget from estimated lines
+    estimated_lines = file_entry.get("estimated_lines", 100)
+    max_tokens = max(4096, min(estimated_lines * 15, 16384))
+
+    # Available for context files
+    available_input = (
+        MODEL_CONTEXT_WINDOW - max_tokens - SAFETY_MARGIN
+        - system_prompt_tokens - contract_tokens
+    )
+
+    files_to_include: list[str] = []
+    truncated: list[str] = []
+    total_context_tokens = 0
+
+    # Prioritize direct dependencies first, then other context files
+    context_paths = file_entry.get("context_files", [])
+    depends_on = file_entry.get("depends_on", [])
+    ordered = list(depends_on) + [p for p in context_paths if p not in depends_on]
+
+    for path in ordered:
+        if path not in available_context_files:
+            continue
+        content = available_context_files[path]
+        # Rough token estimate: ~4 chars per token
+        estimated_tokens = len(content) // 4
+        if total_context_tokens + estimated_tokens > available_input:
+            # Truncate this file to fit
+            remaining_chars = (available_input - total_context_tokens) * 4
+            if remaining_chars > 500:
+                available_context_files[path] = (
+                    content[:remaining_chars // 2]
+                    + "\n\n[... truncated ...]\n\n"
+                    + content[-(remaining_chars // 2):]
+                )
+                truncated.append(path)
+                files_to_include.append(path)
+            break
+        files_to_include.append(path)
+        total_context_tokens += estimated_tokens
+
+    return {
+        "files_to_include": files_to_include,
+        "max_tokens": max_tokens,
+        "truncated": truncated,
+    }
+
+
+def _topological_sort(files: list[dict]) -> list[dict]:
+    """Sort manifest files by dependency order (topological sort).
+
+    Falls back to linear order if circular dependencies detected.
+    """
+    path_to_entry = {f["path"]: f for f in files}
+    visited: set[str] = set()
+    temp_mark: set[str] = set()
+    result: list[dict] = []
+
+    def visit(path: str) -> bool:
+        if path in temp_mark:
+            return False  # Circular dependency
+        if path in visited:
+            return True
+        temp_mark.add(path)
+        entry = path_to_entry.get(path)
+        if entry:
+            for dep in entry.get("depends_on", []):
+                if dep in path_to_entry:
+                    if not visit(dep):
+                        return False
+        temp_mark.discard(path)
+        visited.add(path)
+        if entry:
+            result.append(entry)
+        return True
+
+    for f in files:
+        if f["path"] not in visited:
+            if not visit(f["path"]):
+                # Circular dependency detected — fall back to linear order
+                logger.warning("Circular dependency in manifest — using linear order")
+                return list(files)
+
+    return result
+
+
+async def _generate_file_manifest(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    contracts: list[dict],
+    current_phase: dict,
+    workspace_info: str,
+) -> list[dict] | None:
+    """Generate a structured file manifest for a phase via Sonnet planner.
+
+    Makes one API call to the planner model. Returns a list of file entries
+    sorted in dependency order, or None if the planner fails.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    # Load planner system prompt
+    if not _PLANNER_BUILD_PROMPT_PATH.exists():
+        logger.warning("planner_build_prompt.md not found — cannot generate manifest")
+        return None
+    system_prompt = _PLANNER_BUILD_PROMPT_PATH.read_text(encoding="utf-8")
+
+    # Build relevant contracts text (exclude phases — current phase is inline)
+    contract_parts = []
+    for c in contracts:
+        if c["contract_type"] == "phases":
+            continue
+        contract_parts.append(f"## {c['contract_type']}\n{c['content']}\n")
+    contracts_text = "\n---\n".join(contract_parts)
+
+    # Phase deliverables
+    phase_text = (
+        f"## Phase {current_phase['number']} -- {current_phase['name']}\n"
+        f"**Objective:** {current_phase.get('objective', '')}\n\n"
+        f"**Deliverables:**\n"
+    )
+    for d in current_phase.get("deliverables", []):
+        phase_text += f"- {d}\n"
+
+    user_message = (
+        f"## Project Contracts\n\n{contracts_text}\n\n"
+        f"## Current Phase\n\n{phase_text}\n\n"
+        f"## Existing Workspace\n\n{workspace_info}\n\n"
+        f"Produce the JSON file manifest for this phase."
+    )
+
+    await build_repo.append_build_log(
+        build_id,
+        f"Generating file manifest for Phase {current_phase['number']}",
+        source="planner", level="info",
+    )
+
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=settings.LLM_PLANNER_MODEL,
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=4096,
+            provider="anthropic",
+        )
+
+        text = result["text"] if isinstance(result, dict) else result
+        usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+        # Record planner cost
+        input_t = usage.get("input_tokens", 0)
+        output_t = usage.get("output_tokens", 0)
+        model = settings.LLM_PLANNER_MODEL
+        input_rate, output_rate = _get_token_rates(model)
+        cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+        await build_repo.record_build_cost(
+            build_id, f"Phase {current_phase['number']} (manifest)", input_t, output_t, model, cost,
+        )
+
+        # Strip markdown fences if present
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            first_nl = cleaned.find("\n")
+            if first_nl >= 0:
+                cleaned = cleaned[first_nl + 1:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+        cleaned = cleaned.strip()
+
+        # Parse JSON
+        manifest = json.loads(cleaned)
+        files = manifest.get("files", [])
+
+        # Validate
+        valid_files = []
+        seen_paths: set[str] = set()
+        for f in files:
+            path = f.get("path", "")
+            if not path or ".." in path or path.startswith("/"):
+                logger.warning("Invalid manifest path: %s — skipping", path)
+                continue
+            if path in seen_paths:
+                logger.warning("Duplicate manifest path: %s — skipping", path)
+                continue
+            seen_paths.add(path)
+            valid_files.append({
+                "path": path,
+                "action": f.get("action", "create"),
+                "purpose": f.get("purpose", ""),
+                "depends_on": f.get("depends_on", []),
+                "context_files": f.get("context_files", []),
+                "estimated_lines": f.get("estimated_lines", 100),
+                "language": f.get("language", "python"),
+                "status": "pending",
+            })
+
+        # Topological sort
+        sorted_files = _topological_sort(valid_files)
+
+        await build_repo.append_build_log(
+            build_id,
+            f"File manifest generated: {len(sorted_files)} files",
+            source="planner", level="info",
+        )
+
+        # Broadcast manifest
+        await _broadcast_build_event(user_id, build_id, "file_manifest", {
+            "phase": f"Phase {current_phase['number']}",
+            "files": [
+                {
+                    "path": f["path"],
+                    "purpose": f["purpose"],
+                    "status": f["status"],
+                    "language": f["language"],
+                    "estimated_lines": f["estimated_lines"],
+                }
+                for f in sorted_files
+            ],
+        })
+
+        return sorted_files
+
+    except json.JSONDecodeError as exc:
+        logger.warning("Manifest JSON parse failed: %s — retrying once", exc)
+        # Retry once — sometimes the planner wraps in extra text
+        try:
+            # Try to extract JSON from the response
+            json_match = re.search(r"\{[\s\S]*\}", text)
+            if json_match:
+                manifest = json.loads(json_match.group())
+                files = manifest.get("files", [])
+                sorted_files = _topological_sort([
+                    {
+                        "path": f.get("path", ""),
+                        "action": f.get("action", "create"),
+                        "purpose": f.get("purpose", ""),
+                        "depends_on": f.get("depends_on", []),
+                        "context_files": f.get("context_files", []),
+                        "estimated_lines": f.get("estimated_lines", 100),
+                        "language": f.get("language", "python"),
+                        "status": "pending",
+                    }
+                    for f in files
+                    if f.get("path") and ".." not in f.get("path", "") and not f.get("path", "").startswith("/")
+                ])
+                return sorted_files if sorted_files else None
+        except Exception:
+            pass
+        return None
+    except Exception as exc:
+        logger.error("File manifest generation failed: %s", exc)
+        return None
+
+
+async def _generate_single_file(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    file_entry: dict,
+    contracts: list[dict],
+    context_files: dict[str, str],
+    phase_deliverables: str,
+    working_dir: str,
+    error_context: str = "",
+) -> str:
+    """Generate a single file via an independent API call.
+
+    Makes ONE call to the builder model. Returns the file content.
+    No conversation history — each file is a fresh call.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    file_path = file_entry["path"]
+    purpose = file_entry.get("purpose", "")
+    language = file_entry.get("language", "python")
+    estimated_lines = file_entry.get("estimated_lines", 100)
+
+    # Select relevant contracts
+    relevant_contracts = _select_contracts_for_file(file_path, contracts)
+    contracts_text = ""
+    for c in relevant_contracts:
+        contracts_text += f"\n## {c['contract_type']}\n{c['content']}\n"
+
+    # System prompt — concise, cacheable
+    system_prompt = (
+        "You are writing a single file for a software project built under the "
+        "Forge governance framework. Output ONLY the raw file content. "
+        "No explanation, no markdown fences, no preamble, no postamble. "
+        "Just the file content, ready to save to disk.\n\n"
+        "Rules:\n"
+        "- Follow the project contracts exactly\n"
+        "- Respect layer boundaries (routers, services, repos, clients, audit)\n"
+        "- Use the context files to understand imports and interfaces\n"
+        "- Write production-quality code with proper error handling\n"
+        "- Include docstrings and type hints\n"
+    )
+
+    # Build user message with context
+    parts = [f"## Project Contracts (reference)\n{contracts_text}\n"]
+    parts.append(f"## Current Phase Deliverables\n{phase_deliverables}\n")
+    parts.append(
+        f"\n## File to Write\n"
+        f"Path: {file_path}\n"
+        f"Purpose: {purpose}\n"
+        f"Language: {language}\n"
+    )
+
+    if context_files:
+        parts.append("\n## Context Files (already written -- reference only)\n")
+        for ctx_path, ctx_content in context_files.items():
+            parts.append(f"\n### {ctx_path}\n```\n{ctx_content}\n```\n")
+
+    if error_context:
+        parts.append(
+            f"\n## Error Context (fix required)\n{error_context}\n"
+        )
+
+    parts.append(
+        f"\n## Instructions\n"
+        f"Write the complete content of `{file_path}`. "
+        f"Output ONLY the raw file content.\n"
+        f"Do not wrap in markdown code fences. "
+        f"Do not add explanation before or after.\n"
+    )
+
+    user_message = "\n".join(parts)
+
+    # Calculate max_tokens
+    max_tokens = max(4096, min(estimated_lines * 15, 16384))
+
+    await _broadcast_build_event(user_id, build_id, "file_generating", {
+        "path": file_path,
+    })
+
+    result = await llm_chat(
+        api_key=api_key,
+        model=settings.LLM_BUILDER_MODEL,
+        system_prompt=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+        max_tokens=max_tokens,
+        provider="anthropic",
+    )
+
+    content = result["text"] if isinstance(result, dict) else result
+    usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+    # Strip markdown fences if model wrapped output
+    content = re.sub(r"^```\w*\n", "", content)
+    content = re.sub(r"\n```\s*$", "", content)
+
+    # Ensure trailing newline
+    if content and not content.endswith("\n"):
+        content += "\n"
+
+    # Handle empty response — retry once
+    if not content.strip():
+        logger.warning("Empty response for %s — retrying once", file_path)
+        result2 = await llm_chat(
+            api_key=api_key,
+            model=settings.LLM_BUILDER_MODEL,
+            system_prompt=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": user_message + "\nPlease write the complete file content.",
+            }],
+            max_tokens=max_tokens,
+            provider="anthropic",
+        )
+        content = result2["text"] if isinstance(result2, dict) else result2
+        content = re.sub(r"^```\w*\n", "", content)
+        content = re.sub(r"\n```\s*$", "", content)
+        if content and not content.endswith("\n"):
+            content += "\n"
+        usage2 = result2.get("usage", {}) if isinstance(result2, dict) else {}
+        # Combine usage
+        for k in ("input_tokens", "output_tokens"):
+            usage[k] = usage.get(k, 0) + usage2.get(k, 0)
+
+    # Record cost
+    input_t = usage.get("input_tokens", 0)
+    output_t = usage.get("output_tokens", 0)
+    model = settings.LLM_BUILDER_MODEL
+    input_rate, output_rate = _get_token_rates(model)
+    cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+    await build_repo.record_build_cost(
+        build_id, f"file:{file_path}", input_t, output_t, model, cost,
+    )
+
+    # Write to disk
+    from app.services.tool_executor import _exec_write_file
+    write_result = _exec_write_file({"path": file_path, "content": content}, working_dir)
+
+    size_bytes = len(content.encode("utf-8"))
+    lang = _detect_language(file_path)
+
+    # Log and broadcast
+    await build_repo.append_build_log(
+        build_id,
+        json.dumps({"path": file_path, "size_bytes": size_bytes, "language": lang}),
+        source="file", level="info",
+    )
+    await _broadcast_build_event(user_id, build_id, "file_generated", {
+        "path": file_path,
+        "size_bytes": size_bytes,
+        "language": lang,
+        "tokens_in": input_t,
+        "tokens_out": output_t,
+        "duration_ms": 0,  # Not tracked per-call currently
+    })
+
+    return content
+
+
+async def _verify_phase_output(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    manifest: list[dict],
+    working_dir: str,
+    contracts: list[dict],
+) -> dict:
+    """Run syntax and test verification on generated files.
+
+    Returns dict with syntax_errors, tests_passed, tests_failed, fixes_applied.
+    """
+    from app.services.tool_executor import _exec_check_syntax, _exec_run_tests
+
+    syntax_errors = 0
+    fixes_applied = 0
+    tests_passed = 0
+    tests_failed = 0
+
+    # Check syntax on all Python files
+    py_files = [f for f in manifest if f["language"] == "python" and f["path"].endswith(".py")]
+    for f in py_files:
+        result = await _exec_check_syntax({"file_path": f["path"]}, working_dir)
+        if "No syntax errors" in result:
+            continue
+        if "error" in result.lower() or "SyntaxError" in result:
+            syntax_errors += 1
+            # Attempt fix
+            for attempt in range(2):
+                try:
+                    fix_content = await _generate_single_file(
+                        build_id, user_id, api_key,
+                        {**f, "purpose": f"Fix syntax errors in {f['path']}"},
+                        contracts,
+                        {f["path"]: Path(working_dir, f["path"]).read_text(encoding="utf-8")},
+                        "",
+                        working_dir,
+                        error_context=f"Syntax error:\n{result}\n\nFix the syntax errors while preserving all functionality.",
+                    )
+                    recheck = await _exec_check_syntax({"file_path": f["path"]}, working_dir)
+                    if "error" not in recheck.lower() and "SyntaxError" not in recheck:
+                        fixes_applied += 1
+                        syntax_errors -= 1
+                        break
+                except Exception as exc:
+                    logger.warning("Syntax fix attempt %d failed for %s: %s", attempt + 1, f["path"], exc)
+
+    # Run tests if test files were generated
+    test_files = [f for f in manifest if f["path"].startswith("tests/")]
+    if test_files:
+        test_paths = " ".join(f["path"] for f in test_files)
+        try:
+            test_result = await _exec_run_tests(
+                {"command": f"pytest {test_paths} -x -q", "timeout": 120}, working_dir,
+            )
+            if "exit_code: 0" in test_result or "passed" in test_result.lower():
+                tests_passed = len(test_files)
+            else:
+                tests_failed = len(test_files)
+                # Try to fix failures
+                for attempt in range(2):
+                    if tests_failed == 0:
+                        break
+                    for tf in test_files:
+                        try:
+                            target_file = tf["path"].replace("tests/test_", "app/").replace(".py", ".py")
+                            context = {}
+                            try:
+                                context[tf["path"]] = Path(working_dir, tf["path"]).read_text(encoding="utf-8")
+                            except Exception:
+                                pass
+                            try:
+                                context[target_file] = Path(working_dir, target_file).read_text(encoding="utf-8")
+                            except Exception:
+                                pass
+
+                            await _generate_single_file(
+                                build_id, user_id, api_key,
+                                {**tf, "purpose": f"Fix failing test {tf['path']}"},
+                                contracts, context, "", working_dir,
+                                error_context=f"Test failure:\n{test_result}\n\nFix the test or implementation so the test passes.",
+                            )
+                        except Exception:
+                            pass
+
+                    # Re-run tests
+                    retest = await _exec_run_tests(
+                        {"command": f"pytest {test_paths} -x -q", "timeout": 120}, working_dir,
+                    )
+                    if "exit_code: 0" in retest or "passed" in retest.lower():
+                        tests_passed = len(test_files)
+                        tests_failed = 0
+                        fixes_applied += 1
+                        break
+        except Exception as exc:
+            logger.warning("Test verification failed: %s", exc)
+
+    result = {
+        "syntax_errors": syntax_errors,
+        "tests_passed": tests_passed,
+        "tests_failed": tests_failed,
+        "fixes_applied": fixes_applied,
+    }
+
+    await _broadcast_build_event(user_id, build_id, "verification_result", result)
+    return result
+
+
+async def _generate_fix_manifest(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    recovery_plan: str,
+    existing_files: dict[str, str],
+    audit_findings: str,
+    contracts: list[dict],
+) -> list[dict] | None:
+    """Generate a fix manifest from a recovery plan.
+
+    Instead of injecting the recovery plan into a conversation, this
+    produces a list of specific files to regenerate or patch.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    system_prompt = (
+        "You are a build repair planner. Given audit findings and a recovery "
+        "plan, produce a JSON manifest of files that need to be created or "
+        "modified to fix the issues.\n\n"
+        "Output ONLY valid JSON matching this schema:\n"
+        '{"fixes": [{"path": "file.py", "action": "modify", '
+        '"reason": "why", "context_files": ["dep.py"], '
+        '"fix_instructions": "what to fix"}]}'
+    )
+
+    existing_listing = "\n".join(f"- {p}" for p in existing_files.keys())
+
+    user_message = (
+        f"## Audit Findings\n{audit_findings}\n\n"
+        f"## Recovery Plan\n{recovery_plan}\n\n"
+        f"## Existing Files\n{existing_listing}\n\n"
+        f"Produce the fix manifest."
+    )
+
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=settings.LLM_PLANNER_MODEL,
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=4096,
+            provider="anthropic",
+        )
+
+        text = result["text"] if isinstance(result, dict) else result
+
+        # Strip fences
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            first_nl = cleaned.find("\n")
+            if first_nl >= 0:
+                cleaned = cleaned[first_nl + 1:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+
+        data = json.loads(cleaned.strip())
+        fixes = data.get("fixes", [])
+
+        return [
+            {
+                "path": f.get("path", ""),
+                "action": f.get("action", "modify"),
+                "purpose": f.get("reason", ""),
+                "depends_on": [],
+                "context_files": f.get("context_files", []),
+                "estimated_lines": 100,
+                "language": _detect_language(f.get("path", "")),
+                "status": "pending",
+                "fix_instructions": f.get("fix_instructions", ""),
+            }
+            for f in fixes
+            if f.get("path")
+        ]
+    except Exception as exc:
+        logger.warning("Fix manifest generation failed: %s", exc)
+        return None
+
+
+async def _run_build_plan_execute(
+    build_id: UUID,
+    project_id: UUID,
+    user_id: UUID,
+    contracts: list[dict],
+    api_key: str,
+    audit_llm_enabled: bool = True,
+    *,
+    target_type: str | None = None,
+    target_ref: str | None = None,
+    working_dir: str | None = None,
+    access_token: str = "",
+    branch: str = "main",
+    api_key_2: str = "",
+    phases: list[dict] | None = None,
+) -> None:
+    """Plan-then-execute build architecture.
+
+    Instead of a single long conversation loop, this:
+    1. Generates a file manifest per phase (Sonnet planner)
+    2. Generates each file independently (Opus, fresh call per file)
+    3. Verifies syntax + tests after all files written
+    4. Runs audit; if fail, generates fix manifest and applies fixes
+    5. Advances to next phase
+
+    No accumulating conversation. Memory is the filesystem.
+    """
+    if not working_dir:
+        await _fail_build(build_id, user_id, "No working directory for plan-execute mode")
+        return
+
+    if not phases:
+        # Parse phases from contracts
+        for c in contracts:
+            if c["contract_type"] == "phases":
+                phases = _parse_phases_contract(c["content"])
+                break
+    if not phases:
+        await _fail_build(build_id, user_id, "No phases contract found")
+        return
+
+    # Emit build overview
+    await _broadcast_build_event(user_id, build_id, "build_overview", {
+        "phases": [
+            {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+            for p in phases
+        ],
+    })
+
+    # Track all files written across all phases
+    all_files_written: dict[str, str] = {}  # path -> content
+    files_written_list: list[dict] = []
+
+    for phase in phases:
+        phase_num = phase["number"]
+        phase_name = f"Phase {phase_num}"
+        current_phase = phase_name
+
+        await build_repo.update_build_status(
+            build_id, "running", phase=phase_name
+        )
+        await build_repo.append_build_log(
+            build_id, f"Starting {phase_name}: {phase['name']}",
+            source="system", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"Starting {phase_name}: {phase['name']}",
+            "source": "system", "level": "info",
+        })
+
+        # Build workspace info
+        workspace_info = ""
+        try:
+            existing_files_list = []
+            for dirpath, dirnames, filenames in os.walk(working_dir):
+                dirnames[:] = [d for d in dirnames if d not in {".git", "__pycache__", "node_modules", ".venv"}]
+                for fname in filenames:
+                    rel = Path(dirpath).relative_to(working_dir) / fname
+                    existing_files_list.append(str(rel))
+            workspace_info = "\n".join(f"- {f}" for f in existing_files_list[:100])
+        except Exception:
+            workspace_info = "(empty workspace)"
+
+        # Phase deliverables text
+        phase_deliverables = (
+            f"Phase {phase_num} -- {phase['name']}\n"
+            f"Objective: {phase.get('objective', '')}\n"
+            f"Deliverables:\n"
+            + "\n".join(f"- {d}" for d in phase.get("deliverables", []))
+        )
+
+        # 1. Generate file manifest
+        manifest = await _generate_file_manifest(
+            build_id, user_id, api_key,
+            contracts, phase, workspace_info,
+        )
+
+        if not manifest:
+            await build_repo.append_build_log(
+                build_id,
+                f"Manifest generation failed for {phase_name} — falling back to conversation mode",
+                source="system", level="warn",
+            )
+            # Fall back to conversation mode for this phase
+            # (Phase 21.10 backward compatibility)
+            break
+
+        # Emit phase plan
+        plan_tasks = [
+            {"id": i + 1, "title": f"Generate {f['path']}", "status": "pending"}
+            for i, f in enumerate(manifest)
+        ]
+        await _broadcast_build_event(user_id, build_id, "phase_plan", {
+            "phase": phase_name,
+            "tasks": plan_tasks,
+        })
+
+        # 2. Generate each file
+        phase_files_written: dict[str, str] = {}
+        for i, file_entry in enumerate(manifest):
+            file_path = file_entry["path"]
+
+            # Resolve context files from disk
+            context = {}
+            for ctx_path in file_entry.get("context_files", []):
+                if ctx_path in all_files_written:
+                    context[ctx_path] = all_files_written[ctx_path]
+                elif ctx_path in phase_files_written:
+                    context[ctx_path] = phase_files_written[ctx_path]
+                else:
+                    # Try reading from disk
+                    try:
+                        full = Path(working_dir) / ctx_path
+                        if full.exists():
+                            context[ctx_path] = full.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+
+            # Also include depends_on files as context
+            for dep_path in file_entry.get("depends_on", []):
+                if dep_path not in context:
+                    if dep_path in phase_files_written:
+                        context[dep_path] = phase_files_written[dep_path]
+                    elif dep_path in all_files_written:
+                        context[dep_path] = all_files_written[dep_path]
+
+            try:
+                content = await _generate_single_file(
+                    build_id, user_id, api_key,
+                    file_entry, contracts, context,
+                    phase_deliverables, working_dir,
+                )
+                phase_files_written[file_path] = content
+                all_files_written[file_path] = content
+
+                file_info = {
+                    "path": file_path,
+                    "size_bytes": len(content.encode("utf-8")),
+                    "language": _detect_language(file_path),
+                }
+                if not any(f["path"] == file_path for f in files_written_list):
+                    files_written_list.append(file_info)
+
+                # Mark task done
+                await _broadcast_build_event(user_id, build_id, "plan_task_complete", {
+                    "task_id": i + 1,
+                    "status": "done",
+                })
+
+            except Exception as exc:
+                logger.error("Failed to generate %s: %s", file_path, exc)
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Failed to generate {file_path}: {exc}",
+                    source="system", level="error",
+                )
+
+        # 3. Git commit phase files
+        if phase_files_written:
+            try:
+                await git_client.add_all(working_dir)
+                sha = await git_client.commit(
+                    working_dir, f"forge: {phase_name} files generated",
+                )
+                if sha:
+                    await build_repo.append_build_log(
+                        build_id, f"Committed {phase_name}: {sha[:8]}",
+                        source="system", level="info",
+                    )
+            except Exception as exc:
+                logger.warning("Git commit failed for %s: %s", phase_name, exc)
+
+        # 4. Verify phase output
+        try:
+            verification = await _verify_phase_output(
+                build_id, user_id, api_key,
+                manifest, working_dir, contracts,
+            )
+            await build_repo.append_build_log(
+                build_id,
+                f"Verification: {verification}",
+                source="system", level="info",
+            )
+        except Exception as exc:
+            logger.warning("Verification failed: %s", exc)
+            verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
+
+        # 5. Run audit
+        # Build accumulated output description for the auditor
+        phase_output = (
+            f"Phase {phase_num} ({phase['name']}) generated {len(phase_files_written)} files:\n"
+            + "\n".join(f"- {p}" for p in phase_files_written.keys())
+        )
+
+        audit_verdict, audit_report = await _run_inline_audit(
+            build_id, phase_name, phase_output,
+            contracts, api_key, audit_llm_enabled,
+        )
+
+        # 6. Handle audit result
+        audit_attempts = 1
+        while audit_verdict != "PASS" and audit_attempts < settings.PAUSE_THRESHOLD:
+            audit_attempts += 1
+            loop_count = await build_repo.increment_loop_count(build_id)
+
+            await build_repo.append_build_log(
+                build_id,
+                f"Audit FAIL for {phase_name} (attempt {audit_attempts})",
+                source="audit", level="warn",
+            )
+            await _broadcast_build_event(user_id, build_id, "audit_fail", {
+                "phase": phase_name,
+                "loop_count": loop_count,
+            })
+
+            # Recovery planner
+            remediation_plan = ""
+            try:
+                remediation_plan = await _run_recovery_planner(
+                    build_id=build_id, user_id=user_id, api_key=api_key,
+                    phase=phase_name, audit_findings=audit_report,
+                    builder_output=phase_output, contracts=contracts,
+                    working_dir=working_dir,
+                )
+            except Exception as exc:
+                logger.warning("Recovery planner failed: %s", exc)
+
+            # Generate fix manifest
+            existing = {}
+            for p in phase_files_written:
+                try:
+                    existing[p] = Path(working_dir, p).read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
+            fix_manifest = None
+            if remediation_plan:
+                fix_manifest = await _generate_fix_manifest(
+                    build_id, user_id, api_key,
+                    remediation_plan, existing, audit_report, contracts,
+                )
+
+            if fix_manifest:
+                for fix_entry in fix_manifest:
+                    fix_path = fix_entry["path"]
+                    fix_context = {}
+                    for ctx in fix_entry.get("context_files", []):
+                        try:
+                            full = Path(working_dir) / ctx
+                            if full.exists():
+                                fix_context[ctx] = full.read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+                    # Add current file content as context for modifications
+                    if fix_entry["action"] == "modify" and fix_path in existing:
+                        fix_context[fix_path] = existing[fix_path]
+
+                    try:
+                        error_ctx = fix_entry.get("fix_instructions", "")
+                        if audit_report:
+                            error_ctx += f"\n\nAudit finding:\n{audit_report[:2000]}"
+                        fix_content = await _generate_single_file(
+                            build_id, user_id, api_key,
+                            fix_entry, contracts, fix_context,
+                            phase_deliverables, working_dir,
+                            error_context=error_ctx,
+                        )
+                        phase_files_written[fix_path] = fix_content
+                        all_files_written[fix_path] = fix_content
+                    except Exception as exc:
+                        logger.warning("Fix generation failed for %s: %s", fix_path, exc)
+
+                # Re-commit fixes
+                try:
+                    await git_client.add_all(working_dir)
+                    await git_client.commit(
+                        working_dir, f"forge: {phase_name} fixes (attempt {audit_attempts})",
+                    )
+                except Exception:
+                    pass
+
+            # Re-audit
+            phase_output_updated = (
+                f"Phase {phase_num} ({phase['name']}) — attempt {audit_attempts}. "
+                f"Files: {', '.join(phase_files_written.keys())}"
+            )
+            audit_verdict, audit_report = await _run_inline_audit(
+                build_id, phase_name, phase_output_updated,
+                contracts, api_key, audit_llm_enabled,
+            )
+
+        if audit_verdict != "PASS" and audit_attempts >= settings.PAUSE_THRESHOLD:
+            # Pause for user
+            await _pause_build(
+                build_id, user_id, phase_name,
+                audit_attempts,
+                f"{audit_attempts} audit failures on {phase_name}",
+            )
+            event = _pause_events.get(str(build_id))
+            if event:
+                try:
+                    await asyncio.wait_for(
+                        event.wait(),
+                        timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                    )
+                except asyncio.TimeoutError:
+                    await _fail_build(
+                        build_id, user_id,
+                        f"RISK_EXCEEDS_SCOPE: pause timed out on {phase_name}",
+                    )
+                    return
+
+            action = _resume_actions.pop(str(build_id), "retry")
+            _pause_events.pop(str(build_id), None)
+            await build_repo.resume_build(build_id)
+
+            if action == "abort":
+                await _fail_build(build_id, user_id, f"Build aborted on {phase_name}")
+                return
+            elif action == "skip":
+                await build_repo.append_build_log(
+                    build_id, f"Phase {phase_name} skipped by user",
+                    source="system", level="warn",
+                )
+                continue
+            # retry — will proceed to next phase anyway at this point
+
+        # Phase passed or skipped
+        if audit_verdict == "PASS":
+            await build_repo.append_build_log(
+                build_id, f"Audit PASS for {phase_name}",
+                source="audit", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "audit_pass", {
+                "phase": phase_name,
+            })
+            await _broadcast_build_event(user_id, build_id, "phase_complete", {
+                "phase": phase_name,
+                "status": "pass",
+            })
+
+        # Push to GitHub
+        if (
+            working_dir
+            and target_type in ("github_new", "github_existing")
+            and access_token
+        ):
+            try:
+                await git_client.push(
+                    working_dir, branch=branch, access_token=access_token,
+                )
+                await build_repo.append_build_log(
+                    build_id, f"Pushed {phase_name} to GitHub",
+                    source="system", level="info",
+                )
+            except Exception as exc:
+                logger.warning("Git push failed for %s: %s", phase_name, exc)
+
+    # Build complete
+    now = datetime.now(timezone.utc)
+    await build_repo.update_build_status(
+        build_id, "completed", completed_at=now,
+    )
+    await project_repo.update_project_status(project_id, "completed")
+    await build_repo.append_build_log(
+        build_id, "Build completed successfully (plan-execute mode)",
+        source="system", level="info",
+    )
+
+    cost_summary = await build_repo.get_build_cost_summary(build_id)
+    await _broadcast_build_event(user_id, build_id, "build_complete", {
+        "id": str(build_id),
+        "status": "completed",
+        "total_input_tokens": cost_summary["total_input_tokens"],
+        "total_output_tokens": cost_summary["total_output_tokens"],
+        "total_cost_usd": float(cost_summary["total_cost_usd"]),
+    })

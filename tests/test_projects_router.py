@@ -174,7 +174,8 @@ def test_list_projects(mock_list, mock_get_user):
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
 @patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
 @patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock)
-def test_get_project_detail(mock_contracts, mock_project, mock_get_user):
+@patch("app.services.project_service.build_repo.get_latest_build_for_project", new_callable=AsyncMock)
+def test_get_project_detail(mock_latest_build, mock_contracts, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
         "id": UUID(PROJECT_ID),
@@ -188,6 +189,7 @@ def test_get_project_detail(mock_contracts, mock_project, mock_get_user):
         "updated_at": "2025-01-01T00:00:00Z",
     }
     mock_contracts.return_value = []
+    mock_latest_build.return_value = None
 
     resp = client.get(f"/projects/{PROJECT_ID}", headers=_auth_header())
     assert resp.status_code == 200

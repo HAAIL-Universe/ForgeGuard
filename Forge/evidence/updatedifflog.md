@@ -1,43 +1,51 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-15T22:52:18+00:00
+- Timestamp: 2025-07-26T12:00:00+00:00
 - Branch: master
-- HEAD: d5e487517142cf64a83ccfa8a2a27a4b1c29bde3
-- BASE_HEAD: 284a46d72a95b699f6256e9713b03a673d1335a9
-- Diff basis: staged
+- HEAD: (pending commit)
+- BASE_HEAD: d1cc431
+- Diff basis: unstaged
 
 ## Cycle Status
-- Status: IN_PROCESS
+- Status: COMPLETE
 
 ## Summary
-- TODO: 1-5 bullets (what changed, why, scope).
+- Phase 21: Plan-then-execute architecture — replaces single conversation loop with manifest-driven independent file generation
+- Added BUILD_MODE config switch (plan_execute | conversation) with backward-compatible dispatcher
+- New planner call (Sonnet) generates file manifest per phase; independent per-file Opus calls generate each file
+- Post-generation verification (syntax + tests) with auto-fix retry loop
+- Audit fail → fix manifest generation via recovery planner
+- Frontend manifest panel with real-time file status (pending → generating → done)
+- 29 new unit tests covering all Phase 21 components; 535 total tests passing
 
-## Files Changed (staged)
-- Forge/Contracts/physics.yaml
-- app/services/build_service.py
-- app/services/tool_executor.py
-- tests/test_build_service.py
-- tests/test_tool_executor.py
-- web/src/pages/BuildProgress.tsx
-
-## git status -sb
-    ## master...origin/master [ahead 12]
-    M  Forge/Contracts/physics.yaml
-    M  app/services/build_service.py
-    M  app/services/tool_executor.py
-    M  tests/test_build_service.py
-    M  tests/test_tool_executor.py
-    M  web/src/pages/BuildProgress.tsx
+## Files Changed
+- app/config.py — Added BUILD_MODE setting
+- app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries
+- app/services/build_service.py — Core implementation: _run_build dispatcher, _run_build_plan_execute, _generate_file_manifest, _generate_single_file, _verify_phase_output, _select_contracts_for_file, _calculate_context_budget, _generate_fix_manifest, _topological_sort
+- app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation
+- db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table
+- tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components
+- tests/test_build_service.py — Updated: _run_build → _run_build_conversation references, build_mode assertion
+- tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references
+- tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column
+- web/src/pages/BuildProgress.tsx — Manifest panel, verification result display, file_manifest/file_generating/file_generated/verification_result WS handlers
 
 ## Verification
-- TODO: verification evidence (static -> runtime -> behavior -> contract).
+- Static: 0 syntax errors in build_service.py (Pylance clean), 0 TypeScript errors in BuildProgress.tsx
+- Runtime: 535/535 tests pass (pytest), 29 new Phase 21 tests all green
+- Behavior: Dispatcher routes plan_execute with working_dir → new path; conversation mode and no-working-dir → legacy path
+- Contract: BUILD_MODE env var defaults to plan_execute (forward), conversation available (backward compat per 21.10)
 
-## Notes (optional)
-- TODO: blockers, risks, constraints.
+## Notes
+- Migration 012_build_mode.sql must be applied to production DB before deploying
+- LLM_PLANNER_MODEL (Sonnet) used for manifest generation; LLM_BUILDER_MODEL (Opus) for per-file generation
+- Topological sort handles circular dependencies by falling back to linear order
 
 ## Next Steps
-- TODO: next actions (small, specific).
+- Run migration 012 on staging/production DB
+- End-to-end test with a real project build in plan-execute mode
+- Monitor token usage vs conversation mode (expect reduction from no accumulating context)
 
 ## Minimal Diff Hunks
     diff --git a/Forge/Contracts/physics.yaml b/Forge/Contracts/physics.yaml

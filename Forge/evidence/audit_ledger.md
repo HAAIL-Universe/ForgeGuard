@@ -4970,3 +4970,53 @@ A5: WARN -- updatedifflog.md contains TODO: placeholders.
 W1: PASS -- No secret patterns detected.
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 21 -- Plan-then-execute architecture — replaces single conversation loop with manifest-driven independent file generation -- Iteration 111
+Timestamp: 2026-02-16T06:26:56Z
+AEM Cycle: Phase 21 -- Plan-then-execute architecture — replaces single conversation loop with manifest-driven independent file generation
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/config.py, app/repos/build_repo.py, app/services/build_service.py, tests/test_build_integration.py, tests/test_build_service.py, tests/test_projects_router.py, web/src/pages/BuildProgress.tsx. Claimed but not in diff: _calculate_context_budget, _generate_file_manifest, _generate_fix_manifest, _generate_single_file, _run_build_plan_execute, _select_contracts_for_file, _topological_sort, _verify_phase_output, app/config.py — Added BUILD_MODE setting, app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries, app/services/build_service.py — Core implementation: _run_build dispatcher, app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation, build_mode assertion, db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table, file_manifest/file_generating/file_generated/verification_result WS handlers, tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references, tests/test_build_service.py — Updated: _run_build → _run_build_conversation references, tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components, tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column, verification result display, web/src/pages/BuildProgress.tsx — Manifest panel.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/config.py, app/repos/build_repo.py, app/services/build_service.py, tests/test_build_integration.py, tests/test_build_service.py, tests/test_projects_router.py, web/src/pages/BuildProgress.tsx. Claimed but not in diff: _calculate_context_budget, _generate_file_manifest, _generate_fix_manifest, _generate_single_file, _run_build_plan_execute, _select_contracts_for_file, _topological_sort, _verify_phase_output, app/config.py — Added BUILD_MODE setting, app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries, app/services/build_service.py — Core implementation: _run_build dispatcher, app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation, build_mode assertion, db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table, file_manifest/file_generating/file_generated/verification_result WS handlers, tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references, tests/test_build_service.py — Updated: _run_build → _run_build_conversation references, tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components, tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column, verification result display, web/src/pages/BuildProgress.tsx — Manifest panel.
+- A4: FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+
+### Files Changed
+- _calculate_context_budget
+- _generate_file_manifest
+- _generate_fix_manifest
+- _generate_single_file
+- _run_build_plan_execute
+- _select_contracts_for_file
+- _topological_sort
+- _verify_phase_output
+- app/config.py — Added BUILD_MODE setting
+- app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries
+- app/services/build_service.py — Core implementation: _run_build dispatcher
+- app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation
+- build_mode assertion
+- db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table
+- file_manifest/file_generating/file_generated/verification_result WS handlers
+- tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references
+- tests/test_build_service.py — Updated: _run_build → _run_build_conversation references
+- tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components
+- tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column
+- verification result display
+- web/src/pages/BuildProgress.tsx — Manifest panel
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

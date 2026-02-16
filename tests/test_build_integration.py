@@ -233,7 +233,7 @@ class TestFullBuildLifecycle:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.return_value = ("PASS", "")
 
-                    await build_service._run_build(
+                    await build_service._run_build_conversation(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
                         _contracts(), "sk-test", True,
                         target_type="local_path",
@@ -280,7 +280,7 @@ class TestFullBuildLifecycle:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.side_effect = lambda *a, **kw: next(audit_results)
 
-                    await build_service._run_build(
+                    await build_service._run_build_conversation(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
                         _contracts(), "sk-test", True,
                         target_type="local_path",
@@ -333,7 +333,7 @@ class TestFullBuildLifecycle:
                     mock_audit.side_effect = lambda *a, **kw: next(audit_iter)
 
                     await asyncio.gather(
-                        build_service._run_build(
+                        build_service._run_build_conversation(
                             _BUILD_ID, _PROJECT_ID, _USER_ID,
                             _contracts(), "sk-test", True,
                             target_type="local_path",
@@ -380,7 +380,7 @@ class TestFullBuildLifecycle:
                     mock_audit.side_effect = lambda *a, **kw: next(audit_iter)
 
                     await asyncio.gather(
-                        build_service._run_build(
+                        build_service._run_build_conversation(
                             _BUILD_ID, _PROJECT_ID, _USER_ID,
                             _contracts(), "sk-test", True,
                             target_type="local_path",
@@ -428,7 +428,7 @@ class TestFullBuildLifecycle:
                     mock_audit.side_effect = lambda *a, **kw: next(audit_iter)
 
                     await asyncio.gather(
-                        build_service._run_build(
+                        build_service._run_build_conversation(
                             _BUILD_ID, _PROJECT_ID, _USER_ID,
                             _contracts(), "sk-test", True,
                             target_type="local_path",
@@ -486,7 +486,7 @@ class TestInterjection:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.return_value = ("PASS", "")
 
-                    await build_service._run_build(
+                    await build_service._run_build_conversation(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
                         _contracts(), "sk-test", True,
                         target_type="local_path",
@@ -528,7 +528,7 @@ class TestContextCompaction:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.return_value = ("PASS", "")
                     with patch("app.services.build_service.CONTEXT_COMPACTION_THRESHOLD", 0):
-                        await build_service._run_build(
+                        await build_service._run_build_conversation(
                             _BUILD_ID, _PROJECT_ID, _USER_ID,
                             _contracts(), "sk-test", True,
                             target_type="local_path",
@@ -571,7 +571,7 @@ class TestFileOverwrite:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.return_value = ("PASS", "")
 
-                    await build_service._run_build(
+                    await build_service._run_build_conversation(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
                         _contracts(), "sk-test", True,
                         target_type="local_path",
@@ -610,7 +610,7 @@ class TestBuildTargets:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.return_value = ("PASS", "")
 
-                    await build_service._run_build(
+                    await build_service._run_build_conversation(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
                         _contracts(), "sk-test", True,
                         target_type="local_path",
@@ -643,7 +643,7 @@ class TestBuildTargets:
                 with patch("app.services.build_service._run_inline_audit", new_callable=AsyncMock) as mock_audit:
                     mock_audit.return_value = ("PASS", "")
 
-                    await build_service._run_build(
+                    await build_service._run_build_conversation(
                         _BUILD_ID, _PROJECT_ID, _USER_ID,
                         _contracts(), "sk-test", True,
                         target_type="github_new",
@@ -765,7 +765,7 @@ class TestGitPushRetry:
                     mock_audit.return_value = ("PASS", "")
                     with patch.object(settings, "GIT_PUSH_MAX_RETRIES", 2):
                         await asyncio.gather(
-                            build_service._run_build(
+                            build_service._run_build_conversation(
                                 _BUILD_ID, _PROJECT_ID, _USER_ID,
                                 _contracts(), "sk-test", True,
                                 target_type="github_new",
@@ -808,7 +808,7 @@ class TestWorkingDirCleanup:
                 side_effect=Exception("API error")
             )
 
-            await build_service._run_build(
+            await build_service._run_build_conversation(
                 _BUILD_ID, _PROJECT_ID, _USER_ID,
                 _contracts(), "sk-test", True,
                 target_type="github_new",

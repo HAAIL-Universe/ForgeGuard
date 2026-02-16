@@ -20,15 +20,16 @@ async def create_build(
     target_ref: str | None = None,
     working_dir: str | None = None,
     branch: str = "main",
+    build_mode: str = "plan_execute",
 ) -> dict:
     """Create a new build record in pending status."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO builds (project_id, phase, status, target_type, target_ref, working_dir, branch)
-        VALUES ($1, 'Phase 0', 'pending', $2, $3, $4, $5)
+        INSERT INTO builds (project_id, phase, status, target_type, target_ref, working_dir, branch, build_mode)
+        VALUES ($1, 'Phase 0', 'pending', $2, $3, $4, $5, $6)
         RETURNING id, project_id, phase, status, target_type, target_ref,
-                  working_dir, branch, started_at, completed_at,
+                  working_dir, branch, build_mode, started_at, completed_at,
                   loop_count, error_detail, created_at,
                   paused_at, pause_reason, pause_phase
         """,
@@ -37,6 +38,7 @@ async def create_build(
         target_ref,
         working_dir,
         branch,
+        build_mode,
     )
     return dict(row)
 
@@ -47,7 +49,7 @@ async def get_build_by_id(build_id: UUID) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
-               working_dir, branch, started_at, completed_at,
+               working_dir, branch, build_mode, started_at, completed_at,
                loop_count, error_detail, created_at,
                paused_at, pause_reason, pause_phase
         FROM builds WHERE id = $1
@@ -63,7 +65,7 @@ async def get_latest_build_for_project(project_id: UUID) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
-               working_dir, branch, started_at, completed_at,
+               working_dir, branch, build_mode, started_at, completed_at,
                loop_count, error_detail, created_at,
                paused_at, pause_reason, pause_phase
         FROM builds WHERE project_id = $1
@@ -80,7 +82,7 @@ async def get_builds_for_project(project_id: UUID) -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
-               working_dir, branch, started_at, completed_at,
+               working_dir, branch, build_mode, started_at, completed_at,
                loop_count, error_detail, created_at,
                paused_at, pause_reason, pause_phase
         FROM builds WHERE project_id = $1

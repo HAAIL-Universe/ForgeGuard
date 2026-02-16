@@ -81,6 +81,8 @@ class Settings:
     LLM_BUILDER_MAX_TOKENS: int = int(
         os.getenv("LLM_BUILDER_MAX_TOKENS", "16384")
     )
+    # Build mode: "plan_execute" (new) or "conversation" (legacy)
+    BUILD_MODE: str = os.getenv("BUILD_MODE", "plan_execute")
 
 
 # Validate at import time -- but only when NOT running under pytest.

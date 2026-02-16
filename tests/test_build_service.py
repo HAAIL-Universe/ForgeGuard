@@ -84,6 +84,7 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
         target_ref=None,
         working_dir=None,
         branch="main",
+        build_mode="plan_execute",
     )
     mock_project_repo.update_project_status.assert_called_once_with(
         _PROJECT_ID, "building"
@@ -1103,7 +1104,7 @@ async def test_run_build_multi_turn_plan_detected(
 
     # Mock audit to pass
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1164,7 +1165,7 @@ async def test_run_build_multi_turn_audit_feedback(
         new_callable=AsyncMock,
         return_value="Mocked remediation plan",
     ):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1225,7 +1226,7 @@ async def test_run_build_multi_turn_max_failures(
         return_value="Mocked remediation plan",
     ):
         await asyncio.gather(
-            build_service._run_build(
+            build_service._run_build_conversation(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
                 "sk-ant-test", audit_llm_enabled=True,
             ),
@@ -1269,7 +1270,7 @@ async def test_run_build_turn_event_broadcast(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1307,7 +1308,7 @@ async def test_run_build_task_done_broadcast(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1365,7 +1366,7 @@ async def test_run_build_context_compaction(
         new_callable=AsyncMock,
         return_value=("PASS", ""),
     ):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1436,7 +1437,7 @@ async def test_run_build_pauses_at_threshold(
     ):
         # Run both tasks concurrently
         await asyncio.gather(
-            build_service._run_build(
+            build_service._run_build_conversation(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
                 "sk-ant-test", audit_llm_enabled=True,
             ),
@@ -1504,7 +1505,7 @@ async def test_run_build_pause_resume_retry(
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, side_effect=_audit), \
          patch.object(build_service, "_run_recovery_planner", new_callable=AsyncMock, return_value="Mocked remediation"):
         await asyncio.gather(
-            build_service._run_build(
+            build_service._run_build_conversation(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
                 "sk-ant-test", audit_llm_enabled=True,
             ),
@@ -1569,7 +1570,7 @@ async def test_run_build_pause_skip(
         new_callable=AsyncMock, return_value="Mocked remediation plan",
     ):
         await asyncio.gather(
-            build_service._run_build(
+            build_service._run_build_conversation(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
                 "sk-ant-test", audit_llm_enabled=True,
             ),
@@ -1612,7 +1613,7 @@ async def test_run_build_interjection_injected(
     build_service._interjection_queues[str(_BUILD_ID)] = queue
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1885,7 +1886,7 @@ async def test_plan_tasks_reset_between_phases(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -1933,7 +1934,7 @@ async def test_build_overview_emitted(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -2109,7 +2110,7 @@ async def test_recovery_planner_fallback_on_error(
         new_callable=AsyncMock,
         side_effect=RuntimeError("LLM API timeout"),
     ):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -2156,7 +2157,7 @@ async def test_recovery_planner_injects_remediation(
         new_callable=AsyncMock,
         return_value="=== REMEDIATION PLAN ===\n1. Fix X\n=== END REMEDIATION PLAN ===",
     ):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
         )
@@ -2224,7 +2225,7 @@ async def test_run_build_tool_call_execution(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
             working_dir=str(tmp_path),
@@ -2288,7 +2289,7 @@ async def test_run_build_write_file_tool_emits_file_created(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
             working_dir=str(tmp_path),
@@ -2348,7 +2349,7 @@ async def test_run_build_tool_result_in_messages(
     mock_manager.send_to_user = AsyncMock()
 
     with patch.object(build_service, "_run_inline_audit", new_callable=AsyncMock, return_value=("PASS", "")):
-        await build_service._run_build(
+        await build_service._run_build_conversation(
             _BUILD_ID, _PROJECT_ID, _USER_ID, _contracts(),
             "sk-ant-test", audit_llm_enabled=True,
             working_dir=str(tmp_path),
