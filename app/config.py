@@ -70,12 +70,12 @@ class Settings:
         os.getenv("GIT_PUSH_MAX_RETRIES", "3")
     )
     # Cold-start pacing: initial delay (seconds) between turns at build start.
-    # Decays linearly over COLD_START_TURNS turns to 0.
+    # Decays linearly over COLD_START_TURNS turns, with a 1s floor.
     COLD_START_DELAY: float = float(
-        os.getenv("COLD_START_DELAY", "3.0")
+        os.getenv("COLD_START_DELAY", "5.0")
     )
     COLD_START_TURNS: int = int(
-        os.getenv("COLD_START_TURNS", "8")
+        os.getenv("COLD_START_TURNS", "12")
     )
 
 

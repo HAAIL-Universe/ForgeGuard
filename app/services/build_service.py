@@ -771,10 +771,12 @@ async def _run_build(
 
         system_prompt = (
             "You are an autonomous software builder operating under the Forge governance framework.\n\n"
-            "## Important\n"
-            "Your contracts and build instructions are provided in the first user message below. "
-            "Do NOT search the filesystem for contracts — they are NOT on disk. "
-            "Read your directive and start building immediately.\n\n"
+            "## CRITICAL — Read This First\n"
+            "1. Your contracts and build instructions are ALREADY provided in the first user message below.\n"
+            "2. Do NOT search the filesystem for contracts, README, config files, or any existing files.\n"
+            "3. Do NOT read_file or list_directory before starting Phase 0.\n"
+            "4. The working directory listing (if any) is already provided below — you have it.\n"
+            "5. Start Phase 0 (Genesis) IMMEDIATELY by emitting your plan, then writing code.\n\n"
             "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
             "=== PLAN ===\n"
             "1. First task for this phase\n"
@@ -787,15 +789,15 @@ async def _run_build(
             "## Tools\n"
             "You have access to the following tools for interacting with the project:\n"
             "- **read_file**: Read a file to check existing code or verify your work.\n"
-            "- **list_directory**: List files/folders to understand project structure before making changes.\n"
+            "- **list_directory**: List files/folders to understand project structure.\n"
             "- **search_code**: Search for patterns across files to find implementations or imports.\n"
             "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n"
             "- **run_tests**: Run the test suite to verify your code works.\n"
             "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
             "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
             "Guidelines for tool use:\n"
-            "1. Use list_directory at the start of each phase to understand the current state.\n"
-            "2. Use read_file to examine existing code before modifying it.\n"
+            "1. Do NOT explore the filesystem at the start — the workspace listing is already above.\n"
+            "2. Start writing code immediately in Phase 0. Use read_file only when modifying existing files.\n"
             "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
             "4. Use search_code to find existing patterns, imports, or implementations.\n"
             "5. After writing files, use check_syntax to catch syntax errors immediately.\n"
@@ -835,12 +837,14 @@ async def _run_build(
 
             # Cold-start pacing: add a decaying delay for the first N turns
             # to avoid hammering the API and triggering 429s at build start.
+            # Applies to EVERY turn (including tool-result continuations) so the
+            # API is not hit back-to-back when fast local tool calls respond.
             if turn_count <= settings.COLD_START_TURNS and settings.COLD_START_DELAY > 0:
                 pacing = settings.COLD_START_DELAY * (
                     1.0 - (turn_count - 1) / settings.COLD_START_TURNS
                 )
-                if pacing > 0.1:
-                    await asyncio.sleep(pacing)
+                pacing = max(pacing, 1.0)  # minimum 1s gap per API call during cold start
+                await asyncio.sleep(pacing)
 
             # Phase timeout check
             phase_elapsed = (datetime.now(timezone.utc) - phase_start_time).total_seconds()
