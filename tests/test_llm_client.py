@@ -384,10 +384,10 @@ class TestRetryOnTransient:
         )
         result = await _retry_on_transient(factory, max_retries=3, backoff_base=2.0)
         assert result == "ok"
-        # first retry: 2^0 = 1s, second retry: 2^1 = 2s
+        # first retry: 2^(0+1) = 2s, second retry: 2^(1+1) = 4s
         assert mock_sleep.await_count == 2
-        mock_sleep.assert_any_await(1.0)
         mock_sleep.assert_any_await(2.0)
+        mock_sleep.assert_any_await(4.0)
 
 
 # ---------------------------------------------------------------------------

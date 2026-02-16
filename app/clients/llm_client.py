@@ -11,9 +11,25 @@ logger = logging.getLogger(__name__)
 # Retry configuration
 # ---------------------------------------------------------------------------
 
-MAX_RETRIES = 3
-RETRY_BACKOFF_BASE = 2.0  # seconds
+MAX_RETRIES = 6
+RETRY_BACKOFF_BASE = 2.0  # seconds — exponential: 2, 4, 8, 16, 32, 64
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 529})
+
+
+def _compute_wait(exc: httpx.HTTPStatusError | None, attempt: int) -> float:
+    """Return seconds to wait before retrying.
+
+    Prefers the ``retry-after`` header for 429s. Falls back to exponential
+    backoff capped at 90 seconds.
+    """
+    if exc is not None and exc.response is not None:
+        retry_after = exc.response.headers.get("retry-after")
+        if retry_after:
+            try:
+                return min(float(retry_after), 120.0)
+            except (ValueError, TypeError):
+                pass
+    return min(RETRY_BACKOFF_BASE ** (attempt + 1), 90.0)
 
 
 async def _retry_on_transient(
@@ -34,7 +50,7 @@ async def _retry_on_transient(
         except httpx.TimeoutException as exc:
             last_exc = exc
             if attempt < max_retries:
-                wait = backoff_base ** attempt
+                wait = min(backoff_base ** (attempt + 1), 90.0)
                 logger.warning(
                     "LLM request timeout (attempt %d/%d), retrying in %.1fs",
                     attempt + 1, max_retries + 1, wait,
@@ -45,7 +61,7 @@ async def _retry_on_transient(
         except httpx.HTTPStatusError as exc:
             last_exc = exc
             if exc.response.status_code in _RETRYABLE_STATUS_CODES and attempt < max_retries:
-                wait = backoff_base ** attempt
+                wait = _compute_wait(exc, attempt)
                 logger.warning(
                     "LLM request %d (attempt %d/%d), retrying in %.1fs",
                     exc.response.status_code, attempt + 1, max_retries + 1, wait,
@@ -58,7 +74,7 @@ async def _retry_on_transient(
             msg = str(exc)
             if any(f"API {code}" in msg for code in _RETRYABLE_STATUS_CODES) and attempt < max_retries:
                 last_exc = exc
-                wait = backoff_base ** attempt
+                wait = min(backoff_base ** (attempt + 1), 90.0)
                 logger.warning(
                     "LLM API error (attempt %d/%d), retrying in %.1fs: %s",
                     attempt + 1, max_retries + 1, wait, msg,

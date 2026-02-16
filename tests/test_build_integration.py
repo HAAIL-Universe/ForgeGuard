@@ -116,7 +116,7 @@ def _mock_stream_agent(responses: list[str]):
     """
     call_count = 0
 
-    async def mock_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None):
+    async def mock_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None, on_retry=None):
         nonlocal call_count
         idx = call_count
         call_count += 1

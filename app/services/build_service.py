@@ -796,6 +796,16 @@ async def _run_build(
             tool_calls_this_turn: list[dict] = []
             pending_tool_results: list[dict] = []
 
+            def _on_rate_limit(status_code: int, attempt: int, wait: float):
+                """Fire-and-forget WS notification on rate-limit retry."""
+                asyncio.ensure_future(
+                    _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"Rate limited ({status_code}), retrying in {wait:.0f}s (attempt {attempt})…",
+                        "source": "system",
+                        "level": "warn",
+                    })
+                )
+
             async for item in stream_agent(
                 api_key=api_key,
                 model=settings.LLM_BUILDER_MODEL,
@@ -803,6 +813,7 @@ async def _run_build(
                 messages=messages,
                 usage_out=usage,
                 tools=BUILDER_TOOLS if working_dir else None,
+                on_retry=_on_rate_limit,
             ):
                 if isinstance(item, ToolCall):
                     # --- Tool call detected ---
