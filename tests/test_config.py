@@ -49,3 +49,11 @@ def test_config_has_tpm_settings():
     assert hasattr(settings, "ANTHROPIC_OUTPUT_TPM")
     assert settings.ANTHROPIC_INPUT_TPM > 0
     assert settings.ANTHROPIC_OUTPUT_TPM > 0
+
+
+def test_config_has_builder_max_tokens():
+    """Settings include configurable builder max_tokens."""
+    from app.config import settings
+
+    assert hasattr(settings, "LLM_BUILDER_MAX_TOKENS")
+    assert settings.LLM_BUILDER_MAX_TOKENS > 0

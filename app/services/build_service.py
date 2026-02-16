@@ -928,11 +928,18 @@ async def _run_build(
 
             def _on_rate_limit(status_code: int, attempt: int, wait: float):
                 """Fire-and-forget WS notification on rate-limit retry."""
+                if status_code == 0:
+                    # Budget pacing — proactive self-throttle, not a real 429
+                    msg = f"⏳ Pacing: waiting {wait:.0f}s for token budget"
+                    level = "info"
+                else:
+                    msg = f"Rate limited ({status_code}), retrying in {wait:.0f}s (attempt {attempt})…"
+                    level = "warn"
                 asyncio.ensure_future(
                     _broadcast_build_event(user_id, build_id, "build_log", {
-                        "message": f"Rate limited ({status_code}), retrying in {wait:.0f}s (attempt {attempt})…",
+                        "message": msg,
                         "source": "system",
-                        "level": "warn",
+                        "level": level,
                     })
                 )
 
@@ -947,6 +954,7 @@ async def _run_build(
                 model=settings.LLM_BUILDER_MODEL,
                 system_prompt=system_prompt,
                 messages=messages,
+                max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
                 usage_out=usage,
                 tools=BUILDER_TOOLS if working_dir else None,
                 on_retry=_on_rate_limit,
@@ -1146,11 +1154,20 @@ async def _run_build(
             all_output = recorded_output_baseline + usage.output_tokens
             total_tokens_all_turns = all_input + all_output
 
-            # Broadcast token update so the frontend shows real-time metrics
+            # Broadcast token update with rate-window metrics for UI
+            rate_input_60s, rate_output_60s = 0, 0
+            try:
+                rate_input_60s, rate_output_60s = limiter._current_usage()
+            except Exception:
+                pass
             await _broadcast_build_event(user_id, build_id, "token_update", {
                 "input_tokens": all_input,
                 "output_tokens": all_output,
                 "total_tokens": total_tokens_all_turns,
+                "rate_input_60s": rate_input_60s,
+                "rate_output_60s": rate_output_60s,
+                "rate_input_limit": settings.ANTHROPIC_INPUT_TPM,
+                "rate_output_limit": settings.ANTHROPIC_OUTPUT_TPM,
             })
 
             if not compacted:

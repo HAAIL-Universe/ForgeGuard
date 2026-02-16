@@ -465,38 +465,32 @@ def test_headers_include_caching():
 async def test_token_budget_limiter_cache_reads_excluded():
     """Cache-read tokens must NOT be recorded toward the rate-limit budget.
 
-    After recording a large cache-creation call, the budget should reflect
-    those tokens.  A second call that only uses cache reads should pass
-    immediately because cache reads aren't counted.
+    Only fresh input_tokens should be tracked. Cache reads and cache creation
+    are excluded.
     """
-    limiter = agent_client.TokenBudgetLimiter(input_tpm=60_000, output_tpm=16_000)
-    # First call: 50K cache creation + 2K fresh = 52K recorded
-    limiter.record(52_000, 1_000)
+    limiter = agent_client.TokenBudgetLimiter(input_tpm=80_000, output_tpm=16_000)
+    # Record only fresh tokens (what the limiter should see)
+    limiter.record(2_000, 1_000)
     inp, out = limiter._current_usage()
-    assert inp == 52_000
-
-    # Second call: mostly cache reads (not counted).
-    # Only ~3K fresh tokens — total in window = 52K + 3K = 55K < 54K (90% of 60K)?
-    # Actually 55K < 54K is false, so let's use more headroom
-    limiter2 = agent_client.TokenBudgetLimiter(input_tpm=80_000, output_tpm=16_000)
-    limiter2.record(50_000, 1_000)
-    # 50K used.  New call estimates 3K.  50K + 3K = 53K < 72K (90% of 80K).
+    assert inp == 2_000
+    # 2K recorded + 3K estimated = 5K << 72K (90% of 80K).
     # Should pass immediately.
-    await limiter2.wait_for_budget(estimated_input=3_000)
+    await limiter.wait_for_budget(estimated_input=3_000)
 
 
 @pytest.mark.asyncio
 @patch("app.clients.agent_client.httpx.AsyncClient")
-async def test_stream_agent_cache_read_not_counted_for_limiter(mock_client_cls):
-    """stream_agent records only fresh+creation tokens, not cache reads."""
+async def test_stream_agent_only_fresh_tokens_counted_for_limiter(mock_client_cls):
+    """stream_agent records only fresh input_tokens in the limiter,
+    excluding both cache_read and cache_creation tokens."""
     events = [
         {
             "type": "message_start",
             "message": {
                 "usage": {
                     "input_tokens": 500,
-                    "cache_read_input_tokens": 48_000,
-                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 40_000,
+                    "cache_creation_input_tokens": 8_000,
                 },
                 "model": "claude-opus-4-6",
             },
@@ -518,11 +512,13 @@ async def test_stream_agent_cache_read_not_counted_for_limiter(mock_client_cls):
     ):
         pass
 
-    # usage_out should track ALL tokens for billing/display
+    # usage_out tracks ALL tokens for billing/display
     assert usage.input_tokens == 500
-    assert usage.cache_read_input_tokens == 48_000
+    assert usage.cache_read_input_tokens == 40_000
+    assert usage.cache_creation_input_tokens == 8_000
 
-    # But the limiter should only record fresh input (500), not cache reads (48K)
+    # Limiter records ONLY fresh input_tokens (500), not cache reads (40K)
+    # or cache creation (8K)
     inp, out = limiter._current_usage()
-    assert inp == 500  # cache_read excluded
+    assert inp == 500  # only fresh input_tokens
     assert out == 100

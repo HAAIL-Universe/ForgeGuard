@@ -116,7 +116,7 @@ def _mock_stream_agent(responses: list[str]):
     """
     call_count = 0
 
-    async def mock_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None, on_retry=None, token_limiter=None):
+    async def mock_stream(*, api_key, model, system_prompt, messages, max_tokens=16384, usage_out, tools=None, on_retry=None, token_limiter=None):
         nonlocal call_count
         idx = call_count
         call_count += 1
@@ -471,7 +471,7 @@ class TestInterjection:
 
             original_mock = _mock_stream_agent([output, output])
 
-            async def capturing_stream(*, api_key, model, system_prompt, messages, usage_out, tools=None, on_retry=None, token_limiter=None):
+            async def capturing_stream(*, api_key, model, system_prompt, messages, max_tokens=16384, usage_out, tools=None, on_retry=None, token_limiter=None):
                 captured_messages.append([m.copy() for m in messages])
                 async for chunk in original_mock(api_key=api_key, model=model,
                                                   system_prompt=system_prompt,

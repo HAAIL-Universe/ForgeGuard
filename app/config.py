@@ -78,6 +78,9 @@ class Settings:
     ANTHROPIC_OUTPUT_TPM: int = int(
         os.getenv("ANTHROPIC_OUTPUT_TPM", "16000")
     )
+    LLM_BUILDER_MAX_TOKENS: int = int(
+        os.getenv("LLM_BUILDER_MAX_TOKENS", "16384")
+    )
 
 
 # Validate at import time -- but only when NOT running under pytest.

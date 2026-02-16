@@ -254,27 +254,33 @@ async def stream_agent(
             cached_tools[-1]["cache_control"] = {"type": "ephemeral"}
         payload["tools"] = cached_tools
 
-    # Rough estimate of input tokens (~4 chars per token)
-    est_input = len(system_prompt) // 4
+    # Estimate fresh (non-cached) input tokens (~4 chars per token).
+    # The system prompt and any message blocks with cache_control are
+    # served as cache reads and excluded from the limiter's budget, so
+    # we skip them here.  On the very first call the limiter has no
+    # history and always proceeds immediately, so under-estimating is
+    # harmless.
+    est_input = 0  # system prompt is always cached — skip
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):
             est_input += len(content) // 4
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict):
-                    est_input += len(str(block.get("text", "") or block.get("content", ""))) // 4
+                if isinstance(block, dict) and not block.get("cache_control"):
+                    text = block.get("text", "") or block.get("content", "")
+                    est_input += len(str(text)) // 4
 
     # Proactive token budget check — wait if approaching per-minute limits
     if token_limiter:
         def _on_budget_wait(wait_s: float, inp_used: int, inp_lim: int, out_used: int, out_lim: int):
             if on_retry:
                 on_retry(
-                    429, 0,  # use 429 so the UI shows a rate-limit message
+                    0, 0,  # status 0 = budget pacing (not a real 429)
                     wait_s,
                 )
             logger.info(
-                "Budget wait: %.0fs (in=%d/%d out=%d/%d)",
+                "Budget pacing: %.0fs (in=%d/%d out=%d/%d)",
                 wait_s, inp_used, inp_lim, out_used, out_lim,
             )
         await token_limiter.wait_for_budget(
@@ -338,10 +344,13 @@ async def stream_agent(
                                 usage_out.cache_read_input_tokens += cache_read
                                 usage_out.cache_creation_input_tokens += cache_create
                                 usage_out.model = msg.get("model", model)
-                                # Only count fresh input + cache creation toward
-                                # rate limits.  Cache reads are NOT rate-limited
-                                # by Anthropic and must be excluded.
-                                call_input_tokens += inp + cache_create
+                                # Record only fresh input_tokens for the limiter.
+                                # Cache creation is a one-time cost (won't recur
+                                # on subsequent calls once the prefix is cached)
+                                # and cache reads are discounted.  Both are
+                                # excluded so the limiter doesn't self-block
+                                # after the initial cache-creation call.
+                                call_input_tokens += inp
 
                             # Capture usage from message_delta (output tokens)
                             if etype == "message_delta" and usage_out is not None:
