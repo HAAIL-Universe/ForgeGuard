@@ -2877,6 +2877,18 @@ async def _generate_file_manifest(
         contract_parts.append(f"## {c['contract_type']}\n{c['content']}\n")
     contracts_text = "\n---\n".join(contract_parts)
 
+    # Cap contracts to stay within planner context budget (~25k tokens)
+    MAX_PLANNER_CONTRACTS_CHARS = 100_000
+    if len(contracts_text) > MAX_PLANNER_CONTRACTS_CHARS:
+        contracts_text = (
+            contracts_text[:MAX_PLANNER_CONTRACTS_CHARS]
+            + "\n\n[... contracts truncated for context budget ...]\n"
+        )
+        logger.info(
+            "Planner contracts capped at %d chars for Phase %s",
+            MAX_PLANNER_CONTRACTS_CHARS, current_phase["number"],
+        )
+
     # Phase deliverables
     phase_text = (
         f"## Phase {current_phase['number']} -- {current_phase['name']}\n"
@@ -2900,14 +2912,38 @@ async def _generate_file_manifest(
     )
 
     try:
-        result = await llm_chat(
-            api_key=api_key,
-            model=settings.LLM_PLANNER_MODEL,
-            system_prompt=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-            max_tokens=4096,
-            provider="anthropic",
-        )
+        try:
+            result = await llm_chat(
+                api_key=api_key,
+                model=settings.LLM_PLANNER_MODEL,
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                max_tokens=4096,
+                provider="anthropic",
+            )
+        except (ValueError, Exception) as exc:
+            err_str = str(exc).lower()
+            if any(kw in err_str for kw in ("token", "context", "too long", "too large")):
+                logger.warning(
+                    "Planner context overflow (%d chars) — retrying truncated",
+                    len(user_message),
+                )
+                MAX_FALLBACK_CHARS = 600_000
+                truncated_msg = (
+                    user_message[:MAX_FALLBACK_CHARS]
+                    + "\n\n[... truncated ...]\n\n"
+                    + f"Produce the JSON file manifest for Phase {current_phase['number']}."
+                )
+                result = await llm_chat(
+                    api_key=api_key,
+                    model=settings.LLM_PLANNER_MODEL,
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": truncated_msg}],
+                    max_tokens=4096,
+                    provider="anthropic",
+                )
+            else:
+                raise
 
         text = result["text"] if isinstance(result, dict) else result
         usage = result.get("usage", {}) if isinstance(result, dict) else {}
@@ -3046,6 +3082,15 @@ async def _generate_single_file(
     for c in relevant_contracts:
         contracts_text += f"\n## {c['contract_type']}\n{c['content']}\n"
 
+    # Cap contracts to stay within context budget (~30k tokens)
+    MAX_CONTRACTS_CHARS = 120_000
+    if len(contracts_text) > MAX_CONTRACTS_CHARS:
+        contracts_text = (
+            contracts_text[:MAX_CONTRACTS_CHARS]
+            + "\n\n[... contracts truncated for context budget ...]\n"
+        )
+        logger.info("Contracts capped at %d chars for %s", MAX_CONTRACTS_CHARS, file_path)
+
     # System prompt — concise, cacheable
     system_prompt = (
         "You are writing a single file for a software project built under the "
@@ -3060,6 +3105,34 @@ async def _generate_single_file(
         "- Include docstrings and type hints\n"
     )
 
+    # --- Context budget: decide which context files fit ---
+    system_prompt_tokens = len(system_prompt) // 4
+    contract_tokens = len(contracts_text) // 4
+    phase_tokens = len(phase_deliverables) // 4
+
+    # Copy context_files so budget truncation doesn't mutate caller's dict
+    context_copy = dict(context_files) if context_files else {}
+    budget = _calculate_context_budget(
+        file_entry=file_entry,
+        system_prompt_tokens=system_prompt_tokens,
+        contract_tokens=contract_tokens + phase_tokens,
+        available_context_files=context_copy,
+    )
+    budgeted_context: dict[str, str] = {
+        p: context_copy[p] for p in budget["files_to_include"] if p in context_copy
+    }
+    max_tokens = budget["max_tokens"]
+
+    if budget["truncated"]:
+        logger.info(
+            "Context files truncated for %s: %s", file_path, budget["truncated"],
+        )
+    if len(budgeted_context) < len(context_files or {}):
+        logger.info(
+            "Context budget: using %d/%d context files for %s",
+            len(budgeted_context), len(context_files or {}), file_path,
+        )
+
     # Build user message with context
     parts = [f"## Project Contracts (reference)\n{contracts_text}\n"]
     parts.append(f"## Current Phase Deliverables\n{phase_deliverables}\n")
@@ -3070,9 +3143,9 @@ async def _generate_single_file(
         f"Language: {language}\n"
     )
 
-    if context_files:
+    if budgeted_context:
         parts.append("\n## Context Files (already written -- reference only)\n")
-        for ctx_path, ctx_content in context_files.items():
+        for ctx_path, ctx_content in budgeted_context.items():
             parts.append(f"\n### {ctx_path}\n```\n{ctx_content}\n```\n")
 
     if error_context:
@@ -3090,21 +3163,62 @@ async def _generate_single_file(
 
     user_message = "\n".join(parts)
 
-    # Calculate max_tokens
-    max_tokens = max(4096, min(estimated_lines * 15, 16384))
-
     await _broadcast_build_event(user_id, build_id, "file_generating", {
         "path": file_path,
     })
 
-    result = await llm_chat(
-        api_key=api_key,
-        model=settings.LLM_BUILDER_MODEL,
-        system_prompt=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-        max_tokens=max_tokens,
-        provider="anthropic",
-    )
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=settings.LLM_BUILDER_MODEL,
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=max_tokens,
+            provider="anthropic",
+        )
+    except (ValueError, Exception) as exc:
+        err_str = str(exc).lower()
+        if any(kw in err_str for kw in ("token", "context", "too long", "too large")):
+            logger.warning(
+                "Context overflow for %s (%d chars) — retrying with minimal context",
+                file_path, len(user_message),
+            )
+            # Rebuild message without context files
+            minimal_parts = [
+                f"## Project Contracts (reference)\n{contracts_text}\n",
+                f"## Current Phase Deliverables\n{phase_deliverables}\n",
+                f"\n## File to Write\nPath: {file_path}\n"
+                f"Purpose: {purpose}\nLanguage: {language}\n",
+            ]
+            if error_context:
+                minimal_parts.append(
+                    f"\n## Error Context (fix required)\n{error_context}\n"
+                )
+            minimal_parts.append(
+                f"\n## Instructions\n"
+                f"Write the complete content of `{file_path}`. "
+                f"Output ONLY the raw file content.\n"
+                f"Do not wrap in markdown code fences. "
+                f"Do not add explanation before or after.\n"
+            )
+            minimal_msg = "\n".join(minimal_parts)
+            # If still too large, hard-truncate contracts
+            MAX_FALLBACK_CHARS = 600_000  # ~150k tokens
+            if len(minimal_msg) > MAX_FALLBACK_CHARS:
+                minimal_msg = (
+                    minimal_msg[:MAX_FALLBACK_CHARS]
+                    + "\n\n[... truncated for context limit ...]\n"
+                )
+            result = await llm_chat(
+                api_key=api_key,
+                model=settings.LLM_BUILDER_MODEL,
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": minimal_msg}],
+                max_tokens=max_tokens,
+                provider="anthropic",
+            )
+        else:
+            raise
 
     content = result["text"] if isinstance(result, dict) else result
     usage = result.get("usage", {}) if isinstance(result, dict) else {}
