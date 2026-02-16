@@ -139,17 +139,93 @@ class TokenBudgetLimiter:
         self._history.append((time.monotonic(), input_tokens, output_tokens))
 
 
-# Global limiter instance — shared across all builds for the same process.
-# Replaced at startup if config provides different limits.
-_global_limiter: TokenBudgetLimiter | None = None
+# ---------------------------------------------------------------------------
+# API Key Pool — round-robin across multiple keys for higher throughput
+# ---------------------------------------------------------------------------
 
 
+class ApiKeyPool:
+    """Manages multiple Anthropic API keys, each with its own rate limiter.
+
+    On each call, picks the key whose limiter has the most remaining
+    input-token budget (least-loaded).  This lets N keys achieve ~N×
+    the throughput of a single key.
+    """
+
+    def __init__(
+        self,
+        api_keys: list[str],
+        input_tpm: int = DEFAULT_INPUT_TPM,
+        output_tpm: int = DEFAULT_OUTPUT_TPM,
+    ) -> None:
+        if not api_keys:
+            raise ValueError("At least one API key is required")
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for k in api_keys:
+            if k and k not in seen:
+                seen.add(k)
+                unique.append(k)
+        if not unique:
+            raise ValueError("At least one non-empty API key is required")
+        self._keys = unique
+        self._limiters = {
+            k: TokenBudgetLimiter(input_tpm, output_tpm) for k in unique
+        }
+
+    @property
+    def key_count(self) -> int:
+        return len(self._keys)
+
+    def best_key(self) -> tuple[str, TokenBudgetLimiter]:
+        """Return the (api_key, limiter) pair with the most available budget."""
+        best_key = self._keys[0]
+        best_avail = -1
+        for key in self._keys:
+            lim = self._limiters[key]
+            inp_used, _ = lim._current_usage()
+            available = lim.input_tpm - inp_used
+            if available > best_avail:
+                best_avail = available
+                best_key = key
+        return best_key, self._limiters[best_key]
+
+    def get_limiter(self, api_key: str) -> TokenBudgetLimiter:
+        """Get the limiter for a specific key."""
+        return self._limiters[api_key]
+
+    def aggregate_usage(self) -> tuple[int, int]:
+        """Return total (input, output) usage across all keys in the window."""
+        total_in = total_out = 0
+        for lim in self._limiters.values():
+            inp, out = lim._current_usage()
+            total_in += inp
+            total_out += out
+        return total_in, total_out
+
+
+# Global key pool — shared across all builds for the same process.
+_global_pool: ApiKeyPool | None = None
+
+
+def get_key_pool(
+    api_keys: list[str],
+    input_tpm: int = DEFAULT_INPUT_TPM,
+    output_tpm: int = DEFAULT_OUTPUT_TPM,
+) -> ApiKeyPool:
+    """Get or create the global API key pool."""
+    global _global_pool
+    if _global_pool is None:
+        _global_pool = ApiKeyPool(api_keys, input_tpm, output_tpm)
+    return _global_pool
+
+
+# Backward-compat: single-key helper
 def get_limiter(input_tpm: int = DEFAULT_INPUT_TPM, output_tpm: int = DEFAULT_OUTPUT_TPM) -> TokenBudgetLimiter:
-    """Get or create the global token budget limiter."""
-    global _global_limiter
-    if _global_limiter is None:
-        _global_limiter = TokenBudgetLimiter(input_tpm, output_tpm)
-    return _global_limiter
+    """Get or create a single global limiter (legacy, prefer get_key_pool)."""
+    pool = get_key_pool(["default"], input_tpm, output_tpm)
+    return pool.get_limiter("default")
 
 
 @dataclass
@@ -206,6 +282,7 @@ async def stream_agent(
     tools: list[dict] | None = None,
     on_retry: "Callable[[int, int, float], Any] | None" = None,
     token_limiter: TokenBudgetLimiter | None = None,
+    key_pool: ApiKeyPool | None = None,
 ) -> AsyncIterator[Union[str, ToolCall]]:
     """Stream a builder agent session, yielding text chunks or tool calls.
 
@@ -213,7 +290,7 @@ async def stream_agent(
     and transient server errors (500/502/503/529).
 
     Args:
-        api_key: Anthropic API key.
+        api_key: Anthropic API key (used when key_pool is not provided).
         model: Model identifier (e.g. "claude-opus-4-6").
         system_prompt: Builder directive / system instructions.
         messages: Conversation history in Anthropic messages format.
@@ -222,7 +299,11 @@ async def stream_agent(
         tools: Optional list of tool definitions in Anthropic format.
         on_retry: Optional callback(status_code, attempt, wait_seconds) called
                   before each retry sleep so the caller can log / broadcast.
-        token_limiter: Optional TokenBudgetLimiter for proactive rate control.
+        token_limiter: Optional TokenBudgetLimiter for proactive rate control
+                       (used when key_pool is not provided).
+        key_pool: Optional ApiKeyPool for multi-key rotation.  When provided,
+                  overrides api_key and token_limiter — the pool picks the
+                  least-loaded key automatically.
 
     Yields:
         str: Incremental text chunks from the builder agent.
@@ -232,6 +313,13 @@ async def stream_agent(
         httpx.HTTPStatusError: On non-retryable API errors.
         ValueError: On unexpected stream format.
     """
+    # If a key pool is provided, select the best key and its limiter
+    if key_pool:
+        api_key, token_limiter = key_pool.best_key()
+        logger.info(
+            "Key pool: selected key ...%s (%d keys available)",
+            api_key[-6:], key_pool.key_count,
+        )
     # Use prompt caching: system prompt as a cacheable block
     system_blocks = [
         {

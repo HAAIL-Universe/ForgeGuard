@@ -436,12 +436,12 @@ def test_token_budget_limiter_purge():
 def test_get_limiter_singleton():
     """get_limiter returns the same instance."""
     # Reset global
-    agent_client._global_limiter = None
+    agent_client._global_pool = None
     l1 = agent_client.get_limiter()
     l2 = agent_client.get_limiter()
     assert l1 is l2
     # Clean up
-    agent_client._global_limiter = None
+    agent_client._global_pool = None
 
 
 def test_stream_usage_cache_fields():
@@ -523,3 +523,71 @@ async def test_stream_agent_all_tokens_counted_for_limiter(mock_client_cls):
     inp, out = limiter._current_usage()
     assert inp == 48_500  # fresh + cache_read + cache_creation
     assert out == 100
+
+
+# ---------------------------------------------------------------------------
+# ApiKeyPool tests
+# ---------------------------------------------------------------------------
+
+def test_api_key_pool_init_single_key():
+    """Pool works with a single key."""
+    pool = agent_client.ApiKeyPool(["key-a"])
+    assert pool.key_count == 1
+    key, lim = pool.best_key()
+    assert key == "key-a"
+    assert isinstance(lim, agent_client.TokenBudgetLimiter)
+
+
+def test_api_key_pool_init_multiple_keys():
+    """Pool works with multiple keys."""
+    pool = agent_client.ApiKeyPool(["key-a", "key-b", "key-c"])
+    assert pool.key_count == 3
+
+
+def test_api_key_pool_deduplicates():
+    """Pool deduplicates identical keys."""
+    pool = agent_client.ApiKeyPool(["key-a", "key-a", "key-b"])
+    assert pool.key_count == 2
+
+
+def test_api_key_pool_rejects_empty():
+    """Pool raises on empty key list."""
+    import pytest
+    with pytest.raises(ValueError):
+        agent_client.ApiKeyPool([])
+    with pytest.raises(ValueError):
+        agent_client.ApiKeyPool(["", ""])
+
+
+def test_api_key_pool_best_key_selects_least_loaded():
+    """best_key returns the key with the most available budget."""
+    pool = agent_client.ApiKeyPool(["key-a", "key-b"], input_tpm=80_000, output_tpm=16_000)
+    # Load key-a with 50K tokens
+    pool.get_limiter("key-a").record(50_000, 0)
+    # key-b is fresh — should be selected
+    key, lim = pool.best_key()
+    assert key == "key-b"
+    # Now load key-b with 60K
+    pool.get_limiter("key-b").record(60_000, 0)
+    # key-a (50K used) has more room than key-b (60K used)
+    key, _ = pool.best_key()
+    assert key == "key-a"
+
+
+def test_api_key_pool_aggregate_usage():
+    """aggregate_usage sums across all keys."""
+    pool = agent_client.ApiKeyPool(["key-a", "key-b"])
+    pool.get_limiter("key-a").record(10_000, 500)
+    pool.get_limiter("key-b").record(20_000, 300)
+    inp, out = pool.aggregate_usage()
+    assert inp == 30_000
+    assert out == 800
+
+
+def test_get_key_pool_singleton():
+    """get_key_pool returns the same instance."""
+    agent_client._global_pool = None
+    p1 = agent_client.get_key_pool(["key-a"])
+    p2 = agent_client.get_key_pool(["key-a", "key-b"])
+    assert p1 is p2  # second call returns existing
+    agent_client._global_pool = None

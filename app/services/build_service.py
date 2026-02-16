@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, get_limiter
+from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, get_key_pool, ApiKeyPool
 from app.clients import git_client
 from app.clients import github_client
 from app.config import settings
@@ -976,8 +976,12 @@ async def _run_build(
                     })
                 )
 
-            # Token budget limiter — proactive self-throttle before API calls
-            limiter = get_limiter(
+            # Build API key pool for multi-key rotation
+            pool_keys = [api_key]
+            if settings.ANTHROPIC_API_KEY_2:
+                pool_keys.append(settings.ANTHROPIC_API_KEY_2)
+            key_pool = get_key_pool(
+                api_keys=pool_keys,
                 input_tpm=settings.ANTHROPIC_INPUT_TPM,
                 output_tpm=settings.ANTHROPIC_OUTPUT_TPM,
             )
@@ -991,7 +995,7 @@ async def _run_build(
                 usage_out=usage,
                 tools=BUILDER_TOOLS if working_dir else None,
                 on_retry=_on_rate_limit,
-                token_limiter=limiter,
+                key_pool=key_pool,
             ):
                 if isinstance(item, ToolCall):
                     # --- Tool call detected ---
@@ -1194,7 +1198,7 @@ async def _run_build(
             # Broadcast token update with rate-window metrics for UI
             rate_input_60s, rate_output_60s = 0, 0
             try:
-                rate_input_60s, rate_output_60s = limiter._current_usage()
+                rate_input_60s, rate_output_60s = key_pool.aggregate_usage()
             except Exception:
                 pass
             await _broadcast_build_event(user_id, build_id, "token_update", {
@@ -1203,8 +1207,8 @@ async def _run_build(
                 "total_tokens": total_tokens_all_turns,
                 "rate_input_60s": rate_input_60s,
                 "rate_output_60s": rate_output_60s,
-                "rate_input_limit": settings.ANTHROPIC_INPUT_TPM,
-                "rate_output_limit": settings.ANTHROPIC_OUTPUT_TPM,
+                "rate_input_limit": settings.ANTHROPIC_INPUT_TPM * key_pool.key_count,
+                "rate_output_limit": settings.ANTHROPIC_OUTPUT_TPM * key_pool.key_count,
             })
 
             if not compacted:
