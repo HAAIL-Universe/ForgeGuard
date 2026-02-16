@@ -1,4 +1,4 @@
-"""Git client -- thin wrapper around asyncio.subprocess for git operations.
+"""Git client -- thin wrapper around subprocess for git operations.
 
 Handles clone, add, commit, push for build targets. No database access,
 no business logic, no HTTP framework imports.
@@ -7,27 +7,35 @@ no business logic, no HTTP framework imports.
 import asyncio
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
 async def _run_git(args: list[str], cwd: str | Path, env: dict | None = None) -> str:
-    """Run a git command and return stdout. Raises on non-zero exit."""
-    merged_env = {**os.environ, **(env or {})}
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=merged_env,
-    )
-    stdout, stderr = await proc.communicate()
-    out = stdout.decode("utf-8", errors="replace").strip()
-    err = stderr.decode("utf-8", errors="replace").strip()
+    """Run a git command and return stdout. Raises on non-zero exit.
 
-    if proc.returncode != 0:
-        logger.error("git %s failed (rc=%d): %s", " ".join(args), proc.returncode, err)
+    Uses subprocess.run in a thread to avoid asyncio event-loop limitations
+    on Windows (ProactorEventLoop requirement for create_subprocess_exec).
+    """
+    merged_env = {**os.environ, **(env or {})}
+
+    def _sync() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            env=merged_env,
+        )
+
+    result = await asyncio.get_event_loop().run_in_executor(None, _sync)
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+
+    if result.returncode != 0:
+        logger.error("git %s failed (rc=%d): %s", " ".join(args), result.returncode, err)
         raise RuntimeError(f"git {args[0]} failed: {err}")
 
     return out

@@ -55,6 +55,8 @@ interface BuildStatus {
   loop_count: number;
   error_detail: string | null;
   created_at: string;
+  target_type: string | null;
+  target_ref: string | null;
 }
 
 interface PhaseDefinition {
@@ -698,6 +700,42 @@ function BuildProgress() {
     setShowCancelConfirm(false);
   };
 
+  const handleRetryBuild = async () => {
+    setDevSteps(createInitialSteps());
+    setDevSteps((prev) =>
+      prev.map((s) =>
+        s.id === 'build_request' ? { ...s, status: 'active' as const, startedAt: new Date().toISOString(), detail: 'Retrying...' } : s,
+      ),
+    );
+    try {
+      const body = build?.target_type
+        ? JSON.stringify({ target_type: build.target_type, target_ref: build.target_ref })
+        : undefined;
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+      if (body) headers['Content-Type'] = 'application/json';
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
+        method: 'POST',
+        headers,
+        body,
+      });
+      if (res.ok) {
+        const newBuild = await res.json();
+        setBuild(newBuild);
+        setNoBuild(false);
+        setActivity([]);
+        setTotalTokens({ input: 0, output: 0 });
+        setBuildFiles([]);
+        setOverviewPhases([]);
+        addToast('Build restarted', 'success');
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to retry build' }));
+        addToast(data.detail || 'Failed to retry build');
+      }
+    } catch {
+      addToast('Network error retrying build');
+    }
+  };
+
   const handleStartBuild = async () => {
     /* Mark first dev step immediately */
     setDevSteps(createInitialSteps());
@@ -896,6 +934,24 @@ function BuildProgress() {
                 }}
               >
                 View Summary
+              </button>
+            )}
+            {build?.status === 'failed' && (
+              <button
+                onClick={handleRetryBuild}
+                data-testid="retry-build-btn"
+                style={{
+                  background: '#2563EB',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '6px 16px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                }}
+              >
+                Retry Build
               </button>
             )}
             {isActive && (

@@ -339,6 +339,9 @@ async def _run_subprocess(
 ) -> tuple[int, str, str]:
     """Run a subprocess command with timeout and output limits.
 
+    Uses subprocess.run in a thread to avoid asyncio event-loop limitations
+    on Windows (ProactorEventLoop requirement for create_subprocess_shell).
+
     Returns (exit_code, stdout, stderr).
     """
     # Restricted environment: only PATH
@@ -349,29 +352,26 @@ async def _run_subprocess(
         if val:
             env[key] = val
 
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=working_dir,
-        env=env,
-    )
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return -1, "", f"Error: Command timed out after {timeout}s"
+    import subprocess as _sp
 
-    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    def _sync() -> tuple[int, str, str]:
+        try:
+            result = _sp.run(
+                command,
+                capture_output=True,
+                text=True,
+                cwd=working_dir,
+                env=env,
+                shell=True,
+                timeout=timeout,
+            )
+            stdout = _truncate_output(result.stdout or "", MAX_STDOUT_BYTES)
+            stderr = _truncate_output(result.stderr or "", MAX_STDERR_BYTES)
+            return result.returncode, stdout, stderr
+        except _sp.TimeoutExpired:
+            return -1, "", f"Error: Command timed out after {timeout}s"
 
-    stdout = _truncate_output(stdout, MAX_STDOUT_BYTES)
-    stderr = _truncate_output(stderr, MAX_STDERR_BYTES)
-
-    return proc.returncode or 0, stdout, stderr
+    return await asyncio.get_event_loop().run_in_executor(None, _sync)
 
 
 # ---------------------------------------------------------------------------

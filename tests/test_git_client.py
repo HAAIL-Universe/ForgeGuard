@@ -1,6 +1,6 @@
 """Tests for app/clients/git_client.py -- thin async git wrapper."""
 
-import asyncio
+import subprocess
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -12,11 +12,11 @@ from app.clients import git_client
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _mock_process(returncode: int = 0, stdout: str = "", stderr: str = ""):
-    proc = AsyncMock()
-    proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
-    return proc
+def _mock_completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
+    """Return a mock subprocess.CompletedProcess."""
+    return subprocess.CompletedProcess(
+        args=["git"], returncode=returncode, stdout=stdout, stderr=stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -25,22 +25,22 @@ def _mock_process(returncode: int = 0, stdout: str = "", stderr: str = ""):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.git_client.asyncio.create_subprocess_exec")
-async def test_run_git_success(mock_exec):
+@patch("app.clients.git_client.subprocess.run")
+async def test_run_git_success(mock_run):
     """_run_git runs a command and returns stdout."""
-    mock_exec.return_value = _mock_process(0, "ok", "")
+    mock_run.return_value = _mock_completed(0, "ok", "")
 
     result = await git_client._run_git(["status"], cwd="/tmp/test")
 
-    mock_exec.assert_called_once()
+    mock_run.assert_called_once()
     assert result == "ok"
 
 
 @pytest.mark.asyncio
-@patch("app.clients.git_client.asyncio.create_subprocess_exec")
-async def test_run_git_failure(mock_exec):
+@patch("app.clients.git_client.subprocess.run")
+async def test_run_git_failure(mock_run):
     """_run_git raises RuntimeError on non-zero exit."""
-    mock_exec.return_value = _mock_process(128, "", "fatal: not a git repo")
+    mock_run.return_value = _mock_completed(128, "", "fatal: not a git repo")
 
     with pytest.raises(RuntimeError, match="not a git repo"):
         await git_client._run_git(["status"], cwd="/tmp/test")
