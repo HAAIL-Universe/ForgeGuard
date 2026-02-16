@@ -517,6 +517,17 @@ function BuildProgress() {
             break;
           }
 
+          case 'context_reset': {
+            /* Plan-execute mode: each phase is independent, so reset the
+               running token counters.  The "Context Window" bar now
+               reflects per-phase usage rather than the misleading
+               cumulative total across independent API calls. */
+            const droppedCount = (payload.dropped ?? 0) as number;
+            setTotalTokens({ input: 0, output: 0 });
+            addActivity(`Context reset — cleared ${droppedCount} cached files`, 'system');
+            break;
+          }
+
           case 'build_complete': {
             setBuild((prev) => prev ? { ...prev, status: 'completed' } : prev);
             const totalIn = (payload.total_input_tokens ?? 0) as number;
@@ -936,7 +947,7 @@ function BuildProgress() {
     setSendingInterject(true);
 
     // Slash commands route through the same interject endpoint (backend handles routing)
-    const isSlashCmd = ['/stop', '/pause', '/start', '/compact'].includes(trimmed);
+    const isSlashCmd = ['/stop', '/pause', '/start', '/compact', '/clear'].includes(trimmed);
 
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
@@ -954,10 +965,11 @@ function BuildProgress() {
             started: 'Build started',
             already_running: 'Build is already running',
             compact_requested: 'Context compaction requested \u2014 will compact before next file',
+            cleared: 'Build cleared and restarting \u2014 fresh context',
           };
           addToast(msgs[data.status] || data.message || 'Command sent', 'success');
           // Refresh build state after /stop or /start
-          if (['stopped', 'started', 'resumed'].includes(data.status)) {
+          if (['stopped', 'started', 'resumed', 'cleared'].includes(data.status)) {
             const bres = await fetch(`${API_BASE}/projects/${projectId}/build/status`, {
               headers: { Authorization: `Bearer ${token}` },
             });
@@ -1499,7 +1511,7 @@ function BuildProgress() {
               <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }} data-testid="interjection-bar">
                 <input
                   type="text"
-                  placeholder={isActive ? 'Send feedback or /stop /pause /start /compact...' : '/start to begin a new build...'}
+                  placeholder={isActive ? 'Send feedback or /stop /pause /start /compact /clear...' : '/start to begin a new build...'}
                   value={interjectionText}
                   onChange={(e) => setInterjectionText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleInterject(); }}
@@ -1522,6 +1534,7 @@ function BuildProgress() {
                       : interjectionText.trim().toLowerCase() === '/pause' ? '#F59E0B'
                       : interjectionText.trim().toLowerCase() === '/start' ? '#16A34A'
                       : interjectionText.trim().toLowerCase() === '/compact' ? '#7C3AED'
+                      : interjectionText.trim().toLowerCase() === '/clear' ? '#0EA5E9'
                       : '#2563EB',
                     color: '#fff',
                     border: 'none',
@@ -1538,6 +1551,7 @@ function BuildProgress() {
                     : interjectionText.trim().toLowerCase() === '/pause' ? '\u23F8 Pause'
                     : interjectionText.trim().toLowerCase() === '/start' ? '\u25B6 Start'
                     : interjectionText.trim().toLowerCase() === '/compact' ? '\u267B Compact'
+                    : interjectionText.trim().toLowerCase() === '/clear' ? '\u26A1 Clear'
                     : 'Interject'}
                 </button>
               </div>

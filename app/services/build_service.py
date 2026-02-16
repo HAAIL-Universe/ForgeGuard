@@ -557,9 +557,11 @@ async def interject_build(
     """Inject a user message or slash command into an active build.
 
     Slash commands:
-        /stop   — cancel the current build immediately
-        /pause  — pause after the current file finishes
-        /start  — resume a paused build (or start a new one)
+        /stop    — cancel the current build immediately
+        /pause   — pause after the current file finishes
+        /start   — resume a paused build (or start a new one)
+        /compact — compact context before the next file
+        /clear   — stop the build and restart immediately (preserves files on disk)
 
     Regular messages are queued as interjections.
     """
@@ -569,6 +571,22 @@ async def interject_build(
     if stripped == "/stop":
         result = await cancel_build(project_id, user_id)
         return {"status": "stopped", "build_id": str(result["id"]), "message": "Build stopped via /stop"}
+
+    # --- /clear ------------------------------------------------------
+    if stripped == "/clear":
+        # Stop current build, then immediately start a new one
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if latest and latest["status"] in ("running", "paused", "pending"):
+            try:
+                await cancel_build(project_id, user_id)
+            except ValueError:
+                pass  # already cancelled
+        # Start fresh build — will pick up existing files on disk
+        result = await start_build(project_id, user_id)
+        return {"status": "cleared", "build_id": str(result["id"]), "message": "Build cleared and restarted via /clear"}
 
     # --- /start ------------------------------------------------------
     if stripped == "/start":
@@ -3994,6 +4012,21 @@ async def _run_build_plan_execute(
                 )
             except Exception as exc:
                 logger.warning("Git push failed for %s: %s", phase_name, exc)
+
+        # --- Auto-clear context between phases ---
+        # Each phase is independent; prior-phase files live on disk and
+        # will be loaded on demand via the context budget system.
+        dropped = len(all_files_written)
+        all_files_written.clear()
+        await build_repo.append_build_log(
+            build_id,
+            f"Context reset after {phase_name} — cleared {dropped} cached files",
+            source="system", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "context_reset", {
+            "phase": phase_name,
+            "dropped": dropped,
+        })
 
     # Build complete — clean up signal flags
     bid = str(build_id)
