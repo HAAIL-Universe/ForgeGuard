@@ -231,7 +231,12 @@ async def stream_agent(
         "stream": True,
     }
     if tools:
-        payload["tools"] = tools
+        # Mark the last tool with cache_control so the full tool list
+        # is included in the cached prefix (system + tools + first message).
+        cached_tools = [t.copy() for t in tools]
+        if cached_tools:
+            cached_tools[-1]["cache_control"] = {"type": "ephemeral"}
+        payload["tools"] = cached_tools
 
     # Rough estimate of input tokens (~4 chars per token)
     est_input = len(system_prompt) // 4

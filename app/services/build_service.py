@@ -756,8 +756,20 @@ async def _run_build(
             "The workspace file listing is below. Start coding IMMEDIATELY.\n\n"
             + directive
         )
+        # Use content-block format with cache_control so Anthropic caches
+        # the contracts/directive across all turns (prefix caching).
+        # Turns 2+ pay ~10% of the input token cost for this block.
         messages: list[dict] = [
-            {"role": "user", "content": first_message},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": first_message,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
         ]
 
         accumulated_text = ""
