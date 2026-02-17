@@ -7811,3 +7811,29 @@ A5: PASS -- No TODO: placeholders in updatedifflog.md.
 W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 39 -- Scout Metrics Engine & Grounded Quality Assessment
+Timestamp: 2026-02-17T20:15:40Z
+AEM Cycle: Phase 39
+
+### Deliverables
+- 39.1 Deterministic Metrics Engine (app/services/scout_metrics.py)
+  - 5 dimensions: test_file_ratio, doc_coverage, dependency_health, code_organization, security_posture
+  - Each scored 0-20, summed to 0-100 computed_score
+- 39.2 Risk/Smell Detector (11 detectors in same module)
+  - secrets_in_source, env_committed, no_gitignore, no_license, unpinned_deps, large_files, raw_sql, eval_exec, no_tests, missing_readme, todo_fixme_density
+- 39.3 Rubric-based LLM prompt rewrite
+  - _DOSSIER_SYSTEM_PROMPT now requires LLM to use computed_score, not invent its own
+  - Metrics block injected into user message for _generate_dossier()
+- 39.4 Score-Over-Time tracking
+  - Migration 019_scout_computed_score.sql
+  - get_score_history() in scout_repo.py
+  - GET /{repo_id}/score-history endpoint
+- 39.5 Frontend: metrics bars, smells list, sparkline chart, Measured/AI badges
+- 39.6 Tests: 45 new tests (35 metrics + 10 dossier/prompt/history)
+
+### Test Results
+- Backend: 849 passed, 1 pre-existing failure (test_cors_allows_valid_origin)
+- Frontend: 68 passed
+- Total: 917 tests

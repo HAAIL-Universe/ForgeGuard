@@ -38,6 +38,7 @@ async def update_scout_run(
     checks_passed: int = 0,
     checks_failed: int = 0,
     checks_warned: int = 0,
+    computed_score: int | None = None,
 ) -> dict:
     """Update a scout run with results."""
     pool = await get_pool()
@@ -49,11 +50,12 @@ async def update_scout_run(
             checks_passed = $4,
             checks_failed = $5,
             checks_warned = $6,
+            computed_score = $7,
             completed_at = CASE WHEN $2 IN ('completed', 'error') THEN now() ELSE completed_at END
         WHERE id = $1
         RETURNING id, repo_id, user_id, status, hypothesis, scan_type,
                   results, checks_passed, checks_failed, checks_warned,
-                  started_at, completed_at
+                  computed_score, started_at, completed_at
         """,
         run_id,
         status,
@@ -61,6 +63,7 @@ async def update_scout_run(
         checks_passed,
         checks_failed,
         checks_warned,
+        computed_score,
     )
     return dict(row) if row else {}
 
@@ -128,3 +131,30 @@ async def get_scout_run(run_id: UUID) -> dict | None:
         run_id,
     )
     return dict(row) if row else None
+
+
+async def get_score_history(
+    repo_id: UUID,
+    user_id: UUID,
+    limit: int = 30,
+) -> list[dict]:
+    """Return computed_score over time for a repo's deep scans."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, computed_score, checks_passed, checks_failed, checks_warned,
+               started_at, completed_at
+        FROM scout_runs
+        WHERE repo_id = $1
+          AND user_id = $2
+          AND scan_type = 'deep'
+          AND status = 'completed'
+          AND computed_score IS NOT NULL
+        ORDER BY started_at DESC
+        LIMIT $3
+        """,
+        repo_id,
+        user_id,
+        limit,
+    )
+    return [dict(r) for r in rows]

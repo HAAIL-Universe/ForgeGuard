@@ -1,20 +1,18 @@
 Status: PASS
-Phase: 38 � Forge Seal: Build Certificate & Handoff
+Phase: 39 — Scout Metrics Engine & Grounded Quality Assessment
 Branch: master
-Backend: 804 passed, 1 pre-existing failure (test_cors_allows_valid_origin)
+Backend: 849 passed, 1 pre-existing failure (test_cors_allows_valid_origin)
 Frontend: 68 passed
-Total: 872 tests
-New tests: 68 backend (aggregator=17, scorer=28, renderer=23) + 7 frontend (CertificateModal)
+Total: 917 tests
+New tests: 45 backend (scout_metrics=35, dossier_prompt=10)
 Files created:
-  - app/services/certificate_aggregator.py (315 lines)
-  - app/services/certificate_scorer.py (391 lines)
-  - app/services/certificate_renderer.py (276 lines)
-  - web/src/components/CertificateModal.tsx
-  - tests/test_certificate_aggregator.py
-  - tests/test_certificate_scorer.py
-  - tests/test_certificate_renderer.py
-  - web/src/__tests__/Certificate.test.tsx
+  - app/services/scout_metrics.py (380 lines) — deterministic metrics engine + 11 smell detectors
+  - db/migrations/019_scout_computed_score.sql — computed_score column
+  - tests/test_scout_metrics.py (35 tests)
+  - tests/test_scout_dossier_prompt.py (10 tests)
 Files modified:
-  - app/api/routers/projects.py (added 3 certificate endpoints)
-  - web/src/pages/ProjectDetail.tsx (added Forge Seal card + CertificateModal integration)
-  - Forge/Contracts/phases.md (Phase 38 status -> DONE)
+  - app/services/scout_service.py — rubric-based dossier prompt, metrics injection, score history
+  - app/repos/scout_repo.py — computed_score param, get_score_history()
+  - app/api/routers/scout.py — GET /{repo_id}/score-history endpoint
+  - web/src/pages/Scout.tsx — metrics bars, smells list, sparkline chart, Measured/AI badges
+  - Forge/Contracts/phases.md (Phase 39 status -> DONE)

@@ -2924,3 +2924,85 @@ Function: `def render_certificate(scores: CertificateScores, format: str) -> str
 - `tests/test_certificate_renderer.py` — ~6 tests  
 - `tests/test_certificate_endpoint.py` — ~4 tests  
 - Full suite regression, evidence, commit + push
+
+---
+
+## Phase 39 — Scout Intelligence Hardening: Metrics, Rubric & Risk Detection  *(DONE)*
+
+**Status:** 🔨 IN PROGRESS
+
+**Objective:** Transform Scout's quality assessment from an ungrounded LLM guess into a **metrics-first, evidence-backed system**. Compute hard numbers deterministically (free, reproducible, instant), detect concrete risks and code smells without the LLM, give the LLM a structured scoring rubric so its output is consistent and verifiable, and track scores across scans so users can see their repo improving over time.
+
+**Principle:** *Measure first, narrate second.* The LLM becomes the storyteller, not the judge.
+
+**Background:** Currently the deep scan sends ~6KB of code samples plus stack/architecture data to the LLM and asks it to produce a quality score 0–100 with no rubric. The score is non-deterministic and ungrounded. Risk areas are the LLM's opinion rather than detected facts. There is no scan-over-time comparison.
+
+**Depends on:** Phase 36 (Scout deep scan), Phase 37 (Upgrade Advisor for dependency data).
+
+---
+
+### 39.1 — Deterministic Metrics Engine (`app/services/scout_metrics.py`)
+
+A pure-function module that takes the deep scan artifacts (tree, stack_profile, architecture, file_contents, checks) and computes hard numbers — no LLM, no IO.
+
+| Metric | Computation | Score contribution |
+|--------|-------------|-------------------|
+| **test_file_ratio** | Count files matching `test_*` / `*_test.*` / `*_spec.*` / `__tests__/` ÷ total source files | 0–20 |
+| **doc_coverage** | Existence & size of README + docs/ + docstrings in entry points | 0–20 |
+| **dependency_health** | Pinned vs unpinned deps, lock file presence, dep count | 0–20 |
+| **code_organization** | Max file size (flag >500 lines), directory depth, separation of concerns, entry point clarity | 0–20 |
+| **security_posture** | Secrets patterns, `.env` committed, raw SQL, `eval()`/`exec()`, missing `.gitignore` | 0–20 |
+
+Function: `def compute_repo_metrics(tree_paths, file_contents, stack_profile, architecture, checks) -> RepoMetrics`
+
+Returns: `{ scores: { dimension: {score, details} }, computed_score: 0-100, file_stats: {...}, smells: [...] }`
+
+### 39.2 — Actionable Risk & Smell Detector (within `scout_metrics.py`)
+
+Deterministic pattern detection — concrete, verifiable problems.
+
+| Detector | What it finds | Severity |
+|----------|--------------|----------|
+| **secrets_in_source** | `AKIA`, `sk-`, `ghp_`, `password=`, hardcoded tokens | HIGH |
+| **env_committed** | `.env` in tree, not gitignored | HIGH |
+| **no_gitignore** | Missing `.gitignore` | MEDIUM |
+| **no_license** | Missing LICENSE file | LOW |
+| **unpinned_deps** | Deps without version pins | MEDIUM |
+| **large_files** | Source files >500 lines | MEDIUM |
+| **raw_sql** | f-string SQL construction | HIGH |
+| **eval_exec** | `eval()` / `exec()` calls | HIGH |
+| **no_tests** | Zero test files | HIGH |
+| **missing_readme** | No README at root | MEDIUM |
+| **todo_fixme_density** | >10 TODO/FIXME/HACK per 1K lines | LOW |
+
+Function: `def detect_smells(tree_paths, file_contents) -> list[SmellReport]`
+
+### 39.3 — Structured Scoring Rubric in LLM Prompt
+
+Replace the unstructured system prompt with a rubric-based prompt that receives computed metrics and narrates them rather than guessing scores. The LLM uses `computed_score` as `quality_assessment.score` and turns detected smells into `risk_areas`.
+
+Updated `_generate_dossier()` signature: adds `metrics: RepoMetrics` parameter.  
+Updated user message: includes `Computed Metrics:` and `Detected Smells:` sections.
+
+### 39.4 — Score-Over-Time Tracking
+
+- **Migration:** Add `computed_score INTEGER` column to `scout_runs`
+- **Repo function:** `get_score_history(repo_id, user_id) -> [{scan_date, computed_score, scan_type}]`
+- **API endpoint:** `GET /scout/{repo_id}/score-history`
+- **Deep scan integration:** Persist `computed_score` after metrics computation; include metrics in results JSONB
+- **Frontend:** Score trend sparkline (inline SVG mini-chart) in the dossier view
+
+### 39.5 — Frontend Enhancements (`web/src/pages/Scout.tsx`)
+
+1. **Metrics breakdown card** — 5 dimensions as horizontal progress bars (0–20 each)
+2. **Detected smells list** — severity-tagged expandable list with file references
+3. **Score trend sparkline** — mini line chart showing computed_score across last N deep scans
+4. **"Computed vs LLM" badges** — "📐 Measured" for deterministic sections, "🤖 AI Analysis" for LLM-narrated
+
+### 39.6 — Tests + Audit + Commit
+
+- `tests/test_scout_metrics.py` — ~25 tests (metrics + smell detection)
+- `tests/test_scout_dossier_prompt.py` — ~5 tests (updated prompt, metrics passthrough)
+- `tests/test_scout_score_history.py` — ~5 tests (repo function + endpoint)
+- Frontend tests for new components
+- Full suite regression, evidence, commit + push

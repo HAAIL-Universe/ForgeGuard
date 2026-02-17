@@ -11,6 +11,7 @@ from app.services.scout_service import (
     get_scout_detail,
     get_scout_dossier,
     get_scout_history,
+    get_scout_score_history,
     start_deep_scan,
     start_scout_run,
 )
@@ -129,6 +130,23 @@ async def scout_repo_history(
     """Get recent Scout runs for a specific repo."""
     runs = await get_scout_history(current_user["id"], repo_id=repo_id)
     return {"runs": runs}
+
+
+@router.get("/{repo_id}/score-history")
+async def scout_score_history(
+    repo_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Get computed score history for score-over-time charts."""
+    try:
+        history = await get_scout_score_history(
+            current_user["id"], repo_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
+        )
+    return {"history": history}
 
 
 # ---------------------------------------------------------------------------

@@ -118,6 +118,9 @@ function Scout() {
   const [upgradePlan, setUpgradePlan] = useState<Record<string, any> | null>(null);
   const [upgradePlanLoading, setUpgradePlanLoading] = useState(false);
 
+  /* Score history state (39.4) */
+  const [scoreHistory, setScoreHistory] = useState<any[] | null>(null);
+
   /* Fetch repos */
   const fetchRepos = useCallback(async () => {
     try {
@@ -182,6 +185,15 @@ function Scout() {
                 setView('dossier');
               })
               .catch(() => setView('dossier'));
+            // Fetch score history
+            if (p.repo_id) {
+              fetch(`${API_BASE}/scout/${p.repo_id}/score-history`, {
+                headers: { Authorization: `Bearer ${token}` },
+              })
+                .then((res) => (res.ok ? res.json() : null))
+                .then((data) => { if (data?.history) setScoreHistory(data.history); })
+                .catch(() => {});
+            }
           } else {
             setView('results');
           }
@@ -270,6 +282,13 @@ function Scout() {
         const data = await res.json();
         setDeepScanResult(data);
         setView('dossier');
+        // Fetch score history
+        fetch(`${API_BASE}/scout/${run.repo_id}/score-history`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => { if (d?.history) setScoreHistory(d.history); })
+          .catch(() => {});
       } else {
         addToast('Could not load dossier');
       }
@@ -937,11 +956,132 @@ function Scout() {
               </div>
             )}
 
+            {/* ── Measured Metrics (39.1) ── */}
+            {deepScanResult.metrics && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Quality Metrics <span style={{ fontSize: '0.65rem', color: '#22C55E', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: '6px' }}>Measured</span>
+                </h3>
+                {/* Overall Score */}
+                <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155', marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                    <div style={{
+                      width: '52px', height: '52px', borderRadius: '50%', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '1.1rem',
+                      background: (deepScanResult.metrics.computed_score ?? 0) >= 80 ? '#14532D' :
+                        (deepScanResult.metrics.computed_score ?? 0) >= 60 ? '#78350F' : '#7F1D1D',
+                      color: (deepScanResult.metrics.computed_score ?? 0) >= 80 ? '#22C55E' :
+                        (deepScanResult.metrics.computed_score ?? 0) >= 60 ? '#F59E0B' : '#EF4444',
+                    }}>
+                      {deepScanResult.metrics.computed_score ?? '—'}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>Computed Score</div>
+                      <div style={{ fontSize: '0.7rem', color: '#64748B' }}>
+                        {deepScanResult.metrics.file_stats?.source_files ?? 0} source files · {deepScanResult.metrics.file_stats?.test_files ?? 0} test files · {deepScanResult.metrics.file_stats?.doc_files ?? 0} doc files
+                      </div>
+                    </div>
+                  </div>
+                  {/* Dimension bars */}
+                  {Object.entries(deepScanResult.metrics.scores || {}).map(([dim, info]: [string, any]) => (
+                    <div key={dim} style={{ marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '3px' }}>
+                        <span style={{ textTransform: 'capitalize' }}>{dim.replace(/_/g, ' ')}</span>
+                        <span style={{ color: '#64748B' }}>{info.score}/20</span>
+                      </div>
+                      <div style={{ height: '6px', background: '#0F172A', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{
+                          height: '100%',
+                          width: `${(info.score / 20) * 100}%`,
+                          borderRadius: '3px',
+                          background: info.score >= 16 ? '#22C55E' : info.score >= 10 ? '#F59E0B' : '#EF4444',
+                          transition: 'width 0.4s ease',
+                        }} />
+                      </div>
+                      {info.details && info.details.length > 0 && (
+                        <div style={{ fontSize: '0.65rem', color: '#64748B', marginTop: '2px' }}>
+                          {info.details[0]}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Detected Smells (39.2/39.5) ── */}
+            {deepScanResult.metrics?.smells && deepScanResult.metrics.smells.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Detected Issues <span style={{ fontSize: '0.65rem', color: '#22C55E', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: '6px' }}>Measured</span>
+                </h3>
+                <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
+                  {deepScanResult.metrics.smells.map((smell: any, i: number) => (
+                    <div key={i} style={{ display: 'flex', gap: '8px', padding: '6px 0', fontSize: '0.75rem', borderBottom: i < deepScanResult.metrics.smells.length - 1 ? '1px solid #334155' : 'none' }}>
+                      <span style={{
+                        padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600, flexShrink: 0,
+                        background: smell.severity === 'HIGH' ? '#7F1D1D' : smell.severity === 'MEDIUM' ? '#78350F' : '#1E3A5F',
+                        color: smell.severity === 'HIGH' ? '#EF4444' : smell.severity === 'MEDIUM' ? '#F59E0B' : '#3B82F6',
+                      }}>
+                        {smell.severity}
+                      </span>
+                      <div>
+                        <div style={{ fontWeight: 500 }}>{smell.name}</div>
+                        <div style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '2px' }}>{smell.detail}</div>
+                        {smell.files && smell.files.length > 0 && (
+                          <div style={{ fontSize: '0.65rem', color: '#64748B', fontFamily: 'monospace', marginTop: '2px' }}>
+                            {smell.files.slice(0, 3).join(', ')}{smell.files.length > 3 ? ` +${smell.files.length - 3} more` : ''}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Score History Sparkline (39.4) ── */}
+            {scoreHistory && scoreHistory.length > 1 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Score Over Time <span style={{ fontSize: '0.65rem', color: '#22C55E', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: '6px' }}>Measured</span>
+                </h3>
+                <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: '4px', height: '60px' }}>
+                    {[...scoreHistory].reverse().map((pt: any, i: number) => {
+                      const maxScore = 100;
+                      const h = Math.max(4, (pt.computed_score / maxScore) * 56);
+                      return (
+                        <div
+                          key={i}
+                          title={`${pt.computed_score}/100 — ${pt.started_at ? new Date(pt.started_at).toLocaleDateString() : ''}`}
+                          style={{
+                            flex: 1,
+                            height: `${h}px`,
+                            background: pt.computed_score >= 80 ? '#22C55E' : pt.computed_score >= 60 ? '#F59E0B' : '#EF4444',
+                            borderRadius: '2px 2px 0 0',
+                            minWidth: '6px',
+                            maxWidth: '24px',
+                            opacity: i === scoreHistory.length - 1 ? 1 : 0.6,
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: '#64748B', marginTop: '4px' }}>
+                    <span>{scoreHistory[scoreHistory.length - 1]?.started_at ? new Date(scoreHistory[scoreHistory.length - 1].started_at).toLocaleDateString() : ''}</span>
+                    <span>{scoreHistory.length} scans</span>
+                    <span>{scoreHistory[0]?.started_at ? new Date(scoreHistory[0].started_at).toLocaleDateString() : ''}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* LLM Dossier */}
             {deepScanResult.dossier && (
               <div style={{ marginBottom: '24px' }}>
                 <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Project Dossier
+                  Project Dossier <span style={{ fontSize: '0.65rem', color: '#64748B', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: '6px' }}>AI-generated</span>
                 </h3>
                 {/* Executive Summary */}
                 {deepScanResult.dossier.executive_summary && (
