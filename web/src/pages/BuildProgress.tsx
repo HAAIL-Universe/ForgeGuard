@@ -112,12 +112,15 @@ interface PauseInfo {
 interface ManifestFile {
   path: string;
   purpose: string;
-  status: 'pending' | 'generating' | 'done' | 'error';
+  status: 'pending' | 'generating' | 'done' | 'error' | 'audited';
   language: string;
   estimated_lines: number;
   size_bytes?: number;
   tokens_in?: number;
   tokens_out?: number;
+  audit_verdict?: 'PASS' | 'FAIL';
+  audit_findings?: string;
+  audit_duration_ms?: number;
 }
 
 interface VerificationResult {
@@ -245,6 +248,8 @@ function BuildProgress() {
   const [manifestFiles, setManifestFiles] = useState<ManifestFile[]>([]);
   const [manifestExpanded, setManifestExpanded] = useState(true);
   const [verification, setVerification] = useState<VerificationResult | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ path: string; content: string; language: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const feedEndRef = useRef<HTMLDivElement>(null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
@@ -692,6 +697,26 @@ function BuildProgress() {
             break;
           }
 
+          case 'file_audited': {
+            const auditPath = (payload.path ?? '') as string;
+            const verdict = (payload.verdict ?? 'PASS') as 'PASS' | 'FAIL';
+            const findings = (payload.findings ?? '') as string;
+            const auditDur = (payload.duration_ms ?? 0) as number;
+            if (auditPath) {
+              setManifestFiles((prev) =>
+                prev.map((f) =>
+                  f.path === auditPath
+                    ? { ...f, status: 'audited' as const, audit_verdict: verdict, audit_findings: findings, audit_duration_ms: auditDur }
+                    : f,
+                ),
+              );
+              const icon = verdict === 'PASS' ? '✓✓' : '✗';
+              const level = verdict === 'PASS' ? 'info' as const : 'warn' as const;
+              addActivity(`${icon} Audit ${verdict}: ${auditPath}${findings ? ' — ' + findings.slice(0, 120) : ''} (${auditDur}ms)`, level);
+            }
+            break;
+          }
+
           case 'verification_result': {
             const result: VerificationResult = {
               syntax_errors: (payload.syntax_errors ?? 0) as number,
@@ -887,6 +912,26 @@ function BuildProgress() {
       }
     } catch {
       addToast('Network error retrying build');
+    }
+  };
+
+  /* ---- File preview handler ---- */
+  const handleFilePreview = async (filePath: string, language: string) => {
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/files/${encodeURIComponent(filePath)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPreviewFile({ path: filePath, content: data.content ?? data.text ?? '', language });
+      } else {
+        addToast('Failed to load file preview');
+      }
+    } catch {
+      addToast('Network error loading file');
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -1158,45 +1203,8 @@ function BuildProgress() {
           </div>
         </div>
 
-        {/* ---- Phase Overview Grid ---- */}
-        {overviewPhases.length > 0 && (
-          <div style={{ ...cardStyle, padding: '12px 16px', marginBottom: '16px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '6px' }}>
-              {overviewPhases.map((op) => {
-                const colors: Record<string, string> = {
-                  pending: '#475569', active: '#3B82F6', passed: '#22C55E', failed: '#EF4444', paused: '#F59E0B',
-                };
-                const bg: Record<string, string> = {
-                  pending: '#1E293B', active: '#1E3A5F', passed: '#14532D', failed: '#7F1D1D', paused: '#78350F',
-                };
-                const c = colors[op.status] ?? '#475569';
-                const b = bg[op.status] ?? '#1E293B';
-                const isActivePhase = op.status === 'active';
-                return (
-                  <div
-                    key={op.number}
-                    title={op.objective || op.name}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      padding: '4px 8px',
-                      borderRadius: '6px',
-                      background: b,
-                      border: `1px solid ${c}`,
-                      ...(isActivePhase ? { boxShadow: `0 0 6px ${c}40` } : {}),
-                    }}
-                  >
-                    <span style={{ fontSize: '0.65rem', fontWeight: 700, color: c, minWidth: '14px' }}>{op.number}</span>
-                    <span style={{ fontSize: '0.65rem', color: c, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {op.name}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {/* Phase Overview Grid removed — the expandable Phases panel below
+           provides the same info with richer detail (tokens, deliverables). */}
 
         {/* ---- Two-column layout ---- */}
         <div style={twoColStyle}>
@@ -1327,7 +1335,12 @@ function BuildProgress() {
                 onClick={() => setManifestExpanded(!manifestExpanded)}
               >
                 <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
-                  File Manifest ({manifestFiles.filter((f) => f.status === 'done').length}/{manifestFiles.length})
+                  File Manifest ({manifestFiles.filter((f) => f.status === 'done' || f.status === 'audited').length}/{manifestFiles.length})
+                  {manifestFiles.some((f) => f.status === 'audited') && (
+                    <span style={{ fontSize: '0.65rem', color: '#22C55E', marginLeft: '8px', fontWeight: 400 }}>
+                      {manifestFiles.filter((f) => f.status === 'audited' && f.audit_verdict === 'PASS').length} audited
+                    </span>
+                  )}
                 </h3>
                 <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: manifestExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
               </div>
@@ -1336,30 +1349,59 @@ function BuildProgress() {
                   {manifestFiles.map((f) => (
                     <div
                       key={f.path}
+                      onClick={() => (f.status === 'done' || f.status === 'audited') ? handleFilePreview(f.path, f.language) : undefined}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         gap: '8px',
                         padding: '5px 8px',
                         borderRadius: '4px',
-                        background: f.status === 'done' ? '#0D2818' : f.status === 'generating' ? '#1E3A5F' : '#0F172A',
+                        background: f.status === 'audited'
+                          ? (f.audit_verdict === 'FAIL' ? '#2D1215' : '#0D2818')
+                          : f.status === 'done' ? '#0D2818'
+                          : f.status === 'generating' ? '#1E3A5F'
+                          : '#0F172A',
                         fontSize: '0.72rem',
                         transition: 'background 0.3s',
+                        cursor: (f.status === 'done' || f.status === 'audited') ? 'pointer' : 'default',
                       }}
+                      title={f.audit_findings ? `Audit: ${f.audit_findings.slice(0, 200)}` : f.purpose}
                     >
                       <span style={{
-                        color: f.status === 'done' ? '#22C55E' : f.status === 'generating' ? '#3B82F6' : f.status === 'error' ? '#EF4444' : '#475569',
+                        color: f.status === 'audited'
+                          ? (f.audit_verdict === 'FAIL' ? '#EF4444' : '#22C55E')
+                          : f.status === 'done' ? '#22C55E'
+                          : f.status === 'generating' ? '#3B82F6'
+                          : f.status === 'error' ? '#EF4444'
+                          : '#475569',
                         flexShrink: 0,
                         animation: f.status === 'generating' ? 'pulse 1.5s infinite' : 'none',
                       }}>
-                        {f.status === 'done' ? '✓' : f.status === 'generating' ? '⏳' : f.status === 'error' ? '✗' : '○'}
+                        {f.status === 'audited'
+                          ? (f.audit_verdict === 'PASS' ? '✓✓' : '✗')
+                          : f.status === 'done' ? '✓'
+                          : f.status === 'generating' ? '⏳'
+                          : f.status === 'error' ? '✗'
+                          : '○'}
                       </span>
-                      <span style={{ color: f.status === 'done' ? '#22C55E' : '#94A3B8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{
+                        color: f.status === 'audited'
+                          ? (f.audit_verdict === 'FAIL' ? '#FCA5A5' : '#22C55E')
+                          : f.status === 'done' ? '#22C55E'
+                          : '#94A3B8',
+                        flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
                         {f.path}
                       </span>
+                      {f.status === 'audited' && f.audit_verdict === 'FAIL' && (
+                        <span style={{ color: '#EF4444', fontSize: '0.6rem', flexShrink: 0, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {f.audit_findings?.split('\n')[0]?.slice(0, 60) || 'FAIL'}
+                        </span>
+                      )}
                       <span style={{ color: '#475569', flexShrink: 0, fontSize: '0.62rem' }}>
                         {f.language && <span style={{ marginRight: '4px' }}>{f.language}</span>}
-                        {f.status === 'done' && f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)}k` : `~${f.estimated_lines}L`}
+                        {(f.status === 'done' || f.status === 'audited') && f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)}k` : `~${f.estimated_lines}L`}
+                        {f.audit_duration_ms ? ` ${f.audit_duration_ms}ms` : ''}
                       </span>
                     </div>
                   ))}
@@ -1653,6 +1695,94 @@ function BuildProgress() {
               >
                 Abort Build
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- File Preview Modal ---- */}
+      {(previewFile || previewLoading) && (
+        <div
+          data-testid="file-preview-modal"
+          onClick={() => { setPreviewFile(null); setPreviewLoading(false); }}
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 110,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#0F172A',
+              borderRadius: '12px',
+              border: '1px solid #334155',
+              maxWidth: '800px',
+              width: '90%',
+              maxHeight: '80vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 16px',
+              borderBottom: '1px solid #1E293B',
+              flexShrink: 0,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: '#64748B' }}>📄</span>
+                <span style={{ color: '#F8FAFC', fontSize: '0.85rem', fontWeight: 600 }}>
+                  {previewFile?.path ?? 'Loading...'}
+                </span>
+                {previewFile?.language && (
+                  <span style={{ color: '#64748B', fontSize: '0.65rem', background: '#1E293B', padding: '2px 6px', borderRadius: '4px' }}>
+                    {previewFile.language}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => { setPreviewFile(null); setPreviewLoading(false); }}
+                style={{
+                  background: 'transparent', border: 'none', color: '#64748B',
+                  cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1, padding: '4px',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            {/* Content */}
+            <div style={{
+              flex: 1,
+              overflow: 'auto',
+              padding: '12px 0',
+            }}>
+              {previewLoading ? (
+                <div style={{ padding: '24px', color: '#64748B', textAlign: 'center' }}>Loading file...</div>
+              ) : (
+                <pre style={{
+                  margin: 0,
+                  padding: '0 16px',
+                  fontSize: '0.72rem',
+                  lineHeight: '1.5',
+                  color: '#E2E8F0',
+                  fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
+                  whiteSpace: 'pre',
+                  overflowX: 'auto',
+                }}>
+                  {previewFile?.content.split('\n').map((line, i) => (
+                    <div key={i} style={{ display: 'flex' }}>
+                      <span style={{ color: '#475569', minWidth: '40px', textAlign: 'right', paddingRight: '12px', userSelect: 'none', flexShrink: 0 }}>
+                        {i + 1}
+                      </span>
+                      <span>{line}</span>
+                    </div>
+                  ))}
+                </pre>
+              )}
             </div>
           </div>
         </div>
