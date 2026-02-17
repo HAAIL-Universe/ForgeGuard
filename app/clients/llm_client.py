@@ -107,20 +107,31 @@ async def chat_anthropic(
     system_prompt: str,
     messages: list[dict],
     max_tokens: int = 2048,
+    tools: list[dict] | None = None,
 ) -> str:
-    """Send a chat request to the Anthropic Messages API."""
+    """Send a chat request to the Anthropic Messages API.
+
+    When *tools* is provided the raw API response dict is returned so the
+    caller can inspect ``stop_reason`` and ``content`` blocks for tool_use.
+    When *tools* is ``None`` (the default) the response is simplified to
+    ``{"text": ..., "usage": ...}`` for backward compatibility.
+    """
 
     async def _call():
+        body: dict = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": messages,
+        }
+        if tools:
+            body["tools"] = tools
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(
                 ANTHROPIC_MESSAGES_URL,
                 headers=_anthropic_headers(api_key),
-                json={
-                    "model": model,
-                    "max_tokens": max_tokens,
-                    "system": system_prompt,
-                    "messages": messages,
-                },
+                json=body,
             )
             if response.status_code >= 400:
                 try:
@@ -135,6 +146,11 @@ async def chat_anthropic(
         content_blocks = data.get("content", [])
         if not content_blocks:
             raise ValueError("Empty response from Anthropic API")
+
+        # If tools were provided, return the full response so the caller
+        # can process tool_use blocks and the stop_reason.
+        if tools:
+            return data
 
         for block in content_blocks:
             if block.get("type") == "text":
@@ -230,6 +246,7 @@ async def chat(
     messages: list[dict],
     max_tokens: int = 2048,
     provider: str = "anthropic",
+    tools: list[dict] | None = None,
 ) -> str:
     """Send a chat request to the configured LLM provider.
 
@@ -247,12 +264,18 @@ async def chat(
         Maximum tokens in the response.
     provider : str
         ``"openai"`` or ``"anthropic"`` (default).
+    tools : list[dict] | None
+        Anthropic-format tool definitions. When provided with the Anthropic
+        provider the full API response is returned instead of the simplified
+        ``{"text": ..., "usage": ...}`` dict so that the caller can inspect
+        ``stop_reason`` and tool_use blocks.
 
     Returns
     -------
     dict
         ``{"text": str, "usage": {"input_tokens": int, "output_tokens": int}}``
+        — or the full API response when *tools* is not None.
     """
     if provider == "openai":
         return await chat_openai(api_key, model, system_prompt, messages, max_tokens)
-    return await chat_anthropic(api_key, model, system_prompt, messages, max_tokens)
+    return await chat_anthropic(api_key, model, system_prompt, messages, max_tokens, tools=tools)

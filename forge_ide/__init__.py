@@ -2,6 +2,13 @@
 
 Public API
 ----------
+Agent loop::
+
+    AgentConfig, AgentError, AgentEvent,
+    ThinkingEvent, ToolCallEvent, ToolResultEvent,
+    TextEvent, DoneEvent, ErrorEvent,
+    run_agent, stream_agent, run_task,
+
 Contracts (Pydantic models)::
 
     ToolRequest, ToolResponse,
@@ -106,6 +113,20 @@ Adapters::
     register_builtin_tools  — wire existing tool_executor handlers
 """
 
+from forge_ide.agent import (
+    AgentConfig,
+    AgentError,
+    AgentEvent,
+    DoneEvent,
+    ErrorEvent,
+    TextEvent,
+    ThinkingEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    run_agent,
+    run_task,
+    stream_agent,
+)
 from forge_ide import git_ops
 from forge_ide.adapters import register_builtin_tools
 from forge_ide.backoff import ConcurrencyLimiter, ExponentialBackoff
@@ -231,6 +252,19 @@ from forge_ide.searcher import Match, search
 from forge_ide.workspace import FileEntry, Workspace, WorkspaceSummary
 
 __all__ = [
+    # Agent loop
+    "AgentConfig",
+    "AgentError",
+    "AgentEvent",
+    "DoneEvent",
+    "ErrorEvent",
+    "TextEvent",
+    "ThinkingEvent",
+    "ToolCallEvent",
+    "ToolResultEvent",
+    "run_agent",
+    "run_task",
+    "stream_agent",
     # Contracts
     "ToolRequest",
     "ToolResponse",
