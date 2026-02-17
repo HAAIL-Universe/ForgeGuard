@@ -11,7 +11,7 @@
 
 | Phase | Name | Items | Effort | Status |
 |-------|------|-------|--------|--------|
-| [R1](#r1--critical-fixes) | Critical Fixes | 8 | Low | ⬜ |
+| [R1](#r1--critical-fixes) | Critical Fixes | 8 | Low | ✅ |
 | [R2](#r2--memory-leaks--resource-safety) | Memory Leaks & Resource Safety | 4 | Low | ⬜ |
 | [R3](#r3--domain-exceptions--error-handling) | Domain Exceptions & Error Handling | 3 | Low | ⬜ |
 | [R4](#r4--database-hardening) | Database Hardening | 5 | Med | ⬜ |

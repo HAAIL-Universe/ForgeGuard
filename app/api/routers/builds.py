@@ -47,21 +47,14 @@ async def start_build(
     """Start a build for a project."""
     if not build_limiter.is_allowed(str(user["id"])):
         raise HTTPException(status_code=429, detail="Build rate limit exceeded")
-    try:
-        build = await build_service.start_build(
-            project_id,
-            user["id"],
-            target_type=body.target_type if body else None,
-            target_ref=body.target_ref if body else None,
-            branch=body.branch if body else "main",
-            contract_batch=body.contract_batch if body else None,
-        )
-        return build
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.start_build(
+        project_id,
+        user["id"],
+        target_type=body.target_type if body else None,
+        target_ref=body.target_ref if body else None,
+        branch=body.branch if body else "main",
+        contract_batch=body.contract_batch if body else None,
+    )
 
 
 # ── GET /projects/{project_id}/builds ─────────────────────────────────────
@@ -73,14 +66,8 @@ async def list_builds(
     user: dict = Depends(get_current_user),
 ):
     """List all builds for a project, newest first."""
-    try:
-        builds = await build_service.list_builds(project_id, user["id"])
-        return {"items": builds}
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    builds = await build_service.list_builds(project_id, user["id"])
+    return {"items": builds}
 
 
 # ── DELETE /projects/{project_id}/builds ──────────────────────────────────
@@ -93,16 +80,10 @@ async def delete_builds(
     user: dict = Depends(get_current_user),
 ):
     """Delete selected builds for a project."""
-    try:
-        deleted = await build_service.delete_builds(
-            project_id, user["id"], body.build_ids
-        )
-        return {"deleted": deleted}
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    deleted = await build_service.delete_builds(
+        project_id, user["id"], body.build_ids
+    )
+    return {"deleted": deleted}
 
 
 # ── POST /projects/{project_id}/build/cancel ─────────────────────────────
@@ -114,14 +95,7 @@ async def cancel_build(
     user: dict = Depends(get_current_user),
 ):
     """Cancel an active build."""
-    try:
-        build = await build_service.cancel_build(project_id, user["id"])
-        return build
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.cancel_build(project_id, user["id"])
 
 
 # ── POST /projects/{project_id}/build/force-cancel ───────────────────────
@@ -133,14 +107,7 @@ async def force_cancel_build(
     user: dict = Depends(get_current_user),
 ):
     """Force-cancel a stuck build (manual recovery)."""
-    try:
-        build = await build_service.force_cancel_build(project_id, user["id"])
-        return build
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.force_cancel_build(project_id, user["id"])
 
 
 # ── POST /projects/{project_id}/build/resume ─────────────────────────────
@@ -153,16 +120,9 @@ async def resume_build(
     user: dict = Depends(get_current_user),
 ):
     """Resume a paused build with the chosen action."""
-    try:
-        build = await build_service.resume_build(
-            project_id, user["id"], action=body.action
-        )
-        return build
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.resume_build(
+        project_id, user["id"], action=body.action
+    )
 
 
 # ── POST /projects/{project_id}/build/interject ──────────────────────────
@@ -175,21 +135,9 @@ async def interject_build(
     user: dict = Depends(get_current_user),
 ):
     """Inject a user message into an active build."""
-    try:
-        return await build_service.interject_build(
-            project_id, user["id"], body.message
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception(
-            "Unhandled error in interject_build for project %s", project_id
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await build_service.interject_build(
+        project_id, user["id"], body.message
+    )
 
 
 # ── GET /projects/{project_id}/build/files ────────────────────────────────
@@ -201,14 +149,8 @@ async def get_build_files(
     user: dict = Depends(get_current_user),
 ):
     """List all files written during the build."""
-    try:
-        files = await build_service.get_build_files(project_id, user["id"])
-        return {"items": files}
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    files = await build_service.get_build_files(project_id, user["id"])
+    return {"items": files}
 
 
 # ── GET /projects/{project_id}/build/files/{path} ─────────────────────────
@@ -221,15 +163,9 @@ async def get_build_file_content(
     user: dict = Depends(get_current_user),
 ):
     """Retrieve content of a specific file written during the build."""
-    try:
-        return await build_service.get_build_file_content(
-            project_id, user["id"], path
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.get_build_file_content(
+        project_id, user["id"], path
+    )
 
 
 # ── GET /projects/{project_id}/build/status ──────────────────────────────
@@ -241,13 +177,7 @@ async def get_build_status(
     user: dict = Depends(get_current_user),
 ):
     """Get current build status."""
-    try:
-        return await build_service.get_build_status(project_id, user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.get_build_status(project_id, user["id"])
 
 
 # ── GET /projects/{project_id}/build/logs ────────────────────────────────
@@ -263,17 +193,11 @@ async def get_build_logs(
     level: str | None = Query(default=None),
 ):
     """Get paginated build logs with optional search and level filter."""
-    try:
-        logs, total = await build_service.get_build_logs(
-            project_id, user["id"], limit, offset,
-            search=search, level=level,
-        )
-        return {"items": logs, "total": total}
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    logs, total = await build_service.get_build_logs(
+        project_id, user["id"], limit, offset,
+        search=search, level=level,
+    )
+    return {"items": logs, "total": total}
 
 
 # ── GET /projects/{project_id}/build/phases ──────────────────────────────
@@ -285,13 +209,7 @@ async def get_build_phases(
     user: dict = Depends(get_current_user),
 ):
     """Phase definitions parsed from the project's phases contract."""
-    try:
-        return await build_service.get_build_phases(project_id, user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.get_build_phases(project_id, user["id"])
 
 
 # ── GET /projects/{project_id}/build/summary ─────────────────────────────
@@ -303,13 +221,7 @@ async def get_build_summary(
     user: dict = Depends(get_current_user),
 ):
     """Complete build summary with cost breakdown."""
-    try:
-        return await build_service.get_build_summary(project_id, user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.get_build_summary(project_id, user["id"])
 
 
 # ── GET /projects/{project_id}/build/instructions ────────────────────────
@@ -321,13 +233,7 @@ async def get_build_instructions(
     user: dict = Depends(get_current_user),
 ):
     """Generated deployment instructions."""
-    try:
-        return await build_service.get_build_instructions(project_id, user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    return await build_service.get_build_instructions(project_id, user["id"])
 
 
 # ── POST /projects/{project_id}/build/circuit-break ──────────────────────
@@ -341,21 +247,14 @@ async def circuit_break_build(
     """Circuit breaker — immediate hard stop.  Kills the build and logs
     the reason as CIRCUIT_BREAKER so it's distinguishable from normal
     cancellation."""
-    try:
-        build = await build_service.force_cancel_build(project_id, user["id"])
-        # Log the specific reason
-        from app.repos import build_repo as _br
-        await _br.append_build_log(
-            build["id"],
-            "CIRCUIT BREAKER activated by user — all API calls halted",
-            source="system", level="error",
-        )
-        return {**build, "circuit_breaker": True}
-    except ValueError as exc:
-        detail = str(exc)
-        if "not found" in detail.lower():
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+    build = await build_service.force_cancel_build(project_id, user["id"])
+    from app.repos import build_repo as _br
+    await _br.append_build_log(
+        build["id"],
+        "CIRCUIT BREAKER activated by user — all API calls halted",
+        source="system", level="error",
+    )
+    return {**build, "circuit_breaker": True}
 
 
 # ── GET /projects/{project_id}/build/live-cost ───────────────────────────

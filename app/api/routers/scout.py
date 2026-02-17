@@ -44,17 +44,11 @@ async def trigger_scout(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Trigger an on-demand Scout run against a connected repo."""
-    try:
-        result = await start_scout_run(
-            current_user["id"],
-            repo_id,
-            hypothesis=body.hypothesis if body else None,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
-    return result
+    return await start_scout_run(
+        current_user["id"],
+        repo_id,
+        hypothesis=body.hypothesis if body else None,
+    )
 
 
 @router.post("/{repo_id}/deep-scan")
@@ -64,18 +58,12 @@ async def trigger_deep_scan(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Trigger a deep-scan Scout run for full project intelligence."""
-    try:
-        result = await start_deep_scan(
-            current_user["id"],
-            repo_id,
-            hypothesis=body.hypothesis if body else None,
-            include_llm=body.include_llm if body else True,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
-    return result
+    return await start_deep_scan(
+        current_user["id"],
+        repo_id,
+        hypothesis=body.hypothesis if body else None,
+        include_llm=body.include_llm if body else True,
+    )
 
 
 @router.get("/history")
@@ -93,13 +81,7 @@ async def scout_run_detail(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Get full detail for a Scout run."""
-    try:
-        detail = await get_scout_detail(current_user["id"], run_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
-    return detail
+    return await get_scout_detail(current_user["id"], run_id)
 
 
 @router.get("/runs/{run_id}/dossier")
@@ -108,12 +90,7 @@ async def scout_run_dossier(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Get the full dossier from a completed deep-scan run."""
-    try:
-        dossier = await get_scout_dossier(current_user["id"], run_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    dossier = await get_scout_dossier(current_user["id"], run_id)
     if dossier is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -138,14 +115,7 @@ async def scout_score_history(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Get computed score history for score-over-time charts."""
-    try:
-        history = await get_scout_score_history(
-            current_user["id"], repo_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
-        )
+    history = await get_scout_score_history(current_user["id"], repo_id)
     return {"history": history}
 
 
@@ -161,17 +131,11 @@ async def trigger_upgrade_plan(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Generate an Upgrade / Renovation Plan for a completed deep-scan run."""
-    try:
-        plan = await generate_renovation_plan(
-            current_user["id"],
-            run_id,
-            include_llm=body.include_llm if body else True,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
-    return plan
+    return await generate_renovation_plan(
+        current_user["id"],
+        run_id,
+        include_llm=body.include_llm if body else True,
+    )
 
 
 @router.get("/runs/{run_id}/upgrade-plan")
@@ -180,12 +144,7 @@ async def get_upgrade_plan(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Retrieve a previously generated Upgrade / Renovation Plan."""
-    try:
-        plan = await get_renovation_plan(current_user["id"], run_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    plan = await get_renovation_plan(current_user["id"], run_id)
     if plan is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

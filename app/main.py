@@ -17,6 +17,7 @@ from app.api.routers.scout import router as scout_router
 from app.api.routers.webhooks import router as webhooks_router
 from app.api.routers.ws import router as ws_router
 from app.config import settings
+from app.errors import ForgeError
 from app.repos.db import close_pool
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,28 @@ def create_app() -> FastAPI:
             status_code=500,
             content={"detail": "Internal server error"},
         )
+
+    # Domain exception handler -- maps ForgeError subclasses to HTTP.
+    @application.exception_handler(ForgeError)
+    async def _forge_error_handler(
+        request: Request, exc: ForgeError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": str(exc)},
+        )
+
+    # Transitional ValueError handler -- centralises the "not found" → 404
+    # pattern that was previously duplicated 30+ times across routers.
+    # Services will migrate to ForgeError subclasses incrementally.
+    @application.exception_handler(ValueError)
+    async def _value_error_handler(
+        request: Request, exc: ValueError
+    ) -> JSONResponse:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            return JSONResponse(status_code=404, content={"detail": detail})
+        return JSONResponse(status_code=400, content={"detail": detail})
 
     application.add_middleware(
         CORSMiddleware,

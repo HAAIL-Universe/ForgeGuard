@@ -1,9 +1,8 @@
 """Projects router -- project CRUD, questionnaire chat, contract management."""
 
-import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -29,8 +28,6 @@ from app.services.project_service import (
     reset_questionnaire,
     update_contract,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -122,12 +119,7 @@ async def get_project(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Get project detail with contract status."""
-    try:
-        return await get_project_detail(current_user["id"], project_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    return await get_project_detail(current_user["id"], project_id)
 
 
 @router.delete("/{project_id}")
@@ -136,12 +128,7 @@ async def remove_project(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Delete a project."""
-    try:
-        await delete_user_project(current_user["id"], project_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    await delete_user_project(current_user["id"], project_id)
     return {"status": "deleted"}
 
 
@@ -157,20 +144,11 @@ async def questionnaire_message(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Send a message to the questionnaire chat."""
-    try:
-        return await process_questionnaire_message(
-            user_id=current_user["id"],
-            project_id=project_id,
-            message=body.message,
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    return await process_questionnaire_message(
+        user_id=current_user["id"],
+        project_id=project_id,
+        message=body.message,
+    )
 
 
 @router.get("/{project_id}/questionnaire/state")
@@ -179,12 +157,7 @@ async def questionnaire_progress(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Current questionnaire progress."""
-    try:
-        return await get_questionnaire_state(current_user["id"], project_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    return await get_questionnaire_state(current_user["id"], project_id)
 
 
 @router.delete("/{project_id}/questionnaire")
@@ -193,12 +166,7 @@ async def questionnaire_reset(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Reset questionnaire to start over."""
-    try:
-        return await reset_questionnaire(current_user["id"], project_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    return await reset_questionnaire(current_user["id"], project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -217,14 +185,6 @@ async def gen_contracts(
     except ContractCancelled:
         # User cancelled — return 200 with cancelled flag (not an error)
         return {"cancelled": True, "contracts": []}
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
     return {"contracts": contracts}
 
 
@@ -234,17 +194,7 @@ async def cancel_contracts(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Cancel an in-progress contract generation."""
-    try:
-        result = await cancel_contract_generation(current_user["id"], project_id)
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
-    return result
+    return await cancel_contract_generation(current_user["id"], project_id)
 
 
 @router.get("/{project_id}/contracts")
@@ -253,12 +203,7 @@ async def list_project_contracts(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List generated contracts."""
-    try:
-        contracts = await list_contracts(current_user["id"], project_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    contracts = await list_contracts(current_user["id"], project_id)
     return {
         "items": [
             {
@@ -280,12 +225,7 @@ async def list_contract_history(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List all snapshot batches (previous contract versions)."""
-    try:
-        batches = await list_contract_versions(current_user["id"], project_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        )
+    batches = await list_contract_versions(current_user["id"], project_id)
     return {"items": batches}
 
 
@@ -296,16 +236,7 @@ async def get_contract_history_batch(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Get all contracts for a specific snapshot batch."""
-    try:
-        contracts = await get_contract_version(current_user["id"], project_id, batch)
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    contracts = await get_contract_version(current_user["id"], project_id, batch)
     return {
         "items": [
             {
@@ -327,17 +258,7 @@ async def push_contracts(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Push all contracts to the linked GitHub repository."""
-    try:
-        result = await push_contracts_to_git(current_user["id"], project_id)
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
-    return result
+    return await push_contracts_to_git(current_user["id"], project_id)
 
 
 @router.get("/{project_id}/contracts/{contract_type}")
@@ -347,16 +268,7 @@ async def get_project_contract(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """View a single contract."""
-    try:
-        return await get_contract(current_user["id"], project_id, contract_type)
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    return await get_contract(current_user["id"], project_id, contract_type)
 
 
 @router.put("/{project_id}/contracts/{contract_type}")
@@ -367,18 +279,9 @@ async def edit_contract(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Edit a contract before build."""
-    try:
-        result = await update_contract(
-            current_user["id"], project_id, contract_type, body.content
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    result = await update_contract(
+        current_user["id"], project_id, contract_type, body.content
+    )
     return {
         "id": str(result["id"]),
         "contract_type": result["contract_type"],
@@ -397,16 +300,7 @@ async def get_certificate(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Generate a Forge Seal build certificate (JSON)."""
-    try:
-        data = await aggregate_certificate_data(project_id, current_user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    data = await aggregate_certificate_data(project_id, current_user["id"])
     scores = compute_certificate_scores(data)
     return render_certificate(scores, "json")
 
@@ -417,16 +311,7 @@ async def get_certificate_html(
     current_user: dict = Depends(get_current_user),
 ) -> HTMLResponse:
     """Generate a Forge Seal build certificate (styled HTML)."""
-    try:
-        data = await aggregate_certificate_data(project_id, current_user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    data = await aggregate_certificate_data(project_id, current_user["id"])
     scores = compute_certificate_scores(data)
     html = render_certificate(scores, "html")
     return HTMLResponse(content=html)
@@ -438,16 +323,7 @@ async def get_certificate_text(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Generate a Forge Seal build certificate (plain text)."""
-    try:
-        data = await aggregate_certificate_data(project_id, current_user["id"])
-    except ValueError as exc:
-        detail = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail)
+    data = await aggregate_certificate_data(project_id, current_user["id"])
     scores = compute_certificate_scores(data)
     text = render_certificate(scores, "text")
     return {"format": "text", "certificate": text}

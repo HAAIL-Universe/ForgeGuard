@@ -100,17 +100,13 @@ async def create_repo(
             description=body.description,
             private=body.private,
         )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        )
-    except Exception as exc:
+    except ValueError:
+        raise  # centralised handler maps to 400/404
+    except Exception:
         logger.exception("Failed to create GitHub repo %s", body.name)
-        detail = str(exc) if str(exc) else "Failed to create repo on GitHub"
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=detail,
+            detail="Failed to create repo on GitHub",
         )
 
     return {
@@ -195,11 +191,8 @@ async def sync_commits(
             repo_id=repo_id,
             user_id=current_user["id"],
         )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        )
+    except ValueError:
+        raise  # centralised handler maps to 400/404
     except Exception:
         logger.exception("Failed to sync commits for repo %s", repo_id)
         raise HTTPException(
@@ -217,18 +210,12 @@ async def list_audits(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List audit runs for a repo, newest first."""
-    try:
-        items, total = await get_repo_audits(
-            repo_id=repo_id,
-            user_id=current_user["id"],
-            limit=limit,
-            offset=offset,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        )
+    items, total = await get_repo_audits(
+        repo_id=repo_id,
+        user_id=current_user["id"],
+        limit=limit,
+        offset=offset,
+    )
     return {"items": items, "total": total}
 
 
@@ -239,15 +226,8 @@ async def get_audit(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Get full audit detail including all check results."""
-    try:
-        detail = await get_audit_detail(
-            repo_id=repo_id,
-            audit_id=audit_id,
-            user_id=current_user["id"],
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        )
-    return detail
+    return await get_audit_detail(
+        repo_id=repo_id,
+        audit_id=audit_id,
+        user_id=current_user["id"],
+    )
