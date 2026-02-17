@@ -27,6 +27,7 @@ interface ScoutRun {
   repo_id: string;
   repo_name: string;
   status: string;
+  scan_type?: 'quick' | 'deep';
   hypothesis: string | null;
   checks_passed: number;
   checks_failed: number;
@@ -35,6 +36,37 @@ interface ScoutRun {
   completed_at: string | null;
   checks?: ScoutCheck[];
   warnings?: ScoutCheck[];
+}
+
+interface StackProfile {
+  languages: Record<string, number>;
+  primary_language: string | null;
+  backend: { framework: string | null; runtime: string; orm: string | null; db: string | null } | null;
+  frontend: { framework: string | null; bundler: string | null; language: string; ui_library: string | null } | null;
+  infrastructure: { containerized: boolean; ci_cd: string | null; hosting: string | null };
+  testing: { backend_framework: string | null; frontend_framework: string | null; has_tests: boolean };
+  project_type: string;
+  manifest_files: string[];
+}
+
+interface Dossier {
+  executive_summary?: string;
+  intent?: string;
+  quality_assessment?: { score: number; strengths: string[]; weaknesses: string[] };
+  risk_areas?: { area: string; severity: string; detail: string }[];
+  recommendations?: { priority: string; suggestion: string }[];
+}
+
+interface DeepScanResult {
+  metadata?: Record<string, any>;
+  stack_profile?: StackProfile | null;
+  architecture?: Record<string, any> | null;
+  dossier?: Dossier | null;
+  checks?: ScoutCheck[];
+  warnings?: ScoutCheck[];
+  files_analysed?: number;
+  tree_size?: number;
+  head_sha?: string;
 }
 
 /* All governance checks in display order */
@@ -53,7 +85,7 @@ const ALL_CHECKS = [
   { code: 'W3', name: 'Physics route coverage' },
 ];
 
-type View = 'repos' | 'running' | 'results';
+type View = 'repos' | 'running' | 'results' | 'deep_running' | 'dossier';
 
 function Scout() {
   const { token } = useAuth();
@@ -76,6 +108,11 @@ function Scout() {
   const [liveDetails, setLiveDetails] = useState<Record<string, string>>({});
   const [expandedCheck, setExpandedCheck] = useState<string | null>(null);
   const [expandedHistoryRun, setExpandedHistoryRun] = useState<string | null>(null);
+
+  /* Deep scan state */
+  const [deepSteps, setDeepSteps] = useState<Record<string, string>>({});
+  const [deepScanResult, setDeepScanResult] = useState<DeepScanResult | null>(null);
+  const [deepScanning, setDeepScanning] = useState(false);
 
   /* Fetch repos */
   const fetchRepos = useCallback(async () => {
@@ -116,18 +153,38 @@ function Scout() {
       (data: { type: string; payload: any }) => {
         if (data.type === 'scout_progress') {
           const p = data.payload;
-          setLiveChecks((prev) => ({ ...prev, [p.check_code]: p.result }));
-          if (p.detail) {
-            setLiveDetails((prev) => ({ ...prev, [p.check_code]: p.detail }));
+          if (p.step) {
+            // Deep scan step-by-step progress
+            setDeepSteps((prev) => ({ ...prev, [p.step]: p.detail || 'Done' }));
+          } else {
+            // Quick scan check-by-check
+            setLiveChecks((prev) => ({ ...prev, [p.check_code]: p.result }));
+            if (p.detail) {
+              setLiveDetails((prev) => ({ ...prev, [p.check_code]: p.detail }));
+            }
           }
         } else if (data.type === 'scout_complete') {
           const p = data.payload;
           setActiveRun(p);
-          setView('results');
+          if (p.scan_type === 'deep') {
+            setDeepScanning(false);
+            // Fetch dossier
+            fetch(`${API_BASE}/scout/runs/${p.id}/dossier`, {
+              headers: { Authorization: `Bearer ${token}` },
+            })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((data) => {
+                if (data) setDeepScanResult(data);
+                setView('dossier');
+              })
+              .catch(() => setView('dossier'));
+          } else {
+            setView('results');
+          }
           fetchHistory();
         }
       },
-      [fetchHistory],
+      [fetchHistory, token],
     ),
   );
 
@@ -160,6 +217,60 @@ function Scout() {
     } catch {
       addToast('Network error starting Scout run');
       setView('repos');
+    }
+  };
+
+  /* Trigger a deep scan */
+  const handleDeepScan = async (repo: Repo) => {
+    setActiveRepo(repo);
+    setView('deep_running');
+    setDeepSteps({});
+    setDeepScanResult(null);
+    setDeepScanning(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/scout/${repo.id}/deep-scan`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          hypothesis: hypothesis.trim() || null,
+          include_llm: true,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Deep scan failed' }));
+        addToast(err.detail ?? 'Deep scan failed');
+        setView('repos');
+        setDeepScanning(false);
+      }
+    } catch {
+      addToast('Network error starting deep scan');
+      setView('repos');
+      setDeepScanning(false);
+    }
+  };
+
+  /* View a past deep scan dossier */
+  const handleViewDossier = async (run: ScoutRun) => {
+    setActiveRun(run);
+    const repo = repos.find((r) => r.id === run.repo_id) ?? null;
+    setActiveRepo(repo);
+    try {
+      const res = await fetch(`${API_BASE}/scout/runs/${run.id}/dossier`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDeepScanResult(data);
+        setView('dossier');
+      } else {
+        addToast('Could not load dossier');
+      }
+    } catch {
+      addToast('Network error loading dossier');
     }
   };
 
@@ -373,7 +484,24 @@ function Scout() {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        Scout Repo →
+                        Quick Scan
+                      </button>
+                      <button
+                        onClick={() => handleDeepScan(repo)}
+                        data-testid={`deep-scan-${repo.id}`}
+                        style={{
+                          background: '#7C3AED',
+                          color: '#F8FAFC',
+                          border: 'none',
+                          borderRadius: '6px',
+                          padding: '6px 14px',
+                          cursor: 'pointer',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Deep Scan 🔬
                       </button>
                     </div>
                     {/* Hypothesis input row */}
@@ -440,6 +568,9 @@ function Scout() {
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, color: '#64748B', fontSize: '0.7rem' }}>
+                        {run.scan_type === 'deep' && (
+                          <span style={{ color: '#7C3AED', fontWeight: 600 }}>DEEP</span>
+                        )}
                         <span>{relativeTime(run.started_at)}</span>
                         <span style={{ color: '#22C55E' }}>{run.checks_passed}✓</span>
                         {run.checks_failed > 0 && <span style={{ color: '#EF4444' }}>{run.checks_failed}✗</span>}
@@ -477,22 +608,40 @@ function Scout() {
                               </div>
                             )}
                             {[...(run.checks ?? []), ...(run.warnings ?? [])].length > 0 && (
-                              <button
-                              onClick={() => handleViewRun(run)}
-                              style={{
-                                marginTop: '8px',
-                                background: '#334155',
-                                color: '#F8FAFC',
-                                border: 'none',
-                                borderRadius: '6px',
-                                padding: '6px 14px',
-                                cursor: 'pointer',
-                                fontSize: '0.7rem',
-                                fontWeight: 500,
-                              }}
-                            >
-                              View Full Results
-                            </button>
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                                <button
+                                  onClick={() => handleViewRun(run)}
+                                  style={{
+                                    background: '#334155',
+                                    color: '#F8FAFC',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    padding: '6px 14px',
+                                    cursor: 'pointer',
+                                    fontSize: '0.7rem',
+                                    fontWeight: 500,
+                                  }}
+                                >
+                                  View Full Results
+                                </button>
+                                {run.scan_type === 'deep' && (
+                                  <button
+                                    onClick={() => handleViewDossier(run)}
+                                    style={{
+                                      background: '#7C3AED',
+                                      color: '#F8FAFC',
+                                      border: 'none',
+                                      borderRadius: '6px',
+                                      padding: '6px 14px',
+                                      cursor: 'pointer',
+                                      fontSize: '0.7rem',
+                                      fontWeight: 500,
+                                    }}
+                                  >
+                                    View Dossier 🔬
+                                  </button>
+                                )}
+                              </div>
                             )}
                           </>
                         ) : (
@@ -508,12 +657,53 @@ function Scout() {
         )}
 
         {/* ─── RUNNING VIEW ─── */}
-        {view === 'running' && (
+        {(view === 'running' || view === 'deep_running') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-              <span style={{ fontSize: '0.8rem', color: '#94A3B8' }}>Running checks…</span>
+              <span style={{ fontSize: '0.8rem', color: '#94A3B8' }}>
+                {view === 'deep_running' ? 'Deep scan in progress…' : 'Running checks…'}
+              </span>
             </div>
-            {ALL_CHECKS.map((check) => {
+            {view === 'deep_running' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+                {['metadata', 'tree', 'stack', 'fetching', 'architecture', 'audit', 'dossier'].map((step) => {
+                  const label: Record<string, string> = {
+                    metadata: 'Fetching repo metadata',
+                    tree: 'Fetching file tree',
+                    stack: 'Detecting technology stack',
+                    fetching: 'Fetching key files',
+                    architecture: 'Mapping architecture',
+                    audit: 'Running compliance checks',
+                    dossier: 'Generating project dossier',
+                  };
+                  const done = step in deepSteps;
+                  return (
+                    <div
+                      key={step}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
+                        padding: '8px 14px',
+                        background: '#1E293B',
+                        borderRadius: '6px',
+                        border: '1px solid #334155',
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      <span>{done ? '✅' : deepScanning ? '⏳' : '⬜'}</span>
+                      <span>{label[step]}</span>
+                      {done && deepSteps[step] && (
+                        <span style={{ marginLeft: 'auto', color: '#64748B', fontSize: '0.7rem' }}>
+                          {deepSteps[step]}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {view === 'running' && ALL_CHECKS.map((check) => {
               const status = liveChecks[check.code] ?? 'pending';
               return (
                 <div
@@ -548,6 +738,253 @@ function Scout() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* ─── DOSSIER VIEW ─── */}
+        {view === 'dossier' && deepScanResult && (
+          <div>
+            {/* Stack Profile */}
+            {deepScanResult.stack_profile && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Technology Stack
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                  {/* Languages */}
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '12px', border: '1px solid #334155' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Languages</div>
+                    {Object.entries(deepScanResult.stack_profile.languages).map(([lang, pct]) => (
+                      <div key={lang} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', padding: '2px 0' }}>
+                        <span>{lang}</span>
+                        <span style={{ color: '#64748B' }}>{pct}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Backend */}
+                  {deepScanResult.stack_profile.backend && (
+                    <div style={{ background: '#1E293B', borderRadius: '8px', padding: '12px', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Backend</div>
+                      <div style={{ fontSize: '0.8rem' }}>{deepScanResult.stack_profile.backend.framework ?? 'No framework'}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>{deepScanResult.stack_profile.backend.runtime}</div>
+                      {deepScanResult.stack_profile.backend.db && (
+                        <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>DB: {deepScanResult.stack_profile.backend.db}</div>
+                      )}
+                      {deepScanResult.stack_profile.backend.orm && (
+                        <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>ORM: {deepScanResult.stack_profile.backend.orm}</div>
+                      )}
+                    </div>
+                  )}
+                  {/* Frontend */}
+                  {deepScanResult.stack_profile.frontend && (
+                    <div style={{ background: '#1E293B', borderRadius: '8px', padding: '12px', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Frontend</div>
+                      <div style={{ fontSize: '0.8rem' }}>{deepScanResult.stack_profile.frontend.framework ?? 'Unknown'}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>{deepScanResult.stack_profile.frontend.language}</div>
+                      {deepScanResult.stack_profile.frontend.bundler && (
+                        <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>Bundler: {deepScanResult.stack_profile.frontend.bundler}</div>
+                      )}
+                      {deepScanResult.stack_profile.frontend.ui_library && (
+                        <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>UI: {deepScanResult.stack_profile.frontend.ui_library}</div>
+                      )}
+                    </div>
+                  )}
+                  {/* Infrastructure */}
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '12px', border: '1px solid #334155' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Infrastructure</div>
+                    <div style={{ fontSize: '0.8rem' }}>
+                      {deepScanResult.stack_profile.infrastructure.containerized ? '🐳 Containerized' : 'No container'}
+                    </div>
+                    {deepScanResult.stack_profile.infrastructure.ci_cd && (
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>CI/CD: {deepScanResult.stack_profile.infrastructure.ci_cd}</div>
+                    )}
+                    {deepScanResult.stack_profile.infrastructure.hosting && (
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>Hosting: {deepScanResult.stack_profile.infrastructure.hosting}</div>
+                    )}
+                  </div>
+                  {/* Testing */}
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '12px', border: '1px solid #334155' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Testing</div>
+                    <div style={{ fontSize: '0.8rem' }}>
+                      {deepScanResult.stack_profile.testing.has_tests ? '✅ Tests detected' : '❌ No tests'}
+                    </div>
+                    {deepScanResult.stack_profile.testing.backend_framework && (
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>Backend: {deepScanResult.stack_profile.testing.backend_framework}</div>
+                    )}
+                    {deepScanResult.stack_profile.testing.frontend_framework && (
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>Frontend: {deepScanResult.stack_profile.testing.frontend_framework}</div>
+                    )}
+                  </div>
+                  {/* Project Type */}
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '12px', border: '1px solid #334155' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Project Type</div>
+                    <div style={{ fontSize: '0.8rem', textTransform: 'capitalize' }}>{deepScanResult.stack_profile.project_type.replace('_', ' ')}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '4px' }}>
+                      {deepScanResult.tree_size} files · {deepScanResult.files_analysed} analysed
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Architecture */}
+            {deepScanResult.architecture && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Architecture
+                </h3>
+                <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
+                  <div style={{ fontSize: '0.8rem', marginBottom: '8px' }}>
+                    Structure: <span style={{ color: '#2563EB', textTransform: 'capitalize' }}>{deepScanResult.architecture.structure_type}</span>
+                  </div>
+                  {deepScanResult.architecture.entry_points?.length > 0 && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.7rem', color: '#64748B' }}>Entry points: </span>
+                      <span style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                        {deepScanResult.architecture.entry_points.join(', ')}
+                      </span>
+                    </div>
+                  )}
+                  {deepScanResult.architecture.data_models?.length > 0 && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.7rem', color: '#64748B' }}>Data models: </span>
+                      <span style={{ fontSize: '0.75rem' }}>{deepScanResult.architecture.data_models.join(', ')}</span>
+                    </div>
+                  )}
+                  {deepScanResult.architecture.external_integrations?.length > 0 && (
+                    <div>
+                      <span style={{ fontSize: '0.7rem', color: '#64748B' }}>Integrations: </span>
+                      <span style={{ fontSize: '0.75rem' }}>{deepScanResult.architecture.external_integrations.join(', ')}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* LLM Dossier */}
+            {deepScanResult.dossier && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Project Dossier
+                </h3>
+                {/* Executive Summary */}
+                {deepScanResult.dossier.executive_summary && (
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155', marginBottom: '10px' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Executive Summary</div>
+                    <div style={{ fontSize: '0.8rem', lineHeight: 1.5 }}>{deepScanResult.dossier.executive_summary}</div>
+                  </div>
+                )}
+                {/* Quality Score */}
+                {deepScanResult.dossier.quality_assessment && (
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155', marginBottom: '10px' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Quality Assessment</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                      <div style={{
+                        width: '48px', height: '48px', borderRadius: '50%', display: 'flex',
+                        alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '1rem',
+                        background: deepScanResult.dossier.quality_assessment.score >= 80 ? '#14532D' :
+                          deepScanResult.dossier.quality_assessment.score >= 60 ? '#78350F' : '#7F1D1D',
+                        color: deepScanResult.dossier.quality_assessment.score >= 80 ? '#22C55E' :
+                          deepScanResult.dossier.quality_assessment.score >= 60 ? '#F59E0B' : '#EF4444',
+                      }}>
+                        {deepScanResult.dossier.quality_assessment.score}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: '#94A3B8' }}>
+                        {deepScanResult.dossier.quality_assessment.score >= 80 ? 'Good quality' :
+                          deepScanResult.dossier.quality_assessment.score >= 60 ? 'Needs improvement' : 'Significant issues'}
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.7rem', color: '#22C55E', marginBottom: '4px' }}>Strengths</div>
+                        {deepScanResult.dossier.quality_assessment.strengths.map((s, i) => (
+                          <div key={i} style={{ fontSize: '0.75rem', padding: '2px 0' }}>✅ {s}</div>
+                        ))}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.7rem', color: '#EF4444', marginBottom: '4px' }}>Weaknesses</div>
+                        {deepScanResult.dossier.quality_assessment.weaknesses.map((w, i) => (
+                          <div key={i} style={{ fontSize: '0.75rem', padding: '2px 0' }}>⚠️ {w}</div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {/* Risk Areas */}
+                {deepScanResult.dossier.risk_areas && deepScanResult.dossier.risk_areas.length > 0 && (
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155', marginBottom: '10px' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Risk Areas</div>
+                    {deepScanResult.dossier.risk_areas.map((r, i) => (
+                      <div key={i} style={{ display: 'flex', gap: '8px', padding: '4px 0', fontSize: '0.75rem' }}>
+                        <span style={{
+                          padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600,
+                          background: r.severity === 'high' ? '#7F1D1D' : r.severity === 'medium' ? '#78350F' : '#1E3A5F',
+                          color: r.severity === 'high' ? '#EF4444' : r.severity === 'medium' ? '#F59E0B' : '#3B82F6',
+                        }}>
+                          {r.severity.toUpperCase()}
+                        </span>
+                        <span style={{ color: '#94A3B8' }}>{r.area}:</span>
+                        <span>{r.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Recommendations */}
+                {deepScanResult.dossier.recommendations && deepScanResult.dossier.recommendations.length > 0 && (
+                  <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '6px', textTransform: 'uppercase' }}>Recommendations</div>
+                    {deepScanResult.dossier.recommendations.map((r, i) => (
+                      <div key={i} style={{ display: 'flex', gap: '8px', padding: '4px 0', fontSize: '0.75rem' }}>
+                        <span style={{
+                          padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600,
+                          background: r.priority === 'high' ? '#14532D' : r.priority === 'medium' ? '#1E3A5F' : '#1E293B',
+                          color: r.priority === 'high' ? '#22C55E' : r.priority === 'medium' ? '#3B82F6' : '#94A3B8',
+                        }}>
+                          {r.priority.toUpperCase()}
+                        </span>
+                        <span>{r.suggestion}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => { setView('repos'); setActiveRepo(null); setActiveRun(null); setDeepScanResult(null); }}
+                style={{
+                  background: '#334155',
+                  color: '#F8FAFC',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                }}
+              >
+                ← Back to Repos
+              </button>
+              {activeRepo && (
+                <button
+                  onClick={() => handleDeepScan(activeRepo)}
+                  style={{
+                    background: '#7C3AED',
+                    color: '#F8FAFC',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 18px',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: 500,
+                  }}
+                >
+                  🔬 Re-scan
+                </button>
+              )}
+            </div>
           </div>
         )}
 

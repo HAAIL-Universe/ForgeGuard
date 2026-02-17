@@ -225,6 +225,86 @@ async def get_commit_files(
         return [f["filename"] for f in data.get("files", [])]
 
 
+async def get_repo_tree(
+    access_token: str,
+    full_name: str,
+    sha: str,
+    recursive: bool = True,
+) -> list[dict]:
+    """Fetch the full file tree for a repo at a given SHA.
+
+    Returns list of dicts with path, type ('blob'|'tree'), and size (bytes, blobs only).
+    Truncated trees (>100k entries) return whatever GitHub provides.
+    """
+    params: dict[str, str | int] = {}
+    if recursive:
+        params["recursive"] = "1"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/git/trees/{sha}",
+            params=params,
+            headers=_auth_headers(access_token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        tree = data.get("tree", [])
+        return [
+            {
+                "path": item["path"],
+                "type": item["type"],
+                "size": item.get("size", 0),
+            }
+            for item in tree
+        ]
+
+
+async def get_repo_languages(
+    access_token: str,
+    full_name: str,
+) -> dict[str, int]:
+    """Fetch language byte counts for a repo.
+
+    Returns e.g. {"Python": 45000, "TypeScript": 32000}.
+    """
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/languages",
+            headers=_auth_headers(access_token),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_repo_metadata(
+    access_token: str,
+    full_name: str,
+) -> dict:
+    """Fetch top-level metadata for a repo.
+
+    Returns dict with stargazers_count, forks_count, size, license, topics,
+    created_at, updated_at, default_branch, description, private.
+    """
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}",
+            headers=_auth_headers(access_token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "stargazers_count": data.get("stargazers_count", 0),
+            "forks_count": data.get("forks_count", 0),
+            "size": data.get("size", 0),
+            "license": (data.get("license") or {}).get("spdx_id"),
+            "topics": data.get("topics", []),
+            "created_at": data.get("created_at"),
+            "updated_at": data.get("updated_at"),
+            "default_branch": data.get("default_branch", "main"),
+            "description": data.get("description"),
+            "private": data.get("private", False),
+        }
+
+
 async def list_commits(
     access_token: str,
     full_name: str,

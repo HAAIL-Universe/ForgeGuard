@@ -41,7 +41,7 @@ class Settings:
     GITHUB_CLIENT_SECRET: str = _require("GITHUB_CLIENT_SECRET")
     GITHUB_WEBHOOK_SECRET: str = _require("GITHUB_WEBHOOK_SECRET")
     JWT_SECRET: str = _require("JWT_SECRET")
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5174")
     APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
     LLM_QUESTIONNAIRE_MODEL: str = os.getenv(
         "LLM_QUESTIONNAIRE_MODEL", "claude-sonnet-4-5"

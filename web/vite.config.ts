@@ -16,7 +16,8 @@ const apiProxy = {
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    port: 5174,
+    strictPort: true,
     proxy: {
       '/health': 'http://localhost:8000',
       '/auth/login': 'http://localhost:8000',

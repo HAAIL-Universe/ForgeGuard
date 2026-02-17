@@ -169,7 +169,7 @@ Info ""
 Info "Starting ForgeGuard..."
 
 if (-not $SkipFrontend -and (Test-Path $webDir)) {
-  Info "Starting frontend dev server on port 5173..."
+  Info "Starting frontend dev server on port 5174..."
   $frontendJob = Start-Job -ScriptBlock {
     param($dir)
     Set-Location $dir
@@ -184,7 +184,7 @@ Info "Press Ctrl+C to stop."
 # Open the frontend in the default browser after a short delay
 Start-Job -ScriptBlock {
   Start-Sleep -Seconds 3
-  Start-Process "http://localhost:5173"
+  Start-Process "http://localhost:5174"
 } | Out-Null
 
 & $activePython -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

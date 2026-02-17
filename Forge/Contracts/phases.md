@@ -2331,9 +2331,9 @@ A headless IDE gives the builder and auditor structured, deterministic tools for
 
 ---
 
-## Phase 36 — Scout Enhancement: Project Intelligence Report  *(TODO)*
+## Phase 36 — Scout Enhancement: Project Intelligence Report  *(DONE)*
 
-**Status:** 🔲 NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Objective:** Transform Scout from a compliance-only checker into a full **project intelligence engine**. When pointed at any connected GitHub repo, Scout should produce a comprehensive "Project Dossier" — a structured report covering the complete stack, architecture, dependencies, patterns, risk areas, and contract foundations. The dossier becomes the upstream input for the Forge Upgrade Advisor (Phase 37) and the Forge Seal certificate (Phase 38).
 

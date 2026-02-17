@@ -1,56 +1,67 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-17T19:00:00+00:00
+- Timestamp: 2026-02-18T12:00:00+00:00
 - Branch: master
-- HEAD: 294992c (pre-commit — Phase 35 changes staged)
-- BASE_HEAD: 294992c
+- HEAD: d310a99 (Phase 36-38 spec commit)
+- BASE_HEAD: d310a99
 - Diff basis: working tree vs HEAD
 
 ## Cycle Status
 - Status: COMPLETE
 
 ## Summary
-- Phase 35: Build Spend Cap / Circuit Breaker / Cost Gate.
-  Adds user-configurable per-build spend cap with automatic cost enforcement,
-  live cost ticker via WebSocket, circuit breaker (one-click API kill switch),
-  and cost warning/exceeded banners to prevent runaway API costs.
-- DB: migration 017 adds `build_spend_cap NUMERIC(10,2)` column to users table.
-- Backend: In-memory cost accumulation across 5 LLM cost recording sites.
-  `_check_cost_gate()` enforces warning at 80% and hard stop at 100% of cap.
-  `CostCapExceeded` exception triggers `_fail_build()` + cancel flag.
-  `cost_ticker` WS event broadcasts every 5s with live cost/tokens/api_calls.
-  `cost_warning` and `cost_exceeded` WS events for frontend banners.
-  Server-level default: $50 (BUILD_MAX_COST_USD env var).
-- API: PUT/DELETE `/auth/spend-cap` endpoints. `/auth/me` includes `build_spend_cap`.
-  GET `/projects/{id}/build/live-cost` for REST cost polling.
-  POST `/projects/{id}/build/circuit-break` for immediate hard stop.
-- Frontend BuildProgress.tsx: spend cap progress bar, live API call counter,
-  cost ticker display, cost warning/exceeded banners, circuit breaker button (red).
-- Frontend Settings.tsx: Spend cap input field with save/clear.
-- AuthContext: `build_spend_cap` added to User interface.
-- 19 new tests in test_cost_gate.py. 624 backend + 61 frontend = 685 total tests passing.
+- Phase 36: Scout Enhancement — Project Intelligence Report (Deep Scan).
+  Transforms Scout from a single-commit compliance checker into a full
+  project intelligence engine that can reverse-engineer any connected repo
+  and produce a comprehensive dossier.
+- **GitHub Client** (github_client.py): 3 new async functions — `get_repo_tree()`,
+  `get_repo_languages()`, `get_repo_metadata()` for full repo introspection.
+- **Stack Detector** (stack_detector.py — NEW 435 lines): Heuristic-based tech
+  stack identification. Parses requirements.txt, pyproject.toml, package.json.
+  Detects Python/Node frameworks, ORMs, databases, bundlers, UI libs, test frameworks,
+  infrastructure (Docker, CI/CD, hosting), project type classification.
+- **Architecture Mapper** (architecture_mapper.py — NEW 415 lines): Heuristic
+  project structure analysis. Classifies structure (flat/layered/monorepo),
+  finds entry points, maps directories, extracts API routes (FastAPI/Flask/Express/Django),
+  detects data models (SQL/ORM), finds external integrations, config sources, boundaries.
+- **Deep Scan Service**: 7-step pipeline — metadata → tree → stack → fetch files →
+  architecture → audit → LLM dossier. Safety caps: 20 files max, 100KB total, 50KB
+  per-file skip. Streams progress via WebSocket (step-based events).
+- **LLM Dossier**: Single Anthropic call with system prompt producing structured JSON
+  (executive_summary, quality_assessment with 0-100 score, risk_areas, recommendations).
+  Graceful fallback if no API key.
+- **DB**: Migration 018 adds `scan_type VARCHAR(10)` column to scout_runs.
+- **Router**: POST `/{repo_id}/deep-scan`, GET `/runs/{run_id}/dossier`.
+- **Frontend** (Scout.tsx): "Quick Scan" and "Deep Scan 🔬" buttons per repo.
+  Deep scan progress stepper (7 named steps with real-time status). Full dossier
+  viewer — stack profile cards (languages, backend, frontend, infra, testing),
+  architecture panel, quality score gauge, risk areas table, recommendations list.
+  `scan_type` badge in history, "View Dossier" button for past deep scans.
+- **Tests**: 51 new tests — test_stack_detector.py (17), test_architecture_mapper.py (20),
+  test_scout_deep_scan.py (14). 674 backend + 61 frontend = 735 total tests passing.
 
 ## Files Changed
-- db/migrations/017_user_spend_cap.sql (new migration)
-- app/repos/user_repo.py (build_spend_cap in SELECT + set_build_spend_cap)
-- app/config.py (BUILD_MAX_COST_USD, BUILD_COST_WARN_PCT, BUILD_COST_TICKER_INTERVAL)
-- app/services/build_service.py (cost gate, accumulator, ticker, init/cleanup)
-- app/api/routers/auth.py (spend-cap PUT/DELETE, /me includes build_spend_cap)
-- app/api/routers/builds.py (circuit-break + live-cost endpoints)
-- web/src/pages/BuildProgress.tsx (cost ticker UI, circuit breaker, banners)
-- web/src/pages/Settings.tsx (spend cap input section)
-- web/src/context/AuthContext.tsx (build_spend_cap in User interface)
-- tests/test_cost_gate.py (19 new tests — NEW FILE)
-- tests/test_plan_execute.py (mock fix for get_user_by_id in _run_build)
+- app/clients/github_client.py (3 new functions: get_repo_tree, get_repo_languages, get_repo_metadata)
+- app/services/stack_detector.py (NEW — 435 lines)
+- app/services/architecture_mapper.py (NEW — 415 lines)
+- app/services/scout_service.py (deep scan pipeline, dossier generator, +450 lines)
+- app/repos/scout_repo.py (scan_type column in all queries)
+- app/api/routers/scout.py (deep-scan + dossier endpoints)
+- db/migrations/018_scout_scan_type.sql (NEW)
+- web/src/pages/Scout.tsx (deep scan UI, dossier viewer, progress stepper)
+- tests/test_stack_detector.py (NEW — 17 tests)
+- tests/test_architecture_mapper.py (NEW — 20 tests)
+- tests/test_scout_deep_scan.py (NEW — 14 tests)
 - Forge/evidence/updatedifflog.md (this file)
+- Forge/evidence/test_runs_latest.md (updated)
 
 ## Verification
-- Static: all modules import cleanly, no syntax errors. TypeScript clean (tsc --noEmit).
-- Runtime: FastAPI app boots without error.
-- Behavior: 624 backend tests pass (pytest), 61 frontend tests pass (vitest). 685 total.
+- Static: all modules import cleanly, no syntax errors. TypeScript clean (0 errors).
+- Runtime: 674 backend tests pass (pytest), 61 frontend tests pass (vitest). 735 total.
+- 1 pre-existing failure (test_cors_allows_valid_origin) — not introduced by this phase.
 - Contract: boundary compliance verified via test suite. No forbidden patterns.
 
 ## Next Steps
 - Run watcher audit to validate this diff log.
-- Commit and push Phase 35.
+- Commit and push Phase 36.

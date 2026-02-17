@@ -10,20 +10,22 @@ async def create_scout_run(
     repo_id: UUID,
     user_id: UUID,
     hypothesis: str | None = None,
+    scan_type: str = "quick",
 ) -> dict:
     """Insert a new pending scout run."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO scout_runs (repo_id, user_id, hypothesis, status)
-        VALUES ($1, $2, $3, 'running')
-        RETURNING id, repo_id, user_id, status, hypothesis,
+        INSERT INTO scout_runs (repo_id, user_id, hypothesis, status, scan_type)
+        VALUES ($1, $2, $3, 'running', $4)
+        RETURNING id, repo_id, user_id, status, hypothesis, scan_type,
                   checks_passed, checks_failed, checks_warned,
                   started_at, completed_at
         """,
         repo_id,
         user_id,
         hypothesis,
+        scan_type,
     )
     return dict(row)
 
@@ -49,7 +51,7 @@ async def update_scout_run(
             checks_warned = $6,
             completed_at = CASE WHEN $2 IN ('completed', 'error') THEN now() ELSE completed_at END
         WHERE id = $1
-        RETURNING id, repo_id, user_id, status, hypothesis,
+        RETURNING id, repo_id, user_id, status, hypothesis, scan_type,
                   results, checks_passed, checks_failed, checks_warned,
                   started_at, completed_at
         """,
@@ -72,7 +74,7 @@ async def get_scout_runs_by_user(
     rows = await pool.fetch(
         """
         SELECT s.id, s.repo_id, r.full_name AS repo_name,
-               s.status, s.hypothesis,
+               s.status, s.hypothesis, s.scan_type,
                s.checks_passed, s.checks_failed, s.checks_warned,
                s.started_at, s.completed_at
         FROM scout_runs s
@@ -97,7 +99,7 @@ async def get_scout_runs_by_repo(
     rows = await pool.fetch(
         """
         SELECT s.id, s.repo_id, r.full_name AS repo_name,
-               s.status, s.hypothesis,
+               s.status, s.hypothesis, s.scan_type,
                s.checks_passed, s.checks_failed, s.checks_warned,
                s.started_at, s.completed_at
         FROM scout_runs s
