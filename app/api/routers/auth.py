@@ -4,7 +4,7 @@ import secrets
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.clients.github_client import GITHUB_OAUTH_URL
@@ -146,7 +146,7 @@ async def toggle_audit_llm(
 
 
 class SpendCapBody(BaseModel):
-    spend_cap: float
+    spend_cap: float = Field(ge=0.50, le=9999.99, description="Per-build spend cap in USD")
 
 
 @router.put("/spend-cap")
@@ -154,11 +154,7 @@ async def save_spend_cap(
     body: SpendCapBody,
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """Set the per-build spend cap (USD). Must be > 0."""
-    if body.spend_cap <= 0:
-        raise HTTPException(status_code=400, detail="Spend cap must be greater than zero")
-    if body.spend_cap > 9999.99:
-        raise HTTPException(status_code=400, detail="Spend cap exceeds maximum (9999.99)")
+    """Set the per-build spend cap (USD). Must be >= 0.50."""
     await set_build_spend_cap(current_user["id"], body.spend_cap)
     return {"build_spend_cap": body.spend_cap}
 

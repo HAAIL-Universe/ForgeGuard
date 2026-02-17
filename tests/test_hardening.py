@@ -169,7 +169,13 @@ def test_global_error_handler_is_registered():
 
 def test_cors_allows_valid_origin():
     """CORS should accept requests from the configured frontend origin."""
-    resp = client.options(
+    # Must create a fresh app so the CORS middleware picks up the
+    # monkeypatched FRONTEND_URL (module-level client was built before
+    # the fixture ran).
+    from app.main import create_app
+
+    fresh = TestClient(create_app())
+    resp = fresh.options(
         "/health",
         headers={
             "Origin": "http://localhost:5173",

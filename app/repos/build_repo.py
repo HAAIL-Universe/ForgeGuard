@@ -267,7 +267,8 @@ async def get_build_logs(
 
     if search:
         where += f" AND message ILIKE ${idx}"
-        params.append(f"%{search}%")
+        escaped = search.replace("%", "\\%").replace("_", "\\_")
+        params.append(f"%{escaped}%")
         idx += 1
     if level:
         where += f" AND level = ${idx}"
@@ -308,8 +309,7 @@ async def get_build_stats(build_id: UUID) -> dict:
         """
         SELECT COUNT(*) AS cnt FROM build_logs
         WHERE build_id = $1 AND source = 'system'
-          AND message LIKE 'Build started%'
-           OR (build_id = $1 AND source = 'system' AND message LIKE 'Context compacted%')
+          AND (message LIKE 'Build started%' OR message LIKE 'Context compacted%')
         """,
         build_id,
     )

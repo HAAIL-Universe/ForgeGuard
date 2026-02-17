@@ -47,19 +47,22 @@ async def update_audit_run(
     files_checked: int,
 ) -> None:
     """Update an audit run with results."""
+    from datetime import datetime, timezone
+
     pool = await get_pool()
-    completed = "now()" if status in ("completed", "error") else "NULL"
+    completed_at = datetime.now(timezone.utc) if status in ("completed", "error") else None
     await pool.execute(
-        f"""
+        """
         UPDATE audit_runs
         SET status = $2, overall_result = $3, files_checked = $4,
-            completed_at = {completed}
+            completed_at = $5
         WHERE id = $1
         """,
         audit_run_id,
         status,
         overall_result,
         files_checked,
+        completed_at,
     )
 
 

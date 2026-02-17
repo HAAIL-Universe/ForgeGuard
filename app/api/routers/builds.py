@@ -184,12 +184,12 @@ async def interject_build(
         if "not found" in detail.lower():
             raise HTTPException(status_code=404, detail=detail)
         raise HTTPException(status_code=400, detail=detail)
-    except Exception as exc:
+    except Exception:
         import logging
         logging.getLogger(__name__).exception(
             "Unhandled error in interject_build for project %s", project_id
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ── GET /projects/{project_id}/build/files ────────────────────────────────

@@ -316,7 +316,7 @@ def test_save_spend_cap_rejects_zero(mock_get_user):
         json={"spend_cap": 0},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 @pytest.mark.usefixtures("_auth_config")
@@ -334,7 +334,7 @@ def test_save_spend_cap_rejects_negative(mock_get_user):
         json={"spend_cap": -5},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 @pytest.mark.usefixtures("_auth_config")

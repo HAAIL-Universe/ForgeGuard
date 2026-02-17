@@ -1,15 +1,22 @@
 import '../index.css';
+import { useToast } from '../context/ToastContext';
 
 function Login() {
+  const { addToast } = useToast();
+
   const handleLogin = async () => {
     try {
       const res = await fetch('/auth/github');
+      if (!res.ok) {
+        addToast('Unable to start login — please try again.', 'error');
+        return;
+      }
       const data = await res.json();
       if (data.redirect_url) {
         window.location.href = data.redirect_url;
       }
     } catch {
-      // Network error -- show nothing for now, toast in Phase 4
+      addToast('Network error — check your connection and try again.', 'error');
     }
   };
 
