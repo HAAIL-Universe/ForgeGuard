@@ -7610,3 +7610,204 @@ A5: PASS -- No TODO: placeholders in updatedifflog.md.
 W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 154
+Timestamp: 2026-02-17T17:48:40Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: tests/test_plan_execute.py. Claimed but not in diff: powershell -File Forge/scripts/run_audit.ps1 -ClaimedFiles "db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py, tests/test_plan_execute.py" -Phase "Phase 35" 2>&1 | Select-Object -Last 30.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       FAIL -- Error checking dependencies: Exception calling "GetExtension" with "1" argument(s): "Illegal characters in path."
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: tests/test_plan_execute.py. Claimed but not in diff: powershell -File Forge/scripts/run_audit.ps1 -ClaimedFiles "db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py, tests/test_plan_execute.py" -Phase "Phase 35" 2>&1 | Select-Object -Last 30.
+- A9: FAIL -- Error checking dependencies: Exception calling "GetExtension" with "1" argument(s): "Illegal characters in path."
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/config.py
+- app/repos/user_repo.py
+- app/services/build_service.py
+- powershell -File Forge/scripts/run_audit.ps1 -ClaimedFiles "db/migrations/017_user_spend_cap.sql
+- tests/test_cost_gate.py
+- tests/test_plan_execute.py" -Phase "Phase 35" 2>&1 | Select-Object -Last 30
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/Settings.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 35 -- Iteration 155
+Timestamp: 2026-02-17T17:48:58Z
+AEM Cycle: Phase 35
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Claimed but not in diff: db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Claimed but not in diff: db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/config.py
+- app/repos/user_repo.py
+- app/services/build_service.py
+- db/migrations/017_user_spend_cap.sql
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- tests/test_cost_gate.py
+- tests/test_plan_execute.py
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/Settings.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 35 -- Iteration 156
+Timestamp: 2026-02-17T17:49:02Z
+AEM Cycle: Phase 35
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Claimed but not in diff: db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Claimed but not in diff: db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/config.py
+- app/repos/user_repo.py
+- app/services/build_service.py
+- db/migrations/017_user_spend_cap.sql
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- tests/test_cost_gate.py
+- tests/test_plan_execute.py
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/Settings.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 35 -- Iteration 157
+Timestamp: 2026-02-17T17:49:07Z
+AEM Cycle: Phase 35
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Claimed but not in diff: db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Claimed but not in diff: db/migrations/017_user_spend_cap.sql, tests/test_cost_gate.py.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/config.py
+- app/repos/user_repo.py
+- app/services/build_service.py
+- db/migrations/017_user_spend_cap.sql
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- tests/test_cost_gate.py
+- tests/test_plan_execute.py
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/Settings.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 35 -- Iteration 158
+Timestamp: 2026-02-17T17:49:19Z
+AEM Cycle: Phase 35
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (14 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/auth.py
+- app/api/routers/builds.py
+- app/config.py
+- app/repos/user_repo.py
+- app/services/build_service.py
+- db/migrations/017_user_spend_cap.sql
+- Forge/evidence/test_runs_latest.md
+- Forge/evidence/updatedifflog.md
+- tests/test_cost_gate.py
+- tests/test_plan_execute.py
+- web/src/context/AuthContext.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/Settings.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

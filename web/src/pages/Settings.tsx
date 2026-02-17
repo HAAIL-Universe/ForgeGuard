@@ -21,10 +21,62 @@ function Settings() {
   const [removing, setRemoving] = useState(false);
   const [removing2, setRemoving2] = useState(false);
   const [togglingAudit, setTogglingAudit] = useState(false);
+  const [spendCapInput, setSpendCapInput] = useState('');
+  const [savingCap, setSavingCap] = useState(false);
+  const [removingCap, setRemovingCap] = useState(false);
 
   const hasKey = user?.has_anthropic_key ?? false;
   const hasKey2 = user?.has_anthropic_key_2 ?? false;
   const auditEnabled = user?.audit_llm_enabled ?? true;
+  const currentSpendCap = user?.build_spend_cap as number | null | undefined;
+
+  const handleSaveSpendCap = async () => {
+    const val = parseFloat(spendCapInput);
+    if (isNaN(val) || val <= 0) {
+      addToast('Spend cap must be a positive number');
+      return;
+    }
+    setSavingCap(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/spend-cap`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spend_cap: val }),
+      });
+      if (res.ok) {
+        addToast(`Spend cap set to $${val.toFixed(2)}`, 'success');
+        setSpendCapInput('');
+        updateUser({ build_spend_cap: val });
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to save' }));
+        addToast(data.detail || 'Failed to save spend cap');
+      }
+    } catch {
+      addToast('Network error saving spend cap');
+    } finally {
+      setSavingCap(false);
+    }
+  };
+
+  const handleRemoveSpendCap = async () => {
+    setRemovingCap(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/spend-cap`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        addToast('Spend cap removed (unlimited)', 'info');
+        updateUser({ build_spend_cap: null });
+      } else {
+        addToast('Failed to remove spend cap');
+      }
+    } catch {
+      addToast('Network error removing spend cap');
+    } finally {
+      setRemovingCap(false);
+    }
+  };
 
   const handleSaveKey = async () => {
     const trimmed = apiKey.trim();
@@ -456,6 +508,86 @@ function Settings() {
                   transition: 'left 0.2s',
                 }}
               />
+            </button>
+          </div>
+        </div>
+
+        {/* Build Spend Cap */}
+        <div
+          style={{
+            background: '#1E293B',
+            borderRadius: '8px',
+            padding: '20px',
+            marginBottom: '16px',
+          }}
+          data-testid="spend-cap-section"
+        >
+          <h3 style={{ margin: '0 0 4px', fontSize: '0.9rem', color: '#F8FAFC' }}>
+            Build Spend Cap
+          </h3>
+          <p style={{ margin: '0 0 14px', fontSize: '0.75rem', color: '#64748B', lineHeight: 1.5, maxWidth: 420 }}>
+            Set a per-build cost limit (USD). When the estimated cost reaches this cap
+            the build is automatically stopped. Leave empty for server default ($50).
+          </p>
+
+          {currentSpendCap != null && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              background: '#052e16', border: '1px solid #166534', borderRadius: '6px',
+              padding: '8px 12px', marginBottom: '12px', fontSize: '0.8rem',
+            }}>
+              <span style={{ color: '#22C55E', fontWeight: 600 }}>
+                Current cap: ${currentSpendCap.toFixed(2)}
+              </span>
+              <button
+                onClick={handleRemoveSpendCap}
+                disabled={removingCap}
+                data-testid="remove-spend-cap-btn"
+                style={{
+                  background: 'transparent', color: '#EF4444', border: '1px solid #7F1D1D',
+                  borderRadius: '4px', padding: '3px 10px', cursor: removingCap ? 'not-allowed' : 'pointer',
+                  fontSize: '0.7rem', opacity: removingCap ? 0.6 : 1,
+                }}
+              >
+                {removingCap ? 'Removing...' : 'Remove'}
+              </button>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <span style={{
+              display: 'flex', alignItems: 'center', background: '#0F172A',
+              border: '1px solid #334155', borderRadius: '6px 0 0 6px',
+              padding: '0 10px', color: '#64748B', fontSize: '0.85rem',
+            }}>$</span>
+            <input
+              type="number"
+              min="0.01"
+              max="9999.99"
+              step="0.01"
+              value={spendCapInput}
+              onChange={(e) => setSpendCapInput(e.target.value)}
+              placeholder={currentSpendCap != null ? currentSpendCap.toFixed(2) : '50.00'}
+              data-testid="spend-cap-input"
+              style={{
+                flex: 1, background: '#0F172A', color: '#F8FAFC',
+                border: '1px solid #334155', borderLeft: 'none',
+                borderRadius: '0', padding: '8px 12px', fontSize: '0.85rem',
+              }}
+            />
+            <button
+              onClick={handleSaveSpendCap}
+              disabled={savingCap || !spendCapInput.trim()}
+              data-testid="save-spend-cap-btn"
+              style={{
+                background: '#2563EB', color: '#FFF', border: 'none',
+                borderRadius: '0 6px 6px 0', padding: '8px 16px',
+                cursor: savingCap || !spendCapInput.trim() ? 'not-allowed' : 'pointer',
+                fontWeight: 600, fontSize: '0.8rem',
+                opacity: savingCap || !spendCapInput.trim() ? 0.6 : 1,
+              }}
+            >
+              {savingCap ? 'Saving...' : 'Set Cap'}
             </button>
           </div>
         </div>

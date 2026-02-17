@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user
 from app.clients.github_client import GITHUB_OAUTH_URL
 from app.config import settings
-from app.repos.user_repo import set_anthropic_api_key, set_anthropic_api_key_2, set_audit_llm_enabled
+from app.repos.user_repo import set_anthropic_api_key, set_anthropic_api_key_2, set_audit_llm_enabled, set_build_spend_cap
 from app.services.auth_service import handle_github_callback
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -70,6 +70,8 @@ async def get_current_user_info(
     """Return the current authenticated user info."""
     has_api_key = bool(current_user.get("anthropic_api_key"))
     has_api_key_2 = bool(current_user.get("anthropic_api_key_2"))
+    raw_cap = current_user.get("build_spend_cap")
+    spend_cap = float(raw_cap) if raw_cap is not None else None
     return {
         "id": str(current_user["id"]),
         "github_login": current_user["github_login"],
@@ -77,6 +79,7 @@ async def get_current_user_info(
         "has_anthropic_key": has_api_key,
         "has_anthropic_key_2": has_api_key_2,
         "audit_llm_enabled": current_user.get("audit_llm_enabled", True),
+        "build_spend_cap": spend_cap,
     }
 
 
@@ -140,3 +143,30 @@ async def toggle_audit_llm(
     """Enable or disable the LLM auditor for builds."""
     await set_audit_llm_enabled(current_user["id"], body.enabled)
     return {"audit_llm_enabled": body.enabled}
+
+
+class SpendCapBody(BaseModel):
+    spend_cap: float
+
+
+@router.put("/spend-cap")
+async def save_spend_cap(
+    body: SpendCapBody,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Set the per-build spend cap (USD). Must be > 0."""
+    if body.spend_cap <= 0:
+        raise HTTPException(status_code=400, detail="Spend cap must be greater than zero")
+    if body.spend_cap > 9999.99:
+        raise HTTPException(status_code=400, detail="Spend cap exceeds maximum (9999.99)")
+    await set_build_spend_cap(current_user["id"], body.spend_cap)
+    return {"build_spend_cap": body.spend_cap}
+
+
+@router.delete("/spend-cap")
+async def remove_spend_cap(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Remove the per-build spend cap (unlimited)."""
+    await set_build_spend_cap(current_user["id"], None)
+    return {"removed": True}

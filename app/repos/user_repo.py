@@ -38,7 +38,7 @@ async def get_user_by_id(user_id: UUID) -> dict | None:
     """Fetch a user by primary key. Returns None if not found."""
     pool = await get_pool()
     row = await pool.fetchrow(
-        "SELECT id, github_id, github_login, avatar_url, access_token, anthropic_api_key, anthropic_api_key_2, audit_llm_enabled, created_at, updated_at FROM users WHERE id = $1",
+        "SELECT id, github_id, github_login, avatar_url, access_token, anthropic_api_key, anthropic_api_key_2, audit_llm_enabled, build_spend_cap, created_at, updated_at FROM users WHERE id = $1",
         user_id,
     )
     return dict(row) if row else None
@@ -71,4 +71,17 @@ async def set_audit_llm_enabled(user_id: UUID, enabled: bool) -> None:
         "UPDATE users SET audit_llm_enabled = $2, updated_at = now() WHERE id = $1",
         user_id,
         enabled,
+    )
+
+
+async def set_build_spend_cap(user_id: UUID, spend_cap: float | None) -> None:
+    """Set or clear the per-build spend cap (USD).
+
+    None = no cap (unlimited).  Value must be >= 0.50 if set.
+    """
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE users SET build_spend_cap = $2, updated_at = now() WHERE id = $1",
+        user_id,
+        spend_cap,
     )

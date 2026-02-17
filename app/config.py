@@ -83,6 +83,20 @@ class Settings:
     )
     # Build mode: "plan_execute" (new) or "conversation" (legacy)
     BUILD_MODE: str = os.getenv("BUILD_MODE", "plan_execute")
+    # Server-level hard cost cap (USD) applied when the user has no
+    # personal spend cap configured.  Set to 0 to disable.
+    BUILD_MAX_COST_USD: float = float(
+        os.getenv("BUILD_MAX_COST_USD", "50.00")
+    )
+    # Percentage of the effective spend cap at which a warning is sent
+    # to the frontend via WebSocket.
+    BUILD_COST_WARN_PCT: int = int(
+        os.getenv("BUILD_COST_WARN_PCT", "80")
+    )
+    # How often (in seconds) the backend broadcasts a cost_ticker WS event.
+    BUILD_COST_TICKER_INTERVAL: int = int(
+        os.getenv("BUILD_COST_TICKER_INTERVAL", "5")
+    )
 
 
 # Validate at import time -- but only when NOT running under pytest.

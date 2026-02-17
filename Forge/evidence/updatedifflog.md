@@ -1,64 +1,56 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-17T18:30:00+00:00
+- Timestamp: 2026-02-17T19:00:00+00:00
 - Branch: master
-- HEAD: 7a15606 (pre-commit — Phase 34 changes staged)
-- BASE_HEAD: 7a15606
+- HEAD: 294992c (pre-commit — Phase 35 changes staged)
+- BASE_HEAD: 294992c
 - Diff basis: working tree vs HEAD
 
 ## Cycle Status
 - Status: COMPLETE
 
 ## Summary
-- Phase 34: Governance Gate at Phase Transitions.
-  Adds deterministic governance checks (modelled on Forge run_audit.ps1 A1/A4/A9/W1/W3)
-  that run automatically at every build phase transition, between verification (step 5)
-  and commit (step 6).
-- 7 checks implemented: G1 (scope compliance), G2 (boundary compliance), G3 (dependency gate),
-  G4 (secrets scan), G5 (physics route coverage), G6 (rename detection), G7 (TODO/placeholder scan).
-- G1/G2/G3 are blocking (FAIL stops commit). G4/G5/G6/G7 are warnings (WARN, non-blocking).
-- On blocking failure: auto-fix loop (2 rounds via _generate_fix_manifest + _fix_single_file).
-- Frontend: governance result card in BuildProgress.tsx with per-check expandable display.
-- WS events: governance_check (per-check), governance_pass, governance_fail.
-- Reuses _PYTHON_STDLIB, _PY_NAME_MAP, _extract_imports from app/audit/runner.py.
-- 14 new tests in test_governance_gate.py. 605 backend + 61 frontend = 666 total tests passing.
+- Phase 35: Build Spend Cap / Circuit Breaker / Cost Gate.
+  Adds user-configurable per-build spend cap with automatic cost enforcement,
+  live cost ticker via WebSocket, circuit breaker (one-click API kill switch),
+  and cost warning/exceeded banners to prevent runaway API costs.
+- DB: migration 017 adds `build_spend_cap NUMERIC(10,2)` column to users table.
+- Backend: In-memory cost accumulation across 5 LLM cost recording sites.
+  `_check_cost_gate()` enforces warning at 80% and hard stop at 100% of cap.
+  `CostCapExceeded` exception triggers `_fail_build()` + cancel flag.
+  `cost_ticker` WS event broadcasts every 5s with live cost/tokens/api_calls.
+  `cost_warning` and `cost_exceeded` WS events for frontend banners.
+  Server-level default: $50 (BUILD_MAX_COST_USD env var).
+- API: PUT/DELETE `/auth/spend-cap` endpoints. `/auth/me` includes `build_spend_cap`.
+  GET `/projects/{id}/build/live-cost` for REST cost polling.
+  POST `/projects/{id}/build/circuit-break` for immediate hard stop.
+- Frontend BuildProgress.tsx: spend cap progress bar, live API call counter,
+  cost ticker display, cost warning/exceeded banners, circuit breaker button (red).
+- Frontend Settings.tsx: Spend cap input field with save/clear.
+- AuthContext: `build_spend_cap` added to User interface.
+- 19 new tests in test_cost_gate.py. 624 backend + 61 frontend = 685 total tests passing.
 
 ## Files Changed
-- Forge/Contracts/phases.md (Phase 34 spec appended)
-- app/services/build_service.py (_run_governance_checks function + pipeline wiring)
-- web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card)
-- tests/test_governance_gate.py (14 new tests — NEW FILE)
+- db/migrations/017_user_spend_cap.sql (new migration)
+- app/repos/user_repo.py (build_spend_cap in SELECT + set_build_spend_cap)
+- app/config.py (BUILD_MAX_COST_USD, BUILD_COST_WARN_PCT, BUILD_COST_TICKER_INTERVAL)
+- app/services/build_service.py (cost gate, accumulator, ticker, init/cleanup)
+- app/api/routers/auth.py (spend-cap PUT/DELETE, /me includes build_spend_cap)
+- app/api/routers/builds.py (circuit-break + live-cost endpoints)
+- web/src/pages/BuildProgress.tsx (cost ticker UI, circuit breaker, banners)
+- web/src/pages/Settings.tsx (spend cap input section)
+- web/src/context/AuthContext.tsx (build_spend_cap in User interface)
+- tests/test_cost_gate.py (19 new tests — NEW FILE)
+- tests/test_plan_execute.py (mock fix for get_user_by_id in _run_build)
 - Forge/evidence/updatedifflog.md (this file)
-
-## Minimal Diff Hunks
-(full diff omitted — 639 insertions, 14 deletions across 3 existing files + 1 new file)
-
-### app/services/build_service.py
-- +~360 lines: `_run_governance_checks()` function (G1–G7 checks, boundary compliance, dependency gate, secrets scan, physics coverage, rename detection, TODO scan)
-- +~100 lines: step 5b governance gate wiring in phase loop (between verify and commit)
-- Updated commit message template to include governance tag
-- Updated phase verdict to include governance_clean flag
-
-### web/src/pages/BuildProgress.tsx
-- +16 lines: GovernanceCheck / GovernanceResult interfaces
-- +2 lines: governance / governanceExpanded state
-- +20 lines: governance_check / governance_pass / governance_fail WS handlers
-- +40 lines: governance display card (expandable, per-check results)
-- +1 line: clear governance on phase transition
-
-### Forge/Contracts/phases.md
-- +74 lines: Phase 34 spec (deliverables 34.1–34.5, 7 checks, 11 tests, exit criteria)
-
-### tests/test_governance_gate.py (NEW)
-- 14 tests covering G1–G7, blocking vs warning, check count
 
 ## Verification
 - Static: all modules import cleanly, no syntax errors. TypeScript clean (tsc --noEmit).
 - Runtime: FastAPI app boots without error.
-- Behavior: 605 backend tests pass (pytest), 61 frontend tests pass (vitest). 666 total.
+- Behavior: 624 backend tests pass (pytest), 61 frontend tests pass (vitest). 685 total.
 - Contract: boundary compliance verified via test suite. No forbidden patterns.
 
 ## Next Steps
 - Run watcher audit to validate this diff log.
-- Phase 32 planning (Scout Dashboard).
+- Commit and push Phase 35.

@@ -305,6 +305,11 @@ function BuildProgress() {
   const [governance, setGovernance] = useState<GovernanceResult | null>(null);
   const [governanceExpanded, setGovernanceExpanded] = useState(false);
   const [activityStatus, setActivityStatus] = useState<string>('');
+  /* Cost gate / circuit breaker state (Phase 35) */
+  const [liveCost, setLiveCost] = useState({ total_cost_usd: 0, api_calls: 0, tokens_in: 0, tokens_out: 0, spend_cap: null as number | null, pct_used: 0 });
+  const [costWarning, setCostWarning] = useState<string | null>(null);
+  const [costExceeded, setCostExceeded] = useState<string | null>(null);
+  const [circuitBreaking, setCircuitBreaking] = useState(false);
   const feedEndRef = useRef<HTMLDivElement>(null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
@@ -1063,6 +1068,32 @@ function BuildProgress() {
             });
             break;
           }
+
+          case 'cost_ticker': {
+            setLiveCost({
+              total_cost_usd: (payload.total_cost_usd ?? 0) as number,
+              api_calls: (payload.api_calls ?? 0) as number,
+              tokens_in: (payload.tokens_in ?? 0) as number,
+              tokens_out: (payload.tokens_out ?? 0) as number,
+              spend_cap: (payload.spend_cap ?? null) as number | null,
+              pct_used: (payload.pct_used ?? 0) as number,
+            });
+            break;
+          }
+
+          case 'cost_warning': {
+            const msg = (payload.message ?? '') as string;
+            setCostWarning(msg);
+            addActivity(`⚠️ Cost warning: ${msg}`, 'warn');
+            break;
+          }
+
+          case 'cost_exceeded': {
+            const msg = (payload.message ?? '') as string;
+            setCostExceeded(msg);
+            addActivity(`🛑 Cost exceeded: ${msg}`, 'error');
+            break;
+          }
         }
       },
       [projectId, addActivity, addToast],
@@ -1107,6 +1138,26 @@ function BuildProgress() {
       addToast('Network error force-cancelling build');
     }
     setShowForceCancelConfirm(false);
+  };
+
+  const handleCircuitBreak = async () => {
+    setCircuitBreaking(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/circuit-break`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setBuild(updated);
+        addToast('Circuit breaker activated — all API calls halted', 'info');
+      } else {
+        addToast('Failed to activate circuit breaker');
+      }
+    } catch {
+      addToast('Network error activating circuit breaker');
+    }
+    setCircuitBreaking(false);
   };
 
   const handleRetryBuild = async () => {
@@ -2072,9 +2123,65 @@ function BuildProgress() {
                   <div style={{ width: `${ctxPercent}%`, height: '100%', background: ctxColor, borderRadius: '4px', transition: 'width 0.4s ease' }} />
                 </div>
               </div>
+
+              {/* Spend cap progress meter */}
+              {liveCost.spend_cap != null && liveCost.spend_cap > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: '#94A3B8' }}>
+                    <span>Spend Cap</span>
+                    <span>${liveCost.total_cost_usd.toFixed(4)} / ${liveCost.spend_cap.toFixed(2)} ({liveCost.pct_used.toFixed(1)}%)</span>
+                  </div>
+                  <div style={{ width: '100%', height: '8px', background: '#0F172A', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${Math.min(100, liveCost.pct_used)}%`, height: '100%',
+                      background: liveCost.pct_used > 80 ? '#EF4444' : liveCost.pct_used > 50 ? '#F59E0B' : '#3B82F6',
+                      borderRadius: '4px', transition: 'width 0.4s ease',
+                    }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Live API call counter */}
+              {liveCost.api_calls > 0 && (
+                <div style={{ display: 'flex', gap: '16px', marginTop: '8px', fontSize: '0.65rem', color: '#94A3B8' }}>
+                  <span>API Calls: <span style={{ color: '#F8FAFC', fontWeight: 600 }}>{liveCost.api_calls}</span></span>
+                  <span>Live Cost: <span style={{ color: '#22C55E', fontWeight: 600 }}>${liveCost.total_cost_usd.toFixed(4)}</span></span>
+                </div>
+              )}
             </div>
 
-            {/* -- Error banner -- */}
+            {/* Cost warning/exceeded banners */}
+            {costWarning && !costExceeded && (
+              <div style={{ background: '#78350F', borderRadius: '6px', padding: '10px 16px', fontSize: '0.78rem', color: '#FDE68A', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1.1rem' }}>⚠️</span>
+                <span>{costWarning}</span>
+              </div>
+            )}
+            {costExceeded && (
+              <div style={{ background: '#7F1D1D', borderRadius: '6px', padding: '10px 16px', fontSize: '0.78rem', color: '#FCA5A5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1.1rem' }}>🛑</span>
+                <span>{costExceeded}</span>
+              </div>
+            )}
+
+            {/* Circuit Breaker */}
+            {isActive && (
+              <button
+                onClick={handleCircuitBreak}
+                disabled={circuitBreaking}
+                data-testid="circuit-breaker-btn"
+                style={{
+                  background: '#DC2626', color: '#FFF', border: 'none', borderRadius: '8px',
+                  padding: '10px 16px', cursor: circuitBreaking ? 'not-allowed' : 'pointer',
+                  fontWeight: 700, fontSize: '0.85rem', width: '100%',
+                  opacity: circuitBreaking ? 0.6 : 1,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                }}
+              >
+                <span style={{ fontSize: '1.1rem' }}>⚡</span>
+                {circuitBreaking ? 'Stopping...' : 'CIRCUIT BREAKER — Kill All API Calls'}
+              </button>
+            )}
             {build?.error_detail && (
               <div style={{ background: '#7F1D1D', borderRadius: '6px', padding: '10px 16px', fontSize: '0.78rem', color: '#FCA5A5' }}>
                 <strong>Error:</strong> {build.error_detail}

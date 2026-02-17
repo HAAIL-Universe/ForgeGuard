@@ -328,3 +328,48 @@ async def get_build_instructions(
         if "not found" in detail.lower():
             raise HTTPException(status_code=404, detail=detail)
         raise HTTPException(status_code=400, detail=detail)
+
+
+# ── POST /projects/{project_id}/build/circuit-break ──────────────────────
+
+
+@router.post("/{project_id}/build/circuit-break")
+async def circuit_break_build(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Circuit breaker — immediate hard stop.  Kills the build and logs
+    the reason as CIRCUIT_BREAKER so it's distinguishable from normal
+    cancellation."""
+    try:
+        build = await build_service.force_cancel_build(project_id, user["id"])
+        # Log the specific reason
+        from app.repos import build_repo as _br
+        await _br.append_build_log(
+            build["id"],
+            "CIRCUIT BREAKER activated by user — all API calls halted",
+            source="system", level="error",
+        )
+        return {**build, "circuit_breaker": True}
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GET /projects/{project_id}/build/live-cost ───────────────────────────
+
+
+@router.get("/{project_id}/build/live-cost")
+async def get_live_cost(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Return current in-memory cost data for the active build."""
+    from app.repos import build_repo as _br
+    latest = await _br.get_latest_build_for_project(project_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No builds found")
+    bid = str(latest["id"])
+    return build_service.get_build_cost_live(bid)

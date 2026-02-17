@@ -527,6 +527,7 @@ class TestBuildModeDispatcher:
     async def test_plan_execute_mode(self):
         """When BUILD_MODE=plan_execute and working_dir set → plan-execute path."""
         with patch.object(build_service.settings, "BUILD_MODE", "plan_execute"), \
+             patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
              patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe, \
              patch("app.services.build_service._run_build_conversation", new_callable=AsyncMock) as mock_conv:
 
@@ -542,6 +543,7 @@ class TestBuildModeDispatcher:
     async def test_conversation_mode(self):
         """When BUILD_MODE=conversation → conversation path."""
         with patch.object(build_service.settings, "BUILD_MODE", "conversation"), \
+             patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
              patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe, \
              patch("app.services.build_service._run_build_conversation", new_callable=AsyncMock) as mock_conv:
 
@@ -557,6 +559,7 @@ class TestBuildModeDispatcher:
     async def test_plan_execute_without_working_dir_falls_back(self):
         """Plan-execute without working_dir → falls back to conversation."""
         with patch.object(build_service.settings, "BUILD_MODE", "plan_execute"), \
+             patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
              patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe, \
              patch("app.services.build_service._run_build_conversation", new_callable=AsyncMock) as mock_conv:
 

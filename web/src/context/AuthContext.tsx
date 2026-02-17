@@ -9,6 +9,7 @@ interface User {
   has_anthropic_key?: boolean;
   has_anthropic_key_2?: boolean;
   audit_llm_enabled?: boolean;
+  build_spend_cap?: number | null;
 }
 
 interface AuthContextValue {

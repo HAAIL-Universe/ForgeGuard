@@ -289,6 +289,165 @@ def _get_token_rates(model: str) -> tuple[Decimal, Decimal]:
 
 
 # ---------------------------------------------------------------------------
+# Cost gate / circuit breaker (Phase 35)
+# ---------------------------------------------------------------------------
+
+# In-memory running cost per build (accumulated from every LLM call)
+_build_running_cost: dict[str, Decimal] = {}       # build_id -> USD
+_build_api_calls: dict[str, int] = {}              # build_id -> call count
+_build_total_input_tokens: dict[str, int] = {}     # build_id -> total input tokens
+_build_total_output_tokens: dict[str, int] = {}    # build_id -> total output tokens
+_build_spend_caps: dict[str, float | None] = {}    # build_id -> user's spend cap (None = unlimited)
+_build_cost_warned: dict[str, bool] = {}           # build_id -> whether warning already sent
+_last_cost_ticker: dict[str, float] = {}           # build_id -> epoch of last ticker broadcast
+_build_cost_user: dict[str, UUID] = {}             # build_id -> user_id (for broadcasting)
+
+
+class CostCapExceeded(Exception):
+    """Raised when a build's running cost exceeds the configured spend cap."""
+
+
+async def _accumulate_cost(
+    build_id: UUID,
+    input_tokens: int,
+    output_tokens: int,
+    model: str,
+    cost: Decimal,
+) -> None:
+    """Add cost from an LLM call to the running total and broadcast a
+    cost_ticker event if the ticker interval has elapsed.
+
+    Then check the spend cap — if exceeded, triggers build cancellation.
+    """
+    bid = str(build_id)
+    _build_running_cost[bid] = _build_running_cost.get(bid, Decimal(0)) + cost
+    _build_api_calls[bid] = _build_api_calls.get(bid, 0) + 1
+    _build_total_input_tokens[bid] = _build_total_input_tokens.get(bid, 0) + input_tokens
+    _build_total_output_tokens[bid] = _build_total_output_tokens.get(bid, 0) + output_tokens
+
+    # Broadcast cost ticker at configured interval
+    now = time.time()
+    last = _last_cost_ticker.get(bid, 0.0)
+    if now - last >= settings.BUILD_COST_TICKER_INTERVAL:
+        _last_cost_ticker[bid] = now
+        user_id = _build_cost_user.get(bid)
+        if user_id:
+            await _broadcast_cost_ticker(build_id, user_id)
+
+    # Check spend cap
+    await _check_cost_gate(build_id)
+
+
+async def _broadcast_cost_ticker(build_id: UUID, user_id: UUID) -> None:
+    """Send a cost_ticker WS event with live cost data."""
+    bid = str(build_id)
+    running_cost = float(_build_running_cost.get(bid, Decimal(0)))
+    spend_cap = _build_spend_caps.get(bid)
+    effective_cap = spend_cap if spend_cap else (settings.BUILD_MAX_COST_USD or None)
+    pct_used = (running_cost / effective_cap * 100) if effective_cap else 0.0
+
+    await _broadcast_build_event(user_id, build_id, "cost_ticker", {
+        "total_cost_usd": round(running_cost, 6),
+        "api_calls": _build_api_calls.get(bid, 0),
+        "tokens_in": _build_total_input_tokens.get(bid, 0),
+        "tokens_out": _build_total_output_tokens.get(bid, 0),
+        "spend_cap": effective_cap,
+        "pct_used": round(pct_used, 1),
+    })
+
+
+async def _check_cost_gate(build_id: UUID) -> None:
+    """Check whether the current Running cost exceeds the spend cap.
+
+    If the user has a personal spend cap, use that.
+    Otherwise fall back to the server-level BUILD_MAX_COST_USD.
+    If both are 0/None, spending is unlimited.
+
+    On breach: sets the cancel flag, fails the build, and broadcasts
+    a cost_exceeded event.
+    """
+    bid = str(build_id)
+    running = _build_running_cost.get(bid, Decimal(0))
+
+    # Determine effective cap
+    user_cap = _build_spend_caps.get(bid)
+    server_cap = settings.BUILD_MAX_COST_USD
+    effective_cap: float | None = None
+    if user_cap is not None and user_cap > 0:
+        effective_cap = user_cap
+    elif server_cap > 0:
+        effective_cap = server_cap
+
+    if effective_cap is None or effective_cap <= 0:
+        return  # unlimited spending
+
+    cost_f = float(running)
+    user_id = _build_cost_user.get(bid)
+
+    # Warning threshold
+    warn_pct = settings.BUILD_COST_WARN_PCT / 100.0
+    if cost_f >= effective_cap * warn_pct and not _build_cost_warned.get(bid):
+        _build_cost_warned[bid] = True
+        if user_id:
+            await _broadcast_build_event(user_id, build_id, "cost_warning", {
+                "total_cost_usd": round(cost_f, 6),
+                "spend_cap": effective_cap,
+                "pct_used": round(cost_f / effective_cap * 100, 1),
+                "message": f"Build has reached {round(cost_f / effective_cap * 100)}% of ${effective_cap:.2f} spend cap",
+            })
+
+    # Hard cap
+    if cost_f >= effective_cap:
+        _cancel_flags.add(bid)
+        if user_id:
+            await _broadcast_build_event(user_id, build_id, "cost_exceeded", {
+                "total_cost_usd": round(cost_f, 6),
+                "spend_cap": effective_cap,
+                "message": f"Build stopped — cost ${cost_f:.2f} exceeded ${effective_cap:.2f} spend cap",
+            })
+            await _fail_build(build_id, user_id,
+                              f"Cost cap exceeded: ${cost_f:.2f} >= ${effective_cap:.2f}")
+        raise CostCapExceeded(f"${cost_f:.2f} >= ${effective_cap:.2f}")
+
+
+def _init_cost_tracking(build_id: UUID, user_id: UUID, spend_cap: float | None) -> None:
+    """Initialise in-memory cost tracking for a new build."""
+    bid = str(build_id)
+    _build_running_cost[bid] = Decimal(0)
+    _build_api_calls[bid] = 0
+    _build_total_input_tokens[bid] = 0
+    _build_total_output_tokens[bid] = 0
+    _build_spend_caps[bid] = spend_cap
+    _build_cost_warned[bid] = False
+    _last_cost_ticker[bid] = 0.0
+    _build_cost_user[bid] = user_id
+
+
+def _cleanup_cost_tracking(build_id: UUID) -> None:
+    """Remove in-memory cost tracking for a finished build."""
+    bid = str(build_id)
+    _build_running_cost.pop(bid, None)
+    _build_api_calls.pop(bid, None)
+    _build_total_input_tokens.pop(bid, None)
+    _build_total_output_tokens.pop(bid, None)
+    _build_spend_caps.pop(bid, None)
+    _build_cost_warned.pop(bid, None)
+    _last_cost_ticker.pop(bid, None)
+    _build_cost_user.pop(bid, None)
+
+
+def get_build_cost_live(build_id: str) -> dict:
+    """Return current in-memory cost info for a build (for REST endpoints)."""
+    return {
+        "total_cost_usd": round(float(_build_running_cost.get(build_id, Decimal(0))), 6),
+        "api_calls": _build_api_calls.get(build_id, 0),
+        "tokens_in": _build_total_input_tokens.get(build_id, 0),
+        "tokens_out": _build_total_output_tokens.get(build_id, 0),
+        "spend_cap": _build_spend_caps.get(build_id),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -583,6 +742,7 @@ async def force_cancel_build(project_id: UUID, user_id: UUID) -> dict:
     _build_activity_status.pop(bid, None)
     _interjection_queues.pop(bid, None)
     _last_progress.pop(bid, None)
+    _cleanup_cost_tracking(build_id)
 
     # Force-update DB status
     await build_repo.update_build_status(build_id, "failed")
@@ -1820,6 +1980,12 @@ async def _run_build(
     mode = settings.BUILD_MODE
     bid = str(build_id)
 
+    # Initialise cost tracking — read user's spend cap
+    user = await get_user_by_id(user_id)
+    raw_cap = (user or {}).get("build_spend_cap")
+    spend_cap = float(raw_cap) if raw_cap is not None else None
+    _init_cost_tracking(build_id, user_id, spend_cap)
+
     # Start the health-check watchdog alongside the build
     _touch_progress(build_id)
     watchdog = asyncio.create_task(_build_watchdog(build_id, user_id))
@@ -1880,6 +2046,7 @@ async def _run_build(
         _build_activity_status.pop(bid, None)
         _interjection_queues.pop(bid, None)
         _last_progress.pop(bid, None)
+        _cleanup_cost_tracking(build_id)
 
 
 # ---------------------------------------------------------------------------
@@ -3467,6 +3634,7 @@ async def _run_recovery_planner(
     await build_repo.record_build_cost(
         build_id, f"{phase} (planner)", input_t, output_t, model, cost,
     )
+    await _accumulate_cost(build_id, input_t, output_t, model, cost)
 
     # Broadcast recovery plan WS event
     await _broadcast_build_event(
@@ -3772,6 +3940,7 @@ async def _fix_single_file(
         build_id, f"fix:{label}:{file_path}", input_t, output_t,
         resolve_model, cost,
     )
+    await _accumulate_cost(build_id, input_t, output_t, resolve_model, cost)
 
     await build_repo.append_build_log(
         build_id,
@@ -4302,6 +4471,8 @@ async def _record_phase_cost(
     await build_repo.record_build_cost(
         build_id, phase, input_t, output_t, model, cost
     )
+    # Accumulate into running total and check spend cap
+    await _accumulate_cost(build_id, input_t, output_t, model, cost)
     # Reset for next phase
     usage.input_tokens = 0
     usage.output_tokens = 0
@@ -4792,6 +4963,7 @@ async def _generate_file_manifest(
         await build_repo.record_build_cost(
             build_id, f"Phase {current_phase['number']} (manifest)", input_t, output_t, model, cost,
         )
+        await _accumulate_cost(build_id, input_t, output_t, model, cost)
 
         # Strip markdown fences if present
         cleaned = text.strip()
@@ -5113,6 +5285,7 @@ async def _generate_single_file(
     await build_repo.record_build_cost(
         build_id, f"file:{file_path}", input_t, output_t, model, cost,
     )
+    await _accumulate_cost(build_id, input_t, output_t, model, cost)
 
     # Write to disk
     from app.services.tool_executor import _exec_write_file
