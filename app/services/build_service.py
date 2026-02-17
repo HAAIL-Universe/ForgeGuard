@@ -4052,13 +4052,49 @@ async def _audit_single_file(
             "source": "audit", "level": "info",
         })
 
+        # --- Pre-LLM syntax gate: catch real parse errors early ---
+        syntax_finding = ""
+        if file_path.endswith(".py"):
+            import ast as _ast_audit
+            try:
+                _ast_audit.parse(file_content, filename=file_path)
+            except SyntaxError as _se:
+                syntax_finding = (
+                    f"L{_se.lineno or '?'}: SyntaxError — {_se.msg}"
+                )
+
         # Acquire semaphore — limits concurrent LLM calls
         async with _FILE_AUDIT_SEMAPHORE:
-            return await _audit_single_file_llm(
+            path, verdict, findings = await _audit_single_file_llm(
                 build_id, user_id, audit_api_key,
                 file_path, file_content, file_purpose,
                 t0, progress_tag,
             )
+
+        # If we found a real syntax error, always force FAIL regardless
+        # of the LLM verdict so the fix loop runs before commit.
+        if syntax_finding:
+            combined = (
+                f"{syntax_finding}\n{findings}".strip()
+                if findings
+                else syntax_finding
+            )
+            if verdict != "FAIL":
+                dur = int((_time.monotonic() - t0) * 1000)
+                await build_repo.append_build_log(
+                    build_id,
+                    f"File audit FAIL (syntax) {progress_tag}: {file_path} ({dur}ms)\n{combined}",
+                    source="audit", level="warn",
+                )
+                await _broadcast_build_event(user_id, build_id, "file_audited", {
+                    "path": file_path,
+                    "verdict": "FAIL",
+                    "findings": combined[:2000],
+                    "duration_ms": dur,
+                })
+            return (file_path, "FAIL", combined)
+
+        return (path, verdict, findings)
 
     except Exception as exc:
         dur = int((_time.monotonic() - t0) * 1000)
@@ -5231,7 +5267,9 @@ async def _verify_phase_output(
                         label="verify",
                     )
                     recheck = await _exec_check_syntax({"file_path": f["path"]}, working_dir)
-                    if "error" not in recheck.lower() and "SyntaxError" not in recheck:
+                    # "No syntax errors" contains the substring "error", so
+                    # check for the success phrase FIRST to avoid false negatives.
+                    if "No syntax errors" in recheck:
                         fixes_applied += 1
                         syntax_errors -= 1
                         await _broadcast_build_event(user_id, build_id, "build_log", {
@@ -5239,7 +5277,7 @@ async def _verify_phase_output(
                             "source": "verify", "level": "info",
                         })
                         break
-                    else:
+                    elif "SyntaxError" in recheck or "error" in recheck.lower():
                         await _broadcast_build_event(user_id, build_id, "build_log", {
                             "message": f"Fix attempt {attempt + 1} for {f['path']} — still has errors: {recheck.strip()}",
                             "source": "verify", "level": "warn",
@@ -6396,30 +6434,7 @@ async def _run_build_plan_execute(
                 continue
             # retry — will proceed to next phase anyway at this point
 
-        # 5. Commit after audits pass — never commit unaudited code
-        if phase_files_written:
-            try:
-                await _set_build_activity(build_id, user_id, f"Committing {phase_name}...")
-                await git_client.add_all(working_dir)
-                commit_msg = (
-                    f"forge: {phase_name} complete"
-                    if audit_attempts <= 1
-                    else f"forge: {phase_name} complete (after {audit_attempts} audit attempts)"
-                )
-                sha = await git_client.commit(working_dir, commit_msg)
-                if sha:
-                    _log_msg = f"Committed {phase_name}: {sha[:8]}"
-                    await build_repo.append_build_log(
-                        build_id, _log_msg,
-                        source="system", level="info",
-                    )
-                    await _broadcast_build_event(user_id, build_id, "build_log", {
-                        "message": _log_msg, "source": "system", "level": "info",
-                    })
-            except Exception as exc:
-                logger.warning("Git commit failed for %s: %s", phase_name, exc)
-
-        # 6. Verify phase output (syntax + tests) — only after audit pass
+        # 5. Verify phase output (syntax + tests) — BEFORE committing
         # Verification is a gating step: if errors remain after fix attempts,
         # re-run verification (up to MAX_VERIFY_ROUNDS).  Each run internally
         # attempts its own fixes, so the total fix budget is generous.
@@ -6459,20 +6474,6 @@ async def _run_build_plan_execute(
                 await _broadcast_build_event(user_id, build_id, "build_log", {
                     "message": _v_msg, "source": "system", "level": "info",
                 })
-                # Commit any auto-fixes from verification
-                if verification.get("fixes_applied", 0) > 0:
-                    try:
-                        await git_client.add_all(working_dir)
-                        fix_sha = await git_client.commit(
-                            working_dir, f"forge: {phase_name} verification auto-fixes",
-                        )
-                        if fix_sha:
-                            await build_repo.append_build_log(
-                                build_id, f"Committed verification fixes: {fix_sha[:8]}",
-                                source="system", level="info",
-                            )
-                    except Exception:
-                        pass
             except Exception as exc:
                 logger.warning("Verification failed: %s", exc)
                 verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
@@ -6502,6 +6503,30 @@ async def _run_build_plan_execute(
                 await _broadcast_build_event(user_id, build_id, "build_log", {
                     "message": _warn_msg, "source": "verify", "level": "warn",
                 })
+
+        # 6. Commit after audit + verification — never commit unverified code
+        if phase_files_written:
+            try:
+                await _set_build_activity(build_id, user_id, f"Committing {phase_name}...")
+                await git_client.add_all(working_dir)
+                _fix_count = verification.get("fixes_applied", 0)
+                commit_msg = (
+                    f"forge: {phase_name} complete"
+                    if audit_attempts <= 1 and _fix_count == 0
+                    else f"forge: {phase_name} complete (audit×{audit_attempts}, {_fix_count} auto-fixes)"
+                )
+                sha = await git_client.commit(working_dir, commit_msg)
+                if sha:
+                    _log_msg = f"Committed {phase_name}: {sha[:8]}"
+                    await build_repo.append_build_log(
+                        build_id, _log_msg,
+                        source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _log_msg, "source": "system", "level": "info",
+                    })
+            except Exception as exc:
+                logger.warning("Git commit failed for %s: %s", phase_name, exc)
 
         # Determine final phase verdict: audit + verification
         verification_clean = (
