@@ -243,9 +243,9 @@ class TestGenerateFileManifest:
             "usage": {"input_tokens": 1000, "output_tokens": 500},
         })
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "read_text", return_value="You are a planner..."):
 
@@ -273,9 +273,9 @@ class TestGenerateFileManifest:
             "usage": {"input_tokens": 1000, "output_tokens": 500},
         })
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "read_text", return_value="You are a planner..."):
 
@@ -306,9 +306,9 @@ class TestGenerateFileManifest:
             "usage": {"input_tokens": 500, "output_tokens": 300},
         })
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "read_text", return_value="prompt"):
 
@@ -338,9 +338,9 @@ class TestGenerateFileManifest:
             "usage": {"input_tokens": 500, "output_tokens": 300},
         })
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "read_text", return_value="prompt"):
 
@@ -374,9 +374,9 @@ class TestGenerateSingleFile:
             "usage": {"input_tokens": 500, "output_tokens": 200},
         })
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch("app.services.tool_executor._exec_write_file", return_value="OK"):
 
             mock_repo.append_build_log = AsyncMock()
@@ -409,9 +409,9 @@ class TestGenerateSingleFile:
             "usage": {"input_tokens": 300, "output_tokens": 100},
         })
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch("app.services.tool_executor._exec_write_file", return_value="OK"):
 
             mock_repo.append_build_log = AsyncMock()
@@ -436,9 +436,9 @@ class TestGenerateSingleFile:
         })
         mock_record = AsyncMock()
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
              patch("app.clients.llm_client.chat", mock_chat), \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch("app.services.tool_executor._exec_write_file", return_value="OK"):
 
             mock_repo.append_build_log = AsyncMock()
@@ -588,8 +588,8 @@ class TestVerifyPhaseOutput:
             {"path": "app/foo.py", "language": "python", "status": "done"},
         ]
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch("app.services.tool_executor._exec_check_syntax", mock_check):
 
             mock_repo.append_build_log = AsyncMock()
@@ -621,8 +621,8 @@ class TestVerifyPhaseOutput:
              "estimated_lines": 10},
         ]
 
-        with patch("app.services.build_service.build_repo") as mock_repo, \
-             patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+        with patch("app.services.build._state.build_repo") as mock_repo, \
+             patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
              patch("app.services.tool_executor._exec_check_syntax", side_effect=mock_check), \
              patch("app.services.build_service._generate_single_file", mock_gen):
 

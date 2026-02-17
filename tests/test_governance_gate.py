@@ -60,9 +60,9 @@ def _manifest(files: list[str]) -> list[dict]:
 def _mock_patches():
     """Return common patches for governance tests."""
     return (
-        patch("app.services.build_service.build_repo", new_callable=MagicMock),
-        patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock),
-        patch("app.services.build_service._set_build_activity", new_callable=AsyncMock),
+        patch("app.services.build._state.build_repo", new_callable=MagicMock),
+        patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock),
+        patch("app.services.build._state._set_build_activity", new_callable=AsyncMock),
     )
 
 

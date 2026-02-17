@@ -135,12 +135,17 @@ def _mock_stream_agent(responses: list[str]):
 
 # Common patches for _run_build
 def _build_patches():
+    # Shared build_repo mock — used at both build_service and _state level
+    # so that _pause_build/_fail_build (in _state.py) and build_service.py
+    # functions all see the same mock.
+    shared_repo = MagicMock()
     return {
-        "build_repo": patch("app.services.build_service.build_repo"),
+        "build_repo": patch("app.services.build_service.build_repo", shared_repo),
+        "_state_build_repo": patch("app.services.build._state.build_repo", shared_repo),
         "project_repo": patch("app.services.build_service.project_repo"),
         "git_client": patch("app.services.build_service.git_client"),
         "github_client": patch("app.services.build_service.github_client"),
-        "manager": patch("app.services.build_service.manager"),
+        "manager": patch("app.services.build._state.manager"),
         "get_user": patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock),
         "recovery_planner": patch(
             "app.services.build_service._run_recovery_planner",
@@ -205,6 +210,27 @@ def _setup_mocks(mocks, working_dir=None, audit_result="PASS"):
 # Integration Tests
 # ---------------------------------------------------------------------------
 
+
+
+
+# ---------------------------------------------------------------------------
+# Auto-fixture: mock _state-level deps for sub-module functions
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _mock_build_state_deps():
+    """Mock _state-level external deps so sub-module functions don't hit real DB."""
+    mock_repo = MagicMock()
+    for m in ("append_build_log", "record_build_cost", "update_build",
+              "update_build_status", "get_build", "pause_build"):
+        setattr(mock_repo, m, AsyncMock(return_value=None))
+    mock_mgr = MagicMock()
+    mock_mgr.send_to_user = AsyncMock(return_value=None)
+    mock_mgr.send_to_group = AsyncMock(return_value=None)
+    with patch("app.services.build._state.build_repo", mock_repo), \
+         patch("app.services.build._state.manager", mock_mgr):
+        yield
 
 class TestFullBuildLifecycle:
     """Test the complete build lifecycle: plan → files → audit → commit."""

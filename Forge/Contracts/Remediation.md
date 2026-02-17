@@ -14,9 +14,9 @@
 | [R1](#r1--critical-fixes) | Critical Fixes | 8 | Low | ✅ |
 | [R2](#r2--memory-leaks--resource-safety) | Memory Leaks & Resource Safety | 4 | Low | ✅ |
 | [R3](#r3--domain-exceptions--error-handling) | Domain Exceptions & Error Handling | 3 | Low | ✅ |
-| [R4](#r4--database-hardening) | Database Hardening | 5 | Med | ⬜ |
-| [R5](#r5--auth-hardening) | Auth Hardening | 4 | Low | ⬜ |
-| [R6](#r6--http-client-reuse) | HTTP Client Reuse | 3 | Med | ⬜ |
+| [R4](#r4--database-hardening) | Database Hardening | 5 | Med | ✅ |
+| [R5](#r5--auth-hardening) | Auth Hardening | 4 | Low | ✅ |
+| [R6](#r6--http-client-reuse) | HTTP Client Reuse | 3 | Med | ✅ |
 | [R7](#r7--decompose-build_servicepy) | Decompose `build_service.py` | 1 | High | ⬜ |
 | [R8](#r8--decompose-other-services) | Decompose Other Services | 2 | Med | ⬜ |
 | [R9](#r9--websocket-reliability) | WebSocket Reliability | 4 | Low | ⬜ |

@@ -87,11 +87,11 @@ def test_cleanup_cost_tracking():
 
 @pytest.mark.asyncio
 async def test_accumulate_cost_tracks_running_total(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_COST_TICKER_INTERVAL", 999)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_COST_TICKER_INTERVAL", 999)
     _init_cost_tracking(_BUILD_ID, _USER_ID, None)  # unlimited
     bid = str(_BUILD_ID)
 
-    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock):
+    with patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock):
         await _accumulate_cost(_BUILD_ID, 1000, 500, "claude-opus-4", Decimal("0.05"))
         assert _build_running_cost[bid] == Decimal("0.05")
         assert _build_api_calls[bid] == 1
@@ -112,7 +112,7 @@ async def test_accumulate_cost_tracks_running_total(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cost_gate_no_cap_unlimited(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 0.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 0.0)
     _init_cost_tracking(_BUILD_ID, _USER_ID, None)
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("999.99")
@@ -122,13 +122,13 @@ async def test_cost_gate_no_cap_unlimited(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cost_gate_user_cap_exceeded(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 100.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 100.0)
     _init_cost_tracking(_BUILD_ID, _USER_ID, 5.0)  # user cap = $5
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("5.01")
 
-    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
-         patch("app.services.build_service._fail_build", new_callable=AsyncMock):
+    with patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build._state._fail_build", new_callable=AsyncMock):
         with pytest.raises(CostCapExceeded):
             await _check_cost_gate(_BUILD_ID)
     assert bid in build_service._cancel_flags
@@ -137,13 +137,13 @@ async def test_cost_gate_user_cap_exceeded(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cost_gate_server_cap_used_when_no_user_cap(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 10.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 10.0)
     _init_cost_tracking(_BUILD_ID, _USER_ID, None)  # no user cap
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("10.50")
 
-    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
-         patch("app.services.build_service._fail_build", new_callable=AsyncMock):
+    with patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build._state._fail_build", new_callable=AsyncMock):
         with pytest.raises(CostCapExceeded):
             await _check_cost_gate(_BUILD_ID)
     build_service._cancel_flags.discard(bid)
@@ -151,14 +151,14 @@ async def test_cost_gate_server_cap_used_when_no_user_cap(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cost_gate_warning_at_threshold(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 10.0)
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_COST_WARN_PCT", 80)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 10.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_COST_WARN_PCT", 80)
     _init_cost_tracking(_BUILD_ID, _USER_ID, None)
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("8.50")  # 85% — above warning, below cap
 
     mock_broadcast = AsyncMock()
-    with patch("app.services.build_service._broadcast_build_event", mock_broadcast):
+    with patch("app.services.build._state._broadcast_build_event", mock_broadcast):
         await _check_cost_gate(_BUILD_ID)
 
     assert _build_cost_warned[bid] is True
@@ -170,14 +170,14 @@ async def test_cost_gate_warning_at_threshold(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cost_gate_warning_sent_only_once(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 10.0)
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_COST_WARN_PCT", 80)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 10.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_COST_WARN_PCT", 80)
     _init_cost_tracking(_BUILD_ID, _USER_ID, None)
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("8.50")
 
     mock_broadcast = AsyncMock()
-    with patch("app.services.build_service._broadcast_build_event", mock_broadcast):
+    with patch("app.services.build._state._broadcast_build_event", mock_broadcast):
         await _check_cost_gate(_BUILD_ID)
         await _check_cost_gate(_BUILD_ID)
 
@@ -187,14 +187,14 @@ async def test_cost_gate_warning_sent_only_once(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cost_gate_below_threshold_no_warning(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 10.0)
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_COST_WARN_PCT", 80)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 10.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_COST_WARN_PCT", 80)
     _init_cost_tracking(_BUILD_ID, _USER_ID, None)
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("5.00")  # 50% — below warning
 
     mock_broadcast = AsyncMock()
-    with patch("app.services.build_service._broadcast_build_event", mock_broadcast):
+    with patch("app.services.build._state._broadcast_build_event", mock_broadcast):
         await _check_cost_gate(_BUILD_ID)
 
     mock_broadcast.assert_not_called()
@@ -235,7 +235,7 @@ def test_get_build_cost_live_empty():
 
 @pytest.mark.asyncio
 async def test_broadcast_cost_ticker(monkeypatch):
-    monkeypatch.setattr("app.services.build_service.settings.BUILD_MAX_COST_USD", 50.0)
+    monkeypatch.setattr("app.services.build._state.settings.BUILD_MAX_COST_USD", 50.0)
     _init_cost_tracking(_BUILD_ID, _USER_ID, 20.0)
     bid = str(_BUILD_ID)
     _build_running_cost[bid] = Decimal("4.0")
@@ -244,7 +244,7 @@ async def test_broadcast_cost_ticker(monkeypatch):
     _build_total_output_tokens[bid] = 500
 
     mock_broadcast = AsyncMock()
-    with patch("app.services.build_service._broadcast_build_event", mock_broadcast):
+    with patch("app.services.build._state._broadcast_build_event", mock_broadcast):
         await _broadcast_cost_ticker(_BUILD_ID, _USER_ID)
 
     mock_broadcast.assert_called_once()

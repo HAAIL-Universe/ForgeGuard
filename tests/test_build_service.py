@@ -54,6 +54,32 @@ def _build(**overrides):
     return defaults
 
 
+
+
+# ---------------------------------------------------------------------------
+# Auto-fixture: mock _state-level external deps for sub-module functions
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _mock_build_state_deps():
+    """Mock _state-level external deps so sub-module functions don't hit real DB.
+
+    Sub-modules (cost, planner, verification) access build_repo and manager
+    via _state module attribute access.  We mock only external resources
+    here -- NOT internal helpers -- so the real helpers run against mock deps.
+    """
+    mock_repo = MagicMock()
+    for m in ("append_build_log", "record_build_cost", "update_build",
+              "update_build_status", "get_build", "pause_build"):
+        setattr(mock_repo, m, AsyncMock(return_value=None))
+    mock_mgr = MagicMock()
+    mock_mgr.send_to_user = AsyncMock(return_value=None)
+    mock_mgr.send_to_group = AsyncMock(return_value=None)
+    with patch("app.services.build._state.build_repo", mock_repo), \
+         patch("app.services.build._state.manager", mock_mgr):
+        yield {"build_repo": mock_repo, "manager": mock_mgr}
+
 # ---------------------------------------------------------------------------
 # Tests: start_build
 # ---------------------------------------------------------------------------
@@ -214,7 +240,7 @@ async def test_start_build_no_api_key(mock_get_user, mock_build_repo, mock_proje
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 async def test_cancel_build_success(mock_build_repo, mock_project_repo, mock_manager):
@@ -421,7 +447,7 @@ def test_extract_phase_window_no_phases_contract():
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.build_repo")
 async def test_run_inline_audit(mock_build_repo):
     """_run_inline_audit returns PASS when audit is disabled."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -435,12 +461,12 @@ async def test_run_inline_audit(mock_build_repo):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.build_repo")
 async def test_run_inline_audit_enabled_no_prompt(mock_build_repo, tmp_path, monkeypatch):
     """_run_inline_audit falls back to PASS when auditor_prompt.md is missing."""
     mock_build_repo.append_build_log = AsyncMock()
     # Point FORGE_CONTRACTS_DIR to empty tmp dir → no auditor_prompt.md
-    monkeypatch.setattr(build_service, "FORGE_CONTRACTS_DIR", tmp_path)
+    monkeypatch.setattr("app.services.build.planner.FORGE_CONTRACTS_DIR", tmp_path)
 
     result = await build_service._run_inline_audit(
         _BUILD_ID, "Phase 1", "output", _contracts(), "sk-ant-test", True
@@ -455,8 +481,8 @@ async def test_run_inline_audit_enabled_no_prompt(mock_build_repo, tmp_path, mon
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_audit_single_file_disabled(mock_build_repo, mock_manager):
     """_audit_single_file returns PASS immediately when audit is disabled."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -477,8 +503,8 @@ async def test_audit_single_file_disabled(mock_build_repo, mock_manager):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_audit_single_file_trivially_small(mock_build_repo, mock_manager):
     """_audit_single_file skips files with < 50 chars of content."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -497,8 +523,8 @@ async def test_audit_single_file_trivially_small(mock_build_repo, mock_manager):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_audit_single_file_clean(mock_build_repo, mock_manager):
     """_audit_single_file returns PASS for VERDICT: CLEAN response."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -523,8 +549,8 @@ async def test_audit_single_file_clean(mock_build_repo, mock_manager):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_audit_single_file_flags_found(mock_build_repo, mock_manager):
     """_audit_single_file returns FAIL for VERDICT: FLAGS FOUND response."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -555,8 +581,8 @@ async def test_audit_single_file_flags_found(mock_build_repo, mock_manager):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_audit_single_file_llm_error_failopen(mock_build_repo, mock_manager):
     """_audit_single_file fails open (returns PASS) on LLM error."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -579,8 +605,8 @@ async def test_audit_single_file_llm_error_failopen(mock_build_repo, mock_manage
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_audit_single_file_timeout_failopen(mock_build_repo, mock_manager):
     """_audit_single_file fails open on timeout."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -610,8 +636,8 @@ async def test_audit_single_file_timeout_failopen(mock_build_repo, mock_manager)
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_fail_build(mock_build_repo, mock_manager):
     """_fail_build marks the build as failed and broadcasts."""
     mock_build_repo.update_build_status = AsyncMock()
@@ -758,7 +784,7 @@ def test_generate_deploy_instructions_minimal():
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.build_repo")
 async def test_record_phase_cost(mock_build_repo):
     """_record_phase_cost persists cost and resets usage counters."""
     from app.clients.agent_client import StreamUsage
@@ -1068,6 +1094,7 @@ async def test_get_build_file_content_not_found(mock_build_repo, mock_project_re
         await build_service.get_build_file_content(_PROJECT_ID, _USER_ID, "nonexistent.py")
 
 
+
 # ---------------------------------------------------------------------------
 # Tests: start_build with target params
 # ---------------------------------------------------------------------------
@@ -1286,7 +1313,7 @@ async def _fake_stream_no_signal(*args, **kwargs):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1326,7 +1353,7 @@ async def test_run_build_multi_turn_plan_detected(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1387,7 +1414,7 @@ async def test_run_build_multi_turn_audit_feedback(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1454,7 +1481,7 @@ async def test_run_build_multi_turn_max_failures(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1492,7 +1519,7 @@ async def test_run_build_turn_event_broadcast(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1529,7 +1556,7 @@ async def test_run_build_task_done_broadcast(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1590,7 +1617,7 @@ async def test_run_build_context_compaction(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1660,7 +1687,7 @@ async def test_run_build_pauses_at_threshold(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1726,7 +1753,7 @@ async def test_run_build_pause_resume_retry(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1792,7 +1819,7 @@ async def test_run_build_pause_skip(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -1960,7 +1987,7 @@ async def test_interject_build_no_queue(mock_build_repo, mock_project_repo):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 async def test_cancel_paused_build(mock_build_repo, mock_project_repo, mock_manager):
@@ -1996,8 +2023,8 @@ async def test_cancel_paused_build(mock_build_repo, mock_project_repo, mock_mana
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.manager")
+@patch("app.services.build._state.build_repo")
 async def test_pause_build_helper(mock_build_repo, mock_manager):
     """_pause_build persists pause state and broadcasts event."""
     mock_build_repo.pause_build = AsyncMock(return_value=True)
@@ -2051,7 +2078,7 @@ def test_build_pause_timeout_default():
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2113,7 +2140,7 @@ async def test_plan_tasks_reset_between_phases(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2220,7 +2247,7 @@ def test_gather_project_state_none():
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.build_repo")
 async def test_run_recovery_planner_success(mock_build_repo, monkeypatch):
     """_run_recovery_planner returns the planner's remediation text."""
     mock_build_repo.append_build_log = AsyncMock()
@@ -2231,7 +2258,7 @@ async def test_run_recovery_planner_success(mock_build_repo, monkeypatch):
         "usage": {"input_tokens": 500, "output_tokens": 200},
     }
 
-    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock) as mock_broadcast:
+    with patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock) as mock_broadcast:
         with patch("app.clients.llm_client.chat", new_callable=AsyncMock, return_value=fake_result):
             result = await build_service._run_recovery_planner(
                 build_id=_BUILD_ID,
@@ -2256,11 +2283,11 @@ async def test_run_recovery_planner_success(mock_build_repo, monkeypatch):
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.build_repo")
+@patch("app.services.build._state.build_repo")
 async def test_run_recovery_planner_missing_prompt(mock_build_repo, monkeypatch, tmp_path):
     """_run_recovery_planner returns empty string when prompt file is missing."""
     mock_build_repo.append_build_log = AsyncMock()
-    monkeypatch.setattr(build_service, "FORGE_CONTRACTS_DIR", tmp_path)
+    monkeypatch.setattr("app.services.build.planner.FORGE_CONTRACTS_DIR", tmp_path)
 
     result = await build_service._run_recovery_planner(
         build_id=_BUILD_ID,
@@ -2276,7 +2303,7 @@ async def test_run_recovery_planner_missing_prompt(mock_build_repo, monkeypatch,
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2325,7 +2352,7 @@ async def test_recovery_planner_fallback_on_error(
 
 
 @pytest.mark.asyncio
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2407,7 +2434,7 @@ async def _fake_stream_with_tool_call(*args, **kwargs):
 
 @pytest.mark.asyncio
 @patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2471,7 +2498,7 @@ async def _fake_stream_with_write_tool(*args, **kwargs):
 
 @pytest.mark.asyncio
 @patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2517,7 +2544,7 @@ async def test_run_build_write_file_tool_emits_file_created(
 
 @pytest.mark.asyncio
 @patch("app.services.build_service.execute_tool_async", new_callable=AsyncMock)
-@patch("app.services.build_service.manager")
+@patch("app.services.build._state.manager")
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
@@ -2626,6 +2653,7 @@ async def test_list_builds_wrong_user(mock_project_repo):
 
     with pytest.raises(ValueError, match="Project not found"):
         await build_service.list_builds(_PROJECT_ID, _USER_ID)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2931,8 +2959,8 @@ async def test_fix_single_file_applies_fix(tmp_path):
 
     fixed_content = "import foo\nbar = 1\nprint(bar)\n"
 
-    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
-         patch("app.services.build_service.build_repo") as mock_repo, \
+    with patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build._state.build_repo") as mock_repo, \
          patch("app.clients.llm_client.chat", new_callable=AsyncMock) as mock_chat, \
          patch("app.services.build_service._get_token_rates", return_value=(Decimal("0.01"), Decimal("0.03"))):
         mock_chat.return_value = {"text": fixed_content, "usage": {"input_tokens": 100, "output_tokens": 50}}
@@ -2978,10 +3006,10 @@ async def test_audit_and_cache_fix_loop_passes_after_fix(tmp_path):
             return ("src/app.py", "FAIL", "L1: bad code")
         return ("src/app.py", "PASS", "")
 
-    with patch("app.services.build_service._audit_single_file", side_effect=mock_audit), \
-         patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
-         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
-         patch("app.services.build_service.build_repo") as mock_repo:
+    with patch("app.services.build.verification._audit_single_file", side_effect=mock_audit), \
+         patch("app.services.build.verification._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build._state.build_repo") as mock_repo:
         mock_fix.return_value = "good code\n"
         mock_repo.append_build_log = AsyncMock()
 
@@ -3025,10 +3053,10 @@ async def test_audit_and_cache_pushes_to_fix_queue(tmp_path):
     async def always_fail(*args, **kwargs):
         return ("src/broken.py", "FAIL", "L1: still broken")
 
-    with patch("app.services.build_service._audit_single_file", side_effect=always_fail), \
-         patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
-         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
-         patch("app.services.build_service.build_repo") as mock_repo:
+    with patch("app.services.build.verification._audit_single_file", side_effect=always_fail), \
+         patch("app.services.build.verification._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build._state.build_repo") as mock_repo:
         mock_fix.return_value = "still broken\n"
         mock_repo.append_build_log = AsyncMock()
 
@@ -3072,11 +3100,11 @@ async def test_builder_drain_fix_queue(tmp_path):
     fix_queue: asyncio.Queue = asyncio.Queue()
     await fix_queue.put(("src/fix_me.py", "L1: needs fix"))
 
-    with patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
-         patch("app.services.build_service._audit_single_file", new_callable=AsyncMock) as mock_audit, \
-         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
-         patch("app.services.build_service._touch_progress"), \
-         patch("app.services.build_service.build_repo") as mock_repo:
+    with patch("app.services.build.verification._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build.verification._audit_single_file", new_callable=AsyncMock) as mock_audit, \
+         patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build._state._touch_progress"), \
+         patch("app.services.build._state.build_repo") as mock_repo:
         mock_fix.return_value = "fixed content\n"
         mock_audit.return_value = ("src/fix_me.py", "PASS", "")
         mock_repo.append_build_log = AsyncMock()
@@ -3112,9 +3140,9 @@ async def test_audit_and_cache_skips_fix_when_pass(tmp_path):
     async def pass_audit(*args, **kwargs):
         return ("src/good.py", "PASS", "")
 
-    with patch("app.services.build_service._audit_single_file", side_effect=pass_audit), \
-         patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
-         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock):
+    with patch("app.services.build.verification._audit_single_file", side_effect=pass_audit), \
+         patch("app.services.build.verification._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock):
 
         result = await build_service._audit_and_cache(
             manifest_cache_path=cache_path,
