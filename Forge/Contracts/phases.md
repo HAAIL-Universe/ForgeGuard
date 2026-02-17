@@ -2542,7 +2542,7 @@ Update Scout-related pages:
 
 ---
 
-## Phase 37 — Forge Upgrade Advisor  *(TODO)*
+## Phase 37 — Forge Upgrade Advisor  *(DONE — commit pending)*
 
 **Status:** 🔲 NOT STARTED
 

@@ -1,0 +1,790 @@
+﻿
+[1m[46m RUN [49m[22m [36mv3.2.4 [39m[90mZ:/ForgeCollection/ForgeGuard[39m
+
+ [31mÔØ»[39m web/src/__tests__/BuildTargetModal.test.tsx [2m([22m[2m12 tests[22m[2m | [22m[31m12 failed[39m[2m)[22m[32m 24[2mms[22m[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mrenders three target options[39m[32m 13[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mrenders the Build Target title[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mshows correct placeholder for github_new (default)[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mchanges placeholder when selecting existing repo[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mchanges placeholder when selecting local path[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mdisables Start Build when input is empty[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22menables Start Build when input has value[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mcalls onConfirm with target data[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mcalls onCancel when cancel button clicked[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mcalls onCancel when close button (Ô£ò) clicked[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mshows "Starting..." when starting prop is true[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildTargetModal[2m > [22mclears input when switching target types[39m[32m 0[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+ [31mÔØ»[39m web/src/__tests__/Build.test.tsx [2m([22m[2m20 tests[22m[2m | [22m[31m20 failed[39m[2m)[22m[32m 29[2mms[22m[39m
+[31m   [31m├ù[31m PhaseProgressBar[2m > [22mrenders the progress bar[39m[32m 10[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m PhaseProgressBar[2m > [22mrenders all phase labels[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m PhaseProgressBar[2m > [22mrenders nothing with empty phases[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildLogViewer[2m > [22mrenders the log viewer[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildLogViewer[2m > [22mshows waiting message when no logs[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildLogViewer[2m > [22mrenders log entries[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildAuditCard[2m > [22mrenders the audit card[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildAuditCard[2m > [22mshows iteration count when > 1[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildAuditCard[2m > [22mshows detail text for checks with details[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m ProjectCard[2m > [22mrenders the project card[39m[32m 0[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m ProjectCard[2m > [22mdisplays project name[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m ProjectCard[2m > [22mdisplays project description[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m ProjectCard[2m > [22mdisplays build status[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m ProjectCard[2m > [22mdisplays latest build info[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildComplete[2m > [22mshows skeleton while loading[39m[32m 3[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildComplete[2m > [22mrenders build complete page with data[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildComplete[2m > [22mdisplays cost summary[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildComplete[2m > [22mdisplays deployment instructions[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildComplete[2m > [22mshows status banner for completed build[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+[31m   [31m├ù[31m BuildComplete[2m > [22mshows failed status for failed build[39m[32m 1[2mms[22m[39m
+[31m     ÔåÆ document is not defined[39m
+node.exe : 
+At C:\Program Files\nodejs\npx.ps1:29 char:3
++   & $NODE_EXE $NPX_CLI_JS $args
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteExceptio 
+   n
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[39m[1m[41m Failed Suites 1 
+[49m[22m[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/App.test.tsx[2m [ 
+web/src/__tests__/App.test.tsx ][22m
+[31m[1mReferenceError[22m: beforeEach is not defined[39m
+[36m [2mÔØ»[22m web/src/__tests__/App.test.tsx:[2m199:3[22m[39m
+    [90m197| [39m
+    [90m198| 
+[39m[34mdescribe[39m([32m'QuestionnaireModal'[39m[33m,[39m () 
+[33m=>[39m {
+    [90m199| [39m  [34mbeforeEach[39m(() [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m200| [39m    /* Mock fetch: first call = state endpoint, 
+subsequent = questionnÔÇª
+    [90m201| [39m    vi[33m.[39m[34mstubGlobal[39m(
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[1/33]ÔÄ»[22m[39m
+
+
+[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[39m[1m[41m Failed Tests 32 
+[49m[22m[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mPhaseProgressBar[2m > [22mrenders the progress bar
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m15:5[22m[39m
+    [90m 13| 
+[39m[34mdescribe[39m([32m'PhaseProgressBar'[39m[33m,[39m () 
+[33m=>[39m {
+    [90m 14| [39m  [34mit[39m([32m'renders the progress 
+bar'[39m[33m,[39m () [33m=>[39m {
+    [90m 15| [39m    [34mrender[39m(
+    [90m   | [39m    [31m^[39m
+    [90m 16| [39m      [33m<[39m[33mPhaseProgressBar[39m
+    [90m 17| [39m        [33mphases[39m[33m=[39m[33m{[39m[
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[2/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mPhaseProgressBar[2m > [22mrenders all phase labels
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m28:5[22m[39m
+    [90m 26| [39m
+    [90m 27| [39m  [34mit[39m([32m'renders all phase 
+labels'[39m[33m,[39m () [33m=>[39m {
+    [90m 28| [39m    [34mrender[39m(
+    [90m   | [39m    [31m^[39m
+    [90m 29| [39m      [33m<[39m[33mPhaseProgressBar[39m
+    [90m 30| [39m        [33mphases[39m[33m=[39m[33m{[39m[
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[3/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mPhaseProgressBar[2m > [22mrenders nothing with empty phases
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m43:27[22m[39m
+    [90m 41| [39m
+    [90m 42| [39m  [34mit[39m([32m'renders nothing with empty 
+phases'[39m[33m,[39m () [33m=>[39m {
+    [90m 43| [39m    [35mconst[39m { container } [33m=[39m 
+[34mrender[39m([33m<[39m[33mPhaseProgressBar[39m 
+[33mphases[39m[33m=[39m[33m{[39m[][33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m                          [31m^[39m
+    [90m 44| [39m    [34mexpect[39m(container[33m.[39mfirstChild)[
+33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m 45| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[4/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildLogViewer[2m > [22mrenders the log viewer
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m50:5[22m[39m
+    [90m 48| 
+[39m[34mdescribe[39m([32m'BuildLogViewer'[39m[33m,[39m () 
+[33m=>[39m {
+    [90m 49| [39m  [34mit[39m([32m'renders the log 
+viewer'[39m[33m,[39m () [33m=>[39m {
+    [90m 50| [39m    
+[34mrender[39m([33m<[39m[33mBuildLogViewer[39m 
+[33mlogs[39m[33m=[39m[33m{[39m[][33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m 51| [39m    [34mexpect[39m(screen[33m.[39m[34mgetByTestId
+[39m([32m'build-log-viewer'[39m))[33m.[39m[34mtoBeInTheDocument[39
+m()[33m;[39m
+    [90m 52| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[5/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildLogViewer[2m > [22mshows waiting message when no logs
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m55:5[22m[39m
+    [90m 53| [39m
+    [90m 54| [39m  [34mit[39m([32m'shows waiting message when no 
+logs'[39m[33m,[39m () [33m=>[39m {
+    [90m 55| [39m    
+[34mrender[39m([33m<[39m[33mBuildLogViewer[39m 
+[33mlogs[39m[33m=[39m[33m{[39m[][33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m 56| [39m    expect(screen.getByText('Waiting for build 
+output...')).toBeInTheDÔÇª
+    [90m 57| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[6/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildLogViewer[2m > [22mrenders log entries
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m60:5[22m[39m
+    [90m 58| [39m
+    [90m 59| [39m  [34mit[39m([32m'renders log 
+entries'[39m[33m,[39m () [33m=>[39m {
+    [90m 60| [39m    [34mrender[39m(
+    [90m   | [39m    [31m^[39m
+    [90m 61| [39m      [33m<[39m[33mBuildLogViewer[39m
+    [90m 62| [39m        [33mlogs[39m[33m=[39m[33m{[39m[
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[7/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildAuditCard[2m > [22mrenders the audit card
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m80:5[22m[39m
+    [90m 78| 
+[39m[34mdescribe[39m([32m'BuildAuditCard'[39m[33m,[39m () 
+[33m=>[39m {
+    [90m 79| [39m  [34mit[39m([32m'renders the audit 
+card'[39m[33m,[39m () [33m=>[39m {
+    [90m 80| [39m    [34mrender[39m(
+    [90m   | [39m    [31m^[39m
+    [90m 81| [39m      [33m<[39m[33mBuildAuditCard[39m
+    [90m 82| [39m        [33mphase[39m[33m=[39m[32m"Phase 0"[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[8/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildAuditCard[2m > [22mshows iteration count when > 1
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m98:5[22m[39m
+    [90m 96| [39m
+    [90m 97| [39m  [34mit[39m([32m'shows iteration count when > 
+1'[39m[33m,[39m () [33m=>[39m {
+    [90m 98| [39m    [34mrender[39m(
+    [90m   | [39m    [31m^[39m
+    [90m 99| [39m      [33m<[39m[33mBuildAuditCard[39m
+    [90m100| [39m        [33mphase[39m[33m=[39m[32m"Phase 1"[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[9/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildAuditCard[2m > [22mshows detail text for checks with details
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m110:5[22m[39m
+    [90m108| [39m
+    [90m109| [39m  [34mit[39m([32m'shows detail text for checks 
+with details'[39m[33m,[39m () [33m=>[39m {
+    [90m110| [39m    [34mrender[39m(
+    [90m   | [39m    [31m^[39m
+    [90m111| [39m      [33m<[39m[33mBuildAuditCard[39m
+    [90m112| [39m        [33mphase[39m[33m=[39m[32m"Phase 2"[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[10/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mProjectCard[2m > [22mrenders the project card
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m140:5[22m[39m
+    [90m138| [39m
+    [90m139| [39m  [34mit[39m([32m'renders the project 
+card'[39m[33m,[39m () [33m=>[39m {
+    [90m140| [39m    [34mrender[39m([33m<[39m[33mProjectCard[39m 
+[33mproject[39m[33m=[39m[33m{[39mproject[33m}[39m 
+[33monClick[39m[33m=[39m[33m{[39m() [33m=>[39m {}[33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m141| [39m    [34mexpect[39m(screen[33m.[39m[34mgetByTestId
+[39m([32m'project-card'[39m))[33m.[39m[34mtoBeInTheDocument[39m()
+[33m;[39m
+    [90m142| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[11/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mProjectCard[2m > [22mdisplays project name
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m145:5[22m[39m
+    [90m143| [39m
+    [90m144| [39m  [34mit[39m([32m'displays project 
+name'[39m[33m,[39m () [33m=>[39m {
+    [90m145| [39m    [34mrender[39m([33m<[39m[33mProjectCard[39m 
+[33mproject[39m[33m=[39m[33m{[39mproject[33m}[39m 
+[33monClick[39m[33m=[39m[33m{[39m() [33m=>[39m {}[33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m146| [39m    
+[34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Test 
+Project'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m147| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[12/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mProjectCard[2m > [22mdisplays project description
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m150:5[22m[39m
+    [90m148| [39m
+    [90m149| [39m  [34mit[39m([32m'displays project 
+description'[39m[33m,[39m () [33m=>[39m {
+    [90m150| [39m    [34mrender[39m([33m<[39m[33mProjectCard[39m 
+[33mproject[39m[33m=[39m[33m{[39mproject[33m}[39m 
+[33monClick[39m[33m=[39m[33m{[39m() [33m=>[39m {}[33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m151| [39m    
+[34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'A test 
+project'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m152| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[13/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mProjectCard[2m > [22mdisplays build status
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m155:5[22m[39m
+    [90m153| [39m
+    [90m154| [39m  [34mit[39m([32m'displays build 
+status'[39m[33m,[39m () [33m=>[39m {
+    [90m155| [39m    [34mrender[39m([33m<[39m[33mProjectCard[39m 
+[33mproject[39m[33m=[39m[33m{[39mproject[33m}[39m 
+[33monClick[39m[33m=[39m[33m{[39m() [33m=>[39m {}[33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m156| [39m    [34mexpect[39m(screen[33m.[39m[34mgetByText[
+39m([32m'building'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;
+[39m
+    [90m157| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[14/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mProjectCard[2m > [22mdisplays latest build info
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m160:5[22m[39m
+    [90m158| [39m
+    [90m159| [39m  [34mit[39m([32m'displays latest build 
+info'[39m[33m,[39m () [33m=>[39m {
+    [90m160| [39m    [34mrender[39m([33m<[39m[33mProjectCard[39m 
+[33mproject[39m[33m=[39m[33m{[39mproject[33m}[39m 
+[33monClick[39m[33m=[39m[33m{[39m() [33m=>[39m {}[33m}[39m 
+[33m/[39m[33m>[39m)[33m;[39m
+    [90m   | [39m    [31m^[39m
+    [90m161| [39m    
+[34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/Phase 
+3/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m162| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[15/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildComplete[2m > [22mshows skeleton while loading
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m renderBuildComplete 
+web/src/__tests__/Build.test.tsx:[2m205:10[22m[39m
+    [90m203| [39m    global[33m.[39mfetch [33m=[39m 
+fetchImpl[33m;[39m
+    [90m204| [39m  }
+    [90m205| [39m  [35mreturn[39m [34mrender[39m(
+    [90m   | [39m         [31m^[39m
+    [90m206| [39m    [33m<[39m[33mMemoryRouter[39m [33minitialEntr
+ies[39m[33m=[39m[33m{[39m[[32m'/projects/p1/build/complete'[39m][
+33m}[39m[33m>[39m
+    [90m207| [39m      [33m<[39m[33mRoutes[39m[33m>[39m
+[90m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m221:5[22m[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[16/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildComplete[2m > [22mrenders build complete page with data
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m renderBuildComplete 
+web/src/__tests__/Build.test.tsx:[2m205:10[22m[39m
+    [90m203| [39m    global[33m.[39mfetch [33m=[39m 
+fetchImpl[33m;[39m
+    [90m204| [39m  }
+    [90m205| [39m  [35mreturn[39m [34mrender[39m(
+    [90m   | [39m         [31m^[39m
+    [90m206| [39m    [33m<[39m[33mMemoryRouter[39m [33minitialEntr
+ies[39m[33m=[39m[33m{[39m[[32m'/projects/p1/build/complete'[39m][
+33m}[39m[33m>[39m
+    [90m207| [39m      [33m<[39m[33mRoutes[39m[33m>[39m
+[90m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m234:5[22m[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[17/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildComplete[2m > [22mdisplays cost summary
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m renderBuildComplete 
+web/src/__tests__/Build.test.tsx:[2m205:10[22m[39m
+    [90m203| [39m    global[33m.[39mfetch [33m=[39m 
+fetchImpl[33m;[39m
+    [90m204| [39m  }
+    [90m205| [39m  [35mreturn[39m [34mrender[39m(
+    [90m   | [39m         [31m^[39m
+    [90m206| [39m    [33m<[39m[33mMemoryRouter[39m [33minitialEntr
+ies[39m[33m=[39m[33m{[39m[[32m'/projects/p1/build/complete'[39m][
+33m}[39m[33m>[39m
+    [90m207| [39m      [33m<[39m[33mRoutes[39m[33m>[39m
+[90m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m250:5[22m[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[18/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildComplete[2m > [22mdisplays deployment instructions
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m renderBuildComplete 
+web/src/__tests__/Build.test.tsx:[2m205:10[22m[39m
+    [90m203| [39m    global[33m.[39mfetch [33m=[39m 
+fetchImpl[33m;[39m
+    [90m204| [39m  }
+    [90m205| [39m  [35mreturn[39m [34mrender[39m(
+    [90m   | [39m         [31m^[39m
+    [90m206| [39m    [33m<[39m[33mMemoryRouter[39m [33minitialEntr
+ies[39m[33m=[39m[33m{[39m[[32m'/projects/p1/build/complete'[39m][
+33m}[39m[33m>[39m
+    [90m207| [39m      [33m<[39m[33mRoutes[39m[33m>[39m
+[90m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m265:5[22m[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[19/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildComplete[2m > [22mshows status banner for completed build
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m renderBuildComplete 
+web/src/__tests__/Build.test.tsx:[2m205:10[22m[39m
+    [90m203| [39m    global[33m.[39mfetch [33m=[39m 
+fetchImpl[33m;[39m
+    [90m204| [39m  }
+    [90m205| [39m  [35mreturn[39m [34mrender[39m(
+    [90m   | [39m         [31m^[39m
+    [90m206| [39m    [33m<[39m[33mMemoryRouter[39m [33minitialEntr
+ies[39m[33m=[39m[33m{[39m[[32m'/projects/p1/build/complete'[39m][
+33m}[39m[33m>[39m
+    [90m207| [39m      [33m<[39m[33mRoutes[39m[33m>[39m
+[90m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m280:5[22m[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[20/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m web/src/__tests__/Build.test.tsx[2m > 
+[22mBuildComplete[2m > [22mshows failed status for failed build
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m Proxy.render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m renderBuildComplete 
+web/src/__tests__/Build.test.tsx:[2m205:10[22m[39m
+    [90m203| [39m    global[33m.[39mfetch [33m=[39m 
+fetchImpl[33m;[39m
+    [90m204| [39m  }
+    [90m205| [39m  [35mreturn[39m [34mrender[39m(
+    [90m   | [39m         [31m^[39m
+    [90m206| [39m    [33m<[39m[33mMemoryRouter[39m [33minitialEntr
+ies[39m[33m=[39m[33m{[39m[[32m'/projects/p1/build/complete'[39m][
+33m}[39m[33m>[39m
+    [90m207| [39m      [33m<[39m[33mRoutes[39m[33m>[39m
+[90m [2mÔØ»[22m web/src/__tests__/Build.test.tsx:[2m300:5[22m[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[21/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mrenders three target options
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m14:5[22m[39m
+    [90m 12| [39m
+    [90m 13| [39m  [34mit[39m([32m'renders three target 
+options'[39m[33m,[39m () [33m=>[39m {
+    [90m 14| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 15| [39m    
+[34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'New GitHub 
+Repo'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 16| [39m    expect(screen.getByText('Existing GitHub 
+Repo')).toBeInTheDocumentÔÇª
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[22/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mrenders the Build Target title
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m21:5[22m[39m
+    [90m 19| [39m
+    [90m 20| [39m  [34mit[39m([32m'renders the Build Target 
+title'[39m[33m,[39m () [33m=>[39m {
+    [90m 21| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 22| [39m    
+[34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Build 
+Target'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 23| [39m  })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[23/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mshows correct placeholder for 
+github_new (default)
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m26:5[22m[39m
+    [90m 24| [39m
+    [90m 25| [39m  [34mit[39m([32m'shows correct placeholder for 
+github_new (default)'[39m[33m,[39m () [33m=>[39m {
+    [90m 26| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 27| [39m    const input = 
+screen.getByTestId('target-ref-input') as HTMLInputEÔÇª
+    [90m 28| [39m    [34mexpect[39m(input[33m.[39mplaceholder)[33m
+.[39m[34mtoBe[39m([32m'my-new-project'[39m)[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[24/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mchanges placeholder when selecting 
+existing repo
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m32:5[22m[39m
+    [90m 30| [39m
+    [90m 31| [39m  [34mit[39m([32m'changes placeholder when 
+selecting existing repo'[39m[33m,[39m () [33m=>[39m {
+    [90m 32| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 33| [39m    fireEvent[33m.[39m[34mclick[39m(screen[33m.[
+39m[34mgetByTestId[39m([32m'target-github_existing'[39m))[33m;[39m
+    [90m 34| [39m    const input = 
+screen.getByTestId('target-ref-input') as HTMLInputEÔÇª
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[25/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mchanges placeholder when selecting 
+local path
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m39:5[22m[39m
+    [90m 37| [39m
+    [90m 38| [39m  [34mit[39m([32m'changes placeholder when 
+selecting local path'[39m[33m,[39m () [33m=>[39m {
+    [90m 39| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 40| [39m    fireEvent[33m.[39m[34mclick[39m(screen[33m.[
+39m[34mgetByTestId[39m([32m'target-local_path'[39m))[33m;[39m
+    [90m 41| [39m    const input = 
+screen.getByTestId('target-ref-input') as HTMLInputEÔÇª
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[26/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mdisables Start Build when input is empty
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m46:5[22m[39m
+    [90m 44| [39m
+    [90m 45| [39m  [34mit[39m([32m'disables Start Build when input 
+is empty'[39m[33m,[39m () [33m=>[39m {
+    [90m 46| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 47| [39m    [35mconst[39m btn [33m=[39m screen[33m.[39m
+[34mgetByTestId[39m([32m'target-confirm-btn'[39m)[33m;[39m
+    [90m 48| [39m    
+[34mexpect[39m(btn)[33m.[39m[34mtoBeDisabled[39m()[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[27/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22menables Start Build when input has value
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m52:5[22m[39m
+    [90m 50| [39m
+
+[2m Test Files [22m [1m[31m3 failed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[31m32 failed[39m[22m[90m (32)[39m
+[2m   Start at [22m 19:03:18
+[2m   Duration [22m 1.53s[2m (transform 634ms, setup 0ms, collect 1.32s, tests 53ms, environment 1ms, prepare 627ms)[22m
+
+    [90m 51| [39m  [34mit[39m([32m'enables Start Build when input 
+has value'[39m[33m,[39m () [33m=>[39m {
+    [90m 52| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 53| [39m    [35mconst[39m input [33m=[39m screen[33m.[39
+m[34mgetByTestId[39m([32m'target-ref-input'[39m)[33m;[39m
+    [90m 54| [39m    
+fireEvent[33m.[39m[34mchange[39m(input[33m,[39m { 
+target[33m:[39m { value[33m:[39m [32m'my-repo'[39m } })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[28/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mcalls onConfirm with target data
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m60:5[22m[39m
+    [90m 58| [39m
+    [90m 59| [39m  [34mit[39m([32m'calls onConfirm with target 
+data'[39m[33m,[39m () [33m=>[39m {
+    [90m 60| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 61| [39m    [35mconst[39m input [33m=[39m screen[33m.[39
+m[34mgetByTestId[39m([32m'target-ref-input'[39m)[33m;[39m
+    [90m 62| [39m    
+fireEvent[33m.[39m[34mchange[39m(input[33m,[39m { 
+target[33m:[39m { value[33m:[39m [32m'my-repo'[39m } })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[29/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mcalls onCancel when cancel button 
+clicked
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m71:5[22m[39m
+    [90m 69| [39m
+    [90m 70| [39m  [34mit[39m([32m'calls onCancel when cancel 
+button clicked'[39m[33m,[39m () [33m=>[39m {
+    [90m 71| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 72| [39m    fireEvent[33m.[39m[34mclick[39m(screen[33m.[
+39m[34mgetByText[39m([32m'Cancel'[39m))[33m;[39m
+    [90m 73| [39m    [34mexpect[39m(mockCancel)[33m.[39m[34mtoHave
+BeenCalledOnce[39m()[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[30/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mcalls onCancel when close button (Ô£ò) 
+clicked
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m77:5[22m[39m
+    [90m 75| [39m
+    [90m 76| [39m  [34mit[39m([32m'calls onCancel when close button 
+(Ô£ò) clicked'[39m[33m,[39m () [33m=>[39m {
+    [90m 77| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 78| [39m    fireEvent[33m.[39m[34mclick[39m(screen[33m.[
+39m[34mgetByText[39m([32m'Ô£ò'[39m))[33m;[39m
+    [90m 79| [39m    [34mexpect[39m(mockCancel)[33m.[39m[34mtoHave
+BeenCalledOnce[39m()[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[31/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mshows "Starting..." when starting prop 
+is true
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m83:5[22m[39m
+    [90m 81| [39m
+    [90m 82| [39m  [34mit[39m([32m'shows "Starting..." when 
+starting prop is true'[39m[33m,[39m () [33m=>[39m {
+    [90m 83| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 84| [39m    [35mconst[39m input [33m=[39m screen[33m.[39
+m[34mgetByTestId[39m([32m'target-ref-input'[39m)[33m;[39m
+    [90m 85| [39m    
+fireEvent[33m.[39m[34mchange[39m(input[33m,[39m { 
+target[33m:[39m { value[33m:[39m [32m'blah'[39m } })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[32/33]ÔÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+web/src/__tests__/BuildTargetModal.test.tsx[2m > 
+[22mBuildTargetModal[2m > [22mclears input when switching target types
+[31m[1mReferenceError[22m: document is not defined[39m
+[90m [2mÔØ»[22m render 
+web/node_modules/@testing-library/react/dist/pure.js:[2m256:5[22m[39m
+[36m [2mÔØ»[22m 
+web/src/__tests__/BuildTargetModal.test.tsx:[2m90:5[22m[39m
+    [90m 88| [39m
+    [90m 89| [39m  [34mit[39m([32m'clears input when switching 
+target types'[39m[33m,[39m () [33m=>[39m {
+    [90m 90| [39m    render(<BuildTargetModal onConfirm={mockConfirm} 
+onCancel={mockCanÔÇª
+    [90m   | [39m    [31m^[39m
+    [90m 91| [39m    const input = 
+screen.getByTestId('target-ref-input') as HTMLInputEÔÇª
+    [90m 92| [39m    
+fireEvent[33m.[39m[34mchange[39m(input[33m,[39m { 
+target[33m:[39m { value[33m:[39m [32m'my-repo'[39m } })[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»[33/33]ÔÄ»[22m[39m
+

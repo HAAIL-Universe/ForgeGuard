@@ -85,7 +85,7 @@ const ALL_CHECKS = [
   { code: 'W3', name: 'Physics route coverage' },
 ];
 
-type View = 'repos' | 'running' | 'results' | 'deep_running' | 'dossier';
+type View = 'repos' | 'running' | 'results' | 'deep_running' | 'dossier' | 'upgrade_plan';
 
 function Scout() {
   const { token } = useAuth();
@@ -113,6 +113,10 @@ function Scout() {
   const [deepSteps, setDeepSteps] = useState<Record<string, string>>({});
   const [deepScanResult, setDeepScanResult] = useState<DeepScanResult | null>(null);
   const [deepScanning, setDeepScanning] = useState(false);
+
+  /* Upgrade plan state */
+  const [upgradePlan, setUpgradePlan] = useState<Record<string, any> | null>(null);
+  const [upgradePlanLoading, setUpgradePlanLoading] = useState(false);
 
   /* Fetch repos */
   const fetchRepos = useCallback(async () => {
@@ -274,6 +278,54 @@ function Scout() {
     }
   };
 
+  /* Generate upgrade plan for a deep scan run */
+  const handleGenerateUpgradePlan = async (runId: string) => {
+    setUpgradePlanLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-plan`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ include_llm: true }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUpgradePlan(data);
+        setView('upgrade_plan');
+      } else {
+        const err = await res.json().catch(() => ({ detail: 'Failed to generate upgrade plan' }));
+        addToast(err.detail ?? 'Failed to generate upgrade plan');
+      }
+    } catch {
+      addToast('Network error generating upgrade plan');
+    } finally {
+      setUpgradePlanLoading(false);
+    }
+  };
+
+  /* View a previously generated upgrade plan */
+  const handleViewUpgradePlan = async (runId: string) => {
+    setUpgradePlanLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-plan`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUpgradePlan(data);
+        setView('upgrade_plan');
+      } else {
+        addToast('No upgrade plan found. Generate one first.');
+      }
+    } catch {
+      addToast('Network error loading upgrade plan');
+    } finally {
+      setUpgradePlanLoading(false);
+    }
+  };
+
   /* Load a past run's details */
   const handleExpandHistory = async (run: ScoutRun) => {
     if (expandedHistoryRun === run.id) {
@@ -386,6 +438,8 @@ function Scout() {
               {view === 'repos' && 'Scout'}
               {view === 'running' && `Scout → ${activeRepo?.full_name ?? ''}`}
               {view === 'results' && `Scout → ${activeRepo?.full_name ?? ''}`}
+              {view === 'dossier' && `Dossier → ${activeRepo?.full_name ?? ''}`}
+              {view === 'upgrade_plan' && `Upgrade Plan → ${activeRepo?.full_name ?? ''}`}
             </h2>
             {view === 'results' && (
               <div style={{ display: 'flex', gap: '8px', fontSize: '0.75rem' }}>
@@ -639,6 +693,28 @@ function Scout() {
                                     }}
                                   >
                                     View Dossier 🔬
+                                  </button>
+                                )}
+                                {run.scan_type === 'deep' && run.status === 'completed' && (
+                                  <button
+                                    onClick={() => {
+                                      setActiveRun(run);
+                                      const repo = repos.find((r) => r.id === run.repo_id) ?? null;
+                                      setActiveRepo(repo);
+                                      handleViewUpgradePlan(run.id);
+                                    }}
+                                    style={{
+                                      background: '#059669',
+                                      color: '#F8FAFC',
+                                      border: 'none',
+                                      borderRadius: '6px',
+                                      padding: '6px 14px',
+                                      cursor: 'pointer',
+                                      fontSize: '0.7rem',
+                                      fontWeight: 500,
+                                    }}
+                                  >
+                                    📋 Upgrade Plan
                                   </button>
                                 )}
                               </div>
@@ -967,6 +1043,25 @@ function Scout() {
               >
                 ← Back to Repos
               </button>
+              {activeRun && (
+                <button
+                  disabled={upgradePlanLoading}
+                  onClick={() => handleGenerateUpgradePlan(activeRun.id)}
+                  style={{
+                    background: '#059669',
+                    color: '#F8FAFC',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 18px',
+                    cursor: upgradePlanLoading ? 'wait' : 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: 500,
+                    opacity: upgradePlanLoading ? 0.6 : 1,
+                  }}
+                >
+                  {upgradePlanLoading ? '⏳ Generating…' : '📋 Generate Upgrade Plan'}
+                </button>
+              )}
               {activeRepo && (
                 <button
                   onClick={() => handleDeepScan(activeRepo)}
@@ -984,6 +1079,252 @@ function Scout() {
                   🔬 Re-scan
                 </button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ─── UPGRADE PLAN VIEW ─── */}
+        {view === 'upgrade_plan' && upgradePlan && (
+          <div>
+            {/* Executive Brief */}
+            {upgradePlan.executive_brief && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Executive Brief
+                </h3>
+                <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '12px' }}>
+                    <div style={{
+                      width: '52px', height: '52px', borderRadius: '50%', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '1.2rem',
+                      background: ['A', 'B'].includes(upgradePlan.executive_brief.health_grade) ? '#14532D' :
+                        upgradePlan.executive_brief.health_grade === 'C' ? '#78350F' : '#7F1D1D',
+                      color: ['A', 'B'].includes(upgradePlan.executive_brief.health_grade) ? '#22C55E' :
+                        upgradePlan.executive_brief.health_grade === 'C' ? '#F59E0B' : '#EF4444',
+                    }}>
+                      {upgradePlan.executive_brief.health_grade}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>{upgradePlan.executive_brief.headline}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '2px' }}>
+                        Estimated effort: <span style={{ textTransform: 'capitalize' }}>{upgradePlan.executive_brief.estimated_total_effort}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {upgradePlan.executive_brief.top_priorities?.length > 0 && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: '4px', textTransform: 'uppercase' }}>Top Priorities</div>
+                      {upgradePlan.executive_brief.top_priorities.map((p: string, i: number) => (
+                        <div key={i} style={{ fontSize: '0.75rem', padding: '2px 0' }}>🎯 {p}</div>
+                      ))}
+                    </div>
+                  )}
+                  {upgradePlan.executive_brief.risk_summary && (
+                    <div style={{ fontSize: '0.75rem', color: '#F59E0B', marginTop: '4px' }}>
+                      ⚠️ {upgradePlan.executive_brief.risk_summary}
+                    </div>
+                  )}
+                  {upgradePlan.executive_brief.forge_automation_note && (
+                    <div style={{ fontSize: '0.75rem', color: '#22C55E', marginTop: '4px' }}>
+                      🤖 {upgradePlan.executive_brief.forge_automation_note}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Summary Stats Bar */}
+            {upgradePlan.summary_stats && (
+              <div style={{ marginBottom: '24px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px' }}>
+                  {[
+                    { label: 'Deps checked', value: upgradePlan.summary_stats.dependencies_checked, color: '#94A3B8' },
+                    { label: 'Current', value: upgradePlan.summary_stats.current_count, color: '#22C55E' },
+                    { label: 'Outdated', value: upgradePlan.summary_stats.outdated_count, color: '#F59E0B' },
+                    { label: 'EOL', value: upgradePlan.summary_stats.eol_count, color: '#EF4444' },
+                    { label: 'Patterns', value: upgradePlan.summary_stats.patterns_detected, color: '#3B82F6' },
+                    { label: 'Migrations', value: upgradePlan.summary_stats.migrations_recommended, color: '#7C3AED' },
+                    { label: 'High priority', value: upgradePlan.summary_stats.high_priority_migrations, color: '#EF4444' },
+                    { label: 'Automatable', value: upgradePlan.summary_stats.forge_automatable, color: '#22C55E' },
+                  ].map((stat, i) => (
+                    <div key={i} style={{
+                      background: '#1E293B', borderRadius: '8px', padding: '10px', border: '1px solid #334155', textAlign: 'center',
+                    }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: stat.color }}>{stat.value}</div>
+                      <div style={{ fontSize: '0.65rem', color: '#64748B', textTransform: 'uppercase' }}>{stat.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Version Report */}
+            {upgradePlan.version_report?.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Version Report
+                </h3>
+                <div style={{ background: '#1E293B', borderRadius: '8px', border: '1px solid #334155', overflow: 'hidden' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 60px', gap: '0', fontSize: '0.7rem',
+                    color: '#64748B', padding: '8px 14px', borderBottom: '1px solid #334155', textTransform: 'uppercase' }}>
+                    <span>Package</span><span>Current</span><span>Latest</span><span>Status</span>
+                  </div>
+                  {(upgradePlan.version_report as any[]).map((v: any, i: number) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 60px', gap: '0',
+                      padding: '6px 14px', fontSize: '0.8rem', borderBottom: i < upgradePlan.version_report.length - 1 ? '1px solid #1E293B' : 'none',
+                      background: v.status === 'eol' ? 'rgba(239,68,68,0.05)' : v.status === 'outdated' ? 'rgba(245,158,11,0.05)' : 'transparent',
+                    }}>
+                      <span style={{ fontFamily: 'monospace' }}>{v.package}</span>
+                      <span style={{ color: '#94A3B8', fontFamily: 'monospace' }}>{v.current}</span>
+                      <span style={{ color: '#94A3B8', fontFamily: 'monospace' }}>{v.latest}</span>
+                      <span style={{
+                        fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: '4px',
+                        background: v.status === 'current' ? '#14532D' : v.status === 'outdated' ? '#78350F' : v.status === 'eol' ? '#7F1D1D' : '#1E3A5F',
+                        color: v.status === 'current' ? '#22C55E' : v.status === 'outdated' ? '#F59E0B' : v.status === 'eol' ? '#EF4444' : '#3B82F6',
+                      }}>
+                        {v.status === 'current' ? '🟢' : v.status === 'outdated' ? '🟡' : v.status === 'eol' ? '🔴' : '❓'} {v.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Pattern Findings */}
+            {upgradePlan.pattern_findings?.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Detected Patterns
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {(upgradePlan.pattern_findings as any[]).map((p: any, i: number) => (
+                    <div key={i} style={{
+                      background: '#1E293B', borderRadius: '8px', padding: '10px 14px', border: '1px solid #334155',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                        <span style={{
+                          padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600,
+                          background: p.severity === 'high' ? '#7F1D1D' : p.severity === 'medium' ? '#78350F' : '#1E3A5F',
+                          color: p.severity === 'high' ? '#EF4444' : p.severity === 'medium' ? '#F59E0B' : '#3B82F6',
+                        }}>
+                          {p.severity.toUpperCase()}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: '#64748B', fontFamily: 'monospace' }}>{p.id}</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>{p.name}</span>
+                        <span style={{
+                          marginLeft: 'auto', fontSize: '0.65rem', color: '#64748B', textTransform: 'uppercase',
+                        }}>{p.category}</span>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#94A3B8' }}>{p.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Migration Recommendations */}
+            {upgradePlan.migration_recommendations?.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Migration Recommendations
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {(upgradePlan.migration_recommendations as any[]).map((m: any, i: number) => (
+                    <div key={i} style={{
+                      background: '#1E293B', borderRadius: '8px', padding: '12px 14px', border: '1px solid #334155',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                        <span style={{
+                          padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600,
+                          background: m.priority === 'high' ? '#7F1D1D' : m.priority === 'medium' ? '#78350F' : '#1E3A5F',
+                          color: m.priority === 'high' ? '#EF4444' : m.priority === 'medium' ? '#F59E0B' : '#3B82F6',
+                        }}>
+                          {m.priority.toUpperCase()}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: '#64748B', fontFamily: 'monospace' }}>{m.id}</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>{m.from_state} → {m.to_state}</span>
+                        {m.forge_automatable && (
+                          <span style={{
+                            fontSize: '0.6rem', padding: '1px 6px', borderRadius: '4px',
+                            background: '#14532D', color: '#22C55E', fontWeight: 600,
+                          }}>
+                            🤖 AUTOMATABLE
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#94A3B8', marginBottom: '6px' }}>{m.rationale}</div>
+                      <div style={{ display: 'flex', gap: '12px', fontSize: '0.7rem', color: '#64748B', marginBottom: '6px' }}>
+                        <span>Effort: <span style={{ textTransform: 'capitalize', color: m.effort === 'high' ? '#EF4444' : m.effort === 'medium' ? '#F59E0B' : '#22C55E' }}>{m.effort}</span></span>
+                        <span>Risk: <span style={{ textTransform: 'capitalize', color: m.risk === 'high' ? '#EF4444' : m.risk === 'medium' ? '#F59E0B' : '#22C55E' }}>{m.risk}</span></span>
+                        <span style={{ textTransform: 'capitalize' }}>{m.category}</span>
+                      </div>
+                      {m.steps?.length > 0 && (
+                        <div style={{ paddingLeft: '8px', borderLeft: '2px solid #334155' }}>
+                          {m.steps.map((step: string, si: number) => (
+                            <div key={si} style={{ fontSize: '0.7rem', color: '#94A3B8', padding: '2px 0' }}>
+                              {si + 1}. {step}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Forge Spec */}
+            {upgradePlan.forge_spec && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Forge Automation Spec
+                </h3>
+                <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
+                  <div style={{ fontSize: '0.75rem', color: '#22C55E', marginBottom: '8px' }}>
+                    🤖 {upgradePlan.forge_spec.total_automatable} task(s) can be automated by Forge
+                  </div>
+                  <pre style={{
+                    background: '#0F172A', borderRadius: '6px', padding: '10px', fontSize: '0.7rem',
+                    color: '#94A3B8', overflow: 'auto', maxHeight: '200px', margin: 0,
+                  }}>
+                    {JSON.stringify(upgradePlan.forge_spec, null, 2)}
+                  </pre>
+                </div>
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => { setView('dossier'); }}
+                style={{
+                  background: '#334155',
+                  color: '#F8FAFC',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                }}
+              >
+                ← Back to Dossier
+              </button>
+              <button
+                onClick={() => { setView('repos'); setActiveRepo(null); setActiveRun(null); setDeepScanResult(null); setUpgradePlan(null); }}
+                style={{
+                  background: '#334155',
+                  color: '#F8FAFC',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                }}
+              >
+                ← Back to Repos
+              </button>
             </div>
           </div>
         )}
