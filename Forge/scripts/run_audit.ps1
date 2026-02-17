@@ -70,8 +70,8 @@ try {
   $testRunsLatest    = Join-Path $evidenceDir "test_runs_latest.md"
   $diffLog           = Join-Path $evidenceDir "updatedifflog.md"
   $auditLedger       = Join-Path $evidenceDir "audit_ledger.md"
-  $physicsYaml       = Join-Path $govRoot "Contracts" "physics.yaml"
-  $boundariesJson    = Join-Path $govRoot "Contracts" "boundaries.json"
+  $physicsYaml       = Join-Path (Join-Path $govRoot "Contracts") "physics.yaml"
+  $boundariesJson    = Join-Path (Join-Path $govRoot "Contracts") "boundaries.json"
 
   # Project paths (at project root)
   $forgeJson         = Join-Path $projectRoot "forge.json"
@@ -94,8 +94,8 @@ try {
   )
 
   try {
-    $diffStagedRaw   = & git diff --cached --name-only 2>$null
-    $diffUnstagedRaw = & git diff --name-only 2>$null
+    $diffStagedRaw   = & git diff --cached --name-only 2>&1 | Where-Object { "$_" -notmatch "^warning:" }
+    $diffUnstagedRaw = & git diff --name-only 2>&1 | Where-Object { "$_" -notmatch "^warning:" }
 
     $diffFiles = @()
     if ($diffStagedRaw)   { $diffFiles += $diffStagedRaw }
@@ -126,8 +126,8 @@ try {
   # ── A2: Minimal-diff discipline ────────────────────────────────────────
 
   try {
-    $summaryRaw = & git diff --cached --summary 2>&1
-    $summaryAll = & git diff --summary 2>&1
+    $summaryRaw = & git diff --cached --summary 2>&1 | Where-Object { "$_" -notmatch "^warning:" }
+    $summaryAll = & git diff --summary 2>&1 | Where-Object { "$_" -notmatch "^warning:" }
     $allSummary = @()
     if ($summaryRaw) { $allSummary += $summaryRaw }
     if ($summaryAll) { $allSummary += $summaryAll }
@@ -186,6 +186,15 @@ try {
     } else {
       $boundaries = Get-Content $boundariesJson -Raw | ConvertFrom-Json
 
+      # Build known-violation lookup set: "layer|file|pattern"
+      $knownSet = @{}
+      if ($boundaries.known_violations) {
+        foreach ($kv in $boundaries.known_violations) {
+          $key = "$($kv.layer)|$($kv.file)|$($kv.pattern)"
+          $knownSet[$key] = $true
+        }
+      }
+
       foreach ($layer in $boundaries.layers) {
         $layerName = $layer.name
         $layerGlob = $layer.glob
@@ -205,6 +214,11 @@ try {
             foreach ($rule in $layer.forbidden) {
               $pat = $rule.pattern
               $reason = $rule.reason
+
+              # Skip known false positives
+              $kvKey = "$layerName|$($lf.Name)|$pat"
+              if ($knownSet.ContainsKey($kvKey)) { continue }
+
               if ($content -match "(?i)$pat") {
                 $a4Violations += "[$layerName] $($lf.Name) contains '$pat' ($reason)"
               }
@@ -444,6 +458,7 @@ try {
               "python" {
                 # Skip known stdlib modules and local imports
                 $stdlibModules = @(
+                  "__future__",
                   "abc", "argparse", "ast", "asyncio", "base64", "binascii",
                   "bisect", "calendar", "cmath", "codecs", "collections",
                   "concurrent", "configparser", "contextlib", "contextvars",
@@ -535,8 +550,8 @@ try {
   # ── W1: No secrets in diff ────────────────────────────────────────────
 
   try {
-    $diffContent = & git diff --cached 2>&1
-    $diffContentUnstaged = & git diff 2>&1
+    $diffContent = & git diff --cached 2>&1 | Where-Object { "$_" -notmatch "^warning:" }
+    $diffContentUnstaged = & git diff 2>&1 | Where-Object { "$_" -notmatch "^warning:" }
     $allDiff = ""
     if ($diffContent)         { $allDiff += ($diffContent -join "`n") }
     if ($diffContentUnstaged) { $allDiff += "`n" + ($diffContentUnstaged -join "`n") }

@@ -85,6 +85,7 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
         working_dir=None,
         branch="main",
         build_mode="plan_execute",
+        contract_batch=None,
     )
     mock_project_repo.update_project_status.assert_called_once_with(
         _PROJECT_ID, "building"
@@ -126,6 +127,55 @@ async def test_start_build_no_contracts(mock_build_repo, mock_project_repo):
 
     with pytest.raises(ValueError, match="No contracts"):
         await build_service.start_build(_PROJECT_ID, _USER_ID)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.asyncio.create_task")
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+async def test_start_build_with_snapshot_batch(mock_get_user, mock_build_repo, mock_project_repo, mock_create_task):
+    """start_build uses snapshot contracts when contract_batch is provided."""
+    snapshot_contracts = [
+        {"contract_type": "blueprint", "content": "# Snapshot Blueprint"},
+        {"contract_type": "manifesto", "content": "# Snapshot Manifesto"},
+    ]
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_project_repo.get_snapshot_contracts = AsyncMock(return_value=snapshot_contracts)
+    mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.create_build = AsyncMock(return_value=_build())
+    mock_create_task.return_value = MagicMock()
+    mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+    result = await build_service.start_build(_PROJECT_ID, _USER_ID, contract_batch=2)
+
+    assert result["status"] == "pending"
+    mock_project_repo.get_snapshot_contracts.assert_called_once_with(_PROJECT_ID, 2)
+    # Should NOT have called get_contracts_by_project
+    mock_project_repo.get_contracts_by_project = AsyncMock()
+    mock_build_repo.create_build.assert_called_once_with(
+        _PROJECT_ID,
+        target_type=None,
+        target_ref=None,
+        working_dir=None,
+        branch="main",
+        build_mode="plan_execute",
+        contract_batch=2,
+    )
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_start_build_snapshot_batch_not_found(mock_build_repo, mock_project_repo):
+    """start_build raises ValueError when snapshot batch doesn't exist."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_project_repo.get_snapshot_contracts = AsyncMock(return_value=[])
+
+    with pytest.raises(ValueError, match="Snapshot batch 99 not found"):
+        await build_service.start_build(_PROJECT_ID, _USER_ID, contract_batch=99)
 
 
 @pytest.mark.asyncio
@@ -397,6 +447,161 @@ async def test_run_inline_audit_enabled_no_prompt(mock_build_repo, tmp_path, mon
     )
 
     assert result == ("PASS", "")
+
+
+# ---------------------------------------------------------------------------
+# Tests: _audit_single_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_audit_single_file_disabled(mock_build_repo, mock_manager):
+    """_audit_single_file returns PASS immediately when audit is disabled."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    result = await build_service._audit_single_file(
+        _BUILD_ID, _USER_ID, "sk-ant-test",
+        "src/foo.py", "print('hi')", "A test file",
+        audit_llm_enabled=False,
+    )
+
+    assert result == ("src/foo.py", "PASS", "")
+    # Should have broadcast file_audited
+    mock_manager.send_to_user.assert_called_once()
+    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    assert ws_payload["type"] == "file_audited"
+    assert ws_payload["payload"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_audit_single_file_trivially_small(mock_build_repo, mock_manager):
+    """_audit_single_file skips files with < 50 chars of content."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    result = await build_service._audit_single_file(
+        _BUILD_ID, _USER_ID, "sk-ant-test",
+        "src/init.py", "# empty", "init file",
+        audit_llm_enabled=True,
+    )
+
+    assert result == ("src/init.py", "PASS", "")
+    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    assert ws_payload["type"] == "file_audited"
+    assert ws_payload["payload"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_audit_single_file_clean(mock_build_repo, mock_manager):
+    """_audit_single_file returns PASS for VERDICT: CLEAN response."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    llm_response = {"text": "Looks good.\nVERDICT: CLEAN", "usage": {}}
+
+    with patch("app.clients.llm_client.chat", new_callable=AsyncMock, return_value=llm_response):
+        result = await build_service._audit_single_file(
+            _BUILD_ID, _USER_ID, "sk-ant-test",
+            "src/app.py",
+            "def main():\n    print('hello world')\n" * 5,
+            "Main application entry",
+            audit_llm_enabled=True,
+        )
+
+    assert result[0] == "src/app.py"
+    assert result[1] == "PASS"
+    assert result[2] == ""
+    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    assert ws_payload["payload"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_audit_single_file_flags_found(mock_build_repo, mock_manager):
+    """_audit_single_file returns FAIL for VERDICT: FLAGS FOUND response."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    llm_response = {
+        "text": "BLOCKING: missing export\nVERDICT: FLAGS FOUND",
+        "usage": {},
+    }
+
+    with patch("app.clients.llm_client.chat", new_callable=AsyncMock, return_value=llm_response):
+        result = await build_service._audit_single_file(
+            _BUILD_ID, _USER_ID, "sk-ant-test",
+            "src/broken.py",
+            "class Broken:\n    pass\n" * 5,
+            "A broken module",
+            audit_llm_enabled=True,
+        )
+
+    assert result[0] == "src/broken.py"
+    assert result[1] == "FAIL"
+    assert "FLAGS FOUND" in result[2]
+    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    assert ws_payload["payload"]["verdict"] == "FAIL"
+    # Build log should have been called with warn level
+    log_calls = mock_build_repo.append_build_log.call_args_list
+    assert any(c.kwargs.get("level") == "warn" or (len(c.args) > 3 and "warn" in str(c)) for c in log_calls)
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_audit_single_file_llm_error_failopen(mock_build_repo, mock_manager):
+    """_audit_single_file fails open (returns PASS) on LLM error."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    with patch("app.clients.llm_client.chat", new_callable=AsyncMock, side_effect=RuntimeError("LLM down")):
+        result = await build_service._audit_single_file(
+            _BUILD_ID, _USER_ID, "sk-ant-test",
+            "src/widget.py",
+            "def widget():\n    return 42\n" * 5,
+            "Widget module",
+            audit_llm_enabled=True,
+        )
+
+    assert result[0] == "src/widget.py"
+    assert result[1] == "PASS"
+    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    assert ws_payload["payload"]["verdict"] == "PASS"
+    assert "error" in ws_payload["payload"]["findings"].lower()
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.manager")
+@patch("app.services.build_service.build_repo")
+async def test_audit_single_file_timeout_failopen(mock_build_repo, mock_manager):
+    """_audit_single_file fails open on timeout."""
+    mock_build_repo.append_build_log = AsyncMock()
+    mock_manager.send_to_user = AsyncMock()
+
+    async def _slow_chat(**kwargs):
+        await asyncio.sleep(999)
+
+    with patch("app.clients.llm_client.chat", new_callable=AsyncMock, side_effect=_slow_chat):
+        # Patch the timeout to be tiny for test speed
+        with patch.object(build_service.asyncio, "wait_for", side_effect=asyncio.TimeoutError):
+            result = await build_service._audit_single_file(
+                _BUILD_ID, _USER_ID, "sk-ant-test",
+                "src/slow.py",
+                "def slow():\n    pass\n" * 5,
+                "Slow module",
+                audit_llm_enabled=True,
+            )
+
+    assert result[0] == "src/slow.py"
+    assert result[1] == "PASS"
 
 
 # ---------------------------------------------------------------------------
@@ -1664,14 +1869,14 @@ async def test_resume_build_success(mock_build_repo, mock_project_repo):
 @pytest.mark.asyncio
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
-async def test_resume_build_not_paused(mock_build_repo, mock_project_repo):
-    """resume_build raises ValueError if build is not paused."""
+async def test_resume_build_not_resumable(mock_build_repo, mock_project_repo):
+    """resume_build raises ValueError if build is in a terminal non-resumable state."""
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_build_repo.get_latest_build_for_project = AsyncMock(
-        return_value=_build(status="running")
+        return_value=_build(status="completed")
     )
 
-    with pytest.raises(ValueError, match="No paused build"):
+    with pytest.raises(ValueError, match="Cannot resume build"):
         await build_service.resume_build(_PROJECT_ID, _USER_ID)
 
 
@@ -2539,3 +2744,393 @@ async def test_delete_builds_empty_ids(mock_project_repo):
 
     with pytest.raises(ValueError, match="No build IDs"):
         await build_service.delete_builds(_PROJECT_ID, _USER_ID, [])
+
+
+# ---------------------------------------------------------------------------
+# Tests: /pull slash command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.start_build", new_callable=AsyncMock)
+@patch("app.services.build_service.git_client")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_pull_command_detects_phase(
+    mock_build_repo, mock_project_repo, mock_get_user, mock_git, mock_start
+):
+    """/pull clones the repo, parses git log, and resumes from detected phase."""
+    mock_project_repo.get_project_by_id = AsyncMock(
+        return_value=_project(repo_full_name="owner/repo")
+    )
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed", branch="main")
+    )
+    mock_get_user.return_value = {"id": _USER_ID, "access_token": "ghp_test"}
+
+    mock_git.clone_repo = AsyncMock()
+    mock_git.log_oneline = AsyncMock(return_value=[
+        "forge: Phase 3 complete",
+        "forge: Phase 2 complete (after 2 audit attempts)",
+        "forge: Phase 1 complete",
+        "forge: Phase 0 complete",
+    ])
+
+    new_build = _build(status="running")
+    mock_start.return_value = new_build
+
+    result = await build_service.interject_build(_PROJECT_ID, _USER_ID, "/pull")
+
+    assert result["status"] == "pulled"
+    assert "Phase 4" in result["message"]
+    assert "Phase 3 was last committed" in result["message"]
+
+    # Verify start_build was called with resume_from_phase=3
+    mock_start.assert_awaited_once()
+    call_kwargs = mock_start.call_args[1]
+    assert call_kwargs["resume_from_phase"] == 3
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.git_client")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_pull_command_no_repo(
+    mock_build_repo, mock_project_repo, mock_get_user, mock_git
+):
+    """/pull raises ValueError if no GitHub repo is linked."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="No GitHub repository"):
+        await build_service.interject_build(_PROJECT_ID, _USER_ID, "/pull")
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.git_client")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_pull_command_no_token(
+    mock_build_repo, mock_project_repo, mock_get_user, mock_git
+):
+    """/pull raises ValueError if no GitHub access token."""
+    mock_project_repo.get_project_by_id = AsyncMock(
+        return_value=_project(repo_full_name="owner/repo")
+    )
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_get_user.return_value = {"id": _USER_ID}
+
+    with pytest.raises(ValueError, match="No GitHub access token"):
+        await build_service.interject_build(_PROJECT_ID, _USER_ID, "/pull")
+
+
+@pytest.mark.asyncio
+@patch("app.services.build_service.start_build", new_callable=AsyncMock)
+@patch("app.services.build_service.git_client")
+@patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_pull_command_no_phases_starts_fresh(
+    mock_build_repo, mock_project_repo, mock_get_user, mock_git, mock_start
+):
+    """/pull with no forge commits starts from Phase 0."""
+    mock_project_repo.get_project_by_id = AsyncMock(
+        return_value=_project(repo_full_name="owner/repo")
+    )
+    mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_get_user.return_value = {"id": _USER_ID, "access_token": "ghp_test"}
+
+    mock_git.clone_repo = AsyncMock()
+    mock_git.log_oneline = AsyncMock(return_value=[
+        "Initial commit",
+        "Add README",
+    ])
+
+    new_build = _build(status="running")
+    mock_start.return_value = new_build
+
+    result = await build_service.interject_build(_PROJECT_ID, _USER_ID, "/pull")
+
+    assert result["status"] == "pulled"
+    assert "Phase 0" in result["message"]
+    assert "no prior phases" in result["message"]
+
+    call_kwargs = mock_start.call_args[1]
+    assert call_kwargs["resume_from_phase"] == -1
+
+
+# ---------------------------------------------------------------------------
+# Manifest caching (resume resilience)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_manifest_cache_save_and_load(tmp_path):
+    """After generating a manifest, it should be persisted to .forge/
+    as JSON.  On a second run the cached copy is loaded instead of
+    calling the LLM again."""
+    import json
+
+    manifest_data = [
+        {
+            "path": "src/main.py",
+            "action": "create",
+            "purpose": "entry point",
+            "depends_on": [],
+            "context_files": [],
+            "estimated_lines": 50,
+            "language": "python",
+            "status": "pending",
+        },
+        {
+            "path": "src/utils.py",
+            "action": "create",
+            "purpose": "helpers",
+            "depends_on": [],
+            "context_files": [],
+            "estimated_lines": 30,
+            "language": "python",
+            "status": "pending",
+        },
+    ]
+
+    # Write a cached manifest
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    cache_file = forge_dir / "manifest_phase_1.json"
+    cache_file.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    # Verify it round-trips correctly
+    loaded = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert isinstance(loaded, list)
+    assert len(loaded) == 2
+    assert loaded[0]["path"] == "src/main.py"
+    assert loaded[1]["path"] == "src/utils.py"
+
+    # Verify cleanup works (simulating phase completion)
+    assert cache_file.exists()
+    cache_file.unlink(missing_ok=True)
+    assert not cache_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Auditor-as-fixer tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fix_single_file_applies_fix(tmp_path):
+    """_fix_single_file reads file, sends to LLM, writes fixed content back."""
+    # Create a broken file on disk
+    src = tmp_path / "src"
+    src.mkdir()
+    broken_file = src / "main.py"
+    broken_file.write_text("import foo\nprint(bar)\n", encoding="utf-8")
+
+    fixed_content = "import foo\nbar = 1\nprint(bar)\n"
+
+    with patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build_service.build_repo") as mock_repo, \
+         patch("app.clients.llm_client.chat", new_callable=AsyncMock) as mock_chat, \
+         patch("app.services.build_service._get_token_rates", return_value=(Decimal("0.01"), Decimal("0.03"))):
+        mock_chat.return_value = {"text": fixed_content, "usage": {"input_tokens": 100, "output_tokens": 50}}
+        mock_repo.record_build_cost = AsyncMock()
+        mock_repo.append_build_log = AsyncMock()
+
+        result = await build_service._fix_single_file(
+            build_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            api_key="test-key",
+            file_path="src/main.py",
+            findings="L2: 'bar' is undefined",
+            working_dir=str(tmp_path),
+        )
+
+    assert result == fixed_content
+    assert broken_file.read_text(encoding="utf-8") == fixed_content
+    mock_chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_audit_and_cache_fix_loop_passes_after_fix(tmp_path):
+    """When audit returns FAIL, _audit_and_cache fixes + re-audits."""
+    # Create file and cache
+    src = tmp_path / "src"
+    src.mkdir()
+    target = src / "app.py"
+    target.write_text("bad code\n", encoding="utf-8")
+
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    import json
+    manifest = [{"path": "src/app.py", "status": "pending", "language": "python"}]
+    cache_path = forge_dir / "manifest_phase_1.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    call_count = 0
+
+    async def mock_audit(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ("src/app.py", "FAIL", "L1: bad code")
+        return ("src/app.py", "PASS", "")
+
+    with patch("app.services.build_service._audit_single_file", side_effect=mock_audit), \
+         patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build_service.build_repo") as mock_repo:
+        mock_fix.return_value = "good code\n"
+        mock_repo.append_build_log = AsyncMock()
+
+        result = await build_service._audit_and_cache(
+            manifest_cache_path=cache_path,
+            build_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            audit_api_key="key2",
+            file_path="src/app.py",
+            file_content="bad code\n",
+            file_purpose="app entry",
+            audit_llm_enabled=True,
+            working_dir=str(tmp_path),
+        )
+
+    fpath, fverdict, _ = result
+    assert fverdict == "PASS"
+    mock_fix.assert_awaited_once()
+    # Manifest cache should be updated to "fixed"
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cached[0]["status"] == "fixed"
+
+
+@pytest.mark.asyncio
+async def test_audit_and_cache_pushes_to_fix_queue(tmp_path):
+    """When auditor can't fix after max rounds, file goes to fix_queue."""
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    import json
+    manifest = [{"path": "src/broken.py", "status": "pending"}]
+    cache_path = forge_dir / "manifest_phase_1.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Create the file
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "broken.py").write_text("broken\n", encoding="utf-8")
+
+    fix_queue: asyncio.Queue = asyncio.Queue()
+
+    async def always_fail(*args, **kwargs):
+        return ("src/broken.py", "FAIL", "L1: still broken")
+
+    with patch("app.services.build_service._audit_single_file", side_effect=always_fail), \
+         patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build_service.build_repo") as mock_repo:
+        mock_fix.return_value = "still broken\n"
+        mock_repo.append_build_log = AsyncMock()
+
+        result = await build_service._audit_and_cache(
+            manifest_cache_path=cache_path,
+            build_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            audit_api_key="key2",
+            file_path="src/broken.py",
+            file_content="broken\n",
+            file_purpose="broken module",
+            audit_llm_enabled=True,
+            working_dir=str(tmp_path),
+            fix_queue=fix_queue,
+        )
+
+    _, fverdict, _ = result
+    assert fverdict == "FAIL"
+    # Should have been pushed to fix queue
+    assert not fix_queue.empty()
+    queued_path, queued_findings = fix_queue.get_nowait()
+    assert queued_path == "src/broken.py"
+    # Fix was attempted _AUDITOR_FIX_ROUNDS times
+    assert mock_fix.await_count == build_service._AUDITOR_FIX_ROUNDS
+
+
+@pytest.mark.asyncio
+async def test_builder_drain_fix_queue(tmp_path):
+    """Builder drains fix queue and produces results."""
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    import json
+    manifest = [{"path": "src/fix_me.py", "status": "fix_queued"}]
+    cache_path = forge_dir / "manifest_phase_1.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "fix_me.py").write_text("needs fix\n", encoding="utf-8")
+
+    fix_queue: asyncio.Queue = asyncio.Queue()
+    await fix_queue.put(("src/fix_me.py", "L1: needs fix"))
+
+    with patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build_service._audit_single_file", new_callable=AsyncMock) as mock_audit, \
+         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock), \
+         patch("app.services.build_service._touch_progress"), \
+         patch("app.services.build_service.build_repo") as mock_repo:
+        mock_fix.return_value = "fixed content\n"
+        mock_audit.return_value = ("src/fix_me.py", "PASS", "")
+        mock_repo.append_build_log = AsyncMock()
+
+        results = await build_service._builder_drain_fix_queue(
+            build_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            builder_api_key="key1",
+            audit_api_key="key2",
+            fix_queue=fix_queue,
+            working_dir=str(tmp_path),
+            manifest_cache_path=cache_path,
+        )
+
+    assert len(results) == 1
+    assert results[0][1] == "PASS"
+    assert fix_queue.empty()
+    # Manifest cache should be updated to "fixed"
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cached[0]["status"] == "fixed"
+
+
+@pytest.mark.asyncio
+async def test_audit_and_cache_skips_fix_when_pass(tmp_path):
+    """When audit passes immediately, no fix is attempted."""
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    import json
+    manifest = [{"path": "src/good.py", "status": "pending"}]
+    cache_path = forge_dir / "manifest_phase_1.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    async def pass_audit(*args, **kwargs):
+        return ("src/good.py", "PASS", "")
+
+    with patch("app.services.build_service._audit_single_file", side_effect=pass_audit), \
+         patch("app.services.build_service._fix_single_file", new_callable=AsyncMock) as mock_fix, \
+         patch("app.services.build_service._broadcast_build_event", new_callable=AsyncMock):
+
+        result = await build_service._audit_and_cache(
+            manifest_cache_path=cache_path,
+            build_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            audit_api_key="key2",
+            file_path="src/good.py",
+            file_content="good code\n",
+            file_purpose="good module",
+            audit_llm_enabled=True,
+            working_dir=str(tmp_path),
+        )
+
+    _, fverdict, _ = result
+    assert fverdict == "PASS"
+    mock_fix.assert_not_awaited()
+    # Manifest cache should be "audited"
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cached[0]["status"] == "audited"

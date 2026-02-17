@@ -198,6 +198,75 @@ async def update_contract_content(
 
 
 # ---------------------------------------------------------------------------
+# contract_snapshots
+# ---------------------------------------------------------------------------
+
+
+async def snapshot_contracts(project_id: UUID) -> int | None:
+    """Copy all current project_contracts into contract_snapshots as a new batch.
+
+    Returns the new batch number, or None if there were no contracts to snapshot.
+    """
+    pool = await get_pool()
+    # Determine the next batch number
+    max_batch = await pool.fetchval(
+        "SELECT COALESCE(MAX(batch), 0) FROM contract_snapshots WHERE project_id = $1",
+        project_id,
+    )
+    new_batch = max_batch + 1
+
+    # Copy current contracts into snapshots
+    inserted = await pool.execute(
+        """
+        INSERT INTO contract_snapshots (project_id, batch, contract_type, content)
+        SELECT project_id, $2, contract_type, content
+        FROM project_contracts
+        WHERE project_id = $1
+        """,
+        project_id,
+        new_batch,
+    )
+    # inserted is like 'INSERT 0 9' — extract count
+    count = int(inserted.split()[-1])
+    return new_batch if count > 0 else None
+
+
+async def get_snapshot_batches(project_id: UUID) -> list[dict]:
+    """Return a summary of all snapshot batches for a project.
+
+    Each entry: {batch, created_at, count}.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT batch, MIN(created_at) AS created_at, COUNT(*) AS count
+        FROM contract_snapshots
+        WHERE project_id = $1
+        GROUP BY batch
+        ORDER BY batch DESC
+        """,
+        project_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_snapshot_contracts(project_id: UUID, batch: int) -> list[dict]:
+    """Return all contracts for a specific snapshot batch."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, project_id, batch, contract_type, content, created_at
+        FROM contract_snapshots
+        WHERE project_id = $1 AND batch = $2
+        ORDER BY contract_type
+        """,
+        project_id,
+        batch,
+    )
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

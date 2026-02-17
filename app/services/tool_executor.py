@@ -54,8 +54,23 @@ BLOCKED_COMMANDS = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Path sandboxing
+# Path sandboxing (delegates to Workspace.resolve — Phase 23)
 # ---------------------------------------------------------------------------
+
+# Module-level workspace cache: one Workspace per working_dir (≈ one per build)
+_workspace_cache: dict[str, object] = {}
+
+
+def _get_workspace(working_dir: str) -> object:
+    """Return a cached ``Workspace`` for *working_dir*.
+
+    Uses lazy imports to avoid circular references (adapters → tool_executor).
+    """
+    if working_dir not in _workspace_cache:
+        from forge_ide.workspace import Workspace
+
+        _workspace_cache[working_dir] = Workspace(working_dir)
+    return _workspace_cache[working_dir]
 
 
 def _resolve_sandboxed(rel_path: str, working_dir: str) -> Path | None:
@@ -63,28 +78,18 @@ def _resolve_sandboxed(rel_path: str, working_dir: str) -> Path | None:
 
     Returns the resolved absolute Path if safe, or None if the path
     would escape the sandbox (e.g. via `..` traversal or absolute paths).
+
+    Delegates to ``Workspace.resolve()`` for the actual enforcement logic.
     """
     if not rel_path or not working_dir:
         return None
 
-    # Reject absolute paths
-    if os.path.isabs(rel_path):
-        return None
-
-    # Reject path traversal
-    if ".." in rel_path.split(os.sep) or ".." in rel_path.split("/"):
-        return None
-
-    root = Path(working_dir).resolve()
-    target = (root / rel_path).resolve()
-
-    # Ensure the resolved path is within the working directory
     try:
-        target.relative_to(root)
-    except ValueError:
+        ws = _get_workspace(working_dir)
+        return ws.resolve(rel_path)  # type: ignore[union-attr]
+    except Exception:
+        # SandboxViolation, ValueError, or any other error → None
         return None
-
-    return target
 
 
 # ---------------------------------------------------------------------------

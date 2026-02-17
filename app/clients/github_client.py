@@ -106,12 +106,16 @@ async def create_github_repo(
 
     Returns a dict with github_repo_id, full_name, default_branch, private.
     """
+    # GitHub limits repo descriptions to 350 chars and rejects control characters
+    safe_desc = (description or "").replace("\r", " ").replace("\n", " ")
+    safe_desc = safe_desc[:350]
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{GITHUB_API_BASE}/user/repos",
             json={
                 "name": name,
-                "description": description or "",
+                "description": safe_desc,
                 "private": private,
                 "auto_init": True,
             },

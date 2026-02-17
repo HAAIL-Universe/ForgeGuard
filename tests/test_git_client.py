@@ -221,3 +221,33 @@ async def test_diff_summary_single_commit(mock_run):
     mock_run.side_effect = RuntimeError("bad revision")
     result = await git_client.diff_summary("/tmp/test")
     assert "no diff available" in result
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_log_oneline(mock_run):
+    """log_oneline returns list of commit subject lines."""
+    mock_run.return_value = (
+        "forge: Phase 2 complete\n"
+        "forge: Phase 1 complete (after 2 audit attempts)\n"
+        "forge: Phase 0 complete\n"
+    )
+    result = await git_client.log_oneline("/tmp/test", max_count=50)
+    assert result == [
+        "forge: Phase 2 complete",
+        "forge: Phase 1 complete (after 2 audit attempts)",
+        "forge: Phase 0 complete",
+    ]
+    mock_run.assert_awaited_once_with(
+        ["log", "--max-count=50", "--format=%s"],
+        cwd="/tmp/test",
+    )
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_log_oneline_empty(mock_run):
+    """log_oneline returns empty list on error."""
+    mock_run.side_effect = RuntimeError("no commits")
+    result = await git_client.log_oneline("/tmp/test")
+    assert result == []

@@ -16,6 +16,9 @@ from app.repos.project_repo import (
     get_contracts_by_project,
     get_project_by_id,
     get_projects_by_user,
+    get_snapshot_batches,
+    get_snapshot_contracts,
+    snapshot_contracts,
     update_contract_content as repo_update_contract_content,
     update_project_status,
     update_questionnaire_state,
@@ -460,6 +463,13 @@ async def generate_contracts(
     cancel_event = asyncio.Event()
     _active_generations[pid] = cancel_event
 
+    # Snapshot existing contracts before overwriting (version history)
+    existing = await get_contracts_by_project(project_id)
+    if existing:
+        batch = await snapshot_contracts(project_id)
+        if batch:
+            logger.info("Archived contracts as snapshot batch %d for project %s", batch, pid)
+
     generated = []
     total = len(CONTRACT_TYPES)
     try:
@@ -593,6 +603,46 @@ async def list_contracts(
     return await get_contracts_by_project(project_id)
 
 
+async def list_contract_versions(
+    user_id: UUID,
+    project_id: UUID,
+) -> list[dict]:
+    """List all snapshot batches for a project's contracts."""
+    project = await get_project_by_id(project_id)
+    if not project:
+        raise ValueError("Project not found")
+    if str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    batches = await get_snapshot_batches(project_id)
+    return [
+        {
+            "batch": b["batch"],
+            "created_at": b["created_at"],
+            "count": b["count"],
+        }
+        for b in batches
+    ]
+
+
+async def get_contract_version(
+    user_id: UUID,
+    project_id: UUID,
+    batch: int,
+) -> list[dict]:
+    """Get all contracts for a specific snapshot batch."""
+    project = await get_project_by_id(project_id)
+    if not project:
+        raise ValueError("Project not found")
+    if str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    contracts = await get_snapshot_contracts(project_id, batch)
+    if not contracts:
+        raise ValueError(f"Snapshot batch {batch} not found")
+    return contracts
+
+
 async def get_contract(
     user_id: UUID,
     project_id: UUID,
@@ -634,6 +684,110 @@ async def update_contract(
     if not result:
         raise ValueError(f"Contract '{contract_type}' not found")
     return result
+
+
+async def push_contracts_to_git(
+    user_id: UUID,
+    project_id: UUID,
+) -> dict:
+    """Write all contracts to the linked GitHub repo and push.
+
+    Clones the repo into a temp directory, writes each contract file
+    under a ``Forge/Contracts/`` folder, commits, and pushes.
+
+    Returns:
+        Dict with status, message, and commit sha.
+
+    Raises:
+        ValueError: If project not found, no repo linked, no access token,
+                    no contracts, or git operations fail.
+    """
+    import shutil
+    import tempfile
+    from app.clients import git_client
+    from app.repos.user_repo import get_user_by_id
+
+    project = await get_project_by_id(project_id)
+    if not project:
+        raise ValueError("Project not found")
+    if str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    repo_full_name = project.get("repo_full_name", "")
+    if not repo_full_name:
+        raise ValueError("No GitHub repository linked to this project")
+
+    user = await get_user_by_id(user_id)
+    access_token = (user or {}).get("access_token", "")
+    if not access_token:
+        raise ValueError("No GitHub access token — connect GitHub in Settings")
+
+    contracts = await get_contracts_by_project(project_id)
+    if not contracts:
+        raise ValueError("No contracts to push — generate contracts first")
+
+    # File extension mapping
+    ext_map = {
+        "physics": "physics.yaml",
+        "boundaries": "boundaries.json",
+    }
+
+    # Clone repo into temp dir
+    working_dir = tempfile.mkdtemp(prefix="forgeguard_contracts_push_")
+    clone_url = f"https://github.com/{repo_full_name}.git"
+    branch = "main"
+
+    # Detect branch from latest build if available
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if latest and latest.get("branch"):
+        branch = latest["branch"]
+
+    try:
+        shutil.rmtree(working_dir, ignore_errors=True)
+        await git_client.clone_repo(
+            clone_url, working_dir,
+            branch=branch,
+            access_token=access_token,
+            shallow=False,
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to clone {repo_full_name}: {exc}")
+
+    try:
+        # Write contracts under Forge/Contracts/
+        contracts_dir = Path(working_dir) / "Forge" / "Contracts"
+        contracts_dir.mkdir(parents=True, exist_ok=True)
+
+        for c in contracts:
+            ct = c["contract_type"]
+            filename = ext_map.get(ct, f"{ct}.md")
+            fp = contracts_dir / filename
+            fp.write_text(c["content"], encoding="utf-8")
+
+        # Commit and push
+        await git_client.add_all(working_dir)
+        sha = await git_client.commit(working_dir, "forge: push contracts")
+        if not sha:
+            # Nothing changed — contracts already up to date
+            return {
+                "status": "unchanged",
+                "message": f"Contracts already up to date on {repo_full_name}",
+                "sha": None,
+            }
+
+        await git_client.push(
+            working_dir, branch=branch, access_token=access_token,
+        )
+
+        return {
+            "status": "pushed",
+            "message": f"Pushed {len(contracts)} contracts to {repo_full_name} ({branch})",
+            "sha": sha[:8],
+        }
+    except Exception as exc:
+        raise ValueError(f"Failed to push contracts: {exc}")
+    finally:
+        shutil.rmtree(working_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

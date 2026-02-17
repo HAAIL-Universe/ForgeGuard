@@ -75,9 +75,18 @@ function ProjectDetail() {
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   const [contractsExpanded, setContractsExpanded] = useState(false);
   const [showRegenerate, setShowRegenerate] = useState(false);
+  const [pushingContracts, setPushingContracts] = useState(false);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
+
+  /* Contract version history */
+  const [versionHistory, setVersionHistory] = useState<{batch: number; created_at: string; count: number}[]>([]);
+  const [expandedBatch, setExpandedBatch] = useState<number | null>(null);
+  const [batchContracts, setBatchContracts] = useState<Record<number, {contract_type: string; content: string}[]>>({});
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [loadingBatch, setLoadingBatch] = useState<number | null>(null);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState('main');
+  const [selectedContractBatch, setSelectedContractBatch] = useState<number | null>(null);
 
   /* Background contract generation tracking */
   const [bgGenActive, setBgGenActive] = useState(false);
@@ -86,6 +95,9 @@ function ProjectDetail() {
 
   /* Workspace-ready gate: holds the build ID we're waiting on before navigating */
   const pendingBuildIdRef = useRef<string | null>(null);
+
+  /* Dynamic loading status text shown on the 3-D orb while starting */
+  const [loadingStatus, setLoadingStatus] = useState<string | undefined>(undefined);
 
   /* Build history */
   interface BuildHistoryItem {
@@ -140,7 +152,7 @@ function ProjectDetail() {
 
   const hasContracts = (project?.contracts?.length ?? 0) > 0;
 
-  /* Listen for WS events: contract_progress + workspace_ready */
+  /* Listen for WS events: contract_progress + workspace_ready + build_log */
   useWebSocket(
     useCallback(
       (data: { type: string; payload: any }) => {
@@ -148,12 +160,29 @@ function ProjectDetail() {
         if (data.type === 'workspace_ready') {
           const pending = pendingBuildIdRef.current;
           if (pending && data.payload?.id === pending) {
-            pendingBuildIdRef.current = null;
-            setStarting(false);
-            setShowBranchPicker(false);
-            setShowTargetPicker(false);
-            addToast('Workspace ready — entering build view', 'success');
-            navigate(`/projects/${projectId}/build`);
+            setLoadingStatus('Workspace ready!');
+            // Brief delay so user sees the "ready" message before navigating
+            setTimeout(() => {
+              pendingBuildIdRef.current = null;
+              setStarting(false);
+              setShowBranchPicker(false);
+              setShowTargetPicker(false);
+              setLoadingStatus(undefined);
+              navigate(`/projects/${projectId}/build`);
+            }, 600);
+          }
+          return;
+        }
+
+        /* ── build_log: update loading status while workspace is syncing ── */
+        if (data.type === 'build_log' && pendingBuildIdRef.current) {
+          const msg = data.payload?.message;
+          if (typeof msg === 'string' && msg.length > 0) {
+            // Show user-friendly workspace setup messages
+            if (msg.includes('Created GitHub repo'))   setLoadingStatus('Repository created…');
+            else if (msg.includes('Cloned'))            setLoadingStatus('Repository cloned…');
+            else if (msg.includes('branch'))            setLoadingStatus('Switching branch…');
+            else if (msg.includes('Pushed Forge'))      setLoadingStatus('Contracts synced…');
           }
           return;
         }
@@ -201,19 +230,33 @@ function ProjectDetail() {
       setShowQuestionnaire(true);
       return;
     }
+    /* Pre-fetch contract version history so BranchPickerModal knows
+       whether to show the version selection step */
+    if (versionHistory.length === 0) {
+      try {
+        const hres = await fetch(`${API_BASE}/projects/${projectId}/contracts/history`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (hres.ok) {
+          const data = await hres.json();
+          setVersionHistory(data.items || []);
+        }
+      } catch { /* ignore */ }
+    }
     /* Show branch picker first */
     setShowBranchPicker(true);
   };
 
   const handleBranchConfirm = async (choice: BranchChoice) => {
     setSelectedBranch(choice.branch);
+    setSelectedContractBatch(choice.contractBatch);
     /* Keep BranchPicker open — it shows the sync spinner while starting=true */
     /* If a repo is already connected, build straight into it */
     if (project?.repo_id && project?.repo_full_name) {
       await handleTargetConfirm({
         target_type: 'github_existing',
         target_ref: project.repo_full_name,
-      }, choice.branch);
+      }, choice.branch, choice.contractBatch);
       return;
     }
     /* No repo connected — close picker, show target picker modal */
@@ -221,8 +264,10 @@ function ProjectDetail() {
     setShowTargetPicker(true);
   };
 
-  const handleTargetConfirm = async (target: BuildTarget, branch?: string) => {
+  const handleTargetConfirm = async (target: BuildTarget, branch?: string, contractBatch?: number | null) => {
     setStarting(true);
+    setLoadingStatus('Queuing build…');
+    let keepStarting = false;
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
         method: 'POST',
@@ -230,26 +275,35 @@ function ProjectDetail() {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ ...target, branch: branch ?? selectedBranch }),
+        body: JSON.stringify({
+          ...target,
+          branch: branch ?? selectedBranch,
+          contract_batch: contractBatch ?? selectedContractBatch ?? null,
+        }),
       });
       if (res.ok) {
         const build = await res.json().catch(() => null);
         if (build?.id) {
           // Don't navigate yet — wait for workspace_ready WS event.
-          // Keep starting=true so the BranchPicker shows the sync spinner.
+          // Keep starting=true so the BranchPicker shows the 3-D orb loader.
+          // NOTE: `finally` always runs in JS even after `return`, so we use
+          // a flag to prevent it from resetting `starting`.
+          keepStarting = true;
           pendingBuildIdRef.current = build.id;
+          setLoadingStatus('Preparing workspace…');
           addToast('Build queued — syncing workspace…', 'success');
           // Safety timeout: navigate after 30s even if WS event is lost
           setTimeout(() => {
             if (pendingBuildIdRef.current === build.id) {
               pendingBuildIdRef.current = null;
               setStarting(false);
+              setLoadingStatus(undefined);
               setShowBranchPicker(false);
               setShowTargetPicker(false);
               navigate(`/projects/${projectId}/build`);
             }
           }, 30_000);
-          return; // skip finally's setStarting(false)
+          return;
         } else {
           // Fallback: navigate immediately if we can't parse the build ID
           setShowTargetPicker(false);
@@ -264,7 +318,10 @@ function ProjectDetail() {
     } catch {
       addToast('Network error starting build');
     } finally {
-      setStarting(false);
+      if (!keepStarting) {
+        setStarting(false);
+        setLoadingStatus(undefined);
+      }
     }
   };
 
@@ -277,6 +334,16 @@ function ProjectDetail() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) setProject(await res.json());
+    } catch { /* ignore */ }
+    /* Refresh version history (a snapshot was just created) */
+    try {
+      const hres = await fetch(`${API_BASE}/projects/${projectId}/contracts/history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (hres.ok) {
+        const data = await hres.json();
+        setVersionHistory(data.items || []);
+      }
     } catch { /* ignore */ }
   };
 
@@ -378,6 +445,7 @@ function ProjectDetail() {
 
   return (
     <AppShell>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
@@ -497,6 +565,10 @@ function ProjectDetail() {
         {/* Background generation progress bar */}
         {bgGenActive && !showRegenerate && !showQuestionnaire && (
           <div
+            onClick={() => setShowQuestionnaire(true)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setShowQuestionnaire(true); }}
             style={{
               background: '#1E293B',
               borderRadius: '8px',
@@ -505,7 +577,12 @@ function ProjectDetail() {
               display: 'flex',
               flexDirection: 'column',
               gap: '8px',
+              cursor: 'pointer',
+              transition: 'background 0.15s',
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#253348')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#1E293B')}
+            title="Click to view progress"
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -541,24 +618,79 @@ function ProjectDetail() {
           <div style={{ background: '#1E293B', borderRadius: '8px', padding: '16px 20px', marginBottom: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '0.9rem' }}>Generated Contracts</h3>
-              <button
-                onClick={() => setShowRegenerate(true)}
-                style={{
-                  background: '#2563EB',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '6px 14px',
-                  cursor: 'pointer',
-                  fontSize: '0.75rem',
-                  fontWeight: 600,
-                  transition: 'background 0.15s',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#1D4ED8')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = '#2563EB')}
-              >
-                ↻ Regenerate
-              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  disabled={pushingContracts}
+                  onClick={async () => {
+                    setPushingContracts(true);
+                    const minDelay = new Promise((r) => setTimeout(r, 1000));
+                    try {
+                      const [res] = await Promise.all([
+                        fetch(`${API_BASE}/projects/${projectId}/contracts/push`, {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${token}` },
+                        }),
+                        minDelay,
+                      ]);
+                      if (res.ok) {
+                        const data = await res.json();
+                        addToast(data.message || 'Contracts pushed to GitHub', 'success');
+                      } else {
+                        const err = await res.json().catch(() => ({ detail: 'Push failed' }));
+                        addToast(err.detail || 'Push failed');
+                      }
+                    } catch {
+                      addToast('Network error pushing contracts');
+                    } finally {
+                      setPushingContracts(false);
+                    }
+                  }}
+                  style={{
+                    background: pushingContracts ? '#115E59' : '#0D9488',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 14px',
+                    cursor: pushingContracts ? 'not-allowed' : 'pointer',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    transition: 'background 0.15s',
+                    opacity: pushingContracts ? 0.8 : 1,
+                    minWidth: '110px',
+                  }}
+                  onMouseEnter={(e) => { if (!pushingContracts) e.currentTarget.style.background = '#0F766E'; }}
+                  onMouseLeave={(e) => { if (!pushingContracts) e.currentTarget.style.background = '#0D9488'; }}
+                >
+                  {pushingContracts ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{
+                        display: 'inline-block', width: '12px', height: '12px',
+                        border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff',
+                        borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+                      }} />
+                      Pushing…
+                    </span>
+                  ) : '🚀 Push to Git'}
+                </button>
+                <button
+                  onClick={() => setShowRegenerate(true)}
+                  style={{
+                    background: '#2563EB',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 14px',
+                    cursor: 'pointer',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = '#1D4ED8')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = '#2563EB')}
+                >
+                  ↻ Regenerate
+                </button>
+              </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               {project.contracts.map((c) => (
@@ -582,6 +714,97 @@ function ProjectDetail() {
                   </span>
                 </div>
               ))}
+            </div>
+
+            {/* Version History */}
+            <div style={{ marginTop: '12px', borderTop: '1px solid #334155', paddingTop: '10px' }}>
+              <div
+                onClick={async () => {
+                  const next = !historyExpanded;
+                  setHistoryExpanded(next);
+                  if (next && versionHistory.length === 0) {
+                    try {
+                      const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/history`, {
+                        headers: { Authorization: `Bearer ${token}` },
+                      });
+                      if (res.ok) {
+                        const data = await res.json();
+                        setVersionHistory(data.items || []);
+                      }
+                    } catch { /* ignore */ }
+                  }
+                }}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', padding: '4px 0' }}
+              >
+                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#94A3B8' }}>Previous Versions</span>
+                <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: historyExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+              </div>
+              {historyExpanded && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                  {versionHistory.length === 0 && (
+                    <span style={{ color: '#475569', fontSize: '0.75rem', fontStyle: 'italic' }}>No previous versions</span>
+                  )}
+                  {versionHistory.map((v) => (
+                    <div key={v.batch} style={{ background: '#0F172A', borderRadius: '6px', overflow: 'hidden' }}>
+                      <div
+                        onClick={async () => {
+                          if (expandedBatch === v.batch) {
+                            setExpandedBatch(null);
+                            return;
+                          }
+                          setExpandedBatch(v.batch);
+                          if (!batchContracts[v.batch]) {
+                            setLoadingBatch(v.batch);
+                            try {
+                              const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/history/${v.batch}`, {
+                                headers: { Authorization: `Bearer ${token}` },
+                              });
+                              if (res.ok) {
+                                const data = await res.json();
+                                setBatchContracts((prev) => ({ ...prev, [v.batch]: data.items || [] }));
+                              }
+                            } catch { /* ignore */ }
+                            setLoadingBatch(null);
+                          }
+                        }}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', cursor: 'pointer' }}
+                      >
+                        <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#F8FAFC' }}>V{v.batch}</span>
+                        <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
+                          {v.count} contracts · {new Date(v.created_at).toLocaleDateString()}
+                          {' '}{expandedBatch === v.batch ? '▲' : '▼'}
+                        </span>
+                      </div>
+                      {expandedBatch === v.batch && (
+                        <div style={{ padding: '0 10px 8px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          {loadingBatch === v.batch && <span style={{ color: '#64748B', fontSize: '0.7rem' }}>Loading...</span>}
+                          {(batchContracts[v.batch] || []).map((c) => (
+                            <div
+                              key={c.contract_type}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '4px 8px',
+                                background: '#1E293B',
+                                borderRadius: '3px',
+                                fontSize: '0.72rem',
+                              }}
+                            >
+                              <span style={{ color: '#CBD5E1', textTransform: 'capitalize' }}>
+                                {c.contract_type.replace(/_/g, ' ')}
+                              </span>
+                              <span style={{ color: '#475569', fontSize: '0.65rem' }}>
+                                {c.content.length.toLocaleString()} chars
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -849,10 +1072,11 @@ function ProjectDetail() {
         <QuestionnaireModal
           projectId={project.id}
           projectName={project.name}
+          initialGenerating={bgGenActive}
+          initialDoneContracts={bgGenDone}
           onClose={() => setShowQuestionnaire(false)}
           onContractsGenerated={handleContractsGenerated}
           onDismissDuringGeneration={() => {
-            setBgGenDone([]);
             setBgGenActive(true);
           }}
         />
@@ -872,6 +1096,8 @@ function ProjectDetail() {
           onCancel={() => setShowBranchPicker(false)}
           repoConnected={!!(project?.repo_id && project?.repo_full_name)}
           starting={starting}
+          loadingStatus={loadingStatus}
+          contractVersions={versionHistory}
         />
       )}
 

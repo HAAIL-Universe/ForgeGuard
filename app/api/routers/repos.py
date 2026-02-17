@@ -34,7 +34,7 @@ class CreateRepoRequest(BaseModel):
     )
     description: str | None = Field(
         None,
-        max_length=500,
+        max_length=2000,
         description="Short repo description",
     )
     private: bool = Field(False, description="Create as private repo")

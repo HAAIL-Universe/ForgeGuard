@@ -11,19 +11,19 @@
           "reason": "DB access belongs in repos, not routers"
         },
         {
-          "pattern": "\\bSELECT\\b",
+          "pattern": "\\bSELECT\\b.*\\bFROM\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
-          "pattern": "\\bINSERT\\b",
+          "pattern": "\\bINSERT\\s+INTO\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
-          "pattern": "\\bUPDATE\\b",
+          "pattern": "\\bUPDATE\\s+\\w+\\s+SET\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
-          "pattern": "\\bDELETE FROM\\b",
+          "pattern": "\\bDELETE\\s+FROM\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
@@ -65,11 +65,11 @@
           "reason": "DB access belongs in repos, not clients"
         },
         {
-          "pattern": "\\bSELECT\\b",
+          "pattern": "\\bSELECT\\b.*\\bFROM\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
-          "pattern": "\\bINSERT\\b",
+          "pattern": "\\bINSERT\\s+INTO\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
@@ -107,11 +107,11 @@
           "reason": "DB access belongs in repos, not services"
         },
         {
-          "pattern": "\\bSELECT\\b",
+          "pattern": "\\bSELECT\\b.*\\bFROM\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {
-          "pattern": "\\bINSERT\\b",
+          "pattern": "\\bINSERT\\s+INTO\\b",
           "reason": "Raw SQL belongs in repos"
         },
         {

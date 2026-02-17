@@ -17,6 +17,7 @@ class StartBuildRequest(BaseModel):
     target_type: str | None = None
     target_ref: str | None = None
     branch: str = "main"
+    contract_batch: int | None = None
 
 
 class DeleteBuildsRequest(BaseModel):
@@ -53,6 +54,7 @@ async def start_build(
             target_type=body.target_type if body else None,
             target_ref=body.target_ref if body else None,
             branch=body.branch if body else "main",
+            contract_batch=body.contract_batch if body else None,
         )
         return build
     except ValueError as exc:
@@ -122,6 +124,25 @@ async def cancel_build(
         raise HTTPException(status_code=400, detail=detail)
 
 
+# ── POST /projects/{project_id}/build/force-cancel ───────────────────────
+
+
+@router.post("/{project_id}/build/force-cancel")
+async def force_cancel_build(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Force-cancel a stuck build (manual recovery)."""
+    try:
+        build = await build_service.force_cancel_build(project_id, user["id"])
+        return build
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
 # ── POST /projects/{project_id}/build/resume ─────────────────────────────
 
 
@@ -163,6 +184,12 @@ async def interject_build(
         if "not found" in detail.lower():
             raise HTTPException(status_code=404, detail=detail)
         raise HTTPException(status_code=400, detail=detail)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Unhandled error in interject_build for project %s", project_id
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── GET /projects/{project_id}/build/files ────────────────────────────────

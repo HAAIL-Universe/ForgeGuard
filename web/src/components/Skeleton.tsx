@@ -1,6 +1,6 @@
 interface SkeletonProps {
-  width?: string;
-  height?: string;
+  width?: string | number;
+  height?: string | number;
   borderRadius?: string;
   style?: React.CSSProperties;
 }

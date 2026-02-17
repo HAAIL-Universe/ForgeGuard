@@ -61,6 +61,8 @@ interface Props {
   tokenUsage: TokenUsage;
   model: string;
   onComplete: () => void;
+  /** Contracts already completed — skip POST, just listen to WS */
+  initialDone?: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -109,12 +111,18 @@ const meterBarOuter: React.CSSProperties = {
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
-export default function ContractProgress({ projectId, tokenUsage: initialTokenUsage, model, onComplete }: Props) {
+export default function ContractProgress({ projectId, tokenUsage: initialTokenUsage, model, onComplete, initialDone }: Props) {
   const { token } = useAuth();
+  const reconnecting = !!(initialDone && initialDone.length > 0);
   const [statuses, setStatuses] = useState<Record<string, ContractStatus>>(() =>
-    Object.fromEntries(ALL_CONTRACTS.map((c) => [c, 'pending' as const])),
+    Object.fromEntries(ALL_CONTRACTS.map((c) => [
+      c,
+      initialDone?.includes(c) ? 'done' as const : 'pending' as const,
+    ])),
   );
-  const [log, setLog] = useState<LogEntry[]>([]);
+  const [log, setLog] = useState<LogEntry[]>(() =>
+    reconnecting ? [{ time: new Date().toLocaleTimeString('en-GB', { hour12: false }), message: `Reconnected — ${initialDone!.length} of ${ALL_CONTRACTS.length} already complete` }] : [],
+  );
   const [generating, setGenerating] = useState(false);
   const [allDone, setAllDone] = useState(false);
   const [cancelled, setCancelled] = useState(false);
@@ -122,6 +130,7 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
   const [cumulativeTokens, setCumulativeTokens] = useState<TokenUsage>(initialTokenUsage);
   const logEndRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const addLog = useCallback((msg: string) => {
     const now = new Date();
@@ -179,16 +188,33 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
     ),
   );
 
-  /* Kick off generation on mount */
+  /* Kick off generation on mount (skip if reconnecting to in-progress generation) */
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
+
+    if (reconnecting) {
+      /* Check if everything is already done */
+      if (initialDone && initialDone.length >= ALL_CONTRACTS.length) {
+        setAllDone(true);
+        setGenerating(false);
+        addLog('All contracts generated successfully.');
+      } else {
+        setGenerating(true);
+      }
+      return; // Just listen to WS — don't fire a new POST
+    }
+
     setGenerating(true);
     addLog('Starting contract generation...');
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     fetch(`${API_BASE}/projects/${projectId}/contracts/generate`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
     })
       .then(async (res) => {
         if (!res.ok) throw new Error('Generation failed');
@@ -210,7 +236,8 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         setAllDone(true);
         setGenerating(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err?.name === 'AbortError') return; // unmount — ignore
         /* Only show error if not already in cancelled state */
         setCancelled((prev) => {
           if (!prev) addLog('✗ Contract generation failed');
@@ -218,6 +245,8 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         });
         setGenerating(false);
       });
+
+    return () => { controller.abort(); };
   }, [projectId, token, addLog]);
 
   /* Derived values */
@@ -320,10 +349,26 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
             onClick={async () => {
               setCancelling(true);
               try {
-                await fetch(`${API_BASE}/projects/${projectId}/contracts/cancel`, {
+                const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/cancel`, {
                   method: 'POST',
                   headers: { Authorization: `Bearer ${token}` },
                 });
+                if (!res.ok) {
+                  /* No active generation — it already finished or was cancelled */
+                  /* Check if all contracts are done */
+                  setStatuses((prev) => {
+                    const values = Object.values(prev);
+                    if (values.every((s) => s === 'done')) {
+                      setAllDone(true);
+                      addLog('All contracts generated successfully.');
+                    } else {
+                      addLog('Generation already finished.');
+                      setCancelled(true);
+                    }
+                    return prev;
+                  });
+                  setGenerating(false);
+                }
               } catch {
                 /* WS event will confirm cancellation */
               }

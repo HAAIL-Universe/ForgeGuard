@@ -30,10 +30,45 @@ def run_all_checks(
         List of CheckResult dicts.
     """
     results: list[CheckResult] = []
+    results.append(check_python_syntax(files))
     results.append(check_boundary_compliance(files, boundaries))
     results.append(check_dependency_gate(files))
     results.append(check_secrets_scan(files))
     return results
+
+
+def check_python_syntax(files: dict[str, str]) -> CheckResult:
+    """A0 -- Syntax validity for Python files.
+
+    Compiles each Python file to catch obvious syntax errors so audits fail
+    on real parse issues instead of surfacing phantom file paths.
+    """
+    errors: list[str] = []
+
+    for filepath, content in files.items():
+        if not filepath.endswith(".py"):
+            continue
+        try:
+            compile(content, filepath, "exec")
+        except SyntaxError as exc:  # pragma: no cover - exercised via tests
+            detail = exc.msg or "Syntax error"
+            loc = f"{filepath}:{exc.lineno}"
+            errors.append(f"{loc} — {detail}")
+
+    if errors:
+        return {
+            "check_code": "A0",
+            "check_name": "Syntax validity",
+            "result": "FAIL",
+            "detail": "; ".join(errors),
+        }
+
+    return {
+        "check_code": "A0",
+        "check_name": "Syntax validity",
+        "result": "PASS",
+        "detail": None,
+    }
 
 
 def check_boundary_compliance(

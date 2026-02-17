@@ -14,11 +14,14 @@ from app.services.project_service import (
     delete_user_project,
     generate_contracts,
     get_contract,
+    get_contract_version,
     get_project_detail,
     get_questionnaire_state,
+    list_contract_versions,
     list_contracts,
     list_user_projects,
     process_questionnaire_message,
+    push_contracts_to_git,
     reset_questionnaire,
     update_contract,
 )
@@ -265,6 +268,72 @@ async def list_project_contracts(
             for c in contracts
         ]
     }
+
+
+@router.get("/{project_id}/contracts/history")
+async def list_contract_history(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """List all snapshot batches (previous contract versions)."""
+    try:
+        batches = await list_contract_versions(current_user["id"], project_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        )
+    return {"items": batches}
+
+
+@router.get("/{project_id}/contracts/history/{batch}")
+async def get_contract_history_batch(
+    project_id: UUID,
+    batch: int,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Get all contracts for a specific snapshot batch."""
+    try:
+        contracts = await get_contract_version(current_user["id"], project_id, batch)
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail)
+    return {
+        "items": [
+            {
+                "id": str(c["id"]),
+                "project_id": str(c["project_id"]),
+                "batch": c["batch"],
+                "contract_type": c["contract_type"],
+                "content": c["content"],
+                "created_at": c["created_at"],
+            }
+            for c in contracts
+        ]
+    }
+
+
+@router.post("/{project_id}/contracts/push")
+async def push_contracts(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Push all contracts to the linked GitHub repository."""
+    try:
+        result = await push_contracts_to_git(current_user["id"], project_id)
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail)
+    return result
 
 
 @router.get("/{project_id}/contracts/{contract_type}")

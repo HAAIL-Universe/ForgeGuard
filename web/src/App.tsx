@@ -8,6 +8,7 @@ import ProjectDetail from './pages/ProjectDetail';
 import BuildProgress from './pages/BuildProgress';
 import BuildComplete from './pages/BuildComplete';
 import Settings from './pages/Settings';
+import Scout from './pages/Scout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 
@@ -103,6 +104,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Settings />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/scout"
+              element={
+                <ProtectedRoute>
+                  <Scout />
                 </ProtectedRoute>
               }
             />

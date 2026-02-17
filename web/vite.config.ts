@@ -25,6 +25,7 @@ export default defineConfig({
       '/auth/api-key': 'http://localhost:8000',
       '/repos': apiProxy,
       '/projects': apiProxy,
+      '/scout': apiProxy,
       '/webhooks': 'http://localhost:8000',
       '/ws': {
         target: 'http://localhost:8000',

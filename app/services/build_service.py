@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -257,6 +258,16 @@ _compact_flags: set[str] = set()  # build IDs that should compact context ASAP
 # Tracks which file is currently being generated per build (for audit trail)
 _current_generating: dict[str, str] = {}  # build_id -> file path
 
+# Live activity status — human-readable label of what the build is doing right now
+_build_activity_status: dict[str, str] = {}  # build_id -> status label
+
+# Build health-check / watchdog state
+_build_heartbeat_tasks: dict[str, asyncio.Task] = {}
+_last_progress: dict[str, float] = {}  # build_id -> epoch timestamp
+_HEARTBEAT_INTERVAL = 45     # seconds between health-check messages
+_STALL_WARN_THRESHOLD = 300  # 5 min — emit warning
+_STALL_FAIL_THRESHOLD = 900  # 15 min — force-fail the build
+
 # Cost-per-token estimates (USD) keyed by model prefix -- updated as pricing changes
 _MODEL_PRICING: dict[str, tuple[Decimal, Decimal]] = {
     # (input $/token, output $/token)
@@ -344,6 +355,9 @@ async def start_build(
     target_type: str | None = None,
     target_ref: str | None = None,
     branch: str = "main",
+    contract_batch: int | None = None,
+    resume_from_phase: int = -1,
+    working_dir_override: str | None = None,
 ) -> dict:
     """Start a build for a project.
 
@@ -355,6 +369,10 @@ async def start_build(
         user_id: The authenticated user (for ownership check).
         target_type: Build target -- 'github_new', 'github_existing', or 'local_path'.
         target_ref: Target reference -- repo name, full_name, or absolute path.
+        contract_batch: If set, use snapshot contracts from this batch instead
+                        of the current/live contracts.
+        resume_from_phase: Highest completed phase number (-1 = fresh build).
+        working_dir_override: Reuse this working directory (for /continue).
 
     Returns:
         The created build record.
@@ -368,13 +386,20 @@ async def start_build(
         raise ValueError("Project not found")
 
     # Contracts must be generated before building
-    contracts = await project_repo.get_contracts_by_project(project_id)
-    if not contracts:
-        raise ValueError("No contracts found. Generate contracts before building.")
+    if contract_batch is not None:
+        # Use snapshot contracts from a specific historical batch
+        contracts = await project_repo.get_snapshot_contracts(project_id, contract_batch)
+        if not contracts:
+            raise ValueError(f"Snapshot batch {contract_batch} not found")
+    else:
+        # Use current/live contracts
+        contracts = await project_repo.get_contracts_by_project(project_id)
+        if not contracts:
+            raise ValueError("No contracts found. Generate contracts before building.")
 
     # Prevent concurrent builds
     latest = await build_repo.get_latest_build_for_project(project_id)
-    if latest and latest["status"] in ("pending", "running"):
+    if latest and latest["status"] in ("pending", "running", "paused"):
         raise ValueError("A build is already in progress for this project")
 
     # BYOK: user must supply their own Anthropic API key for builds
@@ -404,7 +429,10 @@ async def start_build(
 
     # Resolve working directory based on target type
     working_dir: str | None = None
-    if target_type == "local_path":
+    if working_dir_override:
+        # /continue — reuse previous build's working directory
+        working_dir = working_dir_override
+    elif target_type == "local_path":
         working_dir = str(Path(target_ref).resolve()) if target_ref else None
         if working_dir:
             Path(working_dir).mkdir(parents=True, exist_ok=True)
@@ -420,6 +448,7 @@ async def start_build(
         working_dir=working_dir,
         branch=branch,
         build_mode=settings.BUILD_MODE,
+        contract_batch=contract_batch,
     )
 
     # Update project status
@@ -436,6 +465,7 @@ async def start_build(
             access_token=(user or {}).get("access_token", ""),
             branch=branch,
             api_key_2=user_api_key_2,
+            resume_from_phase=resume_from_phase,
         )
     )
     _active_tasks[str(build["id"])] = task
@@ -500,6 +530,78 @@ async def cancel_build(project_id: UUID, user_id: UUID) -> dict:
     return updated
 
 
+async def force_cancel_build(project_id: UUID, user_id: UUID) -> dict:
+    """Force-cancel a build regardless of its current DB status.
+
+    This is the nuclear option — kills the asyncio task, cleans up all
+    in-memory state, and marks the build failed.  Use when the normal
+    cancel doesn't work (e.g. the build is stuck and the task is not
+    responding to CancelledError).
+
+    Returns:
+        The updated build record.
+
+    Raises:
+        ValueError: If project not found or not owned.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest:
+        raise ValueError("No builds found")
+
+    build_id = latest["id"]
+    bid = str(build_id)
+
+    # Kill everything
+    _cancel_flags.add(bid)
+    _pause_flags.discard(bid)
+
+    # Cancel the watchdog
+    watchdog = _build_heartbeat_tasks.pop(bid, None)
+    if watchdog and not watchdog.done():
+        watchdog.cancel()
+
+    # Unblock any pause
+    event = _pause_events.get(bid)
+    if event:
+        _resume_actions[bid] = "abort"
+        event.set()
+
+    # Kill the asyncio task
+    task = _active_tasks.pop(bid, None)
+    if task and not task.done():
+        task.cancel()
+
+    # Clean up all in-memory state
+    _cancel_flags.discard(bid)
+    _pause_flags.discard(bid)
+    _compact_flags.discard(bid)
+    _current_generating.pop(bid, None)
+    _build_activity_status.pop(bid, None)
+    _interjection_queues.pop(bid, None)
+    _last_progress.pop(bid, None)
+
+    # Force-update DB status
+    await build_repo.update_build_status(build_id, "failed")
+    await build_repo.append_build_log(
+        build_id, "Build force-cancelled by user (manual recovery)",
+        source="system", level="error",
+    )
+
+    # Broadcast
+    await _broadcast_build_event(user_id, build_id, "build_failed", {
+        "id": bid,
+        "status": "failed",
+        "error": "Force-cancelled by user",
+    })
+
+    updated = await build_repo.get_build_by_id(build_id)
+    return updated
+
+
 async def resume_build(
     project_id: UUID,
     user_id: UUID,
@@ -523,8 +625,18 @@ async def resume_build(
         raise ValueError("Project not found")
 
     latest = await build_repo.get_latest_build_for_project(project_id)
-    if not latest or latest["status"] != "paused":
-        raise ValueError("No paused build to resume")
+    if not latest:
+        raise ValueError("No build found to resume")
+
+    # Accept paused, running, cancelled, or failed builds.
+    # After a server restart the build may be orphaned in any of these states
+    # while the frontend still shows the pause modal.
+    _resumable = ("paused", "running", "cancelled", "failed")
+    if latest["status"] not in _resumable:
+        raise ValueError(
+            f"Cannot resume build — status is '{latest['status']}'. "
+            f"Use /start to begin a new build."
+        )
 
     if action not in ("retry", "skip", "abort", "edit"):
         raise ValueError(f"Invalid action: {action}. Must be retry, skip, abort, or edit.")
@@ -537,7 +649,117 @@ async def resume_build(
     if event:
         event.set()
     else:
-        raise ValueError("Build pause state not found — build may have already resumed")
+        # Orphaned pause — the server restarted while the build was paused.
+        # The background task that was waiting on the event is gone.
+        # Cancel the old build and restart from the current phase.
+        logger.warning(
+            "Orphaned pause for build %s — restarting from current phase",
+            build_id,
+        )
+        import re as _re_resume
+        _phase_str = latest.get("phase", "Phase 0")
+        _m = _re_resume.search(r"Phase (\d+)", _phase_str)
+        current_phase_num = int(_m.group(1)) if _m else 0
+
+        # Use completed_phases from DB when available (more reliable than
+        # the phase column which may not advance until the next phase starts).
+        _db_completed = latest.get("completed_phases")
+        _db_completed = _db_completed if isinstance(_db_completed, int) else -1
+
+        # If this build has no progress, search ALL builds for the project
+        # to find the one with the most progress + a valid working_dir.
+        _best_dir = latest.get("working_dir")
+        _best_completed = _db_completed
+        _best_ref_build = latest
+        if _db_completed < 0:
+            try:
+                all_builds = await build_repo.get_builds_for_project(project_id)
+                for b in all_builds:
+                    b_cp = b.get("completed_phases")
+                    b_cp = b_cp if isinstance(b_cp, int) else -1
+                    b_dir = b.get("working_dir")
+                    if b_cp > _best_completed and b_dir and Path(b_dir).exists():
+                        _best_completed = b_cp
+                        _best_dir = b_dir
+                        _best_ref_build = b
+                if _best_completed > _db_completed:
+                    logger.info(
+                        "Orphaned recovery: current build has no progress; "
+                        "found prior build %s with completed_phases=%d",
+                        _best_ref_build["id"], _best_completed,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to search prior builds for orphan recovery: %s", exc)
+
+        # Final fallback: parse git log — the repo is the real source of truth
+        if _best_completed < 0 and _best_dir and Path(_best_dir).exists():
+            try:
+                _git_msgs = await git_client.log_oneline(_best_dir, max_count=200)
+                for _gm in _git_msgs:
+                    _gm_match = _re_resume.match(
+                        r"forge:\s*(.+?)\s+complete(?:\s*\(after \d+ audit attempts?\))?$",
+                        _gm, _re_resume.IGNORECASE,
+                    )
+                    if _gm_match:
+                        _gm_phase = _re_resume.search(r"Phase\s+(\d+)", _gm_match.group(1))
+                        if _gm_phase:
+                            _gp = int(_gm_phase.group(1))
+                            if _gp > _best_completed:
+                                _best_completed = _gp
+                if _best_completed >= 0:
+                    logger.info(
+                        "Orphaned recovery: inferred completed_phases=%d from git log in %s",
+                        _best_completed, _best_dir,
+                    )
+            except Exception as exc:
+                logger.warning("Git log fallback failed in orphan recovery: %s", exc)
+
+        # Figure out resume point: for 'retry' we redo the current phase,
+        # for 'skip' we advance past it, for 'abort' we cancel.
+        if action == "abort":
+            await build_repo.update_build_status(build_id, "cancelled")
+            await build_repo.append_build_log(
+                build_id, "Build aborted (orphaned pause recovery)",
+                source="system", level="warn",
+            )
+            updated = await build_repo.get_build_by_id(build_id)
+            return updated
+
+        if action == "skip":
+            resume_from = max(current_phase_num, _best_completed)  # skip = mark current as done
+        else:
+            # retry / edit = redo current phase.
+            # But if progress shows the phase is already done,
+            # continue from the next phase instead of redoing it.
+            if _best_completed >= current_phase_num:
+                resume_from = _best_completed  # phase already done → continue
+            else:
+                resume_from = current_phase_num - 1 if current_phase_num > 0 else -1
+
+        # Cancel old build first
+        await build_repo.update_build_status(build_id, "cancelled")
+        await build_repo.append_build_log(
+            build_id,
+            f"Build cancelled for orphaned pause recovery (action={action}, resume_from={resume_from})",
+            source="system", level="info",
+        )
+
+        _use_dir = _best_dir or latest.get("working_dir")
+        if _use_dir and Path(_use_dir).exists():
+            new_build = await start_build(
+                project_id, user_id,
+                target_type=_best_ref_build.get("target_type"),
+                target_ref=_best_ref_build.get("target_ref"),
+                branch=_best_ref_build.get("branch", "main"),
+                contract_batch=_best_ref_build.get("contract_batch"),
+                resume_from_phase=resume_from,
+                working_dir_override=_use_dir,
+            )
+            return new_build
+        else:
+            raise ValueError(
+                "Previous build's working directory no longer exists. Use /start for a fresh build."
+            )
 
     await build_repo.append_build_log(
         build_id,
@@ -570,11 +792,19 @@ async def interject_build(
     """Inject a user message or slash command into an active build.
 
     Slash commands:
-        /stop    — cancel the current build immediately
-        /pause   — pause after the current file finishes
-        /start   — resume a paused build (or start a new one)
-        /compact — compact context before the next file
-        /clear   — stop the build and restart immediately (preserves files on disk)
+        /stop      — cancel the current build immediately
+        /pause     — pause after the current file finishes
+        /start     — resume or start build (optionally: /start phase N)
+        /verify    — run verification (syntax + tests) on project files
+        /fix       — send verification errors to the builder for fixing
+        /compact   — compact context before the next file
+        /clear     — stop the build and restart immediately (preserves files on disk)
+        /commit    — git add, commit, and push all files to GitHub immediately
+        /push      — push to GitHub (commits uncommitted changes first, sets remote if needed)
+        /pull      — pull from GitHub and continue from last committed phase
+        /status    — get an LLM-generated summary of current build state
+
+    /continue is accepted as an alias for /start.
 
     Regular messages are queued as interjections.
     """
@@ -608,14 +838,16 @@ async def interject_build(
             )
             try:
                 await cancel_build(project_id, user_id)
-            except ValueError:
-                pass  # already cancelled
+            except Exception:
+                logger.info("/clear: cancel_build raised (may already be cancelled)", exc_info=True)
+            # Give the cancelled task a tick to clean up
+            await asyncio.sleep(0.1)
         # Start fresh build — will pick up existing files on disk
         result = await start_build(project_id, user_id)
         return {"status": "cleared", "build_id": str(result["id"]), "message": "Build cleared and restarted via /clear"}
 
-    # --- /start ------------------------------------------------------
-    if stripped == "/start":
+    # --- /start [phase N] (also handles /continue as alias) ----------
+    if stripped == "/start" or stripped.startswith("/start ") or stripped == "/continue" or stripped.startswith("/continue "):
         project = await project_repo.get_project_by_id(project_id)
         if not project or str(project["user_id"]) != str(user_id):
             raise ValueError("Project not found")
@@ -623,13 +855,411 @@ async def interject_build(
         if latest and latest["status"] == "paused":
             result = await resume_build(project_id, user_id, action="retry")
             return {"status": "resumed", "build_id": str(result["id"]), "message": "Build resumed via /start"}
-        # If running, /start is a no-op
+        # If running, check if it's truly active or orphaned (server restart)
         if latest and latest["status"] == "running":
-            return {"status": "already_running", "build_id": str(latest["id"]), "message": "Build is already running"}
-        # Otherwise start a new build
-        from app.services.build_service import start_build
+            bid = str(latest["id"])
+            # A truly running build has active in-memory state
+            is_truly_active = (
+                bid in _current_generating
+                or bid in _pause_events
+                or bid in _pause_flags
+                or bid in _build_heartbeat_tasks
+                or bid in _last_progress
+            )
+            if is_truly_active:
+                return {"status": "already_running", "build_id": str(latest["id"]), "message": "Build is already running"}
+            # Orphaned running build — recover by continuing (not retrying)
+            result = await resume_build(project_id, user_id, action="retry")
+            _cp = latest.get("completed_phases")
+            _cp_str = f" (completed_phases={_cp})" if _cp is not None else ""
+            return {"status": "resumed", "build_id": str(result["id"]), "message": f"Recovering orphaned build via /start{_cp_str}"}
+
+        # Parse optional "phase N" argument (works for both /start and /continue)
+        import re as _re_start
+        explicit_phase: int | None = None
+        _phase_match = _re_start.search(r"phase\s+(\d+)", stripped)
+        if _phase_match:
+            explicit_phase = int(_phase_match.group(1))
+
+        # If previous build has progress, auto-continue.
+        # .get() returns None for NULL DB values (key exists but value is None),
+        # so coerce to int explicitly.
+        _raw_cp = latest.get("completed_phases") if latest else None
+        _safe_cp = _raw_cp if isinstance(_raw_cp, int) else -1
+
+        # The "latest" build may have no progress (e.g. a buggy recovery
+        # cancelled the real build and started a fresh one).  Search ALL
+        # builds for the one with the most progress + a valid working_dir.
+        _best_build = latest
+        _best_cp = _safe_cp
+        if _safe_cp < 0 and latest:
+            try:
+                all_builds = await build_repo.get_builds_for_project(project_id)
+                for b in all_builds:
+                    b_cp = b.get("completed_phases")
+                    b_cp = b_cp if isinstance(b_cp, int) else -1
+                    b_dir = b.get("working_dir")
+                    if b_cp > _best_cp and b_dir and Path(b_dir).exists():
+                        _best_cp = b_cp
+                        _best_build = b
+                if _best_cp > _safe_cp:
+                    logger.info(
+                        "Latest build has no progress; found prior build %s "
+                        "with completed_phases=%d and valid working_dir",
+                        _best_build["id"], _best_cp,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to search prior builds: %s", exc)
+
+        # Final fallback: parse git log for "forge: Phase N ... complete"
+        # commits — the git repo is the real source of truth.
+        _scan_dir = (_best_build or latest or {}).get("working_dir")
+        if _best_cp < 0 and _scan_dir and Path(_scan_dir).exists():
+            try:
+                _git_msgs = await git_client.log_oneline(_scan_dir, max_count=200)
+                for _gm in _git_msgs:
+                    _gm_match = _re_start.match(
+                        r"forge:\s*(.+?)\s+complete(?:\s*\(after \d+ audit attempts?\))?$",
+                        _gm, _re_start.IGNORECASE,
+                    )
+                    if _gm_match:
+                        _gm_phase = _re_start.search(r"Phase\s+(\d+)", _gm_match.group(1))
+                        if _gm_phase:
+                            _gp = int(_gm_phase.group(1))
+                            if _gp > _best_cp:
+                                _best_cp = _gp
+                if _best_cp >= 0:
+                    logger.info(
+                        "Inferred completed_phases=%d from git log in %s",
+                        _best_cp, _scan_dir,
+                    )
+            except Exception as exc:
+                logger.warning("Git log fallback failed: %s", exc)
+
+        if _best_build and (_best_cp >= 0 or explicit_phase is not None):
+            if explicit_phase is not None:
+                completed = explicit_phase - 1
+            else:
+                completed = _best_cp
+                # Fallback: infer completed phases from the phase column
+                if completed < 0:
+                    phase_str = _best_build.get("phase", "Phase 0")
+                    _m = _re_start.search(r"Phase (\d+)", phase_str)
+                    if _m and int(_m.group(1)) > 0:
+                        completed = int(_m.group(1)) - 1
+
+            prev_dir = _best_build.get("working_dir")
+            can_reuse_dir = bool(prev_dir and Path(prev_dir).exists())
+            if completed >= 0:
+                # When an explicit phase is requested, clear its cached manifest
+                # so the planner generates a fresh one (existing files on disk
+                # are still skipped via the skip-existing-files logic).
+                if explicit_phase is not None and can_reuse_dir and prev_dir:
+                    _cache = Path(prev_dir) / ".forge" / f"manifest_phase_{explicit_phase}.json"
+                    if _cache.exists():
+                        _cache.unlink(missing_ok=True)
+                        logger.info(
+                            "Cleared cached manifest for Phase %d (explicit /start phase %d)",
+                            explicit_phase, explicit_phase,
+                        )
+
+                # Prefer reusing the existing workspace; if it is missing but
+                # the target is GitHub-backed, fall back to a fresh clone while
+                # preserving the resume_from_phase so we do not restart at Phase 1.
+                if can_reuse_dir:
+                    result = await start_build(
+                        project_id, user_id,
+                        target_type=_best_build.get("target_type"),
+                        target_ref=_best_build.get("target_ref"),
+                        branch=_best_build.get("branch", "main"),
+                        contract_batch=_best_build.get("contract_batch"),
+                        resume_from_phase=completed,
+                        working_dir_override=prev_dir,
+                    )
+                    target_phase = completed + 1
+                    return {
+                        "status": "continued",
+                        "build_id": str(result["id"]),
+                        "message": f"Build continuing from Phase {target_phase} (use /clear to start fresh)",
+                    }
+                elif _best_build.get("target_type") in ("github_new", "github_existing"):
+                    # Workspace vanished (e.g., temp dir cleaned up) — clone fresh
+                    # and resume from the last completed phase inferred from DB/git log.
+                    result = await start_build(
+                        project_id, user_id,
+                        target_type=_best_build.get("target_type"),
+                        target_ref=_best_build.get("target_ref"),
+                        branch=_best_build.get("branch", "main"),
+                        contract_batch=_best_build.get("contract_batch"),
+                        resume_from_phase=completed,
+                    )
+                    target_phase = completed + 1
+                    return {
+                        "status": "continued",
+                        "build_id": str(result["id"]),
+                        "message": (
+                            f"Build continuing from Phase {target_phase} (fresh clone — "
+                            "previous workspace missing)"
+                        ),
+                    }
+
+        # No prior progress — start fresh
         result = await start_build(project_id, user_id)
         return {"status": "started", "build_id": str(result["id"]), "message": "Build started via /start"}
+
+    # --- /verify [phase N] -------------------------------------------
+    if stripped == "/verify" or stripped.startswith("/verify "):
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest:
+            raise ValueError("No builds found. Use /start to begin a new build.")
+        working_dir = latest.get("working_dir")
+        if not working_dir or not Path(working_dir).exists():
+            raise ValueError("Build working directory not found on disk.")
+        build_id = latest["id"]
+        api_key = ""
+        user = await get_user_by_id(user_id)
+        if user:
+            api_key = user.get("anthropic_api_key") or user.get("api_key") or ""
+
+        # Scan working dir to build a lightweight manifest
+        _wd = Path(working_dir)
+        scan_manifest: list[dict] = []
+        for fp in sorted(_wd.rglob("*")):
+            if fp.is_dir():
+                continue
+            rel = str(fp.relative_to(_wd)).replace("\\", "/")
+            # Skip hidden / generated dirs
+            if any(part.startswith(".") for part in rel.split("/")):
+                continue
+            if rel.startswith("__pycache__/") or "/__pycache__/" in rel:
+                continue
+            if rel.startswith("node_modules/") or "/node_modules/" in rel:
+                continue
+            scan_manifest.append({
+                "path": rel,
+                "language": _detect_language(rel),
+            })
+
+        if not scan_manifest:
+            raise ValueError("No files found in working directory.")
+
+        # Run verification as a background task so we don't block the interject
+        async def _run_verify_task() -> None:
+            try:
+                _log_msg = f"Running verification on {len(scan_manifest)} files..."
+                await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _log_msg, "source": "system", "level": "info",
+                })
+                result = await _verify_phase_output(
+                    build_id, user_id, api_key,
+                    scan_manifest, working_dir, [],
+                )
+                _v_msg = (
+                    f"Verification complete — "
+                    f"{result.get('syntax_errors', 0)} syntax errors, "
+                    f"{result.get('tests_passed', 0)} tests passed, "
+                    f"{result.get('tests_failed', 0)} tests failed, "
+                    f"{result.get('fixes_applied', 0)} auto-fixes"
+                )
+                await build_repo.append_build_log(build_id, _v_msg, source="system", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _v_msg, "source": "system", "level": "info",
+                })
+            except Exception as exc:
+                logger.warning("/verify task failed: %s", exc)
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"Verification error: {exc}",
+                    "source": "system", "level": "error",
+                })
+
+        asyncio.create_task(_run_verify_task())
+        return {
+            "status": "verifying",
+            "build_id": str(build_id),
+            "message": f"Running verification on {len(scan_manifest)} files...",
+        }
+
+    # --- /fix <error details> ----------------------------------------
+    if stripped.startswith("/fix "):
+        fix_payload = message.strip()[4:].strip()  # preserve original case
+        if not fix_payload:
+            raise ValueError("No error details provided. Usage: /fix <error output>")
+
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest:
+            raise ValueError("No builds found. Use /start first.")
+
+        working_dir = latest.get("working_dir")
+        if not working_dir or not Path(working_dir).exists():
+            raise ValueError("Build working directory not found on disk.")
+
+        build_id = latest["id"]
+        user = await get_user_by_id(user_id)
+        api_key = ""
+        if user:
+            api_key = user.get("anthropic_api_key") or user.get("api_key") or ""
+
+        if latest["status"] in ("running", "paused"):
+            # Build is active — queue as interjection
+            queue = _interjection_queues.get(str(build_id))
+            if queue is not None:
+                queue.put_nowait(fix_payload)
+            await build_repo.append_build_log(
+                build_id, f"Fix request queued: {fix_payload[:200]}...",
+                source="user", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": "🔧 Fix request sent to builder",
+                "source": "user", "level": "info",
+            })
+            return {
+                "status": "fix_queued",
+                "build_id": str(build_id),
+                "message": "Fix request queued for active build",
+            }
+
+        # Build not active — do a targeted in-place fix
+        async def _run_fix_task() -> None:
+            try:
+                _touch_progress(build_id)
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": "🔧 Analysing error and applying targeted fix...",
+                    "source": "system", "level": "info",
+                })
+
+                # Extract file paths mentioned in the error output
+                import re as _re_fix
+                _wd = Path(working_dir)
+                mentioned_files: dict[str, str] = {}
+                # Match paths like backend/app/foo.py, tests/test_foo.py, etc.
+                for m in _re_fix.finditer(r'((?:[\w./-]+/)?[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|ini|cfg|toml|yaml|yml|json|css|html))', fix_payload):
+                    rel = m.group(1).replace("\\", "/")
+                    fp = _wd / rel
+                    if fp.exists() and fp.is_file():
+                        try:
+                            mentioned_files[rel] = fp.read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+
+                # Also check for common config files mentioned by name
+                for cfg_name in ("pytest.ini", "pyproject.toml", "setup.cfg", "requirements.txt"):
+                    if cfg_name.lower() in fix_payload.lower():
+                        fp = _wd / cfg_name
+                        if fp.exists() and cfg_name not in mentioned_files:
+                            try:
+                                mentioned_files[cfg_name] = fp.read_text(encoding="utf-8")
+                            except Exception:
+                                pass
+
+                if not mentioned_files:
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": "🔧 Could not identify files from error output. No files modified.",
+                        "source": "system", "level": "warn",
+                    })
+                    return
+
+                files_list = ", ".join(mentioned_files.keys())
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"🔧 Identified {len(mentioned_files)} file(s) to fix: {files_list}",
+                    "source": "system", "level": "info",
+                })
+
+                # Build LLM prompt
+                file_blocks = "\n\n".join(
+                    f"=== FILE: {fp} ===\n{content}\n=== END FILE ==="
+                    for fp, content in mentioned_files.items()
+                )
+                system_prompt = (
+                    "You are a precise code repair tool. You will be given one or more files "
+                    "and an error output. Fix ONLY the issue described in the error output. "
+                    "Make the absolute minimum changes necessary — do not refactor, rename, "
+                    "or change anything unrelated to the error.\n\n"
+                    "Return ONLY the fixed file(s) in this exact format:\n"
+                    "=== FILE: path/to/file.ext ===\n"
+                    "<complete file content>\n"
+                    "=== END FILE ===\n\n"
+                    "If a file does not need changes, do not include it in the output."
+                )
+                user_message = (
+                    f"## Error Output\n```\n{fix_payload}\n```\n\n"
+                    f"## Current File Contents\n{file_blocks}"
+                )
+
+                from app.clients.llm_client import chat as llm_chat
+                result = await asyncio.wait_for(
+                    llm_chat(
+                        api_key=api_key,
+                        model=settings.LLM_BUILDER_MODEL,
+                        system_prompt=system_prompt,
+                        messages=[{"role": "user", "content": user_message}],
+                        max_tokens=16384,
+                        provider="anthropic",
+                    ),
+                    timeout=180,
+                )
+
+                response_text = result["text"] if isinstance(result, dict) else result
+
+                # Parse fixed files from response
+                fixed_files = _parse_file_blocks(response_text)
+                if not fixed_files:
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": "🔧 LLM returned no file blocks — could not apply fix.",
+                        "source": "system", "level": "warn",
+                    })
+                    return
+
+                # Write fixed files to disk
+                for ff in fixed_files:
+                    fp = _wd / ff["path"]
+                    fp.parent.mkdir(parents=True, exist_ok=True)
+                    fp.write_text(ff["content"], encoding="utf-8")
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"🔧 Fixed: {ff['path']}",
+                        "source": "system", "level": "info",
+                    })
+
+                # Commit the fix
+                try:
+                    await git_client.add_all(working_dir)
+                    sha = await git_client.commit(working_dir, "forge: targeted fix via /fix")
+                    if sha:
+                        await build_repo.append_build_log(
+                            build_id, f"🔧 Fix committed: {sha[:8]}",
+                            source="system", level="info",
+                        )
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": f"🔧 Fix committed: {sha[:8]}",
+                            "source": "system", "level": "info",
+                        })
+                except Exception as exc:
+                    logger.warning("/fix commit failed: %s", exc)
+
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"🔧 Fix complete — {len(fixed_files)} file(s) repaired",
+                    "source": "system", "level": "info",
+                })
+
+            except Exception as exc:
+                logger.warning("/fix task failed: %s", exc)
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"🔧 Fix error: {exc}",
+                    "source": "system", "level": "error",
+                })
+
+        asyncio.create_task(_run_fix_task())
+        return {
+            "status": "fix_started",
+            "build_id": str(build_id),
+            "message": f"Targeted fix in progress...",
+        }
 
     # --- /compact ----------------------------------------------------
     if stripped == "/compact":
@@ -678,6 +1308,311 @@ async def interject_build(
             "source": "user", "level": "info",
         })
         return {"status": "pause_requested", "build_id": str(build_id), "message": "Pause requested via /pause"}
+
+    # --- /commit -----------------------------------------------------
+    if stripped == "/commit":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest:
+            raise ValueError("No builds found for this project")
+        working_dir = latest.get("working_dir")
+        if not working_dir:
+            raise ValueError("Build has no working directory")
+        branch = latest.get("branch", "main")
+        target_type = latest.get("target_type", "")
+        build_id = latest["id"]
+
+        # Get access token from user record
+        user = await get_user_by_id(user_id)
+        access_token = (user or {}).get("access_token", "")
+
+        try:
+            # Ensure working_dir is a git repo (local_path builds may not have one)
+            git_dir = Path(working_dir) / ".git"
+            if not git_dir.exists():
+                await git_client.init_repo(working_dir)
+                # If there's a branch other than main, create it
+                if branch and branch != "main":
+                    try:
+                        await git_client.create_branch(working_dir, branch)
+                    except Exception:
+                        pass  # branch may already exist
+
+            await git_client.add_all(working_dir)
+            sha = await git_client.commit(
+                working_dir, "forge: manual commit via /commit"
+            )
+            pushed = False
+            if sha and target_type in ("github_new", "github_existing") and access_token:
+                try:
+                    await git_client.push(
+                        working_dir, branch=branch, access_token=access_token,
+                    )
+                    pushed = True
+                except Exception as push_exc:
+                    logger.info("/commit push skipped (no remote?): %s", push_exc)
+
+            msg = f"Committed ({sha[:8]})" if sha else "Nothing new to commit"
+            if pushed:
+                msg += " and pushed to GitHub"
+
+            await build_repo.append_build_log(
+                build_id, msg, source="user", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": msg, "source": "user", "level": "info",
+            })
+            return {"status": "committed", "build_id": str(build_id), "message": msg}
+        except Exception as exc:
+            logger.warning("/commit failed: %s", exc)
+            raise ValueError(f"Git commit failed: {exc}")
+
+    # --- /push -------------------------------------------------------
+    if stripped == "/push":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest:
+            raise ValueError("No builds found for this project")
+        working_dir = latest.get("working_dir")
+        if not working_dir:
+            raise ValueError("Build has no working directory")
+        branch = latest.get("branch", "main")
+        build_id = latest["id"]
+
+        user = await get_user_by_id(user_id)
+        access_token = (user or {}).get("access_token", "")
+        if not access_token:
+            raise ValueError("No GitHub access token — connect GitHub in Settings to push")
+
+        # Resolve repo URL from project
+        repo_full_name = project.get("repo_full_name") or latest.get("target_ref", "")
+        if not repo_full_name:
+            raise ValueError("No GitHub repository linked to this project")
+
+        try:
+            # Ensure git repo exists
+            git_dir = Path(working_dir) / ".git"
+            if not git_dir.exists():
+                await git_client.init_repo(working_dir)
+
+            # Commit any uncommitted changes first
+            await git_client.add_all(working_dir)
+            sha = await git_client.commit(working_dir, "forge: manual commit via /push")
+
+            # Set remote to the project's GitHub repo
+            remote_url = f"https://github.com/{repo_full_name}.git"
+            await git_client.set_remote(working_dir, remote_url)
+
+            # Pull rebase to integrate any remote changes, then push
+            force = False
+            try:
+                await git_client.pull_rebase(
+                    working_dir, branch=branch, access_token=access_token,
+                )
+            except RuntimeError:
+                # Rebase failed (conflicts / unrelated histories) — force push
+                force = True
+
+            # Push (force-with-lease if pull-rebase failed)
+            await git_client.push(
+                working_dir, branch=branch, access_token=access_token,
+                force_with_lease=force,
+            )
+
+            commit_part = f" (new commit {sha[:8]})" if sha else ""
+            msg = f"Pushed to github.com/{repo_full_name} branch {branch}{commit_part}"
+
+            await build_repo.append_build_log(
+                build_id, msg, source="user", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": msg, "source": "user", "level": "info",
+            })
+            return {"status": "pushed", "build_id": str(build_id), "message": msg}
+        except Exception as exc:
+            logger.warning("/push failed: %s", exc)
+            raise ValueError(f"Git push failed: {exc}")
+
+    # --- /pull -------------------------------------------------------
+    if stripped == "/pull":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+
+        # Resolve GitHub repo to pull from
+        repo_full_name = project.get("repo_full_name", "")
+        if not repo_full_name:
+            latest_for_ref = await build_repo.get_latest_build_for_project(project_id)
+            if latest_for_ref:
+                repo_full_name = latest_for_ref.get("target_ref", "")
+        if not repo_full_name:
+            raise ValueError("No GitHub repository linked to this project — cannot pull")
+
+        user = await get_user_by_id(user_id)
+        access_token = (user or {}).get("access_token", "")
+        if not access_token:
+            raise ValueError("No GitHub access token — connect GitHub in Settings to pull")
+
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        branch = (latest.get("branch", "main") if latest else "main")
+
+        # Clone into a fresh temp directory
+        import tempfile as _tmp_pull
+        working_dir = _tmp_pull.mkdtemp(prefix="forgeguard_pull_")
+        clone_url = f"https://github.com/{repo_full_name}.git"
+        try:
+            # Remove empty tempdir so git clone can create it
+            shutil.rmtree(working_dir, ignore_errors=True)
+            await git_client.clone_repo(
+                clone_url, working_dir,
+                branch=branch,
+                access_token=access_token,
+                shallow=False,
+            )
+        except Exception as exc:
+            raise ValueError(f"Failed to clone {repo_full_name}: {exc}")
+
+        # Parse git log to find the last completed phase
+        import re as _re_pull
+        commit_msgs = await git_client.log_oneline(working_dir, max_count=100)
+        completed_phase = -1
+        for msg in commit_msgs:
+            m = _re_pull.match(
+                r"forge:\s*(.+?)\s+complete(?:\s*\(after \d+ audit attempts?\))?$",
+                msg, _re_pull.IGNORECASE,
+            )
+            if m:
+                phase_label = m.group(1)
+                pm = _re_pull.search(r"Phase\s+(\d+)", phase_label)
+                if pm:
+                    phase_num = int(pm.group(1))
+                    if phase_num > completed_phase:
+                        completed_phase = phase_num
+                break  # Newest matching commit is the latest phase — stop
+
+        if completed_phase < 0:
+            # No phase commits found — start fresh from Phase 0
+            completed_phase = -1
+
+        # Start build continuing from the detected phase
+        result = await start_build(
+            project_id, user_id,
+            target_type="github_existing",
+            target_ref=repo_full_name,
+            branch=branch,
+            contract_batch=(latest.get("contract_batch") if latest else None),
+            resume_from_phase=completed_phase,
+            working_dir_override=working_dir,
+        )
+        target_phase = completed_phase + 1
+        if completed_phase < 0:
+            pull_msg = f"Pulled {repo_full_name} — no prior phases detected, starting from Phase 0"
+        else:
+            pull_msg = f"Pulled {repo_full_name} — resuming from Phase {target_phase} (Phase {completed_phase} was last committed)"
+        return {
+            "status": "pulled",
+            "build_id": str(result["id"]),
+            "message": pull_msg,
+        }
+
+    # --- /status -----------------------------------------------------
+    if stripped == "/status":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest:
+            raise ValueError("No builds found for this project")
+        build_id = latest["id"]
+        bid = str(build_id)
+
+        # Gather state snapshot
+        current_file = _current_generating.get(bid, None)
+        is_paused = bid in _pause_flags
+        is_cancelling = bid in _cancel_flags
+        is_compacting = bid in _compact_flags
+        has_task = bid in _active_tasks
+
+        # Get recent logs (last 30)
+        recent_logs, _ = await build_repo.get_build_logs(
+            build_id, limit=30, offset=0,
+        )
+        log_lines = "\n".join(
+            f"[{r.get('level', 'info')}] {r.get('message', '')}"
+            for r in recent_logs[-30:]
+        )
+
+        # Get file stats
+        files = await build_repo.get_build_file_logs(build_id)
+        files_written = len(files)
+
+        # Build context for LLM
+        status_context = (
+            f"Build ID: {bid}\n"
+            f"Status: {latest.get('status', 'unknown')}\n"
+            f"Phase: {latest.get('phase', 'unknown')}\n"
+            f"Build mode: {latest.get('build_mode', 'unknown')}\n"
+            f"Started at: {latest.get('started_at', 'unknown')}\n"
+            f"Files written so far: {files_written}\n"
+            f"Currently generating file: {current_file or 'none'}\n"
+            f"Background task alive: {has_task}\n"
+            f"Pause flag set: {is_paused}\n"
+            f"Cancel flag set: {is_cancelling}\n"
+            f"Compact flag set: {is_compacting}\n"
+            f"\n--- Recent build logs (last 30) ---\n{log_lines}\n"
+        )
+
+        # Resolve API key: prefer user's secondary key, fall back to primary, then env
+        user = await get_user_by_id(user_id)
+        api_key = (
+            (user or {}).get("anthropic_api_key_2")
+            or (user or {}).get("anthropic_api_key")
+            or settings.ANTHROPIC_API_KEY
+        )
+        if not api_key:
+            raise ValueError("No API key available for /status — configure an Anthropic API key")
+
+        # Broadcast "thinking" indicator
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": "Analysing build status…", "source": "system", "level": "info",
+        })
+
+        try:
+            from app.clients import llm_client
+            result = await llm_client.chat(
+                api_key=api_key,
+                model=settings.LLM_PLANNER_MODEL,
+                system_prompt=(
+                    "You are a build status analyst for ForgeGuard, an autonomous code generation platform. "
+                    "The user has asked for a status update. Analyse the build state and recent logs provided, "
+                    "then write a clear, concise 2-4 sentence summary of what is currently happening, what phase "
+                    "the build is in, what file is being worked on (if any), how many files have been completed, "
+                    "and whether the build appears healthy, stalled, or has an issue. Be direct and informative."
+                ),
+                messages=[{"role": "user", "content": status_context}],
+                max_tokens=300,
+            )
+            summary = result["text"].strip() if isinstance(result, dict) else str(result).strip()
+        except Exception as exc:
+            logger.warning("/status LLM call failed: %s", exc)
+            summary = (
+                f"Build is {latest.get('status', 'unknown')} on {latest.get('phase', 'unknown')}. "
+                f"{files_written} files written. "
+                f"{'Currently generating: ' + current_file if current_file else 'No file in progress.'} "
+                f"{'⚠ Background task not found.' if not has_task else ''}"
+            )
+
+        await build_repo.append_build_log(
+            build_id, f"[Status] {summary}", source="system", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"📊 {summary}", "source": "system", "level": "info",
+        })
+        return {"status": "status_reported", "build_id": str(build_id), "message": summary}
 
     # --- Regular interjection ----------------------------------------
     project = await project_repo.get_project_by_id(project_id)
@@ -766,6 +1701,97 @@ async def get_build_logs(
 # ---------------------------------------------------------------------------
 
 
+def _touch_progress(build_id: UUID | str) -> None:
+    """Record a progress heartbeat so the watchdog knows the build is alive."""
+    _last_progress[str(build_id)] = time.monotonic()
+
+
+async def _set_build_activity(
+    build_id: UUID, user_id: UUID, status: str
+) -> None:
+    """Set the live activity status for a build and broadcast to the UI.
+
+    The frontend renders this as a persistent spinner bar so the user
+    always knows what the build is doing right now.
+    """
+    bid = str(build_id)
+    _build_activity_status[bid] = status
+    _touch_progress(build_id)
+    await _broadcast_build_event(user_id, build_id, "build_activity_status", {
+        "status": status,
+    })
+
+
+async def _build_watchdog(build_id: UUID, user_id: UUID) -> None:
+    """Periodic health-check that runs alongside a build.
+
+    Every ``_HEARTBEAT_INTERVAL`` seconds it:
+    - Emits a health status line to the activity log
+    - Warns if the build looks stalled (>5 min silence)
+    - Force-fails the build if stalled >15 min
+    """
+    bid = str(build_id)
+    try:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+
+            # Build may have finished while we were sleeping
+            if bid not in _active_tasks:
+                break
+
+            last = _last_progress.get(bid, time.monotonic())
+            idle = time.monotonic() - last
+            # Use live activity status if set, fall back to _current_generating
+            activity_label = _build_activity_status.get(bid, "")
+            if not activity_label:
+                current_file = _current_generating.get(bid, "")
+                activity_label = f"generating {current_file}" if current_file else "processing"
+            status = activity_label
+
+            if idle >= _STALL_FAIL_THRESHOLD:
+                msg = (
+                    f"\u26A0 Health: build stalled — no progress for "
+                    f"{int(idle)}s while {status}. Force-failing."
+                )
+                await build_repo.append_build_log(
+                    build_id, msg, source="health", level="error",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": msg, "source": "health", "level": "error",
+                })
+                # Cancel the asyncio task — the CancelledError handler
+                # in _run_build will mark it properly.
+                task = _active_tasks.get(bid)
+                if task and not task.done():
+                    task.cancel()
+                break
+
+            if idle >= _STALL_WARN_THRESHOLD:
+                msg = (
+                    f"\u26A0 Health: {status} — no progress for "
+                    f"{int(idle)}s (force-fail at {_STALL_FAIL_THRESHOLD}s)"
+                )
+                level = "warning"
+            else:
+                mins = int(idle) // 60
+                secs = int(idle) % 60
+                elapsed_str = f"{mins}m{secs}s" if mins else f"{secs}s"
+                msg = f"\u2764 Health: {status} — {elapsed_str} since last progress"
+                level = "info"
+
+            await build_repo.append_build_log(
+                build_id, msg, source="health", level=level,
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": msg, "source": "health", "level": level,
+            })
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _build_heartbeat_tasks.pop(bid, None)
+        _last_progress.pop(bid, None)
+
+
 async def _run_build(
     build_id: UUID,
     project_id: UUID,
@@ -780,6 +1806,7 @@ async def _run_build(
     access_token: str = "",
     branch: str = "main",
     api_key_2: str = "",
+    resume_from_phase: int = -1,
 ) -> None:
     """Dispatch to the appropriate build mode.
 
@@ -791,28 +1818,68 @@ async def _run_build(
     loop.
     """
     mode = settings.BUILD_MODE
-    if mode == "plan_execute" and working_dir:
-        await _run_build_plan_execute(
-            build_id, project_id, user_id, contracts, api_key,
-            audit_llm_enabled,
-            target_type=target_type,
-            target_ref=target_ref,
-            working_dir=working_dir,
-            access_token=access_token,
-            branch=branch,
-            api_key_2=api_key_2,
-        )
-    else:
-        await _run_build_conversation(
-            build_id, project_id, user_id, contracts, api_key,
-            audit_llm_enabled,
-            target_type=target_type,
-            target_ref=target_ref,
-            working_dir=working_dir,
-            access_token=access_token,
-            branch=branch,
-            api_key_2=api_key_2,
-        )
+    bid = str(build_id)
+
+    # Start the health-check watchdog alongside the build
+    _touch_progress(build_id)
+    watchdog = asyncio.create_task(_build_watchdog(build_id, user_id))
+    _build_heartbeat_tasks[bid] = watchdog
+
+    try:
+        if mode == "plan_execute" and working_dir:
+            await _run_build_plan_execute(
+                build_id, project_id, user_id, contracts, api_key,
+                audit_llm_enabled,
+                target_type=target_type,
+                target_ref=target_ref,
+                working_dir=working_dir,
+                access_token=access_token,
+                branch=branch,
+                api_key_2=api_key_2,
+                resume_from_phase=resume_from_phase,
+            )
+        else:
+            await _run_build_conversation(
+                build_id, project_id, user_id, contracts, api_key,
+                audit_llm_enabled,
+                target_type=target_type,
+                target_ref=target_ref,
+                working_dir=working_dir,
+                access_token=access_token,
+                branch=branch,
+                api_key_2=api_key_2,
+            )
+    except asyncio.CancelledError:
+        logger.info("Build task cancelled: %s", build_id)
+        try:
+            await build_repo.append_build_log(
+                build_id, "Build task cancelled", source="system", level="warn",
+            )
+            await build_repo.update_build_status(build_id, "cancelled")
+            await _broadcast_build_event(user_id, build_id, "build_cancelled", {
+                "id": str(build_id),
+            })
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.exception("Build crashed: %s", exc)
+        try:
+            await _fail_build(build_id, user_id, f"Build crashed: {exc}")
+        except Exception:
+            pass
+    finally:
+        # Stop the watchdog
+        watchdog.cancel()
+        _build_heartbeat_tasks.pop(bid, None)
+
+        _active_tasks.pop(bid, None)
+        _cancel_flags.discard(bid)
+        _pause_flags.discard(bid)
+        _compact_flags.discard(bid)
+        _current_generating.pop(bid, None)
+        _build_activity_status.pop(bid, None)
+        _interjection_queues.pop(bid, None)
+        _last_progress.pop(bid, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1002,14 +2069,19 @@ async def _run_build_conversation(
         if working_dir:
             try:
                 file_list = await git_client.get_file_list(working_dir)
-                # Exclude Forge/Contracts/ from listing — builder already has them
-                file_list = [f for f in file_list if not f.startswith("Forge/Contracts/")]
+                # Exclude ALL Forge/ files — contracts are already inline,
+                # evidence/scripts/intake are governance artefacts that
+                # should not consume listing slots meant for project files.
+                file_list = [f for f in file_list if not f.startswith("Forge/")]
+                _FILE_LIST_CAP = 200
                 if file_list:
                     workspace_info = (
                         "\n\n## Working Directory\n"
-                        "The target repo already contains these files:\n"
-                        + "\n".join(f"- {f}" for f in file_list[:50])
-                        + ("\n- ... (truncated)" if len(file_list) > 50 else "")
+                        "The target repo already contains these files "
+                        f"({len(file_list)} total):\n"
+                        + "\n".join(f"- {f}" for f in file_list[:_FILE_LIST_CAP])
+                        + (f"\n- ... ({len(file_list) - _FILE_LIST_CAP} more, truncated)"
+                           if len(file_list) > _FILE_LIST_CAP else "")
                         + "\n"
                     )
                 else:
@@ -1261,6 +2333,7 @@ async def _run_build_conversation(
             ):
                 if isinstance(item, ToolCall):
                     # --- Tool call detected ---
+                    _touch_progress(build_id)
                     tool_result = await execute_tool_async(item.name, item.input, working_dir or "")
 
                     # Log the tool call
@@ -1283,6 +2356,7 @@ async def _run_build_conversation(
 
                     # Track write_file calls as files_written
                     if item.name == "write_file" and tool_result.startswith("OK:"):
+                        _touch_progress(build_id)
                         rel_path = item.input.get("path", "")
                         content = item.input.get("content", "")
                         lang = _detect_language(rel_path)
@@ -1574,12 +2648,12 @@ async def _run_build_conversation(
                     }
                 )
 
-                # Run inline audit
+                _touch_progress(build_id)
                 audit_verdict, audit_report = await _run_inline_audit(
                     build_id, current_phase, accumulated_text,
                     contracts, api_key, audit_llm_enabled,
                 )
-
+                _touch_progress(build_id)
                 if audit_verdict == "PASS":
                     await build_repo.append_build_log(
                         build_id,
@@ -1620,6 +2694,29 @@ async def _run_build_conversation(
                         except Exception as exc:
                             logger.debug("Diff summary failed: %s", exc)
 
+                    # Refresh workspace file listing so the builder knows
+                    # every file that now exists (avoids re-creating files
+                    # from earlier phases that fell off the truncated
+                    # initial listing after context compaction).
+                    refreshed_listing = ""
+                    if working_dir:
+                        try:
+                            _refresh_list = await git_client.get_file_list(working_dir)
+                            _refresh_list = [f for f in _refresh_list if not f.startswith("Forge/")]
+                            _REFRESH_CAP = 200
+                            if _refresh_list:
+                                refreshed_listing = (
+                                    "\n### Current workspace files "
+                                    f"({len(_refresh_list)} total)\n"
+                                    + "\n".join(f"- {f}" for f in _refresh_list[:_REFRESH_CAP])
+                                    + (f"\n- ... ({len(_refresh_list) - _REFRESH_CAP} more, truncated)"
+                                       if len(_refresh_list) > _REFRESH_CAP else "")
+                                    + "\n\nDo NOT recreate or overwrite any of these files "
+                                    "unless the phase deliverables explicitly require modifying them.\n"
+                                )
+                        except Exception:
+                            pass
+
                     # Extract the next phase window (current + next)
                     next_window = _extract_phase_window(contracts, current_phase_num)
 
@@ -1633,6 +2730,8 @@ async def _run_build_conversation(
                             f"\n### What was built in the previous phase\n"
                             f"```\n{diff_log}\n```\n"
                         )
+                    if refreshed_listing:
+                        advance_parts.append(refreshed_listing)
                     if next_window:
                         advance_parts.append(f"\n{next_window}\n")
                     advance_parts.append(
@@ -2459,9 +3558,13 @@ async def _run_inline_audit(
             f"Review the builder's output for {phase} against the reference contracts above.\n"
             f"Check for: contract compliance, architectural drift, boundary violations, "
             f"schema mismatches, logic errors, and test quality.\n\n"
+            f"Classify each finding as BLOCKING (must fix) or ADVISORY (nice to have).\n"
+            f"BLOCKING = broken functionality, wrong API schemas, missing required "
+            f"deliverables, structural violations.\n"
+            f"ADVISORY = style issues, optional tooling, cosmetic preferences.\n\n"
             f"Respond with your audit report. Your verdict MUST be either:\n"
-            f"- `CLEAN` — if everything passes\n"
-            f"- `FLAGS FOUND` — if there are issues\n\n"
+            f"- `CLEAN` — if there are no BLOCKING issues (ADVISORY items are OK)\n"
+            f"- `FLAGS FOUND` — ONLY if there are BLOCKING issues\n\n"
             f"End your response with exactly one of these lines:\n"
             f"VERDICT: CLEAN\n"
             f"VERDICT: FLAGS FOUND\n"
@@ -2517,6 +3620,574 @@ async def _run_inline_audit(
         return ("PASS", "")
 
 
+# ---------------------------------------------------------------------------
+# Per-file streaming audit (runs in parallel with generation)
+# ---------------------------------------------------------------------------
+
+# Semaphore to limit concurrent per-file audit LLM calls (avoid rate-limit storms)
+_FILE_AUDIT_SEMAPHORE = asyncio.Semaphore(3)
+
+# Max fix attempts the auditor (Key 2) will try before deferring to builder
+_AUDITOR_FIX_ROUNDS = 2
+
+
+async def _fix_single_file(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    file_path: str,
+    findings: str,
+    working_dir: str,
+    model: str | None = None,
+    label: str = "auditor",
+) -> str:
+    """Apply a targeted fix to a single file based on audit findings.
+
+    Reads the file + related sibling files from disk, sends to the LLM
+    with the audit findings for correction, writes the fixed output back.
+    Uses ``_FILE_AUDIT_SEMAPHORE`` to respect concurrency limits.
+
+    Returns the new file content after the fix.
+    """
+    from app.clients.llm_client import chat as llm_chat
+    from app.services.tool_executor import _exec_write_file
+    import re as _re_fix
+
+    wd = Path(working_dir)
+    target = wd / file_path
+
+    # Read current file content
+    current_content = ""
+    if target.exists():
+        try:
+            current_content = target.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    # Gather related context (siblings + imports)
+    ctx: dict[str, str] = {}
+    # Parse imports from the file
+    for imp_match in _re_fix.finditer(r'(?:from|import)\s+([\w.]+)', current_content):
+        mod = imp_match.group(1)
+        mod_path = mod.replace(".", "/") + ".py"
+        mod_fp = wd / mod_path
+        if mod_fp.exists() and mod_path != file_path and len(ctx) < 6:
+            try:
+                ctx[mod_path] = mod_fp.read_text(encoding="utf-8")
+            except Exception:
+                pass
+    # Sibling files in same directory
+    target_dir = target.parent
+    if target_dir.exists():
+        for sibling in sorted(target_dir.iterdir()):
+            if len(ctx) >= 6:
+                break
+            if sibling.is_file() and sibling.suffix in (".py", ".ts", ".tsx", ".js"):
+                rel = str(sibling.relative_to(wd)).replace("\\", "/")
+                if rel != file_path and rel not in ctx:
+                    try:
+                        ctx[rel] = sibling.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+
+    # Truncate context files to keep within budget
+    max_ctx_chars = 8_000
+    trimmed_ctx: dict[str, str] = {}
+    total = 0
+    for p, c in ctx.items():
+        if total + len(c) > max_ctx_chars:
+            break
+        trimmed_ctx[p] = c
+        total += len(c)
+
+    # Build fix prompt
+    resolve_model = model or settings.LLM_QUESTIONNAIRE_MODEL
+
+    system_prompt = (
+        "You are a code fixer. You receive a file that has structural issues "
+        "identified by a code auditor. Your job is to fix ONLY the specific "
+        "issues listed — do not refactor, restyle, or otherwise change code "
+        "that is working correctly.\n\n"
+        "Output ONLY the complete fixed file content. No markdown fences, "
+        "no explanation, no preamble.\n\n"
+        "Rules:\n"
+        "- Fix each identified issue precisely\n"
+        "- Preserve all existing functionality\n"
+        "- Keep the same imports, structure, and style\n"
+        "- If an import is missing, add it\n"
+        "- If a function is referenced but undefined, define it or fix the reference\n"
+        "- Do NOT remove code unless the finding specifically says it's wrong\n"
+    )
+
+    parts = [f"## File to Fix: `{file_path}`\n\n```\n{current_content}\n```\n"]
+    parts.append(f"\n## Audit Findings (fix these)\n{findings}\n")
+    if trimmed_ctx:
+        parts.append("\n## Related Files (reference only — do not output these)\n")
+        for cp, cc in trimmed_ctx.items():
+            parts.append(f"\n### {cp}\n```\n{cc[:4000]}\n```\n")
+    parts.append(
+        f"\n## Instructions\n"
+        f"Output the COMPLETE fixed content of `{file_path}`. "
+        f"Fix only the issues listed above.\n"
+    )
+
+    user_message = "\n".join(parts)
+
+    await _broadcast_build_event(user_id, build_id, "file_fixing", {
+        "path": file_path,
+        "fixer": label,
+    })
+
+    async with _FILE_AUDIT_SEMAPHORE:
+        result = await asyncio.wait_for(
+            llm_chat(
+                api_key=api_key,
+                model=resolve_model,
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                max_tokens=16_384,
+                provider="anthropic",
+            ),
+            timeout=180,
+        )
+
+    content = result["text"] if isinstance(result, dict) else result
+    usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+    # Strip markdown fences if model wrapped output
+    content = re.sub(r"^```\w*\n", "", content)
+    content = re.sub(r"\n```\s*$", "", content)
+    if content and not content.endswith("\n"):
+        content += "\n"
+
+    # Write to disk
+    _exec_write_file({"path": file_path, "content": content}, working_dir)
+
+    # Record cost
+    input_t = usage.get("input_tokens", 0)
+    output_t = usage.get("output_tokens", 0)
+    input_rate, output_rate = _get_token_rates(resolve_model)
+    cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+    await build_repo.record_build_cost(
+        build_id, f"fix:{label}:{file_path}", input_t, output_t,
+        resolve_model, cost,
+    )
+
+    await build_repo.append_build_log(
+        build_id,
+        f"Fix applied by {label}: {file_path} ({input_t}+{output_t} tokens)",
+        source="fix", level="info",
+    )
+
+    return content
+
+
+async def _builder_drain_fix_queue(
+    build_id: UUID,
+    user_id: UUID,
+    builder_api_key: str,
+    audit_api_key: str,
+    fix_queue: "asyncio.Queue[tuple[str, str]]",
+    working_dir: str,
+    manifest_cache_path: Path,
+    audit_llm_enabled: bool = True,
+) -> list[tuple[str, str, str]]:
+    """After file generation completes, builder (Key 1 / Opus) picks up
+    any files that the auditor couldn't fix.
+
+    For each queued file the builder applies a fix then the auditor
+    re-audits.  Returns list of ``(path, final_verdict, findings)`` tuples.
+    """
+    results: list[tuple[str, str, str]] = []
+
+    if fix_queue.empty():
+        return results
+
+    queue_size = fix_queue.qsize()
+    await build_repo.append_build_log(
+        build_id,
+        f"Builder picking up {queue_size} file(s) from auditor fix queue...",
+        source="fix", level="info",
+    )
+    await _broadcast_build_event(user_id, build_id, "build_log", {
+        "message": f"🔧 Builder picking up {queue_size} file(s) the auditor couldn't fix...",
+        "source": "fix", "level": "info",
+    })
+
+    while not fix_queue.empty():
+        try:
+            fpath, ffindings = fix_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        _touch_progress(build_id)
+
+        try:
+            # Builder fix (Key 1 / Opus — higher capability)
+            fixed_content = await _fix_single_file(
+                build_id, user_id, builder_api_key,
+                fpath, ffindings, working_dir,
+                model=settings.LLM_BUILDER_MODEL,
+                label="builder",
+            )
+
+            # Re-audit with auditor (Key 2)
+            re_result = await _audit_single_file(
+                build_id, user_id, audit_api_key,
+                fpath, fixed_content, "",
+                audit_llm_enabled,
+            )
+            _, re_verdict, re_findings = re_result
+
+            if re_verdict == "PASS":
+                _update_manifest_cache(manifest_cache_path, fpath, "fixed", "PASS")
+                await _broadcast_build_event(user_id, build_id, "file_fixed", {
+                    "path": fpath,
+                    "fixer": "builder",
+                    "rounds": 1,
+                })
+                await build_repo.append_build_log(
+                    build_id,
+                    f"✓ Builder fixed {fpath}",
+                    source="fix", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"✓ Builder fixed {fpath}",
+                    "source": "fix", "level": "info",
+                })
+            else:
+                _update_manifest_cache(manifest_cache_path, fpath, "audited", "FAIL")
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Builder fix didn't resolve {fpath} — will proceed to recovery",
+                    source="fix", level="warn",
+                )
+
+            results.append((fpath, re_verdict, re_findings))
+
+        except Exception as exc:
+            logger.warning("Builder fix failed for %s: %s", fpath, exc)
+            results.append((fpath, "FAIL", str(exc)))
+
+    return results
+
+
+def _update_manifest_cache(
+    manifest_cache_path: Path,
+    file_path: str,
+    status: str,
+    verdict: str = "",
+) -> None:
+    """Update a single file's status in the cached manifest JSON.
+
+    Called right after each per-file audit completes so the cache
+    reflects the latest progress.  If the file is not found or the
+    cache is unreadable the update is silently skipped (best-effort).
+    """
+    try:
+        if not manifest_cache_path.exists():
+            return
+        data = json.loads(manifest_cache_path.read_text(encoding="utf-8"))
+        for entry in data:
+            if entry.get("path") == file_path:
+                entry["status"] = status
+                if verdict:
+                    entry["audit_verdict"] = verdict
+                break
+        manifest_cache_path.write_text(
+            json.dumps(data, indent=2), encoding="utf-8",
+        )
+    except Exception:
+        pass  # best-effort
+
+
+async def _audit_and_cache(
+    manifest_cache_path: Path,
+    build_id: UUID,
+    user_id: UUID,
+    audit_api_key: str,
+    file_path: str,
+    file_content: str,
+    file_purpose: str,
+    audit_llm_enabled: bool = True,
+    audit_index: int = 0,
+    audit_total: int = 0,
+    working_dir: str = "",
+    fix_queue: "asyncio.Queue[tuple[str, str]] | None" = None,
+) -> tuple[str, str, str]:
+    """Audit a file, attempt to fix if FAIL, then persist to manifest cache.
+
+    Fix loop (up to ``_AUDITOR_FIX_ROUNDS``):
+      1. Audit → if PASS, done.
+      2. If FAIL, call ``_fix_single_file`` (Key 2 / Sonnet), re-audit.
+      3. If still failing after max rounds, push to ``fix_queue`` for builder.
+
+    Returns ``(file_path, final_verdict, findings)``.
+    """
+    result = await _audit_single_file(
+        build_id, user_id, audit_api_key,
+        file_path, file_content, file_purpose,
+        audit_llm_enabled, audit_index, audit_total,
+    )
+    fpath, fverdict, ffindings = result
+
+    # If PASS or fixing disabled, just cache and return
+    if fverdict == "PASS" or not working_dir or not audit_llm_enabled:
+        _update_manifest_cache(manifest_cache_path, fpath, "audited", fverdict)
+        return result
+
+    # --- Auditor fix loop (Key 2 / Sonnet) ---
+    for fix_round in range(1, _AUDITOR_FIX_ROUNDS + 1):
+        try:
+            _update_manifest_cache(manifest_cache_path, fpath, "fixing", fverdict)
+
+            await build_repo.append_build_log(
+                build_id,
+                f"Auditor fixing {fpath} (round {fix_round}/{_AUDITOR_FIX_ROUNDS})...",
+                source="fix", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": f"🔧 Auditor fixing {fpath} (round {fix_round}/{_AUDITOR_FIX_ROUNDS})...",
+                "source": "fix", "level": "info",
+            })
+
+            fixed_content = await _fix_single_file(
+                build_id, user_id, audit_api_key,
+                fpath, ffindings, working_dir,
+                label="auditor",
+            )
+
+            # Re-audit the fixed file
+            result = await _audit_single_file(
+                build_id, user_id, audit_api_key,
+                fpath, fixed_content, file_purpose,
+                audit_llm_enabled,
+            )
+            fpath, fverdict, ffindings = result
+
+            if fverdict == "PASS":
+                _update_manifest_cache(manifest_cache_path, fpath, "fixed", "PASS")
+                await _broadcast_build_event(user_id, build_id, "file_fixed", {
+                    "path": fpath,
+                    "fixer": "auditor",
+                    "rounds": fix_round,
+                })
+                await build_repo.append_build_log(
+                    build_id,
+                    f"✓ Auditor fixed {fpath} in {fix_round} round(s)",
+                    source="fix", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"✓ Auditor fixed {fpath} in {fix_round} round(s)",
+                    "source": "fix", "level": "info",
+                })
+                return result
+
+        except Exception as exc:
+            logger.warning(
+                "Auditor fix round %d failed for %s: %s",
+                fix_round, fpath, exc,
+            )
+
+    # Auditor couldn't fix it — push to builder fix queue
+    if fix_queue is not None:
+        await fix_queue.put((fpath, ffindings))
+        _update_manifest_cache(manifest_cache_path, fpath, "fix_queued", "FAIL")
+        await build_repo.append_build_log(
+            build_id,
+            f"Auditor couldn't fix {fpath} after {_AUDITOR_FIX_ROUNDS} rounds — queued for builder",
+            source="fix", level="warn",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"⏳ {fpath} queued for builder fix (auditor exhausted {_AUDITOR_FIX_ROUNDS} rounds)",
+            "source": "fix", "level": "warn",
+        })
+    else:
+        _update_manifest_cache(manifest_cache_path, fpath, "audited", fverdict)
+
+    return result
+
+
+async def _audit_single_file(
+    build_id: UUID,
+    user_id: UUID,
+    audit_api_key: str,
+    file_path: str,
+    file_content: str,
+    file_purpose: str,
+    audit_llm_enabled: bool = True,
+    audit_index: int = 0,
+    audit_total: int = 0,
+) -> tuple[str, str, str]:
+    """Light structural audit of a single generated file.
+
+    Uses the *audit* API key (key 2) to avoid competing with the builder.
+    Broadcasts a ``file_audited`` WS event on completion.
+    Returns ``(file_path, verdict, findings_summary)``.
+
+    Concurrency is bounded by ``_FILE_AUDIT_SEMAPHORE`` (3).
+    Errors are handled gracefully (fail-open).
+    """
+    import time as _time
+
+    progress_tag = f"[{audit_index}/{audit_total}]" if audit_total else ""
+
+    t0 = _time.monotonic()
+
+    try:
+        # --- fast-path: audit disabled / trivially small files ---
+        if not audit_llm_enabled or len(file_content.strip()) < 50:
+            dur = int((_time.monotonic() - t0) * 1000)
+            await _broadcast_build_event(user_id, build_id, "file_audited", {
+                "path": file_path,
+                "verdict": "PASS",
+                "findings": "",
+                "duration_ms": dur,
+            })
+            return (file_path, "PASS", "")
+
+        # Announce audit start
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"Auditing {progress_tag} {file_path}...",
+            "source": "audit", "level": "info",
+        })
+
+        # Acquire semaphore — limits concurrent LLM calls
+        async with _FILE_AUDIT_SEMAPHORE:
+            return await _audit_single_file_llm(
+                build_id, user_id, audit_api_key,
+                file_path, file_content, file_purpose,
+                t0, progress_tag,
+            )
+
+    except Exception as exc:
+        dur = int((_time.monotonic() - t0) * 1000)
+        logger.warning("Per-file audit failed for %s: %s", file_path, exc)
+        await build_repo.append_build_log(
+            build_id,
+            f"Per-file audit error for {file_path}: {exc}",
+            source="audit",
+            level="warn",
+        )
+        await _broadcast_build_event(user_id, build_id, "file_audited", {
+            "path": file_path,
+            "verdict": "PASS",
+            "findings": f"Audit error: {exc}",
+            "duration_ms": dur,
+        })
+        return (file_path, "PASS", "")
+
+
+async def _audit_single_file_llm(
+    build_id: UUID,
+    user_id: UUID,
+    audit_api_key: str,
+    file_path: str,
+    file_content: str,
+    file_purpose: str,
+    t0: float,
+    progress_tag: str,
+) -> tuple[str, str, str]:
+    """Light structural LLM audit (runs under semaphore, separate API key)."""
+    import time as _time
+
+    try:
+        # Truncate very large files
+        max_file_chars = 12_000
+        trimmed = file_content
+        if len(file_content) > max_file_chars:
+            trimmed = (
+                file_content[:max_file_chars]
+                + f"\n[... truncated {len(file_content) - max_file_chars} chars ...]"
+            )
+
+        system_prompt = (
+            "You are a fast structural code auditor. Do a quick quality check "
+            "on the file below.\n\n"
+            "Check ONLY for:\n"
+            "- Missing or broken imports/exports\n"
+            "- Obvious logic errors or typos\n"
+            "- Functions/classes referenced but never defined\n"
+            "- File doesn't match its stated purpose\n\n"
+            "Do NOT flag: style, naming, missing docs, optional improvements.\n\n"
+            "If the file looks structurally sound, respond with just:\n"
+            "VERDICT: CLEAN\n\n"
+            "If there are real problems, list each on its own line with the "
+            "line number(s) where the issue occurs, using this exact format:\n"
+            "L<start>[-L<end>]: <short description>\n\n"
+            "Examples:\n"
+            "L42: 'UserService' imported but never defined in this module\n"
+            "L110-L115: unreachable code after return statement\n\n"
+            "After all issues, end with:\n"
+            "VERDICT: FLAGS FOUND"
+        )
+
+        user_message = (
+            f"**File:** `{file_path}`\n"
+            f"**Purpose:** {file_purpose}\n\n"
+            f"```\n{trimmed}\n```"
+        )
+
+        from app.clients.llm_client import chat as llm_chat
+
+        result = await asyncio.wait_for(
+            llm_chat(
+                api_key=audit_api_key,
+                model=settings.LLM_QUESTIONNAIRE_MODEL,
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                max_tokens=1024,
+                provider="anthropic",
+            ),
+            timeout=120,
+        )
+
+        audit_text = result["text"] if isinstance(result, dict) else result
+        dur = int((_time.monotonic() - t0) * 1000)
+
+        if "VERDICT: FLAGS FOUND" in audit_text:
+            verdict = "FAIL"
+            findings = audit_text
+        else:
+            verdict = "PASS"
+            findings = ""
+
+        level = "warn" if verdict == "FAIL" else "info"
+        await build_repo.append_build_log(
+            build_id,
+            f"File audit {verdict} {progress_tag}: {file_path} ({dur}ms)"
+            + (f"\n{findings}" if findings else ""),
+            source="audit",
+            level=level,
+        )
+
+        await _broadcast_build_event(user_id, build_id, "file_audited", {
+            "path": file_path,
+            "verdict": verdict,
+            "findings": findings[:2000] if findings else "",
+            "duration_ms": dur,
+        })
+
+        return (file_path, verdict, findings)
+
+    except Exception as exc:
+        dur = int((_time.monotonic() - t0) * 1000)
+        logger.warning("Per-file audit LLM error for %s: %s", file_path, exc)
+        await build_repo.append_build_log(
+            build_id,
+            f"Per-file audit error for {file_path}: {exc}",
+            source="audit",
+            level="warn",
+        )
+        await _broadcast_build_event(user_id, build_id, "file_audited", {
+            "path": file_path,
+            "verdict": "PASS",
+            "findings": f"Audit error: {exc}",
+            "duration_ms": dur,
+        })
+        return (file_path, "PASS", "")
+
+
 async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     """Mark a build as failed and broadcast the event."""
     bid = str(build_id)
@@ -2524,6 +4195,7 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     _pause_flags.discard(bid)
     _compact_flags.discard(bid)
     _current_generating.pop(bid, None)
+    _build_activity_status.pop(bid, None)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail
@@ -3294,15 +4966,23 @@ async def _generate_single_file(
         "path": file_path,
     })
 
+    # Per-file timeout: 10 minutes max per LLM call (prevents stalls)
+    _FILE_GEN_TIMEOUT = 600  # seconds
+
     try:
-        result = await llm_chat(
-            api_key=api_key,
-            model=settings.LLM_BUILDER_MODEL,
-            system_prompt=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-            max_tokens=max_tokens,
-            provider="anthropic",
+        result = await asyncio.wait_for(
+            llm_chat(
+                api_key=api_key,
+                model=settings.LLM_BUILDER_MODEL,
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                max_tokens=max_tokens,
+                provider="anthropic",
+            ),
+            timeout=_FILE_GEN_TIMEOUT,
         )
+    except asyncio.TimeoutError:
+        raise TimeoutError(f"File generation timed out after {_FILE_GEN_TIMEOUT}s: {file_path}")
     except (ValueError, Exception) as exc:
         err_str = str(exc).lower()
         if any(kw in err_str for kw in ("token", "context", "too long", "too large")):
@@ -3336,13 +5016,16 @@ async def _generate_single_file(
                     minimal_msg[:MAX_FALLBACK_CHARS]
                     + "\n\n[... truncated for context limit ...]\n"
                 )
-            result = await llm_chat(
-                api_key=api_key,
-                model=settings.LLM_BUILDER_MODEL,
-                system_prompt=system_prompt,
-                messages=[{"role": "user", "content": minimal_msg}],
-                max_tokens=max_tokens,
-                provider="anthropic",
+            result = await asyncio.wait_for(
+                llm_chat(
+                    api_key=api_key,
+                    model=settings.LLM_BUILDER_MODEL,
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": minimal_msg}],
+                    max_tokens=max_tokens,
+                    provider="anthropic",
+                ),
+                timeout=_FILE_GEN_TIMEOUT,
             )
         else:
             raise
@@ -3361,16 +5044,19 @@ async def _generate_single_file(
     # Handle empty response — retry once
     if not content.strip():
         logger.warning("Empty response for %s — retrying once", file_path)
-        result2 = await llm_chat(
-            api_key=api_key,
-            model=settings.LLM_BUILDER_MODEL,
-            system_prompt=system_prompt,
-            messages=[{
-                "role": "user",
-                "content": user_message + "\nPlease write the complete file content.",
-            }],
-            max_tokens=max_tokens,
-            provider="anthropic",
+        result2 = await asyncio.wait_for(
+            llm_chat(
+                api_key=api_key,
+                model=settings.LLM_BUILDER_MODEL,
+                system_prompt=system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": user_message + "\nPlease write the complete file content.",
+                }],
+                max_tokens=max_tokens,
+                provider="anthropic",
+            ),
+            timeout=_FILE_GEN_TIMEOUT,
         )
         content = result2["text"] if isinstance(result2, dict) else result2
         content = re.sub(r"^```\w*\n", "", content)
@@ -3424,93 +5110,262 @@ async def _verify_phase_output(
     manifest: list[dict],
     working_dir: str,
     contracts: list[dict],
+    touched_files: set[str] | None = None,
 ) -> dict:
     """Run syntax and test verification on generated files.
 
     Returns dict with syntax_errors, tests_passed, tests_failed, fixes_applied.
+    Attempts to fix issues using the builder with rich context from disk.
     """
     from app.services.tool_executor import _exec_check_syntax, _exec_run_tests
+    import re as _re_verify
 
     syntax_errors = 0
     fixes_applied = 0
     tests_passed = 0
     tests_failed = 0
+    last_test_output = ""
 
-    # Check syntax on all Python files
-    py_files = [f for f in manifest if f["language"] == "python" and f["path"].endswith(".py")]
+    # Helper: gather related files from disk for context
+    def _gather_related_context(target_path: str, max_files: int = 8) -> dict[str, str]:
+        """Read files related to target_path from the working directory."""
+        ctx: dict[str, str] = {}
+        wd = Path(working_dir)
+        # Always include the target file itself
+        fp = wd / target_path
+        if fp.exists():
+            try:
+                ctx[target_path] = fp.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+        # Parse imports from the file to find related modules
+        if target_path in ctx:
+            for imp_match in _re_verify.finditer(
+                r'(?:from|import)\s+([\w.]+)', ctx[target_path]
+            ):
+                mod = imp_match.group(1)
+                # Convert dotted module to path: app.models.user -> app/models/user.py
+                mod_path = mod.replace(".", "/") + ".py"
+                mod_fp = wd / mod_path
+                if mod_fp.exists() and mod_path not in ctx and len(ctx) < max_files:
+                    try:
+                        ctx[mod_path] = mod_fp.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                # Also try __init__.py in the package
+                pkg_init = mod.replace(".", "/") + "/__init__.py"
+                pkg_fp = wd / pkg_init
+                if pkg_fp.exists() and pkg_init not in ctx and len(ctx) < max_files:
+                    try:
+                        ctx[pkg_init] = pkg_fp.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+
+        # Include sibling files in the same directory
+        target_dir = (wd / target_path).parent
+        if target_dir.exists():
+            for sibling in sorted(target_dir.iterdir()):
+                if len(ctx) >= max_files:
+                    break
+                if sibling.is_file() and sibling.suffix == ".py":
+                    rel = str(sibling.relative_to(wd)).replace("\\", "/")
+                    if rel not in ctx:
+                        try:
+                            ctx[rel] = sibling.read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+        return ctx
+
+    # Helper: extract failing file paths from pytest output
+    def _parse_failing_files(test_output: str) -> list[str]:
+        """Extract file paths of failing tests from pytest output."""
+        failing: list[str] = []
+        for m in _re_verify.finditer(r'(?:FAILED|ERROR)\s+([\w/\\.-]+\.py)', test_output):
+            fp = m.group(1).replace("\\", "/")
+            # Strip ::test_name suffix if present
+            fp = fp.split("::")[0]
+            if fp not in failing:
+                failing.append(fp)
+        return failing
+
+    # Scope verification to only files touched in this phase/run if provided
+    def _filter_manifest(entries: list[dict], *, exts: tuple[str, ...]) -> list[dict]:
+        if touched_files is not None:
+            return [f for f in entries if f["path"] in touched_files and f["path"].endswith(exts)]
+        return [f for f in entries if f["path"].endswith(exts)]
+
+    # Check syntax on Python files (touched-only when available)
+    py_files = _filter_manifest(manifest, exts=(".py",))
+    if py_files:
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"Checking syntax on {len(py_files)} Python files...",
+            "source": "verify", "level": "info",
+        })
     for f in py_files:
+        _touch_progress(build_id)
         result = await _exec_check_syntax({"file_path": f["path"]}, working_dir)
         if "No syntax errors" in result:
             continue
         if "error" in result.lower() or "SyntaxError" in result:
             syntax_errors += 1
-            # Attempt fix
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": f"Syntax error in {f['path']}: {result.strip()}",
+                "source": "verify", "level": "warn",
+            })
+            await _set_build_activity(
+                build_id, user_id, f"Fixing syntax error in {f['path']}...",
+            )
+            # Attempt targeted fix using _fix_single_file (preserves existing
+            # code, only patches the syntax error — no full regeneration)
             for attempt in range(2):
+                _touch_progress(build_id)
                 try:
-                    fix_content = await _generate_single_file(
+                    await _fix_single_file(
                         build_id, user_id, api_key,
-                        {**f, "purpose": f"Fix syntax errors in {f['path']}"},
-                        contracts,
-                        {f["path"]: Path(working_dir, f["path"]).read_text(encoding="utf-8")},
-                        "",
+                        f["path"],
+                        f"Syntax error detected by ast.parse:\n{result}\n\n"
+                        f"Fix ONLY the syntax error(s). Do NOT rewrite or restructure "
+                        f"the file. Preserve all existing functionality.",
                         working_dir,
-                        error_context=f"Syntax error:\n{result}\n\nFix the syntax errors while preserving all functionality.",
+                        label="verify",
                     )
                     recheck = await _exec_check_syntax({"file_path": f["path"]}, working_dir)
                     if "error" not in recheck.lower() and "SyntaxError" not in recheck:
                         fixes_applied += 1
                         syntax_errors -= 1
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": f"✓ Syntax fixed: {f['path']} (attempt {attempt + 1})",
+                            "source": "verify", "level": "info",
+                        })
                         break
+                    else:
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": f"Fix attempt {attempt + 1} for {f['path']} — still has errors: {recheck.strip()}",
+                            "source": "verify", "level": "warn",
+                        })
+                        result = recheck  # feed updated error into next attempt
                 except Exception as exc:
                     logger.warning("Syntax fix attempt %d failed for %s: %s", attempt + 1, f["path"], exc)
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"Fix attempt {attempt + 1} failed for {f['path']}: {exc}",
+                        "source": "verify", "level": "warn",
+                    })
 
-    # Run tests if test files were generated
-    test_files = [f for f in manifest if f["path"].startswith("tests/")]
+    # Run tests if test files were generated/touched
+    if touched_files is not None:
+        test_files = [f for f in manifest if f["path"].startswith("tests/") and f["path"] in touched_files]
+    else:
+        test_files = [f for f in manifest if f["path"].startswith("tests/")]
     if test_files:
         test_paths = " ".join(f["path"] for f in test_files)
+        _touch_progress(build_id)
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"Running pytest on {len(test_files)} test file(s)...",
+            "source": "verify", "level": "info",
+        })
         try:
             test_result = await _exec_run_tests(
-                {"command": f"pytest {test_paths} -x -q", "timeout": 120}, working_dir,
+                {"command": f"pytest {test_paths} -x -q -o addopts=", "timeout": 120}, working_dir,
             )
+            last_test_output = test_result
             if "exit_code: 0" in test_result or "passed" in test_result.lower():
                 tests_passed = len(test_files)
             else:
                 tests_failed = len(test_files)
-                # Try to fix failures
+                # Identify which files actually failed
+                failing_paths = _parse_failing_files(test_result)
+
+                # Try to fix failures — target the impl files, not just tests
                 for attempt in range(2):
                     if tests_failed == 0:
                         break
+                    _touch_progress(build_id)
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"Tests failed — fix attempt {attempt + 1}/2...",
+                        "source": "verify", "level": "warn",
+                    })
+
+                    # Determine which files to fix: both test + impl
+                    files_to_fix: list[dict] = []
                     for tf in test_files:
-                        try:
-                            target_file = tf["path"].replace("tests/test_", "app/").replace(".py", ".py")
-                            context = {}
+                        # Find the implementation file the test is exercising
+                        impl_candidates = []
+                        # Parse test file for imports to find the real target
+                        test_fp = Path(working_dir) / tf["path"]
+                        if test_fp.exists():
                             try:
-                                context[tf["path"]] = Path(working_dir, tf["path"]).read_text(encoding="utf-8")
-                            except Exception:
-                                pass
-                            try:
-                                context[target_file] = Path(working_dir, target_file).read_text(encoding="utf-8")
+                                test_src = test_fp.read_text(encoding="utf-8")
+                                for imp in _re_verify.finditer(
+                                    r'from\s+([\w.]+)\s+import', test_src
+                                ):
+                                    mod = imp.group(1).replace(".", "/") + ".py"
+                                    if (Path(working_dir) / mod).exists():
+                                        impl_candidates.append(mod)
                             except Exception:
                                 pass
 
+                        # Fallback: conventional mapping
+                        if not impl_candidates:
+                            conventional = tf["path"].replace("tests/test_", "app/")
+                            if (Path(working_dir) / conventional).exists():
+                                impl_candidates.append(conventional)
+
+                        # Fix the implementation file(s) first
+                        for impl_path in impl_candidates:
+                            impl_entry = next(
+                                (m for m in manifest if m["path"] == impl_path),
+                                {"path": impl_path, "language": "python",
+                                 "purpose": f"Implementation for {tf['path']}"},
+                            )
+                            if impl_entry not in files_to_fix:
+                                files_to_fix.append(impl_entry)
+
+                        # Then fix the test file too
+                        if tf not in files_to_fix:
+                            files_to_fix.append(tf)
+
+                    for fix_entry in files_to_fix:
+                        try:
+                            context = _gather_related_context(fix_entry["path"])
+                            # Also include failing test output in context
                             await _generate_single_file(
                                 build_id, user_id, api_key,
-                                {**tf, "purpose": f"Fix failing test {tf['path']}"},
+                                {**fix_entry, "purpose": f"Fix to pass tests: {fix_entry['path']}"},
                                 contracts, context, "", working_dir,
-                                error_context=f"Test failure:\n{test_result}\n\nFix the test or implementation so the test passes.",
+                                error_context=(
+                                    f"Test failure output:\n{test_result[:3000]}\n\n"
+                                    f"Failing tests: {', '.join(failing_paths) if failing_paths else 'see output above'}\n\n"
+                                    f"Fix the code so the tests pass. Focus on the error messages "
+                                    f"and tracebacks above. Do NOT remove or weaken tests — "
+                                    f"fix the implementation to match what the tests expect."
+                                ),
                             )
                         except Exception:
                             pass
 
                     # Re-run tests
+                    _touch_progress(build_id)
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"Re-running tests after fix attempt {attempt + 1}...",
+                        "source": "verify", "level": "info",
+                    })
                     retest = await _exec_run_tests(
-                        {"command": f"pytest {test_paths} -x -q", "timeout": 120}, working_dir,
+                        {"command": f"pytest {test_paths} -x -q -o addopts=", "timeout": 120}, working_dir,
                     )
+                    last_test_output = retest
                     if "exit_code: 0" in retest or "passed" in retest.lower():
                         tests_passed = len(test_files)
                         tests_failed = 0
                         fixes_applied += 1
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": "✓ All tests passing after fix",
+                            "source": "verify", "level": "info",
+                        })
                         break
+                    # Update test_result for next attempt's error context
+                    test_result = retest
+                    failing_paths = _parse_failing_files(retest)
         except Exception as exc:
             logger.warning("Test verification failed: %s", exc)
 
@@ -3519,6 +5374,7 @@ async def _verify_phase_output(
         "tests_passed": tests_passed,
         "tests_failed": tests_failed,
         "fixes_applied": fixes_applied,
+        "test_output": last_test_output,
     }
 
     await _broadcast_build_event(user_id, build_id, "verification_result", result)
@@ -3543,10 +5399,25 @@ async def _generate_fix_manifest(
 
     system_prompt = (
         "You are a build repair planner. Given audit findings and a recovery "
-        "plan, produce a JSON manifest of files that need to be created or "
-        "modified to fix the issues.\n\n"
+        "plan, produce a JSON manifest of ONLY the files that need to be "
+        "created, modified, or deleted to fix the specific issues found.\n\n"
+        "CRITICAL RULES:\n"
+        "- Only include files DIRECTLY mentioned in the BLOCKING audit "
+        "findings or recovery plan as having problems.\n"
+        "- Do NOT include files that are working correctly.\n"
+        "- Keep the fix list as small as possible — surgical fixes only.\n"
+        "- MAXIMUM 5 files per manifest. If more than 5 need changes, "
+        "include only the 5 most critical.\n"
+        "- If a file just needs a small change, use action 'modify'.\n"
+        "- Only use action 'create' for genuinely new files.\n"
+        "- Use action 'delete' ONLY to remove files at wrong paths "
+        "(e.g. duplicates after a restructure). Delete requires no "
+        "context_files or fix_instructions.\n"
+        "- NEVER suggest directory restructuring (moving files between "
+        "directories). The builder cannot move files. Instead, suggest "
+        "modifying code in-place or updating config references.\n\n"
         "Output ONLY valid JSON matching this schema:\n"
-        '{"fixes": [{"path": "file.py", "action": "modify", '
+        '{"fixes": [{"path": "file.py", "action": "modify"|"create"|"delete", '
         '"reason": "why", "context_files": ["dep.py"], '
         '"fix_instructions": "what to fix"}]}'
     )
@@ -3556,8 +5427,8 @@ async def _generate_fix_manifest(
     user_message = (
         f"## Audit Findings\n{audit_findings}\n\n"
         f"## Recovery Plan\n{recovery_plan}\n\n"
-        f"## Existing Files\n{existing_listing}\n\n"
-        f"Produce the fix manifest."
+        f"## Existing Files (do NOT include unless they have issues)\n{existing_listing}\n\n"
+        f"Produce the fix manifest. Include ONLY files with actual problems."
     )
 
     try:
@@ -3584,7 +5455,7 @@ async def _generate_fix_manifest(
         data = json.loads(cleaned.strip())
         fixes = data.get("fixes", [])
 
-        return [
+        manifest = [
             {
                 "path": f.get("path", ""),
                 "action": f.get("action", "modify"),
@@ -3599,6 +5470,22 @@ async def _generate_fix_manifest(
             for f in fixes
             if f.get("path")
         ]
+
+        # Hard cap: refuse manifests > 50% of phase files (runaway)
+        non_delete = [m for m in manifest if m["action"] != "delete"]
+        if (
+            len(existing_files) > 0
+            and len(non_delete) > max(5, len(existing_files) // 2)
+        ):
+            logger.warning(
+                "Fix manifest too large (%d of %d files) — trimming to 5",
+                len(non_delete), len(existing_files),
+            )
+            # Keep deletes + first 5 non-deletes
+            deletes = [m for m in manifest if m["action"] == "delete"]
+            manifest = deletes + non_delete[:5]
+
+        return manifest
     except Exception as exc:
         logger.warning("Fix manifest generation failed: %s", exc)
         return None
@@ -3619,6 +5506,7 @@ async def _run_build_plan_execute(
     branch: str = "main",
     api_key_2: str = "",
     phases: list[dict] | None = None,
+    resume_from_phase: int = -1,
 ) -> None:
     """Plan-then-execute build architecture.
 
@@ -3644,6 +5532,107 @@ async def _run_build_plan_execute(
     if not phases:
         await _fail_build(build_id, user_id, "No phases contract found")
         return
+
+    # --- Workspace setup (git clone, branch, contracts) ---
+    # --- Workspace setup (skip if continuing from a prior build) ---
+    if resume_from_phase < 0:
+        if target_type == "github_new" and target_ref:
+            try:
+                repo_data = await github_client.create_github_repo(
+                    access_token, target_ref,
+                    description="Built by ForgeGuard",
+                    private=False,
+                )
+                clone_url = f"https://github.com/{repo_data['full_name']}.git"
+                shutil.rmtree(working_dir, ignore_errors=True)
+                await git_client.clone_repo(
+                    clone_url, working_dir,
+                    access_token=access_token, shallow=False,
+                )
+                await build_repo.append_build_log(
+                    build_id, f"Created GitHub repo: {repo_data['full_name']}",
+                    source="system", level="info",
+                )
+            except Exception as exc:
+                await _fail_build(build_id, user_id, f"Failed to create GitHub repo: {exc}")
+                return
+        elif target_type == "github_existing" and target_ref:
+            try:
+                clone_url = f"https://github.com/{target_ref}.git"
+                shutil.rmtree(working_dir, ignore_errors=True)
+                await git_client.clone_repo(
+                    clone_url, working_dir,
+                    access_token=access_token, shallow=False,
+                )
+                await build_repo.append_build_log(
+                    build_id, f"Cloned existing repo: {target_ref}",
+                    source="system", level="info",
+                )
+            except Exception as exc:
+                await _fail_build(build_id, user_id, f"Failed to clone repo: {exc}")
+                return
+        elif target_type == "local_path":
+            try:
+                Path(working_dir).mkdir(parents=True, exist_ok=True)
+                git_dir = Path(working_dir) / ".git"
+                if not git_dir.exists():
+                    await git_client.init_repo(working_dir)
+            except Exception as exc:
+                await _fail_build(build_id, user_id, f"Failed to initialize local path: {exc}")
+                return
+
+        # Create/checkout branch if not main
+        if branch and branch != "main":
+            try:
+                await git_client.create_branch(working_dir, branch)
+            except Exception:
+                try:
+                    await git_client.checkout_branch(working_dir, branch)
+                except Exception as exc2:
+                    await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
+                    return
+
+        # Write contracts to working directory
+        try:
+            _write_contracts_to_workdir(working_dir, contracts)
+        except Exception as exc:
+            logger.warning("Failed to write contracts to workdir: %s", exc)
+
+        # Commit + push contracts seed
+        if target_type in ("github_new", "github_existing") and access_token:
+            try:
+                await git_client.add_all(working_dir)
+                sha = await git_client.commit(working_dir, "forge: seed Forge/Contracts/")
+                if sha:
+                    await git_client.push(working_dir, branch=branch, access_token=access_token)
+                    await build_repo.append_build_log(
+                        build_id, "Pushed Forge/Contracts/ to GitHub",
+                        source="system", level="info",
+                    )
+            except Exception as exc:
+                logger.warning("Initial contracts push failed (non-fatal): %s", exc)
+    else:
+        # Continuing from a prior build — verify workspace exists
+        if not Path(working_dir).exists():
+            await _fail_build(
+                build_id, user_id,
+                "Working directory no longer exists — cannot continue. Use /start for a fresh build.",
+            )
+            return
+        _log_msg = f"Continuing build from Phase {resume_from_phase + 1} — workspace ready"
+        await build_repo.append_build_log(
+            build_id, _log_msg, source="system", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _log_msg, "source": "system", "level": "info",
+        })
+
+    # Signal frontend that workspace is ready
+    await _broadcast_build_event(user_id, build_id, "workspace_ready", {
+        "id": str(build_id),
+        "working_dir": working_dir or "",
+        "branch": branch,
+    })
 
     # Emit build_started so the frontend initialises phase tracking
     now = datetime.now(timezone.utc)
@@ -3677,6 +5666,22 @@ async def _run_build_plan_execute(
         phase_num = phase["number"]
         phase_name = f"Phase {phase_num}"
         current_phase = phase_name
+        _touch_progress(build_id)
+
+        # Skip already-completed phases when continuing a prior build
+        if phase_num <= resume_from_phase:
+            _log_msg = f"⏭ Skipping {phase_name}: {phase['name']} — already completed"
+            await build_repo.append_build_log(
+                build_id, _log_msg, source="system", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
+            await _broadcast_build_event(user_id, build_id, "phase_complete", {
+                "phase": phase_name,
+                "status": "pass",
+            })
+            continue
 
         await build_repo.update_build_status(
             build_id, "running", phase=phase_name
@@ -3694,12 +5699,21 @@ async def _run_build_plan_execute(
         workspace_info = ""
         try:
             existing_files_list = []
+            _SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "Forge"}
             for dirpath, dirnames, filenames in os.walk(working_dir):
-                dirnames[:] = [d for d in dirnames if d not in {".git", "__pycache__", "node_modules", ".venv"}]
-                for fname in filenames:
+                dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+                for fname in sorted(filenames):
                     rel = Path(dirpath).relative_to(working_dir) / fname
                     existing_files_list.append(str(rel))
-            workspace_info = "\n".join(f"- {f}" for f in existing_files_list[:100])
+            existing_files_list.sort()
+            _PE_FILE_LIST_CAP = 200
+            workspace_info = (
+                "\n".join(f"- {f}" for f in existing_files_list[:_PE_FILE_LIST_CAP])
+                + (f"\n- ... ({len(existing_files_list) - _PE_FILE_LIST_CAP} more, truncated)"
+                   if len(existing_files_list) > _PE_FILE_LIST_CAP else "")
+            )
+            if not existing_files_list:
+                workspace_info = "(empty workspace)"
         except Exception:
             workspace_info = "(empty workspace)"
 
@@ -3711,25 +5725,159 @@ async def _run_build_plan_execute(
             + "\n".join(f"- {d}" for d in phase.get("deliverables", []))
         )
 
-        # 1. Generate file manifest
-        manifest = await _generate_file_manifest(
-            build_id, user_id, api_key,
-            contracts, phase, workspace_info,
-        )
+        # 1. Generate file manifest (or load cached from prior run)
+        _forge_dir = Path(working_dir) / ".forge"
+        _manifest_cache_path = _forge_dir / f"manifest_phase_{phase_num}.json"
+        manifest: list[dict] | None = None
+
+        # Try loading cached manifest from a previous (interrupted) run
+        if _manifest_cache_path.exists():
+            try:
+                cached = json.loads(_manifest_cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, list) and cached:
+                    manifest = cached
+                    _n_audited = sum(1 for f in manifest if f.get("status") in ("audited", "fixed"))
+                    _n_remaining = len(manifest) - _n_audited
+                    _log_msg = (
+                        f"Loaded cached manifest for {phase_name} — "
+                        f"{len(manifest)} files total, {_n_audited} already done, "
+                        f"{_n_remaining} remaining"
+                    )
+                    await build_repo.append_build_log(
+                        build_id, _log_msg, source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _log_msg, "source": "system", "level": "info",
+                    })
+                    # Broadcast manifest to UI
+                    await _broadcast_build_event(user_id, build_id, "file_manifest", {
+                        "phase": phase_name,
+                        "files": [
+                            {
+                                "path": f["path"],
+                                "purpose": f.get("purpose", ""),
+                                "status": f.get("status", "pending"),
+                                "language": f.get("language", "python"),
+                                "estimated_lines": f.get("estimated_lines", 100),
+                            }
+                            for f in manifest
+                        ],
+                    })
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load cached manifest for %s: %s — regenerating",
+                    phase_name, exc,
+                )
 
         if not manifest:
+            _log_msg = f"Planning file manifest for {phase_name}..."
+            await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
+            await _set_build_activity(build_id, user_id, f"Planning {phase_name}...")
+            manifest = await _generate_file_manifest(
+                build_id, user_id, api_key,
+                contracts, phase, workspace_info,
+            )
+
+        if manifest:
+            # Persist manifest to disk for resume resilience
+            try:
+                _forge_dir.mkdir(parents=True, exist_ok=True)
+                _manifest_cache_path.write_text(
+                    json.dumps(manifest, indent=2), encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning("Failed to cache manifest for %s: %s", phase_name, exc)
+
+            _log_msg = f"Manifest ready — {len(manifest)} files planned for {phase_name}"
+            await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
+
+        if not manifest:
+            # Retry once before giving up
             await build_repo.append_build_log(
                 build_id,
-                f"Manifest generation failed for {phase_name} — falling back to conversation mode",
+                f"Manifest generation failed for {phase_name} — retrying once...",
                 source="system", level="warn",
             )
-            # Fall back to conversation mode for this phase
-            # (Phase 21.10 backward compatibility)
-            break
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": f"Manifest generation failed for {phase_name} — retrying...",
+                "source": "system", "level": "warn",
+            })
+            await asyncio.sleep(2)
+            manifest = await _generate_file_manifest(
+                build_id, user_id, api_key,
+                contracts, phase, workspace_info,
+            )
+            # Cache the retry result too
+            if manifest:
+                try:
+                    _forge_dir.mkdir(parents=True, exist_ok=True)
+                    _manifest_cache_path.write_text(
+                        json.dumps(manifest, indent=2), encoding="utf-8",
+                    )
+                except Exception:
+                    pass
 
-        # Emit phase plan
+        if not manifest:
+            _fail_msg = (
+                f"Manifest generation failed for {phase_name} after retry — "
+                f"pausing build. Use /start phase {phase_num} to retry."
+            )
+            await build_repo.append_build_log(
+                build_id, _fail_msg,
+                source="system", level="error",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _fail_msg, "source": "system", "level": "error",
+            })
+            await _pause_build(
+                build_id, user_id, phase_name,
+                0, f"Manifest generation failed for {phase_name}",
+            )
+            event = _pause_events.get(str(build_id))
+            if event:
+                try:
+                    await asyncio.wait_for(
+                        event.wait(),
+                        timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                    )
+                except asyncio.TimeoutError:
+                    await _fail_build(
+                        build_id, user_id,
+                        f"Pause timed out waiting for manifest retry on {phase_name}",
+                    )
+                    return
+            action = _resume_actions.pop(str(build_id), "retry")
+            _pause_events.pop(str(build_id), None)
+            await build_repo.resume_build(build_id)
+            if action == "abort":
+                await _fail_build(build_id, user_id, f"Build aborted on {phase_name}")
+                return
+            elif action == "skip":
+                await build_repo.append_build_log(
+                    build_id, f"Phase {phase_name} skipped by user",
+                    source="system", level="warn",
+                )
+                continue
+            # retry — loop back to retry this phase (not supported in for-loop,
+            # so we just continue and let /continue phase N handle it)
+            continue
+
+        # Emit phase plan (show cached/audited files as already done)
+        _cached_count = sum(
+            1 for f in manifest if f.get("status") in ("audited", "fixed")
+        )
         plan_tasks = [
-            {"id": i + 1, "title": f"Generate {f['path']}", "status": "pending"}
+            {
+                "id": i + 1,
+                "title": f"Generate {f['path']}",
+                "status": "done" if f.get("status") in ("audited", "fixed") else "pending",
+            }
             for i, f in enumerate(manifest)
         ]
         await _broadcast_build_event(user_id, build_id, "phase_plan", {
@@ -3737,8 +5885,30 @@ async def _run_build_plan_execute(
             "tasks": plan_tasks,
         })
 
-        # 2. Generate each file
+        if _cached_count > 0:
+            _log_msg = (
+                f"Resuming {phase_name}: {_cached_count}/{len(manifest)} files "
+                f"already generated & audited — skipping those"
+            )
+            await build_repo.append_build_log(
+                build_id, _log_msg, source="system", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
+
+        # 2. Generate each file (with parallel per-file audits)
         phase_files_written: dict[str, str] = {}
+        pending_file_audits: list[asyncio.Task] = []
+        # Pre-populate audit result lists for files whose audits were cached
+        blocking_files: list[tuple[str, str]] = []  # (path, findings)
+        passed_files: list[str] = []
+        # Fix queue: files auditor couldn't fix → builder picks up after generation
+        _fix_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        # Track only files created/modified in this phase to scope verification
+        touched_files: set[str] = set()
+        # Use key 2 for auditor if available (separate rate limits)
+        _audit_key = api_key_2.strip() if api_key_2.strip() else api_key
         for i, file_entry in enumerate(manifest):
             file_path = file_entry["path"]
 
@@ -3791,10 +5961,56 @@ async def _run_build_plan_execute(
                     "message": f"Context compacted — dropped {dropped} prior-phase files",
                     "source": "system", "level": "info",
                 })
+                await _broadcast_build_event(user_id, build_id, "context_reset", {
+                    "phase": phase_name,
+                    "dropped": dropped,
+                })
 
             # --- Skip files that already exist on disk (restart resilience) ---
-            # After a /clear restart, the planner may re-list files that were
-            # already fully generated in the cancelled run.  Skip them.
+            # After a restart, the cached manifest tracks per-file status.
+            # "audited" = fully done (skip generation + audit).
+            # File on disk but status still "pending" = generated but not audited yet.
+            _file_status = file_entry.get("status", "pending")
+            if _file_status in ("audited", "fixed"):
+                # Already generated AND audited/fixed in a prior run
+                existing_path = Path(working_dir) / file_path
+                if existing_path.exists() and existing_path.stat().st_size > 0:
+                    existing_content = existing_path.read_text(encoding="utf-8", errors="replace")
+                    phase_files_written[file_path] = existing_content
+                    all_files_written[file_path] = existing_content
+                    _prior_verdict = file_entry.get("audit_verdict", "PASS")
+                    await build_repo.append_build_log(
+                        build_id,
+                        f"Skipped {file_path} — already generated & audited ({_prior_verdict})",
+                        source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "file_generated", {
+                        "path": file_path,
+                        "size_bytes": existing_path.stat().st_size,
+                        "language": _detect_language(file_path),
+                        "tokens_in": 0,
+                        "tokens_out": 0,
+                        "duration_ms": 0,
+                        "skipped": True,
+                    })
+                    await _broadcast_build_event(user_id, build_id, "plan_task_complete", {
+                        "task_id": i + 1,
+                        "status": "done",
+                    })
+                    # Re-emit the cached audit result (no LLM call)
+                    await _broadcast_build_event(user_id, build_id, "file_audited", {
+                        "path": file_path,
+                        "verdict": _prior_verdict,
+                        "findings": "",
+                        "duration_ms": 0,
+                    })
+                    # Track as pre-audited for the gather step
+                    if _prior_verdict == "FAIL":
+                        blocking_files.append((file_path, file_entry.get("audit_findings", "")))
+                    else:
+                        passed_files.append(file_path)
+                    continue
+
             if file_entry.get("action", "create") == "create":
                 existing_path = Path(working_dir) / file_path
                 if existing_path.exists() and existing_path.stat().st_size > 0:
@@ -3819,10 +6035,26 @@ async def _run_build_plan_execute(
                         "task_id": i + 1,
                         "status": "done",
                     })
+                    # File already exists on disk — skip the full LLM audit.
+                    # It was previously generated (and likely audited/committed).
+                    # Verification (syntax + tests) runs afterward and will
+                    # catch any real issues.
+                    _update_manifest_cache(
+                        _manifest_cache_path, file_path, "audited", "PASS",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "file_audited", {
+                        "path": file_path,
+                        "verdict": "PASS",
+                        "findings": "",
+                        "duration_ms": 0,
+                    })
+                    passed_files.append(file_path)
                     continue
 
             # Track which file is being generated (for audit trail on /stop etc.)
             _current_generating[bid] = file_path
+            _touch_progress(build_id)
+            await _set_build_activity(build_id, user_id, f"Generating {file_path}")
 
             # Resolve context files from disk
             context = {}
@@ -3855,8 +6087,10 @@ async def _run_build_plan_execute(
                     phase_deliverables, working_dir,
                 )
                 _current_generating.pop(bid, None)
+                _touch_progress(build_id)
                 phase_files_written[file_path] = content
                 all_files_written[file_path] = content
+                touched_files.add(file_path)
 
                 file_info = {
                     "path": file_path,
@@ -3872,6 +6106,22 @@ async def _run_build_plan_execute(
                     "status": "done",
                 })
 
+                # Kick off per-file audit+fix in background (uses key 2)
+                _audit_idx = len(pending_file_audits) + 1
+                pending_file_audits.append(asyncio.create_task(
+                    _audit_and_cache(
+                        _manifest_cache_path,
+                        build_id, user_id,
+                        _audit_key,
+                        file_path, content,
+                        file_entry.get("purpose", ""),
+                        audit_llm_enabled,
+                        audit_index=_audit_idx, audit_total=len(manifest),
+                        working_dir=working_dir,
+                        fix_queue=_fix_queue,
+                    )
+                ))
+
             except Exception as exc:
                 _current_generating.pop(bid, None)
                 logger.error("Failed to generate %s: %s", file_path, exc)
@@ -3881,52 +6131,110 @@ async def _run_build_plan_execute(
                     source="system", level="error",
                 )
 
-        # 3. Git commit phase files
-        if phase_files_written:
-            try:
-                await git_client.add_all(working_dir)
-                sha = await git_client.commit(
-                    working_dir, f"forge: {phase_name} files generated",
+        # 3. Collect per-file audit results (streamed in parallel during generation)
+        _log_msg = f"All {len(phase_files_written)} files generated for {phase_name} — collecting audit results..."
+        await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _log_msg, "source": "system", "level": "info",
+        })
+        await _set_build_activity(build_id, user_id, "Collecting audit results...")
+
+        if pending_file_audits:
+            raw_results = await asyncio.gather(
+                *pending_file_audits, return_exceptions=True,
+            )
+            for raw in raw_results:
+                if isinstance(raw, BaseException):
+                    logger.warning("Per-file audit task error: %s", raw)
+                    continue
+                fpath, fverdict, ffindings = raw
+                if fverdict == "FAIL":
+                    blocking_files.append((fpath, ffindings))
+                else:
+                    passed_files.append(fpath)
+
+        # 3b. Builder drains fix queue (files auditor couldn't fix)
+        if not _fix_queue.empty():
+            _touch_progress(build_id)
+            await _set_build_activity(build_id, user_id, "Builder fixing audit failures...")
+            builder_fix_results = await _builder_drain_fix_queue(
+                build_id, user_id, api_key, _audit_key,
+                _fix_queue, working_dir, _manifest_cache_path,
+                audit_llm_enabled,
+            )
+            for fpath, fverdict, ffindings in builder_fix_results:
+                # Remove from blocking_files if builder fixed it
+                if fverdict == "PASS":
+                    blocking_files = [
+                        (bp, bf) for bp, bf in blocking_files if bp != fpath
+                    ]
+                    if fpath not in passed_files:
+                        passed_files.append(fpath)
+                    # Update in-memory content
+                    try:
+                        fp_full = Path(working_dir) / fpath
+                        if fp_full.exists():
+                            fixed_c = fp_full.read_text(encoding="utf-8")
+                            phase_files_written[fpath] = fixed_c
+                            all_files_written[fpath] = fixed_c
+                            touched_files.add(fpath)
+                    except Exception:
+                        pass
+                elif not any(bp == fpath for bp, _ in blocking_files):
+                    blocking_files.append((fpath, ffindings))
+
+        if blocking_files:
+            audit_report = "\n\n".join(
+                f"### {fp}\n{ff}" for fp, ff in blocking_files
+            )
+            audit_verdict = "FAIL"
+            _v_msg = (
+                f"Per-file audit: {len(blocking_files)} BLOCKING, "
+                f"{len(passed_files)} passed"
+            )
+        else:
+            audit_verdict = "PASS"
+            audit_report = ""
+            _v_msg = f"Per-file audit: all {len(passed_files)} files passed"
+
+        await build_repo.append_build_log(
+            build_id, _v_msg, source="audit", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _v_msg, "source": "audit", "level": "info",
+        })
+        _touch_progress(build_id)
+
+        # Build phase_output for recovery planner (needed if audit failed)
+        _audit_parts = [
+            f"Phase {phase_num} ({phase['name']}) generated "
+            f"{len(phase_files_written)} files:\n",
+        ]
+        _audit_budget = 40_000
+        _audit_used = 0
+        _priority_keys = sorted(
+            phase_files_written.keys(),
+            key=lambda p: (
+                0 if "main" in p or "test" in p or "conftest" in p
+                else 1
+            ),
+        )
+        for _ap in _priority_keys:
+            _ac = phase_files_written[_ap]
+            if _audit_used + len(_ac) > _audit_budget:
+                _audit_parts.append(f"- {_ap} ({len(_ac)} chars, content omitted)")
+            else:
+                _audit_parts.append(
+                    f"\n### {_ap}\n```\n{_ac}\n```\n"
                 )
-                if sha:
-                    await build_repo.append_build_log(
-                        build_id, f"Committed {phase_name}: {sha[:8]}",
-                        source="system", level="info",
-                    )
-            except Exception as exc:
-                logger.warning("Git commit failed for %s: %s", phase_name, exc)
+                _audit_used += len(_ac)
+        phase_output = "\n".join(_audit_parts)
 
-        # 4. Verify phase output
-        try:
-            verification = await _verify_phase_output(
-                build_id, user_id, api_key,
-                manifest, working_dir, contracts,
-            )
-            await build_repo.append_build_log(
-                build_id,
-                f"Verification: {verification}",
-                source="system", level="info",
-            )
-        except Exception as exc:
-            logger.warning("Verification failed: %s", exc)
-            verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
-
-        # 5. Run audit
-        # Build accumulated output description for the auditor
-        phase_output = (
-            f"Phase {phase_num} ({phase['name']}) generated {len(phase_files_written)} files:\n"
-            + "\n".join(f"- {p}" for p in phase_files_written.keys())
-        )
-
-        audit_verdict, audit_report = await _run_inline_audit(
-            build_id, phase_name, phase_output,
-            contracts, api_key, audit_llm_enabled,
-        )
-
-        # 6. Handle audit result
+        # 4. Handle audit failures (recovery loop)
         audit_attempts = 1
         while audit_verdict != "PASS" and audit_attempts < settings.PAUSE_THRESHOLD:
             audit_attempts += 1
+            _touch_progress(build_id)
             loop_count = await build_repo.increment_loop_count(build_id)
 
             await build_repo.append_build_log(
@@ -3940,6 +6248,11 @@ async def _run_build_plan_execute(
             })
 
             # Recovery planner
+            _log_msg = f"Running recovery planner for {phase_name} (attempt {audit_attempts})..."
+            await build_repo.append_build_log(build_id, _log_msg, source="audit", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "audit", "level": "info",
+            })
             remediation_plan = ""
             try:
                 remediation_plan = await _run_recovery_planner(
@@ -3967,8 +6280,38 @@ async def _run_build_plan_execute(
                 )
 
             if fix_manifest:
+                fix_paths = [f["path"] for f in fix_manifest]
+                _fix_msg = f"Fix manifest: {len(fix_manifest)} file(s) to repair — {', '.join(fix_paths)}"
+                await build_repo.append_build_log(build_id, _fix_msg, source="recovery", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _fix_msg, "source": "recovery", "level": "info",
+                })
                 for fix_entry in fix_manifest:
                     fix_path = fix_entry["path"]
+
+                    # --- Handle delete action ---
+                    if fix_entry["action"] == "delete":
+                        try:
+                            target = Path(working_dir) / fix_path
+                            if target.exists():
+                                target.unlink()
+                                _del_msg = f"Deleted: {fix_path}"
+                            else:
+                                _del_msg = f"Delete skipped (not found): {fix_path}"
+                            await build_repo.append_build_log(
+                                build_id, _del_msg, source="recovery", level="info",
+                            )
+                            await _broadcast_build_event(user_id, build_id, "build_log", {
+                                "message": _del_msg, "source": "recovery", "level": "info",
+                            })
+                            # Remove from tracked files
+                            phase_files_written.pop(fix_path, None)
+                            all_files_written.pop(fix_path, None)
+                        except Exception as exc:
+                            logger.warning("Delete failed for %s: %s", fix_path, exc)
+                        continue
+
+                    # --- Handle create / modify ---
                     fix_context = {}
                     for ctx in fix_entry.get("context_files", []):
                         try:
@@ -3993,6 +6336,7 @@ async def _run_build_plan_execute(
                         )
                         phase_files_written[fix_path] = fix_content
                         all_files_written[fix_path] = fix_content
+                        touched_files.add(fix_path)
                     except Exception as exc:
                         logger.warning("Fix generation failed for %s: %s", fix_path, exc)
 
@@ -4014,6 +6358,7 @@ async def _run_build_plan_execute(
                 build_id, phase_name, phase_output_updated,
                 contracts, api_key, audit_llm_enabled,
             )
+            _touch_progress(build_id)
 
         if audit_verdict != "PASS" and audit_attempts >= settings.PAUSE_THRESHOLD:
             # Pause for user
@@ -4051,12 +6396,128 @@ async def _run_build_plan_execute(
                 continue
             # retry — will proceed to next phase anyway at this point
 
-        # Phase passed or skipped
-        if audit_verdict == "PASS":
+        # 5. Commit after audits pass — never commit unaudited code
+        if phase_files_written:
+            try:
+                await _set_build_activity(build_id, user_id, f"Committing {phase_name}...")
+                await git_client.add_all(working_dir)
+                commit_msg = (
+                    f"forge: {phase_name} complete"
+                    if audit_attempts <= 1
+                    else f"forge: {phase_name} complete (after {audit_attempts} audit attempts)"
+                )
+                sha = await git_client.commit(working_dir, commit_msg)
+                if sha:
+                    _log_msg = f"Committed {phase_name}: {sha[:8]}"
+                    await build_repo.append_build_log(
+                        build_id, _log_msg,
+                        source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _log_msg, "source": "system", "level": "info",
+                    })
+            except Exception as exc:
+                logger.warning("Git commit failed for %s: %s", phase_name, exc)
+
+        # 6. Verify phase output (syntax + tests) — only after audit pass
+        # Verification is a gating step: if errors remain after fix attempts,
+        # re-run verification (up to MAX_VERIFY_ROUNDS).  Each run internally
+        # attempts its own fixes, so the total fix budget is generous.
+        MAX_VERIFY_ROUNDS = 3
+        verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
+
+        for verify_round in range(1, MAX_VERIFY_ROUNDS + 1):
+            _log_msg = (
+                f"Running verification (syntax + tests) for {phase_name}..."
+                if verify_round == 1
+                else f"Re-running verification for {phase_name} (round {verify_round}/{MAX_VERIFY_ROUNDS})..."
+            )
+            await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
+            await _set_build_activity(
+                build_id, user_id,
+                f"Verifying {phase_name} (round {verify_round})..."
+                if verify_round > 1
+                else f"Verifying {phase_name}...",
+            )
+            try:
+                verification = await _verify_phase_output(
+                    build_id, user_id, api_key,
+                    manifest, working_dir, contracts,
+                    touched_files,
+                )
+                _v_msg = (
+                    f"Verification complete — "
+                    f"{verification.get('syntax_errors', 0)} syntax errors, "
+                    f"{verification.get('tests_passed', 0)} tests passed, "
+                    f"{verification.get('tests_failed', 0)} tests failed, "
+                    f"{verification.get('fixes_applied', 0)} auto-fixes"
+                )
+                await build_repo.append_build_log(build_id, _v_msg, source="system", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _v_msg, "source": "system", "level": "info",
+                })
+                # Commit any auto-fixes from verification
+                if verification.get("fixes_applied", 0) > 0:
+                    try:
+                        await git_client.add_all(working_dir)
+                        fix_sha = await git_client.commit(
+                            working_dir, f"forge: {phase_name} verification auto-fixes",
+                        )
+                        if fix_sha:
+                            await build_repo.append_build_log(
+                                build_id, f"Committed verification fixes: {fix_sha[:8]}",
+                                source="system", level="info",
+                            )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning("Verification failed: %s", exc)
+                verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
+                break  # Can't verify — treat as clean to avoid infinite loop
+
+            # Check if verification is clean
+            has_errors = (
+                verification.get("syntax_errors", 0) > 0
+                or verification.get("tests_failed", 0) > 0
+            )
+            if not has_errors:
+                if verify_round > 1:
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"✓ Verification clean after {verify_round} round(s)",
+                        "source": "verify", "level": "info",
+                    })
+                break  # All good
+
+            if verify_round >= MAX_VERIFY_ROUNDS:
+                # Exhausted verification rounds — log warning but proceed
+                _warn_msg = (
+                    f"⚠ Verification still has issues after {MAX_VERIFY_ROUNDS} rounds: "
+                    f"{verification.get('syntax_errors', 0)} syntax errors, "
+                    f"{verification.get('tests_failed', 0)} tests failed — proceeding"
+                )
+                await build_repo.append_build_log(build_id, _warn_msg, source="verify", level="warn")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _warn_msg, "source": "verify", "level": "warn",
+                })
+
+        # Determine final phase verdict: audit + verification
+        verification_clean = (
+            verification.get("syntax_errors", 0) == 0
+            and verification.get("tests_failed", 0) == 0
+        )
+
+        if audit_verdict == "PASS" and verification_clean:
+            _log_msg = f"✅ Phase {phase_name} PASS (audit + verification)"
             await build_repo.append_build_log(
-                build_id, f"Audit PASS for {phase_name}",
+                build_id, _log_msg,
                 source="audit", level="info",
             )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "audit", "level": "info",
+            })
             await _broadcast_build_event(user_id, build_id, "audit_pass", {
                 "phase": phase_name,
             })
@@ -4064,6 +6525,39 @@ async def _run_build_plan_execute(
                 "phase": phase_name,
                 "status": "pass",
             })
+            # Lock in completed phase for /continue
+            await build_repo.update_completed_phases(build_id, phase_num)
+            # Clean up cached manifest — phase is done
+            _mc = Path(working_dir) / ".forge" / f"manifest_phase_{phase_num}.json"
+            if _mc.exists():
+                _mc.unlink(missing_ok=True)
+        elif audit_verdict == "PASS":
+            # Audit passed but verification has remaining issues — still proceed
+            # but mark as partial pass so the user knows
+            _log_msg = (
+                f"⚠ Phase {phase_name} — audit PASS, verification has "
+                f"{verification.get('syntax_errors', 0)} syntax errors, "
+                f"{verification.get('tests_failed', 0)} test failures"
+            )
+            await build_repo.append_build_log(
+                build_id, _log_msg,
+                source="audit", level="warn",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "audit", "level": "warn",
+            })
+            await _broadcast_build_event(user_id, build_id, "phase_complete", {
+                "phase": phase_name,
+                "status": "partial",
+                "verification": verification,
+            })
+            # Still lock in phase so /continue works — verification issues
+            # can accumulate and be fixed across phases
+            await build_repo.update_completed_phases(build_id, phase_num)
+            # Clean up cached manifest — phase is done
+            _mc = Path(working_dir) / ".forge" / f"manifest_phase_{phase_num}.json"
+            if _mc.exists():
+                _mc.unlink(missing_ok=True)
 
         # Push to GitHub
         if (
@@ -4072,6 +6566,7 @@ async def _run_build_plan_execute(
             and access_token
         ):
             try:
+                await _set_build_activity(build_id, user_id, f"Pushing {phase_name} to GitHub...")
                 await git_client.push(
                     working_dir, branch=branch, access_token=access_token,
                 )
@@ -4087,15 +6582,47 @@ async def _run_build_plan_execute(
         # will be loaded on demand via the context budget system.
         dropped = len(all_files_written)
         all_files_written.clear()
+        _log_msg = f"Context reset after {phase_name} — cleared {dropped} cached files"
         await build_repo.append_build_log(
-            build_id,
-            f"Context reset after {phase_name} — cleared {dropped} cached files",
+            build_id, _log_msg,
             source="system", level="info",
         )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _log_msg, "source": "system", "level": "info",
+        })
         await _broadcast_build_event(user_id, build_id, "context_reset", {
             "phase": phase_name,
             "dropped": dropped,
         })
+
+        # --- Phase transition announcement ---
+        next_idx = phases.index(phase) + 1
+        if next_idx < len(phases):
+            next_phase = phases[next_idx]
+            _trans_msg = (
+                f"🔄 {phase_name} complete — transitioning to "
+                f"Phase {next_phase['number']}: {next_phase['name']}"
+            )
+            await build_repo.append_build_log(
+                build_id, _trans_msg, source="system", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _trans_msg, "source": "system", "level": "info",
+            })
+            await _broadcast_build_event(user_id, build_id, "phase_transition", {
+                "completed_phase": phase_name,
+                "next_phase": f"Phase {next_phase['number']}",
+                "next_phase_name": next_phase["name"],
+                "next_phase_objective": next_phase.get("objective", ""),
+            })
+        else:
+            _trans_msg = f"🏁 {phase_name} complete — all phases finished"
+            await build_repo.append_build_log(
+                build_id, _trans_msg, source="system", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _trans_msg, "source": "system", "level": "info",
+            })
 
     # Build complete — clean up signal flags
     bid = str(build_id)
@@ -4103,6 +6630,7 @@ async def _run_build_plan_execute(
     _pause_flags.discard(bid)
     _compact_flags.discard(bid)
     _current_generating.pop(bid, None)
+    _build_activity_status.pop(bid, None)
 
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(

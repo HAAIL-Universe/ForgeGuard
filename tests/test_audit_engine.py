@@ -6,6 +6,7 @@ from app.audit.engine import (
     check_boundary_compliance,
     check_dependency_gate,
     check_secrets_scan,
+    check_python_syntax,
     run_all_checks,
 )
 
@@ -89,9 +90,23 @@ class TestSecretsScan:
         assert result["result"] == "PASS"
 
 
+class TestPythonSyntax:
+    def test_pass_clean_python(self):
+        files = {"app/main.py": "def ok():\n    return 1"}
+        result = check_python_syntax(files)
+        assert result["result"] == "PASS"
+        assert result["check_code"] == "A0"
+
+    def test_fail_bad_python(self):
+        files = {"app/bad.py": "def oops(:\n    pass"}
+        result = check_python_syntax(files)
+        assert result["result"] == "FAIL"
+        assert "bad.py" in result["detail"]
+
+
 class TestRunAllChecks:
-    def test_returns_three_results(self):
+    def test_returns_four_results(self):
         results = run_all_checks({"app/main.py": "import os"}, None)
-        assert len(results) == 3
+        assert len(results) == 4
         codes = {r["check_code"] for r in results}
-        assert codes == {"A4", "A9", "W1"}
+        assert codes == {"A0", "A4", "A9", "W1"}

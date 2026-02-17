@@ -339,8 +339,9 @@ def test_generate_contracts_incomplete(mock_project, mock_get_user):
 @patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
 @patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock, return_value=[])
 def test_generate_contracts_success(
-    mock_gen, mock_ws, mock_status, mock_upsert, mock_project, mock_get_user
+    mock_existing, mock_gen, mock_ws, mock_status, mock_upsert, mock_project, mock_get_user
 ):
     mock_get_user.return_value = MOCK_USER
     mock_gen.return_value = ("# generated content", {"input_tokens": 100, "output_tokens": 200})

@@ -13,6 +13,7 @@ from app.api.routers.builds import router as builds_router
 from app.api.routers.health import router as health_router
 from app.api.routers.projects import router as projects_router
 from app.api.routers.repos import router as repos_router
+from app.api.routers.scout import router as scout_router
 from app.api.routers.webhooks import router as webhooks_router
 from app.api.routers.ws import router as ws_router
 from app.config import settings
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     application.include_router(webhooks_router)
     application.include_router(ws_router)
     application.include_router(audit_router)
+    application.include_router(scout_router)
     return application
 
 

@@ -50,6 +50,10 @@ interface Props {
   onClose: () => void;
   onContractsGenerated: () => void;
   onDismissDuringGeneration?: () => void;
+  /** When true, open directly into contract-generation view */
+  initialGenerating?: boolean;
+  /** Contracts already completed during background generation */
+  initialDoneContracts?: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -354,10 +358,176 @@ function ProgressBar({ completed, current }: { completed: string[]; current: str
 }
 
 /* ------------------------------------------------------------------ */
+/*  Message formatting helpers                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Insert paragraph breaks into LLM text that arrives as a single block.
+ * Looks for sentence-ending punctuation followed by transition phrases
+ * that signal a new topic (e.g. "Now let's", "Moving on", "Next,").
+ * Also breaks before the final question sentence(s).
+ */
+function addParagraphBreaks(text: string): string {
+  // If it already has paragraph breaks, leave it alone
+  if (/\n\n/.test(text)) return text;
+
+  // Transition phrases that signal a new section mid-text
+  const transitions = [
+    /([.!])\s+(Now let['']?s\b)/gi,
+    /([.!])\s+(Let['']?s (?:talk|move|discuss|define|look|think|design|set up)\b)/gi,
+    /([.!])\s+(Moving (?:on|forward)\b)/gi,
+    /([.!])\s+(Next[,:]?\s)/gi,
+    /([.!])\s+(For (?:the|your|this)\b)/gi,
+    /([.!])\s+(What (?:REST|API|UI|deployment|specific)\b)/gi,
+  ];
+
+  let result = text;
+  for (const re of transitions) {
+    result = result.replace(re, '$1\n\n$2');
+  }
+
+  // Break before the last question if there's a sentence boundary before it
+  // Find the last ". <sentence with ?>" pattern
+  const lastQ = result.lastIndexOf('?');
+  if (lastQ > 0) {
+    // Walk backwards from lastQ to find the start of the question sentence
+    const before = result.slice(0, lastQ);
+    // Find the last ". " that precedes the question — but only if it's
+    // not already after a paragraph break
+    const sentenceEnd = before.lastIndexOf('. ');
+    if (sentenceEnd > 0) {
+      const afterDot = result.slice(sentenceEnd + 2);
+      const beforeDot = result.slice(0, sentenceEnd + 1);
+      // Only break if the question sentence actually contains '?'
+      // and we're not already at a paragraph break
+      if (afterDot.includes('?') && !beforeDot.endsWith('\n\n')) {
+        result = beforeDot + '\n\n' + afterDot;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Split assistant text into paragraphs + a trailing question.
+ * Each double-newline-separated block becomes its own visual paragraph.
+ * The last paragraph containing '?' is pulled out as the question.
+ */
+function splitMessage(text: string): { paragraphs: string[]; question: string | null } {
+  const expanded = addParagraphBreaks(text);
+  const parts = expanded.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return { paragraphs: [], question: null };
+  if (parts.length === 1) {
+    return parts[0].includes('?')
+      ? { paragraphs: [], question: parts[0] }
+      : { paragraphs: [parts[0]], question: null };
+  }
+  // Walk backwards to find the last paragraph with a '?'
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].includes('?')) {
+      return {
+        paragraphs: parts.slice(0, i),
+        question: parts.slice(i).join('\n\n'),
+      };
+    }
+  }
+  return { paragraphs: parts, question: null };
+}
+
+const bodyBubbleStyle: React.CSSProperties = {
+  padding: '10px 14px',
+  borderRadius: '10px',
+  background: '#0F172A',
+  color: '#CBD5E1',
+  fontSize: '0.82rem',
+  lineHeight: '1.5',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+};
+
+const questionBubbleStyle: React.CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: '10px',
+  background: 'rgba(37,99,235,0.4)',
+  color: '#CBD5E1',
+  fontSize: '0.85rem',
+  lineHeight: '1.5',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  fontWeight: 500,
+};
+
+/** Render an assistant message with paragraphs separated and question highlighted. */
+function AssistantBubble({ content }: { content: string }) {
+  const { paragraphs, question } = splitMessage(content);
+  return (
+    <div
+      style={{
+        alignSelf: 'flex-start',
+        maxWidth: '88%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+      }}
+    >
+      {paragraphs.map((p, i) => (
+        <div key={i} style={bodyBubbleStyle}>{p}</div>
+      ))}
+      {question && (
+        <div style={questionBubbleStyle}>{question}</div>
+      )}
+    </div>
+  );
+}
+
+/** Compact user "sent" indicator instead of a full chat bubble. */
+function UserBubble({ content }: { content: string }) {
+  const preview = content.length > 80 ? content.slice(0, 77) + '…' : content;
+  return (
+    <div
+      style={{
+        alignSelf: 'flex-end',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '6px 12px',
+        borderRadius: '12px',
+        background: 'rgba(37,99,235,0.12)',
+        maxWidth: '85%',
+      }}
+      title={content}
+    >
+      <span
+        style={{
+          color: '#94A3B8',
+          fontSize: '0.78rem',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {preview}
+      </span>
+      <span
+        style={{
+          color: '#22C55E',
+          fontSize: '0.75rem',
+          flexShrink: 0,
+          fontWeight: 600,
+        }}
+      >
+        ✓
+      </span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
-function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenerated, onDismissDuringGeneration }: Props) {
+function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenerated, onDismissDuringGeneration, initialGenerating, initialDoneContracts }: Props) {
   const { token } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -371,7 +541,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
   const [error, setError] = useState('');
   const [resetting, setResetting] = useState(false);
   const [tokenUsage, setTokenUsage] = useState({ input_tokens: 0, output_tokens: 0 });
-  const [generatingContracts, setGeneratingContracts] = useState(false);
+  const [generatingContracts, setGeneratingContracts] = useState(initialGenerating ?? false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const loadedRef = useRef(false);
@@ -539,15 +709,17 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
         <div style={headerStyle}>
           <div>
             <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#F8FAFC' }}>
-              Project Intake — {projectName}
+              {generatingContracts ? `Generating Contracts — ${projectName}` : `Project Intake — ${projectName}`}
             </h3>
-            <p style={{ margin: '2px 0 0', fontSize: '0.7rem', color: '#64748B' }}>
-              {qState.is_complete
-                ? 'All sections complete ✓'
-                : qState.current_section
-                  ? `Section: ${SECTION_LABELS[qState.current_section] ?? qState.current_section}`
-                  : 'Starting...'}
-            </p>
+            {!generatingContracts && (
+              <p style={{ margin: '2px 0 0', fontSize: '0.7rem', color: '#64748B' }}>
+                {qState.is_complete
+                  ? 'All sections complete ✓'
+                  : qState.current_section
+                    ? `Section: ${SECTION_LABELS[qState.current_section] ?? qState.current_section}`
+                    : 'Starting...'}
+              </p>
+            )}
             <p style={{ margin: '2px 0 0', fontSize: '0.6rem', color: '#475569', letterSpacing: '0.3px' }}>
               Model: claude-sonnet-4-5
             </p>
@@ -584,7 +756,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           </div>
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
             {/* Restart questionnaire */}
-            <button
+            {!generatingContracts && <button
               onClick={async () => {
                 if (!confirm('Restart the questionnaire? All answers will be cleared.')) return;
                 setResetting(true);
@@ -621,7 +793,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
               }}
             >
               ↻ Restart
-            </button>
+            </button>}
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               {generatingContracts && (
                 <span style={{ color: '#64748B', fontSize: '0.65rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -642,30 +814,20 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           </div>
         </div>
 
-        {/* Progress bar */}
-        <ProgressBar completed={qState.completed_sections} current={qState.current_section} />
+        {/* Progress bar — hidden during contract generation */}
+        {!generatingContracts && (
+          <ProgressBar completed={qState.completed_sections} current={qState.current_section} />
+        )}
 
-        {/* Messages */}
-        <div style={messagesStyle} data-testid="questionnaire-messages">
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              style={{
-                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                maxWidth: '85%',
-                padding: '10px 14px',
-                borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                background: msg.role === 'user' ? '#2563EB' : '#0F172A',
-                color: '#F8FAFC',
-                fontSize: '0.85rem',
-                lineHeight: '1.45',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {msg.content}
-            </div>
-          ))}
+        {/* Messages — hidden during contract generation */}
+        {!generatingContracts && <div style={messagesStyle} data-testid="questionnaire-messages">
+          {messages.map((msg, i) =>
+            msg.role === 'assistant' ? (
+              <AssistantBubble key={i} content={msg.content} />
+            ) : (
+              <UserBubble key={i} content={msg.content} />
+            )
+          )}
 
           {sending && (
             <div
@@ -683,23 +845,26 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           )}
 
           <div ref={messagesEndRef} />
-        </div>
+        </div>}
 
         {/* Error */}
-        {error && (
+        {!generatingContracts && error && (
           <div style={{ padding: '0 20px 8px', color: '#EF4444', fontSize: '0.75rem' }} data-testid="questionnaire-error">
             {error}
           </div>
         )}
 
-        {/* Contract generation progress */}
+        {/* Contract generation progress — takes over the full body */}
         {generatingContracts && (
-          <ContractProgress
-            projectId={projectId}
-            tokenUsage={tokenUsage}
-            model="claude-sonnet-4-5"
-            onComplete={onContractsGenerated}
-          />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' as const, minHeight: 0, overflow: 'auto' }}>
+            <ContractProgress
+              projectId={projectId}
+              tokenUsage={tokenUsage}
+              model="claude-sonnet-4-5"
+              onComplete={onContractsGenerated}
+              initialDone={initialDoneContracts}
+            />
+          </div>
         )}
 
         {/* Generate contracts banner */}
@@ -734,8 +899,8 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           </div>
         )}
 
-        {/* Input bar */}
-        <div style={inputBarStyle}>
+        {/* Input bar — hidden during contract generation */}
+        {!generatingContracts && <div style={inputBarStyle}>
           {/* Mic button */}
           {micSupported && (
             <button
@@ -794,7 +959,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
           >
             Send
           </button>
-        </div>
+        </div>}
       </div>
 
       {/* Pulse animation for mic */}

@@ -1,6 +1,16 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 
+/** Extract a human-readable message from a FastAPI error response body. */
+function extractError(body: Record<string, unknown>, fallback: string): string {
+  const d = body.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) {
+    return d.map((e: Record<string, unknown>) => String(e.msg ?? e.message ?? JSON.stringify(e))).join('; ');
+  }
+  return fallback;
+}
+
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 type SourceType = 'github' | 'local';
@@ -180,7 +190,7 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
           });
           if (!repoRes.ok) {
             const d = await repoRes.json().catch(() => ({}));
-            setError(d.detail || 'Failed to create GitHub repo');
+            setError(extractError(d, 'Failed to create GitHub repo'));
             setLoading(false);
             return;
           }
@@ -207,7 +217,7 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
             });
             if (!connRes.ok) {
               const d = await connRes.json().catch(() => ({}));
-              setError(d.detail || 'Failed to connect repo');
+              setError(extractError(d, 'Failed to connect repo'));
               setLoading(false);
               return;
             }
@@ -233,7 +243,7 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
-        setError(d.detail || 'Failed to create project');
+        setError(extractError(d, 'Failed to create project'));
         setLoading(false);
         return;
       }
@@ -306,10 +316,16 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Brief project description..."
-            rows={2}
+            rows={3}
+            maxLength={2000}
             data-testid="project-desc-input"
             style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
           />
+          {description.length > 0 && (
+            <span style={{ display: 'block', textAlign: 'right', color: description.length > 1800 ? '#FBBF24' : '#64748B', fontSize: '0.7rem', marginTop: '2px' }}>
+              {description.length}/2000
+            </span>
+          )}
         </label>
 
         {/* ---- Source toggle ---- */}

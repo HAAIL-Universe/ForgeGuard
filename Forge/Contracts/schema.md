@@ -256,6 +256,30 @@ CREATE INDEX idx_build_costs_build_id ON build_costs(build_id);
 
 ---
 
+### contract_snapshots
+
+Stores versioned snapshots of generated contracts, archived before each regeneration. Each batch captures a complete set of contracts for diffing and consistency testing.
+
+```sql
+CREATE TABLE contract_snapshots (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    batch           INTEGER NOT NULL,
+    contract_type   VARCHAR(50) NOT NULL,
+    content         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`batch` is an auto-incrementing integer per project (1, 2, 3…). Each batch captures all 9 contract types as they existed before the next regeneration.
+
+```sql
+CREATE INDEX idx_contract_snapshots_project_batch ON contract_snapshots(project_id, batch);
+CREATE INDEX idx_contract_snapshots_project ON contract_snapshots(project_id);
+```
+
+---
+
 ## Schema -> Phase Traceability
 
 | Table | Repo Created In | Wired To Caller In | Notes |
@@ -269,6 +293,7 @@ CREATE INDEX idx_build_costs_build_id ON build_costs(build_id);
 | builds | Phase 9 | Phase 9 | Build orchestration runs |
 | build_logs | Phase 9 | Phase 9 | Streaming builder output |
 | build_costs | Phase 11 | Phase 11 | Token usage and cost tracking |
+| contract_snapshots | Phase 31 | Phase 31 | Contract version history snapshots |
 
 ---
 
@@ -286,4 +311,7 @@ db/migrations/
   006_user_api_key.sql
   007_audit_llm_toggle.sql
   008_build_targets.sql\n  009_build_pause.sql
+  010_build_branch.sql
+  011_user_api_key_2.sql
+  013_contract_snapshots.sql
 ```

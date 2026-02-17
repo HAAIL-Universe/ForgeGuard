@@ -21,17 +21,18 @@ async def create_build(
     working_dir: str | None = None,
     branch: str = "main",
     build_mode: str = "plan_execute",
+    contract_batch: int | None = None,
 ) -> dict:
     """Create a new build record in pending status."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO builds (project_id, phase, status, target_type, target_ref, working_dir, branch, build_mode)
-        VALUES ($1, 'Phase 0', 'pending', $2, $3, $4, $5, $6)
+        INSERT INTO builds (project_id, phase, status, target_type, target_ref, working_dir, branch, build_mode, contract_batch)
+        VALUES ($1, 'Phase 0', 'pending', $2, $3, $4, $5, $6, $7)
         RETURNING id, project_id, phase, status, target_type, target_ref,
-                  working_dir, branch, build_mode, started_at, completed_at,
+                  working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                   loop_count, error_detail, created_at,
-                  paused_at, pause_reason, pause_phase
+                  paused_at, pause_reason, pause_phase, completed_phases
         """,
         project_id,
         target_type,
@@ -39,6 +40,7 @@ async def create_build(
         working_dir,
         branch,
         build_mode,
+        contract_batch,
     )
     return dict(row)
 
@@ -49,9 +51,9 @@ async def get_build_by_id(build_id: UUID) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
-               working_dir, branch, build_mode, started_at, completed_at,
+               working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                loop_count, error_detail, created_at,
-               paused_at, pause_reason, pause_phase
+               paused_at, pause_reason, pause_phase, completed_phases
         FROM builds WHERE id = $1
         """,
         build_id,
@@ -65,9 +67,9 @@ async def get_latest_build_for_project(project_id: UUID) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
-               working_dir, branch, build_mode, started_at, completed_at,
+               working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                loop_count, error_detail, created_at,
-               paused_at, pause_reason, pause_phase
+               paused_at, pause_reason, pause_phase, completed_phases
         FROM builds WHERE project_id = $1
         ORDER BY created_at DESC LIMIT 1
         """,
@@ -82,9 +84,9 @@ async def get_builds_for_project(project_id: UUID) -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT id, project_id, phase, status, target_type, target_ref,
-               working_dir, branch, build_mode, started_at, completed_at,
+               working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                loop_count, error_detail, created_at,
-               paused_at, pause_reason, pause_phase
+               paused_at, pause_reason, pause_phase, completed_phases
         FROM builds WHERE project_id = $1
         ORDER BY created_at DESC
         """,
@@ -195,6 +197,16 @@ async def pause_build(
         phase,
     )
     return result == "UPDATE 1"
+
+
+async def update_completed_phases(build_id: UUID, phase_num: int) -> None:
+    """Record the highest completed phase number for build continuation."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE builds SET completed_phases = $2 WHERE id = $1",
+        build_id,
+        phase_num,
+    )
 
 
 async def resume_build(build_id: UUID) -> bool:

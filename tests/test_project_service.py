@@ -299,9 +299,10 @@ async def test_cancel_contract_generation_success(mock_project):
 @patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
 @patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock, return_value=[])
 @patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
 async def test_generate_contracts_cancelled_mid_generation(
-    mock_project, mock_upsert, mock_status, mock_ws, mock_gen
+    mock_project, mock_existing, mock_upsert, mock_status, mock_ws, mock_gen
 ):
     """Cancellation stops generation and raises ContractCancelled."""
     pid = str(PROJECT_ID)

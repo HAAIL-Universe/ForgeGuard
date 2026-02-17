@@ -126,6 +126,7 @@ async def push(
     remote: str = "origin",
     branch: str = "main",
     access_token: str | None = None,
+    force_with_lease: bool = False,
 ) -> None:
     """Push all commits to the remote."""
     env = {}
@@ -145,7 +146,40 @@ async def push(
         except RuntimeError:
             pass
 
-    await _run_git(["push", "-u", remote, branch], cwd=repo_path, env=env if env else None)
+    cmd = ["push", "-u", remote, branch]
+    if force_with_lease:
+        cmd.insert(1, "--force-with-lease")
+    await _run_git(cmd, cwd=repo_path, env=env if env else None)
+
+
+async def pull_rebase(
+    repo_path: str | Path,
+    *,
+    remote: str = "origin",
+    branch: str = "main",
+    access_token: str | None = None,
+) -> None:
+    """Pull with rebase to integrate remote changes before pushing."""
+    env = {}
+    if access_token:
+        env["GIT_ASKPASS"] = "echo"
+        try:
+            remote_url = await _run_git(["remote", "get-url", remote], cwd=repo_path)
+            if "github.com" in remote_url and "@" not in remote_url:
+                authed_url = remote_url.replace(
+                    "https://", f"https://{access_token}@"
+                )
+                await _run_git(
+                    ["remote", "set-url", remote, authed_url], cwd=repo_path
+                )
+        except RuntimeError:
+            pass
+
+    await _run_git(
+        ["pull", "--rebase", "--allow-unrelated-histories", remote, branch],
+        cwd=repo_path,
+        env=env if env else None,
+    )
 
 
 async def set_remote(
@@ -217,3 +251,22 @@ async def diff_summary(
             if len(diff) > remaining:
                 combined += "\n... (truncated)"
     return combined
+
+
+async def log_oneline(
+    repo_path: str | Path,
+    *,
+    max_count: int = 50,
+) -> list[str]:
+    """Return recent commit messages (one per line, newest first).
+
+    Each entry is the full ``--format=%s`` subject line.
+    """
+    try:
+        raw = await _run_git(
+            ["log", f"--max-count={max_count}", "--format=%s"],
+            cwd=repo_path,
+        )
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+    except RuntimeError:
+        return []

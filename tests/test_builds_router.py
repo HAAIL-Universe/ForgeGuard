@@ -85,7 +85,52 @@ def test_start_build(mock_get_user, mock_start, client):
         _PROJECT_ID, _USER["id"],
         target_type=None, target_ref=None,
         branch="main",
+        contract_batch=None,
     )
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_with_contract_batch(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build with contract_batch passes it to service."""
+    mock_limiter.is_allowed.return_value = True
+    mock_get_user.return_value = _USER
+    mock_start.return_value = _build()
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build",
+        headers=_auth_header(),
+        json={"contract_batch": 3},
+    )
+
+    assert resp.status_code == 200
+    mock_start.assert_called_once_with(
+        _PROJECT_ID, _USER["id"],
+        target_type=None, target_ref=None,
+        branch="main",
+        contract_batch=3,
+    )
+
+
+@patch("app.api.routers.builds.build_limiter")
+@patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_start_build_snapshot_batch_not_found(mock_get_user, mock_start, mock_limiter, client):
+    """POST /projects/{id}/build returns 404 when snapshot batch doesn't exist."""
+    mock_limiter.is_allowed.return_value = True
+    mock_get_user.return_value = _USER
+    mock_start.side_effect = ValueError("Snapshot batch 99 not found")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build",
+        headers=_auth_header(),
+        json={"contract_batch": 99},
+    )
+
+    # "not found" in the message triggers the 404 branch in the router
+    assert resp.status_code == 404
+    assert "Snapshot batch" in resp.json()["detail"]
 
 
 @patch("app.api.routers.builds.build_service.start_build", new_callable=AsyncMock)

@@ -224,6 +224,7 @@ function BuildProgress() {
   const [noBuild, setNoBuild] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
+  const [phasesExpanded, setPhasesExpanded] = useState(true);
   const [buildFiles, setBuildFiles] = useState<BuildFile[]>([]);
   const [filesExpanded, setFilesExpanded] = useState(true);
   const [planTasks, setPlanTasks] = useState<PlanTask[]>([]);
@@ -1100,7 +1101,7 @@ function BuildProgress() {
                 lineHeight: 1,
               }}
             >
-              🛠
+              🖥
             </button>
             {build?.status === 'completed' && (
               <button
@@ -1203,71 +1204,79 @@ function BuildProgress() {
           {/* ======== LEFT: Phase Checklist + Files ======== */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ ...cardStyle, padding: '12px 16px' }}>
-            <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#F8FAFC' }}>
-              Phases ({doneCount}/{totalPhases})
-            </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              {(phaseStates.size > 0
-                ? Array.from(phaseStates.entries()).sort((a, b) => a[0] - b[0]).map(([num, ps]) => ({ num, ps }))
-                : phaseDefs.map((d) => ({ num: d.number, ps: { def: d, status: 'pending' as PhaseStatus, input_tokens: 0, output_tokens: 0, elapsed_ms: 0 } }))
-              ).map(({ num, ps }) => {
-                const isExp = expandedPhase === num;
-                const isActivePhase = ps.status === 'active';
-                const phaseElapsed = ps.elapsed_ms > 0 ? `${Math.floor(ps.elapsed_ms / 60000)}m ${Math.floor((ps.elapsed_ms % 60000) / 1000)}s` : '';
+            <div
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: phasesExpanded ? '12px' : 0 }}
+              onClick={() => setPhasesExpanded(!phasesExpanded)}
+            >
+              <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
+                Phases ({doneCount}/{totalPhases})
+              </h3>
+              <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: phasesExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+            </div>
+            {phasesExpanded && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {(phaseStates.size > 0
+                  ? Array.from(phaseStates.entries()).sort((a, b) => a[0] - b[0]).map(([num, ps]) => ({ num, ps }))
+                  : phaseDefs.map((d) => ({ num: d.number, ps: { def: d, status: 'pending' as PhaseStatus, input_tokens: 0, output_tokens: 0, elapsed_ms: 0 } }))
+                ).map(({ num, ps }) => {
+                  const isExp = expandedPhase === num;
+                  const isActivePhase = ps.status === 'active';
+                  const phaseElapsed = ps.elapsed_ms > 0 ? `${Math.floor(ps.elapsed_ms / 60000)}m ${Math.floor((ps.elapsed_ms % 60000) / 1000)}s` : '';
 
-                return (
-                  <div key={num}>
-                    <div
-                      style={phaseRowStyle(isActivePhase)}
-                      onClick={() => setExpandedPhase(isExp ? null : num)}
-                    >
-                      {/* Status icon */}
-                      <span style={{ color: STATUS_COLOR[ps.status], fontSize: '1rem', width: '20px', textAlign: 'center', flexShrink: 0 }}>
-                        {isActivePhase ? (
-                          <span style={{ display: 'inline-block', animation: 'spin 1.2s linear infinite' }}>◐</span>
-                        ) : (
-                          STATUS_ICON[ps.status]
+                  return (
+                    <div key={num}>
+                      <div
+                        style={phaseRowStyle(isActivePhase)}
+                        onClick={() => setExpandedPhase(isExp ? null : num)}
+                      >
+                        {/* Status icon */}
+                        <span style={{ color: STATUS_COLOR[ps.status], fontSize: '1rem', width: '20px', textAlign: 'center', flexShrink: 0 }}>
+                          {isActivePhase ? (
+                            <span style={{ display: 'inline-block', animation: 'spin 1.2s linear infinite' }}>◐</span>
+                          ) : (
+                            STATUS_ICON[ps.status]
+                          )}
+                        </span>
+
+                        {/* Phase name + objective */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '0.8rem', fontWeight: 600, color: STATUS_COLOR[ps.status] }}>
+                            Phase {num} — {ps.def.name}
+                          </div>
+                          <div style={{ fontSize: '0.68rem', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {ps.def.objective}
+                          </div>
+                        </div>
+
+                        {/* Per-phase tokens (when done) */}
+                        {ps.status === 'pass' && (ps.input_tokens > 0 || ps.output_tokens > 0) && (
+                          <div style={{ fontSize: '0.6rem', color: '#64748B', textAlign: 'right', flexShrink: 0 }}>
+                            <div>{ps.input_tokens.toLocaleString()} in</div>
+                            <div>{ps.output_tokens.toLocaleString()} out</div>
+                            {phaseElapsed && <div>{phaseElapsed}</div>}
+                          </div>
                         )}
-                      </span>
 
-                      {/* Phase name + objective */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: STATUS_COLOR[ps.status] }}>
-                          Phase {num} — {ps.def.name}
-                        </div>
-                        <div style={{ fontSize: '0.68rem', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {ps.def.objective}
-                        </div>
+                        {/* Expand chevron */}
+                        <span style={{ color: '#475569', fontSize: '0.65rem', flexShrink: 0, transition: 'transform 0.15s', transform: isExp ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
                       </div>
 
-                      {/* Per-phase tokens (when done) */}
-                      {ps.status === 'pass' && (ps.input_tokens > 0 || ps.output_tokens > 0) && (
-                        <div style={{ fontSize: '0.6rem', color: '#64748B', textAlign: 'right', flexShrink: 0 }}>
-                          <div>{ps.input_tokens.toLocaleString()} in</div>
-                          <div>{ps.output_tokens.toLocaleString()} out</div>
-                          {phaseElapsed && <div>{phaseElapsed}</div>}
+                      {/* Expanded deliverables */}
+                      {isExp && ps.def.deliverables.length > 0 && (
+                        <div style={{ paddingLeft: '40px', paddingRight: '12px', paddingBottom: '8px' }}>
+                          {ps.def.deliverables.map((d, i) => (
+                            <div key={i} style={{ fontSize: '0.68rem', color: '#94A3B8', paddingTop: '3px', display: 'flex', gap: '6px' }}>
+                              <span style={{ color: '#475569' }}>•</span>
+                              <span>{d}</span>
+                            </div>
+                          ))}
                         </div>
                       )}
-
-                      {/* Expand chevron */}
-                      <span style={{ color: '#475569', fontSize: '0.65rem', flexShrink: 0, transition: 'transform 0.15s', transform: isExp ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
                     </div>
-
-                    {/* Expanded deliverables */}
-                    {isExp && ps.def.deliverables.length > 0 && (
-                      <div style={{ paddingLeft: '40px', paddingRight: '12px', paddingBottom: '8px' }}>
-                        {ps.def.deliverables.map((d, i) => (
-                          <div key={i} style={{ fontSize: '0.68rem', color: '#94A3B8', paddingTop: '3px', display: 'flex', gap: '6px' }}>
-                            <span style={{ color: '#475569' }}>•</span>
-                            <span>{d}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* ======== Build Plan Panel ======== */}
@@ -1343,7 +1352,7 @@ function BuildProgress() {
                         flexShrink: 0,
                         animation: f.status === 'generating' ? 'pulse 1.5s infinite' : 'none',
                       }}>
-                        {f.status === 'done' ? '✓' : f.status === 'generating' ? '⟳' : f.status === 'error' ? '✗' : '○'}
+                        {f.status === 'done' ? '✓' : f.status === 'generating' ? '⏳' : f.status === 'error' ? '✗' : '○'}
                       </span>
                       <span style={{ color: f.status === 'done' ? '#22C55E' : '#94A3B8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {f.path}

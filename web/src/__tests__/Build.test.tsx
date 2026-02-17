@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+
+declare const global: typeof globalThis;
+
 import PhaseProgressBar from '../components/PhaseProgressBar';
 import BuildLogViewer from '../components/BuildLogViewer';
 import BuildAuditCard from '../components/BuildAuditCard';

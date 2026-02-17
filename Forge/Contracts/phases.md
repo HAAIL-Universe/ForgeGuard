@@ -1,3 +1,25 @@
+# Appendix -- DB-Backed Build Staging
+
+**Objective:** Make build resume/recovery reliable by persisting manifests and generated files in Postgres (Neon) instead of relying on temp directories.
+
+**Schema additions (Render/Neon compatible):**
+- `build_phase_manifests`: build_id (uuid), phase_num (int), manifest_json (jsonb), created_at.
+- `build_phase_files`: build_id (uuid), phase_num (int), path (text), status (enum pending|written|verified|pushed), content (bytea or text), sha (text), created_at, updated_at. Index on (build_id, phase_num, path) and partial index on status != 'pushed'.
+
+**Write path:**
+- After planner emits a manifest, upsert into `build_phase_manifests`.
+- Each generated file immediately upserts into `build_phase_files` with content + sha, status `written`; set to `verified` after clean verification; set to `pushed` after successful git push/commit.
+
+**Resume (/start, orphan recovery):**
+- First query `build_phase_files` for latest build: if rows exist with status not `pushed`, rehydrate files onto disk (respect sha to avoid overwrites), and derive resume_from_phase from max verified/pushed phase or git log fallback.
+- If manifest exists for the active phase, reuse; otherwise regenerate.
+- If temp dir is missing, reconstruct workspace from DB rows before continuing.
+
+**Cleanup:**
+- After a phase push succeeds, delete or archive that phase's `build_phase_files` rows (keep manifest rows optionally); add a periodic purge window (e.g., 14–30 days) and clean on project deletion.
+
+**Safety/perf notes:**
+- Cap stored file size; skip generated/vendor paths (node_modules, __pycache__, hidden dirs); avoid storing secrets; use pooling for Render→Neon connections; compress text if needed.
 # ForgeGuard -- Phases
 
 Canonical phase plan. Each phase is self-contained, shippable, and auditable. The builder contract (S1) requires completing phases in strict order. No phase may begin until the previous phase passes audit.
@@ -1420,3 +1442,807 @@ Provide concrete expected improvements to validate after implementation.
 - `BUILD_MODE` feature flag correctly switches between old and new architectures
 - All existing tests still pass + all new unit/integration/frontend tests pass
 - `run_audit.ps1` passes all checks
+
+---
+
+## Phase 22 -- Headless IDE Runtime: Tool Contract & Scaffold
+
+**Objective:** Define the strict input/output JSON schema for every IDE tool, create the `app/ide/` package structure, and establish the dispatch mechanism. This is the foundation for deterministic autonomy — every tool call and result is structured, validated, and predictable.
+
+**Background — why a headless IDE:**
+
+The plan-execute architecture (Phase 21) eliminated the quadratic context growth problem, but the builder still operates blind: in plan-execute mode it has **zero runtime tools** — it's a one-shot text generator that can't read existing code, can't search, can't run diagnostics, and can't verify its own output. Verification and audit happen as post-hoc batch steps where the auditor *guesses* whether things work because it can't actually inspect file contents.
+
+A headless IDE gives the builder and auditor structured, deterministic tools for reading, searching, patching, running, and diagnosing code — without a user interface. Every tool returns structured JSON (never raw strings), every invocation is logged, and every output is stable and reproducible.
+
+**What exists today vs what the IDE provides:**
+
+| Capability | Today | After IDE |
+|-----------|-------|-----------|
+| File reading | Raw strings (conversation mode only, none in plan-execute) | Structured JSON with line ranges, language, encoding |
+| Code search | Basic regex, 50-result cap, raw text output | Ripgrep-powered, structured matches with context lines |
+| File writing | Full-file rewrites only | Unified diff patches for modifications, full writes for creates |
+| Verification | Post-hoc `ast.parse` + pytest batch | Inline diagnostics via pyright/ruff, parsed test results |
+| Audit insight | LLM guessing from file list | Structured diagnostics, test results, import validation |
+| Context assembly | Raw file dumps with char-based budget | Intelligent context packs with relevance scoring |
+| Command execution | Raw stdout strings | Structured JSON with deterministic log parsing |
+| Audit trail | Build logs (text) | Per-operation structured records in DB |
+
+---
+
+### Deliverables
+
+#### 22.1 — Package scaffold
+
+- `app/ide/__init__.py` — package docstring, public API exports
+- `app/ide/contracts.py` — Pydantic models for every tool request/response:
+  - `ToolRequest(name: str, params: dict)` → `ToolResponse(success: bool, data: dict, error: str | None, duration_ms: int)`
+  - Response `data` is always structured JSON — never raw strings
+  - Standard response fields (only populated when relevant to the tool):
+    - `paths: list[str]`
+    - `line_ranges: list[LineRange]`
+    - `snippets: list[Snippet]`
+    - `diffs: list[UnifiedDiff]`
+    - `exit_codes: list[int]`
+    - `diagnostics: list[Diagnostic]`
+  - Shared sub-models: `LineRange(start, end)`, `Snippet(path, start_line, end_line, content)`, `Diagnostic(file, line, column, message, severity, code)`, `UnifiedDiff(path, hunks, insertions, deletions)`
+
+#### 22.2 — Tool registry
+
+- `app/ide/registry.py` — tool registry mapping tool names to async handler functions
+  - `Registry.register(name, handler, request_schema, response_schema)` — registers a tool with strict schema validation
+  - `Registry.dispatch(name, params, workspace) → ToolResponse` — validates input against schema, calls handler, validates output against schema, measures duration
+  - `Registry.list_tools() → list[ToolDefinition]` — returns Anthropic-compatible tool definitions for LLM calls
+  - Schema validation on both input and output — malformed results are caught early, not silently passed to the LLM
+
+#### 22.3 — Error hierarchy
+
+- `app/ide/errors.py` — typed error classes:
+  - `IDEError(Exception)` — base class
+  - `SandboxViolation(IDEError)` — path outside workspace
+  - `ToolTimeout(IDEError)` — command exceeded timeout
+  - `ParseError(IDEError)` — failed to parse tool output
+  - `PatchConflict(IDEError)` — diff hunk doesn't match target
+  - `ToolNotFound(IDEError)` — unknown tool name
+
+#### 22.4 — Backward compatibility layer
+
+- Define contracts for all 7 existing tools (`read_file`, `write_file`, `list_directory`, `search_code`, `run_tests`, `check_syntax`, `run_command`) in the new schema
+- Create adapter functions that wrap existing `tool_executor.py` handlers and return `ToolResponse` objects
+- Existing call sites continue to work unchanged — the new registry calls the same underlying handlers but wraps results in structured responses
+
+#### 22.5 — Tests
+
+- Schema validation (valid + invalid inputs/outputs)
+- Registry dispatch (happy path, unknown tool, schema mismatch)
+- Error hierarchy (each error type, serialisation)
+- Backward compat (all 7 existing tools through the new registry)
+
+**Exit criteria:**
+- Every tool has a Pydantic request and response model
+- The registry dispatches by name with validated input/output
+- Existing tools work through the compat layer with identical behaviour
+- All new + existing tests pass
+
+---
+
+## Phase 23 -- Headless IDE Runtime: Workspace & Sandbox Primitives
+
+**Objective:** Centralise workspace management — root enforcement, safe path resolution, git operations, and workspace metadata caching. Currently path sandboxing is scattered across `tool_executor.py` with no shared workspace concept.
+
+---
+
+### Deliverables
+
+#### 23.1 — Workspace class
+
+- `app/ide/workspace.py` — `Workspace` class:
+  - Constructor: `Workspace(root_path: str | Path)` — validates the root exists and is a directory
+  - `resolve(relative_path: str) → Path` — safe path resolution with sandbox enforcement. Replaces `_resolve_sandboxed` from tool_executor.py. Rejects absolute paths, `..` traversal, symlink escapes, and paths outside `root_path`.
+  - `file_tree(ignore_patterns: list[str] | None = None) → list[FileEntry]` — recursive directory listing respecting `.gitignore` + configurable ignores (`.venv`, `node_modules`, `__pycache__`, `.git`). Result cached with TTL (default 30s), invalidated on file write.
+  - `workspace_summary() → WorkspaceSummary` — `{file_count, total_size_bytes, languages: dict[str, int], last_modified: datetime}`. Cached with TTL.
+  - `is_within(path: str | Path) → bool` — constant-time sandbox check (no I/O)
+  - `FileEntry` model: `{path: str, is_dir: bool, size_bytes: int, language: str, last_modified: datetime}`
+
+#### 23.2 — Structured git operations
+
+- `app/ide/git_ops.py` — wraps existing `app/clients/git_client.py` but returns structured `ToolResponse` objects:
+  - `git_clone(url, dest, branch?, shallow?) → ToolResponse{data: {path, branch, commit}}`
+  - `git_init(path) → ToolResponse{data: {path, branch}}`
+  - `git_branch_create(name) → ToolResponse{data: {name, from_ref}}`
+  - `git_branch_checkout(name) → ToolResponse{data: {name}}`
+  - `git_status() → ToolResponse{data: {staged: [], unstaged: [], untracked: []}}`
+  - `git_diff(ref_a?, ref_b?) → ToolResponse{data: {files_changed, insertions, deletions, patches: [UnifiedDiff]}}`
+  - `git_commit(message) → ToolResponse{data: {sha, message, files_changed}}`
+  - `git_push(remote?, branch?, force?) → ToolResponse{data: {remote, branch, pushed}}`
+  - `git_pull(remote?, branch?) → ToolResponse{data: {remote, branch, updated}}`
+  - All return structured JSON — not raw output strings
+
+#### 23.3 — Refactor tool_executor.py
+
+- Replace `_resolve_sandboxed` calls with `Workspace.resolve()`
+- One `Workspace` instance per build, passed through to all tools
+- No functional changes to existing tool behaviour — only the path resolution implementation changes
+
+#### 23.4 — Tests
+
+- Sandbox enforcement edge cases: symlinks, `..` chains, absolute paths, null bytes, Unicode paths
+- Git operation structure: each op returns correct JSON shape
+- Workspace caching: TTL expiry, invalidation on write
+- File tree: `.gitignore` filtering, configurable ignores
+- Backward compat: all existing tool_executor tests still pass
+
+**Exit criteria:**
+- Single `Workspace` instance per build
+- All path resolution goes through `Workspace.resolve()`
+- Git operations return structured `ToolResponse` objects
+- File tree respects `.gitignore` with caching
+- All tests pass
+
+---
+
+## Phase 24 -- Headless IDE Runtime: Read & Search Primitives
+
+**Objective:** Structured file reading with line ranges, ripgrep-powered code search, and an import graph index for Python. These are the perception tools — the builder's eyes.
+
+---
+
+### Deliverables
+
+#### 24.1 — Structured file reader
+
+- `app/ide/reader.py`:
+  - `read_file(path) → ToolResponse{data: {path, content, line_count, size_bytes, language, encoding}}`
+  - `read_range(path, start_line, end_line) → ToolResponse{data: {path, start_line, end_line, content, lines: [str]}}`
+  - `read_symbol(path, symbol_name) → ToolResponse{data: {path, symbol, kind, start_line, end_line, content}}` — uses `ast.parse` for Python, regex for TS/JS. Full symbol resolution improved in Phase 27.
+  - Language detection from file extension
+  - Encoding detection: UTF-8 default, fallback to latin-1, binary file detection
+  - Size limit enforcement: configurable, default 100KB
+  - All results as structured JSON with explicit line numbers
+
+#### 24.2 — Code search
+
+- `app/ide/searcher.py`:
+  - `search(pattern, glob?, is_regex?, max_results?, context_lines?) → ToolResponse{data: {matches: [Match], total_count, truncated}}`
+  - `Match` model: `{path, line, column, snippet, context_before: [str], context_after: [str]}`
+  - Uses `ripgrep` (`rg`) subprocess if available on PATH, falls back to Python `re` module
+  - `.gitignore`-aware by default (via ripgrep's built-in support, or manual parsing in fallback)
+  - Configurable context lines: default 2 before/after each match
+  - Result count capping with `truncated: bool` indicator (default 100)
+  - Structured JSON output per match — not raw grep lines
+
+#### 24.3 — File index & import graph
+
+- `app/ide/file_index.py`:
+  - Background file indexing: `FileIndex.build(workspace) → {path → FileMetadata}`
+  - `FileMetadata`: `{path, language, size_bytes, last_modified, imports: [str], exports: [str]}`
+  - Import graph for Python files via `ast.parse` of import statements: `import foo`, `from foo import bar`, `from . import baz`
+  - `get_importers(module_path) → [str]` — which files import this module
+  - `get_imports(file_path) → [str]` — what does this file import
+  - Cached per workspace, invalidated on file write (selective — only re-index changed files)
+  - Index stored in-memory (not DB) — rebuilds fast enough for workspace sizes < 10K files
+
+#### 24.4 — Tests
+
+- Read range boundaries: first line, last line, beyond EOF, single line, empty file
+- Search accuracy: literal vs regex, case sensitivity, glob filtering
+- `.gitignore` filtering: nested ignores, negation patterns
+- Encoding edge cases: UTF-8 BOM, latin-1, binary detection
+- Import graph: circular imports, relative imports, re-exports, conditional imports
+- Ripgrep fallback: test both paths (rg available / not available)
+
+**Exit criteria:**
+- Builder can read arbitrary line ranges, search with context, and query the import graph
+- All results are structured JSON with explicit line numbers and metadata
+- Search uses ripgrep when available for performance
+- Import graph correctly maps Python module dependencies
+- All tests pass
+
+---
+
+## Phase 25 -- Headless IDE Runtime: Command Runner
+
+**Objective:** General-purpose command execution with structured output capture, timeout management, and deterministic log summarisation. No LLM involved — parsers are pure regex/structural.
+
+---
+
+### Deliverables
+
+#### 25.1 — Command runner
+
+- `app/ide/runner.py`:
+  - `run(command, timeout_s?, cwd?, env?) → RunResult`
+  - `RunResult` model: `{exit_code, stdout, stderr, duration_ms, truncated: bool, killed: bool}`
+  - Streaming capture with configurable buffer sizes (default 50KB stdout, 10KB stderr)
+  - Process kill on timeout: SIGTERM → wait 5s → SIGKILL (platform-aware: Windows uses `taskkill`)
+  - Command allowlist enforcement: inherits and extends current `_validate_command` logic from tool_executor.py
+  - Command injection prevention: block `;`, `|`, `&`, backticks, `$()`, `{}`
+  - Environment variable isolation: can pass custom env without leaking host secrets
+
+#### 25.2 — Deterministic log parsers
+
+- `app/ide/log_parser.py` — no LLM, just regex/structural parsing:
+  - `summarise_pytest(stdout) → PytestSummary{total, passed, failed, errors, skipped, failures: [{test_name, file, line, message}], duration_s, collection_errors: [str]}`
+  - `summarise_npm_test(stdout) → NpmTestSummary{total, passed, failed, failures: [{test_name, file, message}]}`
+  - `summarise_build(stdout) → BuildSummary{success: bool, errors: [{file, line, message}], warnings: [{file, line, message}]}`
+  - `summarise_generic(stdout, stderr, max_lines?) → GenericSummary` — truncation strategy: first 50 lines + last 50 lines + all lines containing "error", "fail", "exception" (case-insensitive)
+  - All parsers return structured models — never raw text
+
+#### 25.3 — Combined run + summarise
+
+- `run_and_summarise(command, parser?) → {result: RunResult, summary: ParsedSummary}` — detects parser from command (pytest → pytest parser, npm test → npm parser, etc.), combines execution + parsing in one call
+
+#### 25.4 — Refactor existing tools
+
+- Replace `_exec_run_tests` and `_exec_run_command` in tool_executor.py with calls to the new runner
+- Test result parsing replaces raw stdout truncation in `_verify_phase_output`
+- Runner registered in IDE tool registry
+
+#### 25.5 — Tests
+
+- Timeout handling: process killed on timeout, killed flag set, partial output captured
+- Signal propagation: SIGTERM then SIGKILL sequence
+- Pytest parser: passing run, failing run, collection errors, no tests found, verbose output, parametrized tests
+- Npm test parser: vitest output, jest output, passing/failing
+- Truncation: output exceeding buffer size, error line preservation
+- Exit codes: 0 (success), 1 (failure), 137 (killed), -1 (crash)
+- Command allowlist: allowed commands pass, blocked commands rejected
+
+**Exit criteria:**
+- Every command returns structured JSON with `RunResult` model
+- Pytest and npm test output are parsed into structured summaries with individual test failures
+- No raw stdout dumps are ever sent to the LLM
+- Timeout and process kill work correctly on Windows
+- All tests pass
+
+---
+
+## Phase 26 -- Headless IDE Runtime: Patch Engine
+
+**Objective:** Apply surgical code changes via unified diffs instead of full-file rewrites. A one-line fix no longer requires regenerating the entire file — the single biggest token savings in the builder.
+
+---
+
+### Deliverables
+
+#### 26.1 — Patch applicator
+
+- `app/ide/patcher.py`:
+  - `apply_patch(path, unified_diff) → PatchResult`
+  - `PatchResult` model: `{success, path, hunks_applied, hunks_failed, post_content, pre_content, diff_summary}`
+  - `apply_multi_patch(patches: [{path, diff}]) → list[PatchResult]` — atomic: all succeed or all roll back
+  - Unified diff parsing: standard `---`/`+++`/`@@` format
+  - Fuzzy hunk matching: tolerates ±3 line offset (configurable) — handles cases where prior edits shifted line numbers
+  - Conflict detection: if hunk doesn't match at expected location AND fuzzy match fails, report `PatchConflict` with the expected vs actual content
+  - Rollback on failure: backup original content in memory, restore if any hunk fails
+  - Post-apply diff summary: net lines added/removed, files touched
+
+#### 26.2 — Diff generator
+
+- `app/ide/diff_generator.py`:
+  - `generate_diff(path, old_content, new_content) → UnifiedDiff` — for audit trail and LLM display
+  - `generate_multi_diff(changes: [{path, old, new}]) → list[UnifiedDiff]`
+  - 3 context lines per hunk (standard unified diff format)
+  - Line endings normalised to LF before diffing
+
+#### 26.3 — Wire into builder
+
+- Update `_generate_single_file`: for `action: "modify"` entries in the file manifest, the system prompt instructs the builder to emit a unified diff instead of full file content
+- Diff detection: if the LLM response starts with `---` or contains `@@ -`, treat as diff and apply via patch engine; otherwise treat as full file content
+- Fallback: if patch application fails (conflict), re-request as full file content
+
+#### 26.4 — Tests
+
+- Clean apply: single hunk, multi-hunk, hunk at start/end of file
+- Fuzzy matching: hunks offset by 1-3 lines, exact match preferred over fuzzy
+- Conflict detection: modified target content, deleted lines, conflicting hunks
+- Rollback: multi-patch where second patch fails, first patch rolled back
+- Atomic multi-file: 3 files, second fails, all rolled back
+- Empty diff: no changes, no error
+- Binary file rejection: binary files detected and rejected
+- Diff generation: round-trip (generate diff → apply diff = same result)
+
+**Exit criteria:**
+- Builder can emit diffs for modifications, reducing token usage per fix from full-file to patch-sized
+- Patches apply cleanly with fuzzy matching for minor line offsets
+- Failed patches roll back automatically — no corrupted files
+- Full audit trail of every change via generated diffs
+- All tests pass
+
+---
+
+## Phase 27 -- Headless IDE Runtime: Language Intelligence
+
+**Objective:** Real diagnostics and symbol resolution for Python and TypeScript/JavaScript, replacing the current `ast.parse`-only syntax check with full language server diagnostics.
+
+---
+
+### Deliverables
+
+#### 27.1 — Language server abstraction
+
+- `app/ide/lang/__init__.py` — `LanguageIntel` protocol:
+  - `get_diagnostics(path) → list[Diagnostic]`
+  - `get_symbol_outline(path) → list[Symbol]`
+  - `resolve_imports(path) → list[ImportInfo]`
+  - `Symbol` model: `{name, kind, start_line, end_line, parent: str | None}`
+  - `ImportInfo` model: `{module, names: [str], resolved_path: str | None, is_stdlib: bool}`
+
+#### 27.2 — Python intelligence
+
+- `app/ide/lang/python_intel.py`:
+  - **Diagnostics**: run `pyright --outputjson {path}` OR `ruff check --output-format json {path}` → parse JSON → `list[Diagnostic]`
+  - Preference: ruff for linting (fast, covers style + imports), pyright for type checking (optional, heavier)
+  - Fallback: `ast.parse` if neither tool available (current behaviour preserved)
+  - **Symbol outline**: `ast.parse` → extract classes, functions, methods, module-level variables with `{name, kind, start_line, end_line, parent}`
+  - **Import resolution**: parse import statements → resolve each against:
+    1. Workspace files (relative + absolute imports)
+    2. Installed packages (check `site-packages` or `pip show`)
+    3. Standard library (hardcoded module list per Python version)
+  - **Dead code detection** (informational): symbols defined in a file but never imported/referenced by any other workspace file (using the import graph from Phase 24)
+
+#### 27.3 — TypeScript/JavaScript intelligence
+
+- `app/ide/lang/typescript_intel.py`:
+  - **Diagnostics**: `npx tsc --noEmit --pretty false` → parse output → `list[Diagnostic]`
+  - **ESLint**: `npx eslint --format json {path}` → parse JSON → `list[Diagnostic]` (merged with tsc diagnostics)
+  - **Symbol outline**: regex-based extraction of exports, functions, classes, interfaces, type aliases
+  - Fallback: `node --check {path}` for basic syntax validation if tsc unavailable
+
+#### 27.4 — Unified diagnostics interface
+
+- `app/ide/diagnostics.py`:
+  - `get_diagnostics(paths?: list[str]) → DiagnosticReport{files: dict[str, list[Diagnostic]], error_count, warning_count, info_count}`
+  - Auto-detects language from file extension, routes to correct language intel
+  - Severity levels: `error`, `warning`, `info`, `hint`
+  - Diagnostic cache: per-file, invalidated when the file is written/patched
+  - `get_diagnostics()` with no args: all files with cached diagnostics (no full workspace scan unless requested)
+
+#### 27.5 — Replace current check_syntax
+
+- Current `_exec_check_syntax` in tool_executor.py (which only does `ast.parse` for Python) replaced by the full diagnostic pipeline
+- `_verify_phase_output` updated to use `get_diagnostics()` for richer error reporting
+
+#### 27.6 — Tests
+
+- Pyright JSON parsing: errors, warnings, information-level diagnostics
+- Ruff JSON parsing: lint violations, import sorting issues
+- TSC output parsing: type errors, missing module declarations
+- ESLint JSON parsing: rule violations, fixable issues
+- Symbol extraction: Python classes/functions/methods, TS exports/interfaces/types
+- Import resolution: relative imports, absolute imports, third-party, stdlib, unresolved
+- Dead code detection: unused function, unused class, unused variable
+- Diagnostic cache: cache hit, invalidation on write, TTL expiry
+
+**Exit criteria:**
+- `get_diagnostics()` returns structured errors/warnings for Python (via ruff/pyright) and TS (via tsc/eslint)
+- Symbol outlines available for Python + TS files for context assembly
+- Import validation detects unresolved imports (missing packages, typos)
+- All diagnostics are structured `Diagnostic` objects — never raw text
+- All tests pass
+
+---
+
+## Phase 28 -- Headless IDE Runtime: Context Pack Generator
+
+**Objective:** Replace raw file dumps with compact, relevant context packs assembled using the IDE's workspace intelligence. This is the token efficiency win — the builder receives exactly what it needs, nothing more.
+
+---
+
+### Deliverables
+
+#### 28.1 — Context pack generator
+
+- `app/ide/context_pack.py`:
+  - `generate_pack(task_description, target_files, workspace, budget_tokens?) → ContextPack`
+  - `ContextPack` model:
+    ```
+    {
+      repo_summary: {file_count, languages: dict, structure_tree: str},
+      target_files: [{path, content, diagnostics: [Diagnostic]}],
+      dependency_files: [{path, relevant_snippet, why: str}],
+      related_snippets: [{path, start_line, end_line, content, relevance_score}],
+      diagnostics_summary: {errors: [Diagnostic], warnings: [Diagnostic]},
+      test_failures: [{test_name, file, line, message}],
+      git_diff: {files_changed, insertions, deletions, patches: [UnifiedDiff]},
+      token_estimate: int,
+    }
+    ```
+  - **Repo summary**: cached, invalidated on file write — includes top-level file tree (not full recursive tree for large repos)
+  - **Target files**: full content of files being created/modified
+  - **Dependency files**: files referenced in manifest `depends_on` + `context_files` — only relevant snippets extracted (not full files unless small)
+  - **Related snippets**: discovered via import graph + relevance scoring (not manually declared)
+  - **Diagnostics summary**: current diagnostic state of target files
+  - **Test failures**: parsed from last test run (if available)
+  - **Git diff**: uncommitted changes relevant to the target files
+  - **Token budget enforcement**: pack is trimmed to fit within budget — lowest-relevance items dropped first
+
+#### 28.2 — Relevance scoring
+
+- `app/ide/relevance.py`:
+  - `find_related(target_path, workspace, max_results?) → list[RelatedFile]`
+  - `RelatedFile`: `{path, score: float, reason: str}`
+  - Scoring factors:
+    - Import graph distance: direct import = 1.0, transitive (2 hops) = 0.5, none = 0.0
+    - Directory proximity: same directory = 0.3, parent/child = 0.2
+    - Filename similarity: test file ↔ implementation file = 0.4
+    - File recency: recently modified files score higher (they're likely relevant to current work)
+  - Scores are additive (a file can score high on multiple factors)
+  - Replaces `_select_contracts_for_file` and `_calculate_context_budget` with a smarter system that considers code relationships, not just path prefixes
+
+#### 28.3 — Wire into plan-execute builder
+
+- Replace the current context injection in `_generate_single_file`:
+  - Instead of raw `context_files` content, generate a `ContextPack`
+  - Pack is serialised into the user message sent to the builder
+  - Token budget automatically managed by the pack generator
+- Contract selection still uses `_CONTRACT_RELEVANCE` mapping (it's orthogonal — contracts are project-level, context packs are code-level)
+- Measure token usage before/after to validate savings
+
+#### 28.4 — Tests
+
+- Relevance scoring: import-based, directory-based, name-based, recency-based
+- Token budget enforcement: pack trimmed to fit, lowest-relevance items dropped
+- Pack generation: correct fields populated, empty workspace handling
+- Caching: repo summary cached, invalidated correctly
+- Integration: pack used in `_generate_single_file`, correct context delivered
+
+**Exit criteria:**
+- Builder receives context packs instead of raw file dumps
+- Token usage per file call drops measurably (target: 30-50% reduction in input tokens)
+- Context is relevant (import-graph-aware) not exhaustive (raw dumps)
+- Pack respects token budget — no context overflow
+- All tests pass
+
+---
+
+## Phase 29 -- Headless IDE Runtime: Builder Orchestration Integration
+
+**Objective:** Wire the complete IDE runtime into the plan-execute orchestrator. The builder uses IDE tools, emits patches for modifications, runs inline diagnostics, and receives structured output. The IDE becomes the builder's hands and eyes.
+
+---
+
+### Deliverables
+
+#### 29.1 — Updated file generation
+
+- Update `_generate_single_file` system prompt:
+  - For `action: "create"` — outputs full file content (unchanged)
+  - For `action: "modify"` — emits unified diff, applied by patch engine
+  - Context comes from `ContextPack` instead of raw file content
+- Diff detection: if the LLM response starts with `---`/`+++` or contains `@@ -`, treat as diff and apply via patch engine; otherwise treat as full file content
+- Fallback: if patch application fails (conflict), re-request as full file content with error context
+
+#### 29.2 — Inline diagnostics in file loop
+
+- After each file is written/patched:
+  - Run `get_diagnostics()` on the file
+  - If diagnostics show errors: auto-fix loop using patch (not full rewrite) — up to 2 attempts
+  - Diagnostics summary included in the NEXT file's context pack (so the builder sees the current state of the codebase)
+- This replaces the post-hoc batch `_verify_phase_output` syntax check — errors are caught and fixed immediately, not at end of phase
+
+#### 29.3 — Updated phase verification
+
+- `_verify_phase_output` updated:
+  - Uses `get_diagnostics()` for all files in the manifest (replaces per-file `check_syntax`)
+  - Uses `run_and_summarise("pytest ...")` for test execution with parsed `PytestSummary`
+  - Returns structured `{diagnostics: DiagnosticReport, test_summary: PytestSummary, fixes_applied: int}` instead of raw counts
+  - Test output sent to frontend verification bar as structured data
+
+#### 29.4 — IDE tools in conversation mode
+
+- Update `BUILDER_TOOLS` in tool_executor.py with IDE tool definitions from the registry
+- Update `execute_tool_async` to route IDE tools through the registry dispatcher
+- All tool results are structured JSON via `ToolResponse` — replaces raw string returns
+- Backward compat: old tool names still work, mapped to new implementations
+
+#### 29.5 — Rate limiting & backoff
+
+- Exponential backoff on LLM API calls: 1s → 2s → 4s → 8s (max 30s)
+- Rate limiter: max N concurrent LLM calls (configurable, default 3)
+- Applied to fix loops (prevent runaway retry storms)
+- Applied to `_generate_single_file` calls (prevent overwhelming the API during rapid manifest execution)
+
+#### 29.6 — Tests
+
+- Integration: IDE-powered build loop generates files correctly
+- Patch-based modifications: modify action emits diff, applied correctly
+- Inline diagnostics: error detected after write, auto-fix attempt, fix applied
+- Structured verification: `_verify_phase_output` returns correct models
+- Conversation mode: IDE tools accessible via BUILDER_TOOLS, structured responses
+- Rate limiting: backoff timing, concurrent call limiting
+- Fallback: patch conflict → full file regeneration
+
+**Exit criteria:**
+- Plan-execute mode uses context packs for file generation
+- Modifications use patches instead of full rewrites (measurable token savings)
+- Inline diagnostics catch and fix errors immediately per file
+- Conversation mode has access to all IDE tools with structured responses
+- Rate limiting prevents API overload during fix loops
+- All tests pass
+
+---
+
+## Phase 30 -- Headless IDE Runtime: Determinism Hardening & Audit Trail
+
+**Objective:** Ensure every IDE operation produces stable, reproducible output with a complete audit trail. No flaky ordering, no leaked secrets, no non-deterministic noise.
+
+---
+
+### Deliverables
+
+#### 30.1 — Audit trail storage
+
+- `app/ide/audit_trail.py`:
+  - Every tool invocation logged: `{timestamp, tool_name, input_params, output_data, duration_ms, build_id, phase, success}`
+  - `IDEOperation` Pydantic model for structured records
+  - Stored in PostgreSQL via new `ide_operations` table
+  - Queryable: filter by build_id, phase, tool_name, success/failure
+  - Async writes — logging never blocks the tool execution
+- DB migration: `db/migrations/012_ide_operations.sql`:
+  - `ide_operations` table: `id, build_id, phase, tool_name, input_params (jsonb), output_data (jsonb), success, error_message, duration_ms, created_at`
+  - Index on `(build_id, phase)` for efficient per-build queries
+  - Index on `(tool_name, created_at)` for tool usage analytics
+
+#### 30.2 — Output stability
+
+- All IDE tool outputs are deterministically ordered:
+  - File listings: sorted alphabetically by path
+  - Search results: sorted by file path, then line number
+  - Diagnostics: sorted by file path, then line number, then severity
+  - Git diffs: sorted by file path
+  - Symbol outlines: sorted by start_line
+- All timestamps in UTC ISO 8601 format
+- All line endings normalised to LF in tool outputs
+- All paths use forward slashes (even on Windows)
+
+#### 30.3 — Noise filtering
+
+- `.gitignore`-aware everywhere (already implemented in Phase 23)
+- Auto-ignore generated/transient files: `*.pyc`, `__pycache__/`, `node_modules/`, `.venv/`, `dist/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`
+- Test output sanitisation: strip non-deterministic content:
+  - Timestamps in pytest output → replaced with `[timestamp]`
+  - Process IDs → replaced with `[pid]`
+  - Temp file paths → replaced with `[tmpdir]`
+  - Absolute workspace paths → replaced with relative paths
+
+#### 30.4 — Secret redaction
+
+- `app/ide/redactor.py`:
+  - Scan tool inputs/outputs for sensitive patterns before logging and before sending to LLM
+  - Pattern list (regex): API keys (`sk-`, `key-`, `ghp_`, `gho_`), JWT tokens, connection strings (`postgresql://`, `mysql://`), passwords (`:password@`, `PASSWORD=`), AWS keys (`AKIA`), base64-encoded secrets (long alphanumeric strings in env vars)
+  - Redaction: replace matched values with `[REDACTED]`
+  - Configurable: additional patterns can be added via settings
+  - Applied at the `ToolResponse` level — redaction happens after tool execution but before logging/broadcast
+
+#### 30.5 — Consistent diff formatting
+
+- All diffs use unified format with 3 context lines
+- Line endings normalised to LF before diffing
+- Trailing whitespace stripped from diff output
+- File paths in diffs always use forward slashes
+- No-newline-at-end-of-file marker (`\ No newline at end of file`) preserved
+
+#### 30.6 — Tests
+
+- Sort stability: same input always produces same output order
+- Secret redaction: each pattern type detected and redacted, false positive avoidance (short strings not redacted)
+- Noise filtering: timestamps stripped, PIDs stripped, temp paths normalised
+- Audit trail: operations logged, queryable by build/phase/tool, async write doesn't block
+- Diff consistency: same content always produces identical diffs across platforms
+- Path normalisation: Windows backslashes → forward slashes in all outputs
+- Migration: `012_ide_operations.sql` applies cleanly, indexes created
+
+**Exit criteria:**
+- Every IDE operation is logged with structured data in the `ide_operations` table
+- All outputs are deterministically ordered — same input always produces identical output
+- No secrets leak to LLM context or build logs
+- Non-deterministic noise (timestamps, PIDs, temp paths) is sanitised from tool outputs
+- Audit trail is queryable: "show me all tool calls for build X, phase Y"
+- All tests pass
+
+---
+
+## Phase 31 — Contract Version History
+
+**Objective:** Preserve previous contract generations as numbered snapshots so users can compare consistency across regeneration runs. Before each regeneration, the current set of contracts is archived into a `contract_snapshots` table as a versioned batch (V1, V2, V3…). The UI exposes a collapsible "Previous Versions" section under the contracts panel.
+
+**Deliverables:**
+
+#### 31.1 — Database schema
+
+- DB migration: `db/migrations/013_contract_snapshots.sql`:
+  - `contract_snapshots` table: `id (UUID PK), project_id (FK → projects), batch (INTEGER), contract_type (VARCHAR 50), content (TEXT), created_at (TIMESTAMPTZ)`
+  - Index on `(project_id, batch)` for efficient batch queries
+  - Index on `(project_id)` for project-level queries
+- `schema.md` updated with the new table definition
+
+#### 31.2 — Repository layer
+
+- `app/repos/project_repo.py`:
+  - `snapshot_contracts(project_id)` — copies all current `project_contracts` rows into `contract_snapshots` with `batch = max(existing batch) + 1` (or 1 if no snapshots exist)
+  - `get_snapshot_batches(project_id)` — returns list of `{batch, created_at, count}` for all snapshots
+  - `get_snapshot_contracts(project_id, batch)` — returns all contracts for a given batch
+
+#### 31.3 — Service layer
+
+- `app/services/project_service.py`:
+  - Before the generation loop in `generate_contracts()`, call `snapshot_contracts()` if contracts already exist for this project
+  - `list_contract_versions(user_id, project_id)` — ownership check + delegates to repo
+  - `get_contract_version(user_id, project_id, batch)` — ownership check + delegates to repo
+
+#### 31.4 — API endpoints
+
+- `app/api/routers/projects.py`:
+  - `GET /projects/{id}/contracts/history` — returns list of snapshot batches
+  - `GET /projects/{id}/contracts/history/{batch}` — returns all contracts for a specific batch
+
+#### 31.5 — Frontend
+
+- `web/src/pages/ProjectDetail.tsx`:
+  - Below the current contracts list in the expanded panel, show a collapsible "Previous Versions" section
+  - Each version row: "V{batch}" | {count} contracts | {date} | expand/collapse toggle
+  - Expanding a version shows the 9 contract type names with content viewable in a read-only modal or inline
+  - Lazy-load version content only when expanded (calls history/{batch} endpoint)
+
+#### 31.6 — Tests
+
+- `tests/test_contract_snapshots.py`:
+  - Snapshot creation: first snapshot is batch 1, subsequent increments
+  - Snapshot preserves correct content from live contracts
+  - Regeneration auto-snapshots before overwriting
+  - History list endpoint returns correct batches
+  - History detail endpoint returns correct contracts
+  - Ownership checks prevent cross-user access
+  - Empty project (no contracts) does not create empty snapshots
+- Frontend tests: existing 61 tests still pass
+
+**Schema coverage:**
+- [x] contract_snapshots (new table)
+
+**Exit criteria:**
+- Migration applies cleanly
+- Regenerating contracts automatically snapshots the previous set as a new batch
+- `GET /projects/{id}/contracts/history` returns correct batch list
+- `GET /projects/{id}/contracts/history/{batch}` returns correct contracts
+- UI shows "Previous Versions" with expand/collapse per batch
+- All existing backend tests pass + new snapshot tests pass
+- All existing frontend tests pass
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 32 — Scout Dashboard: UI Foundation & Sidebar Navigation
+
+**Objective:** Add Scout as a first-class navigation item in the sidebar and create the Scout landing page with repo listing, run history, and the ability to trigger Scout runs against connected repos. Scout wraps the existing audit engine (`app/audit/runner.py`) into a user-facing on-demand feature.
+
+**Deliverables:**
+
+#### 32.1 — Sidebar navigation section
+
+- `web/src/components/AppShell.tsx`:
+  - Add a **nav section** between the repo list and the user box (above `marginTop: auto`)
+  - Nav section has its own `borderTop` separator
+  - First nav item: Scout icon + "Scout" label
+  - Active state highlight when on `/scout` routes (blue left border, dark bg — matches repo active style)
+  - Extensible pattern for future nav items
+
+#### 32.2 — Scout page with repo selector
+
+- `web/src/pages/Scout.tsx`:
+  - Landing state: lists connected repos with health badges and "Scout Repo →" button per row
+  - Filter/search input for repos (client-side filtering)
+  - "Recent Scout Runs" section below the repo list showing last N runs across all repos
+  - Each history row: repo name, timestamp, pass/fail count, status badge
+
+#### 32.3 — Route registration
+
+- `web/src/App.tsx`:
+  - Add `/scout` route → `Scout` page (protected)
+
+#### 32.4 — Database schema for Scout runs
+
+- DB migration `db/migrations/015_scout_runs.sql`:
+  - `scout_runs` table: `id (UUID PK DEFAULT gen_random_uuid()), repo_id (UUID FK → repos), user_id (UUID FK → users), status (VARCHAR 20 DEFAULT 'pending'), hypothesis (TEXT), results (JSONB), checks_passed (INTEGER DEFAULT 0), checks_failed (INTEGER DEFAULT 0), checks_warned (INTEGER DEFAULT 0), started_at (TIMESTAMPTZ DEFAULT now()), completed_at (TIMESTAMPTZ)`
+  - Indexes: `(repo_id, started_at DESC)`, `(user_id, started_at DESC)`
+- `Forge/Contracts/schema.md` updated with `scout_runs` table definition
+
+#### 32.5 — Repository layer
+
+- `app/repos/scout_repo.py`:
+  - `create_scout_run(repo_id, user_id, hypothesis) → dict` — inserts pending run
+  - `update_scout_run(run_id, status, results, checks_passed, checks_failed, checks_warned) → dict` — updates run with results
+  - `get_scout_runs_by_user(user_id, limit=20) → list[dict]` — recent runs across all repos
+  - `get_scout_runs_by_repo(repo_id, user_id, limit=20) → list[dict]` — recent runs for one repo
+  - `get_scout_run(run_id) → dict | None` — single run detail
+
+#### 32.6 — Service layer
+
+- `app/services/scout_service.py`:
+  - `start_scout_run(user_id, repo_id, hypothesis=None) → dict` — validates ownership, creates run, kicks off audit in background task, streams progress via WS
+  - `_execute_scout(run_id, repo_id, user_id, hypothesis)` — clones repo, runs `run_audit()` with hypothesis context, updates run record, sends WS completion event
+  - `get_scout_history(user_id, repo_id=None) → list[dict]` — returns run history
+  - `get_scout_detail(user_id, run_id) → dict` — returns full run detail with check results
+  - WS events: `scout_progress` (per-check streaming), `scout_complete` (final result)
+
+#### 32.7 — API endpoints
+
+- `app/api/routers/scout.py`:
+  - `POST /scout/{repo_id}/run` — body: `{ "hypothesis": "optional text" }` — triggers Scout run
+  - `GET /scout/history` — returns recent runs for current user
+  - `GET /scout/{repo_id}/history` — returns recent runs for a specific repo
+  - `GET /scout/runs/{run_id}` — returns full run detail
+- Register router in `app/main.py`
+
+#### 32.8 — Scout page live states
+
+- `web/src/pages/Scout.tsx` (continued):
+  - **Running state**: after clicking "Scout Repo", show live check progress (✅/❌/⏳/⬜ per check), driven by `scout_progress` WS events
+  - **Results state**: check breakdown with pass/fail/warn per check, expandable detail, action buttons: "Re-Scout", "Full Report"
+  - **History state**: expandable past runs, click to view full results
+
+#### 32.9 — Tests
+
+- `tests/test_scout_repo.py`: CRUD tests for scout_runs table
+- `tests/test_scout_service.py`: service orchestration tests (mock audit runner)
+- `tests/test_scout_router.py`: endpoint tests (auth, validation, responses)
+- Frontend: existing tests still pass + Scout page renders
+
+**Schema coverage:**
+- [x] scout_runs (new table)
+
+**Exit criteria:**
+- Migration applies cleanly
+- Scout nav item appears in sidebar, navigates to `/scout`
+- Scout page lists connected repos with "Scout Repo" buttons
+- Clicking "Scout Repo" triggers an audit run and streams results live
+- Results page shows pass/fail/warn per check with detail
+- History section shows past Scout runs
+- All existing backend tests pass + new Scout tests pass
+- All existing frontend tests pass
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 33 — Scout Remediation: Scoped Micro-Builds
+
+**Objective:** When Scout finds failing checks, offer one-click scoped remediation that triggers a minimal-diff builder session targeted at the specific failures. The user reviews a proposed fix plan before execution. Multi-issue remediation runs in a single scoped session.
+
+**Deliverables:**
+
+#### 33.1 — Remediation plan generation
+
+- `app/services/scout_service.py` additions:
+  - `generate_remediation_plan(user_id, run_id) → dict` — analyses Scout failures, generates a remediation plan (which files, what approach, estimated scope) using Sonnet as NLU
+  - Returns structured plan: `{ "issues": [...], "files_to_modify": [...], "approach": str, "estimated_phases": int }`
+
+#### 33.2 — Remediation builder mode
+
+- `app/services/build_service.py` additions:
+  - Support `build_mode: "remediation"` — compressed cycle: plan → fix → test → verify
+  - Receives: failing checks, audit report, relevant files, hypothesis
+  - Produces minimal diff targeting only the failures
+  - Runs tests to confirm fix
+  - Evidence written to standard structure
+
+#### 33.3 — Scout UI action buttons
+
+- `web/src/pages/Scout.tsx` additions:
+  - Results state shows action buttons: "Fix All Issues", "Fix Selected" (checkboxes per failing check)
+  - Clicking fix shows remediation plan for review before execution
+  - "Approve & Fix" button triggers the remediation build
+  - Live progress of remediation build (reuses build progress streaming pattern)
+  - Completion card: "All checks pass, evidence committed"
+
+#### 33.4 — Tests
+
+- Service tests for remediation plan generation
+- Integration tests for remediation builder mode
+- Frontend tests for action buttons and plan review
+
+**Exit criteria:**
+- Scout results show "Fix" action buttons on failing checks
+- Clicking fix generates and displays a remediation plan
+- Approving the plan triggers a scoped micro-build
+- Micro-build produces minimal diff and runs tests
+- All existing tests pass + new remediation tests pass

@@ -189,9 +189,36 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
                 );
               })
             )}
+            {/* Nav section */}
             <div
               style={{
+                borderTop: '1px solid #1E293B',
+                padding: '8px 0',
                 marginTop: 'auto',
+              }}
+            >
+              <div
+                onClick={() => navigate('/scout')}
+                data-testid="nav-scout"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 16px',
+                  cursor: 'pointer',
+                  background: location.pathname.startsWith('/scout') ? '#1E293B' : 'transparent',
+                  borderLeft: location.pathname.startsWith('/scout') ? '3px solid #2563EB' : '3px solid transparent',
+                  transition: 'background 0.15s',
+                  fontSize: '0.8rem',
+                  color: location.pathname.startsWith('/scout') ? '#F8FAFC' : '#94A3B8',
+                }}
+              >
+                <span style={{ fontSize: '0.9rem' }}>🔍</span>
+                <span>Scout</span>
+              </div>
+            </div>
+            <div
+              style={{
                 padding: '12px 16px',
                 borderTop: '1px solid #1E293B',
                 display: 'flex',

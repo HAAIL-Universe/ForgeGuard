@@ -5020,3 +5020,2085 @@ A5: PASS -- No TODO: placeholders in updatedifflog.md.
 W1: WARN -- Potential secrets found: sk-, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 21 -- Plan-then-execute architecture — replaces single conversation loop with manifest-driven independent file generation -- Iteration 112
+Timestamp: 2026-02-16T15:04:40Z
+AEM Cycle: Phase 21 -- Plan-then-execute architecture — replaces single conversation loop with manifest-driven independent file generation
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/services/build_service.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. Claimed but not in diff: _calculate_context_budget, _generate_file_manifest, _generate_fix_manifest, _generate_single_file, _run_build_plan_execute, _select_contracts_for_file, _topological_sort, _verify_phase_output, app/config.py — Added BUILD_MODE setting, app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries, app/services/build_service.py — Core implementation: _run_build dispatcher, app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation, build_mode assertion, db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table, file_manifest/file_generating/file_generated/verification_result WS handlers, tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references, tests/test_build_service.py — Updated: _run_build → _run_build_conversation references, tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components, tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column, verification result display, web/src/pages/BuildProgress.tsx — Manifest panel.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [clients] git_client.py contains '\bINSERT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/services/build_service.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. Claimed but not in diff: _calculate_context_budget, _generate_file_manifest, _generate_fix_manifest, _generate_single_file, _run_build_plan_execute, _select_contracts_for_file, _topological_sort, _verify_phase_output, app/config.py — Added BUILD_MODE setting, app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries, app/services/build_service.py — Core implementation: _run_build dispatcher, app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation, build_mode assertion, db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table, file_manifest/file_generating/file_generated/verification_result WS handlers, tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references, tests/test_build_service.py — Updated: _run_build → _run_build_conversation references, tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components, tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column, verification result display, web/src/pages/BuildProgress.tsx — Manifest panel.
+- A4: FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [clients] git_client.py contains '\bINSERT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+
+### Files Changed
+- _calculate_context_budget
+- _generate_file_manifest
+- _generate_fix_manifest
+- _generate_single_file
+- _run_build_plan_execute
+- _select_contracts_for_file
+- _topological_sort
+- _verify_phase_output
+- app/config.py — Added BUILD_MODE setting
+- app/repos/build_repo.py — Added build_mode to create_build + all SELECT queries
+- app/services/build_service.py — Core implementation: _run_build dispatcher
+- app/templates/contracts/planner_build_prompt.md — NEW: Planner system prompt for manifest generation
+- build_mode assertion
+- db/migrations/012_build_mode.sql — NEW: Migration adding build_mode column to builds table
+- file_manifest/file_generating/file_generated/verification_result WS handlers
+- tests/test_build_integration.py — Updated: _run_build → _run_build_conversation references
+- tests/test_build_service.py — Updated: _run_build → _run_build_conversation references
+- tests/test_plan_execute.py — NEW: 29 tests for Phase 21 components
+- tests/test_projects_router.py — Updated: Mocked build_repo to avoid unmigrated DB column
+- verification result display
+- web/src/pages/BuildProgress.tsx — Manifest panel
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, password=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 22 -- Tool Contract & Scaffold — contracts.py, registry.py, errors.py, adapters.py, __init__.py (8 files, 107 tests) -- Iteration 113
+Timestamp: 2026-02-16T15:28:42Z
+AEM Cycle: Phase 22 -- Tool Contract & Scaffold — contracts.py, registry.py, errors.py, adapters.py, __init__.py (8 files, 107 tests)
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/services/build_service.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [clients] git_client.py contains '\bINSERT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       FAIL -- app/ide/adapters.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/contracts.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/errors.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/git_ops.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/registry.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/workspace.py imports '__future__' (looked for '__future__' in requirements.txt); tests/test_ide_git_ops.py imports '__future__' (looked for '__future__' in requirements.txt); tests/test_ide_workspace.py imports '__future__' (looked for '__future__' in requirements.txt)
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/services/build_service.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. 
+- A4: FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [clients] git_client.py contains '\bINSERT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+- A9: FAIL -- app/ide/adapters.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/contracts.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/errors.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/git_ops.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/registry.py imports '__future__' (looked for '__future__' in requirements.txt); app/ide/workspace.py imports '__future__' (looked for '__future__' in requirements.txt); tests/test_ide_git_ops.py imports '__future__' (looked for '__future__' in requirements.txt); tests/test_ide_workspace.py imports '__future__' (looked for '__future__' in requirements.txt)
+
+### Files Changed
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/git_ops.py
+- app/ide/registry.py
+- app/ide/workspace.py
+- app/services/tool_executor.py
+- Forge/Contracts/phases.md
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_registry.py
+- tests/test_ide_workspace.py
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 22 -- Tool Contract & Scaffold -- contracts.py, registry.py, errors.py, adapters.py, __init__.py (8 files, 107 tests) -- Iteration 114
+Timestamp: 2026-02-16T15:31:52Z
+AEM Cycle: Phase 22 -- Tool Contract & Scaffold -- contracts.py, registry.py, errors.py, adapters.py, __init__.py (8 files, 107 tests)
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (23 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/git_ops.py
+- app/ide/registry.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_registry.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 23 -- Iteration 115
+Timestamp: 2026-02-16T15:32:31Z
+AEM Cycle: Phase 23
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Error running git diff: warning: in the working copy of 'Forge/evidence/audit_ledger.md', LF will be replaced by CRLF the next time Git touches it
+- A2 Minimal-diff:          FAIL -- Error checking minimal-diff: warning: in the working copy of 'Forge/evidence/audit_ledger.md', LF will be replaced by CRLF the next time Git touches it
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Error running git diff: warning: in the working copy of 'Forge/evidence/audit_ledger.md', LF will be replaced by CRLF the next time Git touches it
+- A2: FAIL -- Error checking minimal-diff: warning: in the working copy of 'Forge/evidence/audit_ledger.md', LF will be replaced by CRLF the next time Git touches it
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/git_ops.py
+- app/ide/registry.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_registry.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Error scanning for secrets: warning: in the working copy of 'Forge/evidence/audit_ledger.md', LF will be replaced by CRLF the next time Git touches it
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 22 -- +23: IDE scaffold, workspace, git_ops (217 new tests) -- Iteration 116
+Timestamp: 2026-02-16T15:33:31Z
+AEM Cycle: Phase 22 -- +23: IDE scaffold, workspace, git_ops (217 new tests)
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (23 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/git_ops.py
+- app/ide/registry.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_registry.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 23 -- Iteration 117
+Timestamp: 2026-02-16T15:33:38Z
+AEM Cycle: Phase 23
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (23 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/git_ops.py
+- app/ide/registry.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_registry.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 24 -- Read & Search Primitives. Created reader.py (read_file, read_range, read_symbol), searcher.py (ripgrep + Python fallback search with Match model), file_index.py (FileIndex with import graph). Updated __init__.py exports. 155 new tests, 907 total passing. -- Iteration 118
+Timestamp: 2026-02-16T15:50:35Z
+AEM Cycle: Phase 24 -- Read & Search Primitives. Created reader.py (read_file, read_range, read_symbol), searcher.py (ripgrep + Python fallback search with Match model), file_index.py (FileIndex with import graph). Updated __init__.py exports. 155 new tests, 907 total passing.
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/file_index.py
+- app/ide/git_ops.py
+- app/ide/reader.py
+- app/ide/registry.py
+- app/ide/searcher.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_file_index.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_reader.py
+- tests/test_ide_registry.py
+- tests/test_ide_searcher.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 119
+Timestamp: 2026-02-16T15:51:22Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/ide/__init__.py, app/ide/adapters.py, app/ide/contracts.py, app/ide/errors.py, app/ide/file_index.py, app/ide/git_ops.py, app/ide/reader.py, app/ide/registry.py, app/ide/searcher.py, app/ide/workspace.py, app/services/build_service.py, app/services/tool_executor.py, Forge/Contracts/boundaries.json, Forge/scripts/run_audit.ps1, tests/test_ide_contracts.py, tests/test_ide_errors.py, tests/test_ide_file_index.py, tests/test_ide_git_ops.py, tests/test_ide_reader.py, tests/test_ide_registry.py, tests/test_ide_searcher.py, tests/test_ide_workspace.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. Claimed but not in diff: 40.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/ide/__init__.py, app/ide/adapters.py, app/ide/contracts.py, app/ide/errors.py, app/ide/file_index.py, app/ide/git_ops.py, app/ide/reader.py, app/ide/registry.py, app/ide/searcher.py, app/ide/workspace.py, app/services/build_service.py, app/services/tool_executor.py, Forge/Contracts/boundaries.json, Forge/scripts/run_audit.ps1, tests/test_ide_contracts.py, tests/test_ide_errors.py, tests/test_ide_file_index.py, tests/test_ide_git_ops.py, tests/test_ide_reader.py, tests/test_ide_registry.py, tests/test_ide_searcher.py, tests/test_ide_workspace.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. Claimed but not in diff: 40.
+- A7: FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+
+### Files Changed
+- 40
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 24 -- Iteration 120
+Timestamp: 2026-02-16T15:51:49Z
+AEM Cycle: Phase 24
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A7: FAIL -- Missing verification keywords: Static, Runtime, Behavior, Contract.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/file_index.py
+- app/ide/git_ops.py
+- app/ide/reader.py
+- app/ide/registry.py
+- app/ide/searcher.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_file_index.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_reader.py
+- tests/test_ide_registry.py
+- tests/test_ide_searcher.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 24 -- Read & Search Primitives. Created reader.py (read_file, read_range, read_symbol), searcher.py (ripgrep + Python fallback search with Match model), file_index.py (FileIndex with import graph). Updated __init__.py exports. 155 new tests, 907 total passing. -- Iteration 121
+Timestamp: 2026-02-16T15:52:19Z
+AEM Cycle: Phase 24 -- Read & Search Primitives. Created reader.py (read_file, read_range, read_symbol), searcher.py (ripgrep + Python fallback search with Match model), file_index.py (FileIndex with import graph). Updated __init__.py exports. 155 new tests, 907 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/file_index.py
+- app/ide/git_ops.py
+- app/ide/reader.py
+- app/ide/registry.py
+- app/ide/searcher.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_file_index.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_reader.py
+- tests/test_ide_registry.py
+- tests/test_ide_searcher.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 24 -- Iteration 122
+Timestamp: 2026-02-16T15:52:24Z
+AEM Cycle: Phase 24
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/ide/__init__.py
+- app/ide/adapters.py
+- app/ide/contracts.py
+- app/ide/errors.py
+- app/ide/file_index.py
+- app/ide/git_ops.py
+- app/ide/reader.py
+- app/ide/registry.py
+- app/ide/searcher.py
+- app/ide/workspace.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/scripts/run_audit.ps1
+- tests/test_ide_contracts.py
+- tests/test_ide_errors.py
+- tests/test_ide_file_index.py
+- tests/test_ide_git_ops.py
+- tests/test_ide_reader.py
+- tests/test_ide_registry.py
+- tests/test_ide_searcher.py
+- tests/test_ide_workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 25 -- Edit and Patch Primitives (next in phases.md) -- Iteration 123
+Timestamp: 2026-02-16T16:05:41Z
+AEM Cycle: Phase 25 -- Edit and Patch Primitives (next in phases.md)
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 124
+Timestamp: 2026-02-16T16:06:04Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (29 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 25 -- Command Runner - structured subprocess execution and log parsing -- Iteration 125
+Timestamp: 2026-02-16T16:21:18Z
+AEM Cycle: Phase 25 -- Command Runner - structured subprocess execution and log parsing
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (33 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/log_parser.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 126
+Timestamp: 2026-02-16T16:21:25Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (33 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/log_parser.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 26 -- Patch Engine: Built patcher.py (~350 lines) with parse_unified_diff, _match_hunk (fuzzy), apply_patch, apply_multi_patch. Built diff_generator.py (~130 lines) with generate_diff, generate_multi_diff, diff_to_text. Added old_lines/new_lines fields to Hunk model for correct interleaved-change matching. Updated __init__.py with 8 new exports. 68 new tests (43 patcher + 25 diff_generator), 1091 total passing. -- Iteration 127
+Timestamp: 2026-02-16T16:43:09Z
+AEM Cycle: Phase 26 -- Patch Engine: Built patcher.py (~350 lines) with parse_unified_diff, _match_hunk (fuzzy), apply_patch, apply_multi_patch. Built diff_generator.py (~130 lines) with generate_diff, generate_multi_diff, diff_to_text. Added old_lines/new_lines fields to Hunk model for correct interleaved-change matching. Updated __init__.py with 8 new exports. 68 new tests (43 patcher + 25 diff_generator), 1091 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (37 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 128
+Timestamp: 2026-02-16T16:43:18Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (37 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 27 -- Language Intelligence: Built lang/__init__.py (~85 lines) with Symbol, ImportInfo, DiagnosticReport models. Built lang/python_intel.py (~440 lines) with parse_ruff_json, parse_pyright_json, parse_python_ast_errors, extract_symbols (ast-based), resolve_imports (stdlib/workspace/third-party classification). Built lang/ts_intel.py (~230 lines) with parse_tsc_output, parse_eslint_json, extract_symbols (regex-based). Built diagnostics.py (~100 lines) with merge_diagnostics, detect_language. Updated __init__.py with 13 new exports. 89 new tests, 1180 total passing. -- Iteration 129
+Timestamp: 2026-02-16T16:55:53Z
+AEM Cycle: Phase 27 -- Language Intelligence: Built lang/__init__.py (~85 lines) with Symbol, ImportInfo, DiagnosticReport models. Built lang/python_intel.py (~440 lines) with parse_ruff_json, parse_pyright_json, parse_python_ast_errors, extract_symbols (ast-based), resolve_imports (stdlib/workspace/third-party classification). Built lang/ts_intel.py (~230 lines) with parse_tsc_output, parse_eslint_json, extract_symbols (regex-based). Built diagnostics.py (~100 lines) with merge_diagnostics, detect_language. Updated __init__.py with 13 new exports. 89 new tests, 1180 total passing.
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (44 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       FAIL -- Forge/IDE/tests/test_ts_intel.py imports '{' (looked for '{' in requirements.txt)
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A9: FAIL -- Forge/IDE/tests/test_ts_intel.py imports '{' (looked for '{' in requirements.txt)
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 130
+Timestamp: 2026-02-16T16:55:57Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (44 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       FAIL -- Forge/IDE/tests/test_ts_intel.py imports '{' (looked for '{' in requirements.txt)
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A9: FAIL -- Forge/IDE/tests/test_ts_intel.py imports '{' (looked for '{' in requirements.txt)
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 131
+Timestamp: 2026-02-16T16:56:28Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (44 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 27 -- Language Intelligence: Built lang/__init__.py (~85 lines) with Symbol, ImportInfo, DiagnosticReport models. Built lang/python_intel.py (~440 lines) with parse_ruff_json, parse_pyright_json, parse_python_ast_errors, extract_symbols (ast-based), resolve_imports (stdlib/workspace/third-party classification). Built lang/ts_intel.py (~230 lines) with parse_tsc_output, parse_eslint_json, extract_symbols (regex-based). Built diagnostics.py (~100 lines) with merge_diagnostics, detect_language. Updated __init__.py with 13 new exports. 89 new tests, 1180 total passing. -- Iteration 132
+Timestamp: 2026-02-16T16:58:01Z
+AEM Cycle: Phase 27 -- Language Intelligence: Built lang/__init__.py (~85 lines) with Symbol, ImportInfo, DiagnosticReport models. Built lang/python_intel.py (~440 lines) with parse_ruff_json, parse_pyright_json, parse_python_ast_errors, extract_symbols (ast-based), resolve_imports (stdlib/workspace/third-party classification). Built lang/ts_intel.py (~230 lines) with parse_tsc_output, parse_eslint_json, extract_symbols (regex-based). Built diagnostics.py (~100 lines) with merge_diagnostics, detect_language. Updated __init__.py with 13 new exports. 89 new tests, 1180 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (44 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 28 -- Added relevance scoring (4 factors: import graph, directory proximity, name similarity, recency) and context pack assembly with token budget enforcement. 77 new tests, 1257 total passing. -- Iteration 133
+Timestamp: 2026-02-16T17:11:01Z
+AEM Cycle: Phase 28 -- Added relevance scoring (4 factors: import graph, directory proximity, name similarity, recency) and context pack assembly with token budget enforcement. 77 new tests, 1257 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (48 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 134
+Timestamp: 2026-02-16T17:11:05Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/services/build_service.py, app/services/tool_executor.py, Forge/Contracts/boundaries.json, Forge/IDE/tests/test_contracts.py, Forge/IDE/tests/test_diagnostics.py, Forge/IDE/tests/test_diff_generator.py, Forge/IDE/tests/test_errors.py, Forge/IDE/tests/test_file_index.py, Forge/IDE/tests/test_git_ops.py, Forge/IDE/tests/test_log_parser.py, Forge/IDE/tests/test_patcher.py, Forge/IDE/tests/test_python_intel.py, Forge/IDE/tests/test_reader.py, Forge/IDE/tests/test_registry.py, Forge/IDE/tests/test_runner.py, Forge/IDE/tests/test_searcher.py, Forge/IDE/tests/test_ts_intel.py, Forge/IDE/tests/test_workspace.py, Forge/scripts/run_audit.ps1, forge_ide/adapters.py, forge_ide/contracts.py, forge_ide/diagnostics.py, forge_ide/diff_generator.py, forge_ide/errors.py, forge_ide/file_index.py, forge_ide/git_ops.py, forge_ide/lang/__init__.py, forge_ide/lang/python_intel.py, forge_ide/lang/ts_intel.py, forge_ide/log_parser.py, forge_ide/patcher.py, forge_ide/reader.py, forge_ide/registry.py, forge_ide/runner.py, forge_ide/searcher.py, forge_ide/workspace.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/clients/git_client.py, app/services/build_service.py, app/services/tool_executor.py, Forge/Contracts/boundaries.json, Forge/IDE/tests/test_contracts.py, Forge/IDE/tests/test_diagnostics.py, Forge/IDE/tests/test_diff_generator.py, Forge/IDE/tests/test_errors.py, Forge/IDE/tests/test_file_index.py, Forge/IDE/tests/test_git_ops.py, Forge/IDE/tests/test_log_parser.py, Forge/IDE/tests/test_patcher.py, Forge/IDE/tests/test_python_intel.py, Forge/IDE/tests/test_reader.py, Forge/IDE/tests/test_registry.py, Forge/IDE/tests/test_runner.py, Forge/IDE/tests/test_searcher.py, Forge/IDE/tests/test_ts_intel.py, Forge/IDE/tests/test_workspace.py, Forge/scripts/run_audit.ps1, forge_ide/adapters.py, forge_ide/contracts.py, forge_ide/diagnostics.py, forge_ide/diff_generator.py, forge_ide/errors.py, forge_ide/file_index.py, forge_ide/git_ops.py, forge_ide/lang/__init__.py, forge_ide/lang/python_intel.py, forge_ide/lang/ts_intel.py, forge_ide/log_parser.py, forge_ide/patcher.py, forge_ide/reader.py, forge_ide/registry.py, forge_ide/runner.py, forge_ide/searcher.py, forge_ide/workspace.py, web/src/components/BranchPickerModal.tsx, web/src/pages/BuildProgress.tsx. 
+
+### Files Changed
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_relevance.py
+- forge_ide/__init__.py
+- forge_ide/context_pack.py
+- forge_ide/relevance.py
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 135
+Timestamp: 2026-02-16T17:11:18Z
+AEM Cycle: unknown
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: Forge/scripts/run_audit.ps1. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: Forge/scripts/run_audit.ps1. 
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 136
+Timestamp: 2026-02-16T17:11:26Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (48 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 28 -- Added relevance scoring (4 factors: import graph, directory proximity, name similarity, recency) and context pack assembly with token budget enforcement. 77 new tests, 1257 total passing. -- Iteration 137
+Timestamp: 2026-02-16T17:19:46Z
+AEM Cycle: Phase 28 -- Added relevance scoring (4 factors: import graph, directory proximity, name similarity, recency) and context pack assembly with token budget enforcement. 77 new tests, 1257 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (48 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 29 -- Added response parser (LLM output classification, fence stripping, diff detection), build helpers (apply-or-fallback patch handling, run-and-summarise), and backoff/concurrency utilities (ExponentialBackoff, ConcurrencyLimiter). 68 new tests, 1325 total passing. -- Iteration 138
+Timestamp: 2026-02-16T17:31:41Z
+AEM Cycle: Phase 29 -- Added response parser (LLM output classification, fence stripping, diff detection), build helpers (apply-or-fallback patch handling, run-and-summarise), and backoff/concurrency utilities (ExponentialBackoff, ConcurrencyLimiter). 68 new tests, 1325 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (54 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_backoff.py
+- Forge/IDE/tests/test_build_helpers.py
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 139
+Timestamp: 2026-02-16T17:31:45Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (54 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/IDE/tests/test_backoff.py
+- Forge/IDE/tests/test_build_helpers.py
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 140
+Timestamp: 2026-02-16T17:31:50Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (54 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/IDE/tests/test_backoff.py
+- Forge/IDE/tests/test_build_helpers.py
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 30 -- Determinism Hardening — redactor.py (secret detection/redaction, 12 patterns, ~150 lines), sanitiser.py (sort functions, noise filtering, path normalisation, ~175 lines), diff_generator.py enhanced with path normalisation and trailing-whitespace stripping, __init__.py updated to 110 exports. 68 new tests (34 redactor + 34 sanitiser), 1404 total passing. -- Iteration 141
+Timestamp: 2026-02-16T17:44:49Z
+AEM Cycle: Phase 30 -- Determinism Hardening — redactor.py (secret detection/redaction, 12 patterns, ~150 lines), sanitiser.py (sort functions, noise filtering, path normalisation, ~175 lines), diff_generator.py enhanced with path normalisation and trailing-whitespace stripping, __init__.py updated to 110 exports. 68 new tests (34 redactor + 34 sanitiser), 1404 total passing.
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (58 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/redactor.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/sanitiser.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/IDE/tests/test_backoff.py
+- Forge/IDE/tests/test_build_helpers.py
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_redactor.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_sanitiser.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 142
+Timestamp: 2026-02-16T17:44:54Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (58 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/IDE/tests/test_backoff.py
+- Forge/IDE/tests/test_build_helpers.py
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_redactor.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_sanitiser.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/redactor.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/sanitiser.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 143
+Timestamp: 2026-02-16T17:45:05Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (58 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/builds.py
+- app/clients/git_client.py
+- app/services/build_service.py
+- app/services/tool_executor.py
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/phases.md
+- Forge/IDE/tests/test_backoff.py
+- Forge/IDE/tests/test_build_helpers.py
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_redactor.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_sanitiser.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/redactor.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/sanitiser.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- web/src/components/BranchPickerModal.tsx
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 31 -- Iteration 144
+Timestamp: 2026-02-16T20:43:53Z
+AEM Cycle: Phase 31
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/api/routers/repos.py, app/clients/git_client.py, app/clients/github_client.py, app/config.py, app/services/build_service.py, app/services/tool_executor.py, Forge/Contracts/boundaries.json, Forge/scripts/run_audit.ps1, web/package-lock.json, web/src/components/BranchPickerModal.tsx, web/src/components/CreateProjectModal.tsx, web/src/pages/BuildProgress.tsx. 
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/api/routers/builds.py, app/api/routers/repos.py, app/clients/git_client.py, app/clients/github_client.py, app/config.py, app/services/build_service.py, app/services/tool_executor.py, Forge/Contracts/boundaries.json, Forge/scripts/run_audit.ps1, web/package-lock.json, web/src/components/BranchPickerModal.tsx, web/src/components/CreateProjectModal.tsx, web/src/pages/BuildProgress.tsx. 
+
+### Files Changed
+- app/api/routers/projects.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- db/migrations/013_contract_snapshots.sql
+- Forge/Contracts/phases.md
+- Forge/Contracts/schema.md
+- tests/test_contract_snapshots.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/pages/ProjectDetail.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 31 -- Iteration 145
+Timestamp: 2026-02-16T20:44:42Z
+AEM Cycle: Phase 31
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (14 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A4: FAIL -- [clients] agent_client.py contains '\bSELECT\b' (Raw SQL belongs in repos); [services] build_service.py contains '\bSELECT\b' (Raw SQL belongs in repos)
+
+### Files Changed
+- app/api/routers/projects.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- db/migrations/013_contract_snapshots.sql
+- Forge/Contracts/phases.md
+- Forge/Contracts/schema.md
+- Forge/evidence/updatedifflog.md
+- tests/test_contract_snapshots.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/pages/ProjectDetail.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 31 -- Iteration 146
+Timestamp: 2026-02-16T20:49:55Z
+AEM Cycle: Phase 31
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (15 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/api/routers/projects.py
+- app/repos/project_repo.py
+- app/services/project_service.py
+- db/migrations/013_contract_snapshots.sql
+- Forge/Contracts/boundaries.json
+- Forge/Contracts/schema.md
+- tests/test_contract_snapshots.py
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- web/src/components/ContractProgress.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/pages/ProjectDetail.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

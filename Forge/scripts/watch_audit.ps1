@@ -103,6 +103,12 @@ function ParseDiffLogForPhase([string]$diffLogPath) {
     $phaseNum = $Matches[1]
     $phaseName = $Matches[2].Trim()
     if ($phaseName) {
+      # Truncate to just the phase title (before first em-dash, period+space, or 80 chars)
+      # Avoids passing the entire multi-sentence summary as a subprocess argument.
+      $cut = $phaseName.IndexOf([char]0x2014)  # em-dash
+      if ($cut -lt 0) { $cut = $phaseName.IndexOf('. ') }
+      if ($cut -gt 0) { $phaseName = $phaseName.Substring(0, $cut).Trim() }
+      if ($phaseName.Length -gt 80) { $phaseName = $phaseName.Substring(0, 80).TrimEnd() }
       return "Phase $phaseNum -- $phaseName"
     }
     return "Phase $phaseNum"
@@ -353,7 +359,7 @@ Do not overwrite or truncate this file.
             Info "Running manual audit #$auditCount..."
             Write-Host ""
             try {
-              $auditOutput = & pwsh -File $auditScript -ClaimedFiles $claimedFilesStr -Phase $phase 2>&1
+              $auditOutput = & pwsh -File $auditScript -ClaimedFiles "$claimedFilesStr" -Phase "$phase" 2>&1
               $auditExit = $LASTEXITCODE
               foreach ($line in $auditOutput) {
                 $lineStr = "$line"
@@ -435,7 +441,7 @@ Do not overwrite or truncate this file.
     Write-Host ""
 
     try {
-      $auditOutput = & pwsh -File $auditScript -ClaimedFiles $claimedFilesStr -Phase $phase 2>&1
+      $auditOutput = & pwsh -File $auditScript -ClaimedFiles "$claimedFilesStr" -Phase "$phase" 2>&1
       $auditExit = $LASTEXITCODE
 
       # Display the audit output
