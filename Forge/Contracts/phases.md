@@ -2552,15 +2552,293 @@ Update Scout-related pages:
 
 **Depends on:** Phase 36 (Scout Enhancement) — requires StackProfile and ArchitectureMap as inputs.
 
-**Detailed phased plan to be appended upon Phase 36 sign-off.**
+### 37.1 — Version Currency Database
 
-**High-level deliverables:**
-- Version currency database (known latest versions of major frameworks/libraries)
-- Pattern analyzer (detect anti-patterns: callback hell, no TypeScript, inline SQL, no tests, etc.)
-- Migration path recommender (jQuery → vanilla JS, class components → hooks, Express → Fastify, etc.)
-- Renovation plan generator (prioritized, effort-estimated, risk-rated)
-- REST endpoint + frontend UI for viewing and acting on plans
-- Optional: generate `forge.json` spec for automated renovation via Forge builder
+New module `app/services/version_db.py`:
+
+A static, in-memory registry of **known latest stable versions** for major frameworks, libraries, and runtimes. No external API calls — just a curated dict that we update periodically.
+
+```python
+LATEST_VERSIONS: dict[str, VersionInfo] = {
+    # Python ecosystem
+    "python":       {"latest": "3.12",  "eol": {"3.8": "2024-10", "3.9": "2025-10"}, "category": "runtime"},
+    "fastapi":      {"latest": "0.115", "min_recommended": "0.100", "category": "backend"},
+    "django":       {"latest": "5.1",   "min_recommended": "4.2",  "category": "backend"},
+    "flask":        {"latest": "3.1",   "min_recommended": "2.3",  "category": "backend"},
+    "sqlalchemy":   {"latest": "2.0",   "min_recommended": "2.0",  "category": "orm"},
+    "pydantic":     {"latest": "2.10",  "min_recommended": "2.0",  "category": "validation"},
+    "pytest":       {"latest": "8.3",   "min_recommended": "7.0",  "category": "testing"},
+    "asyncpg":      {"latest": "0.30",  "min_recommended": "0.28", "category": "database"},
+    "uvicorn":      {"latest": "0.32",  "min_recommended": "0.20", "category": "server"},
+
+    # Node ecosystem
+    "node":         {"latest": "22",    "lts": "20",               "category": "runtime"},
+    "react":        {"latest": "19.0",  "min_recommended": "18.0", "category": "frontend"},
+    "next":         {"latest": "15.1",  "min_recommended": "14.0", "category": "frontend"},
+    "vue":          {"latest": "3.5",   "min_recommended": "3.3",  "category": "frontend"},
+    "vite":         {"latest": "6.1",   "min_recommended": "5.0",  "category": "bundler"},
+    "typescript":   {"latest": "5.7",   "min_recommended": "5.0",  "category": "language"},
+    "express":      {"latest": "5.0",   "min_recommended": "4.18", "category": "backend"},
+    "vitest":       {"latest": "3.0",   "min_recommended": "1.0",  "category": "testing"},
+    "tailwindcss":  {"latest": "4.0",   "min_recommended": "3.4",  "category": "styling"},
+
+    # Databases
+    "postgresql":   {"latest": "17",    "min_recommended": "15",   "category": "database"},
+}
+```
+
+Functions:
+- `check_version_currency(dep_name: str, detected_version: str | None) -> CurrencyResult` — returns `{"status": "current" | "outdated" | "eol" | "unknown", "latest": "...", "detail": "..."}`
+- `get_all_version_info() -> dict` — dump the full registry (for UI display)
+
+**Tests:** 10 tests — current/outdated/eol detection, unknown packages, edge cases.
+
+### 37.2 — Pattern Analyzer
+
+New module `app/services/pattern_analyzer.py`:
+
+Scans the StackProfile, ArchitectureMap, and file contents to detect **anti-patterns** and **missing best practices**. Pure heuristic — no LLM.
+
+**Anti-pattern registry** (extensible list):
+
+| ID | Pattern | How Detected | Severity |
+|---|---|---|---|
+| `AP01` | No TypeScript (JS-only frontend) | `stack_profile.frontend.language == "JavaScript"` | medium |
+| `AP02` | No test framework detected | `stack_profile.testing.has_tests == false` | high |
+| `AP03` | No CI/CD pipeline | `stack_profile.infrastructure.ci_cd is None` | high |
+| `AP04` | No containerization | `stack_profile.infrastructure.containerized == false` | medium |
+| `AP05` | No ORM (raw SQL everywhere) | `backend.orm == "raw SQL (asyncpg)"` or similar | low |
+| `AP06` | Missing `.env.example` | `.env` in tree but no `.env.example` | medium |
+| `AP07` | No type hints (Python) | heuristic: scan sample files for `def foo(x):` without annotations | medium |
+| `AP08` | Class components (React) | `extends React.Component` or `extends Component` in code | medium |
+| `AP09` | Callback hell (Node) | deep nesting of callbacks (`function(err,` patterns) | medium |
+| `AP10` | No error handling middleware | no `@app.exception_handler` / `app.use(errorHandler)` | medium |
+| `AP11` | Secrets in code | `.env` values hardcoded, API keys in source | high |
+| `AP12` | No README | `README.md` not in tree | low |
+| `AP13` | No license | `LICENSE` not in tree | low |
+| `AP14` | Flat project structure | `architecture.structure_type == "flat"` and `file_count > 20` | medium |
+| `AP15` | No dependency pinning | `requirements.txt` present but no version specifiers | medium |
+
+Function:
+- `analyze_patterns(stack_profile, arch_map, file_contents) -> list[PatternFinding]`
+  ```
+  PatternFinding = {
+    "id": "AP01",
+    "name": "No TypeScript",
+    "severity": "medium",
+    "category": "quality" | "security" | "maintainability" | "devops",
+    "detail": "Frontend uses plain JavaScript. TypeScript adds...",
+    "affected_files": [...] | None,
+  }
+  ```
+
+**Tests:** 15 tests — one per anti-pattern + combinations.
+
+### 37.3 — Migration Path Recommender
+
+New module `app/services/migration_advisor.py`:
+
+Takes the StackProfile + PatternFindings and produces **concrete migration paths** — known upgrade trajectories from older/weaker patterns to modern equivalents.
+
+**Migration registry** (extensible):
+
+| From | To | Effort | Risk | Category |
+|---|---|---|---|---|
+| JavaScript (frontend) | TypeScript | medium | low | quality |
+| Class components | Functional + Hooks | medium | low | modernization |
+| Webpack | Vite | low | low | modernization |
+| Express 4.x | Express 5.x or Fastify | low-medium | medium | modernization |
+| jQuery | Vanilla JS / React | high | medium | modernization |
+| No tests | pytest / vitest scaffold | medium | low | quality |
+| No CI/CD | GitHub Actions template | low | low | devops |
+| No Docker | Dockerfile + compose | low | low | devops |
+| SQLAlchemy 1.x | SQLAlchemy 2.x | medium | medium | modernization |
+| Pydantic v1 | Pydantic v2 | medium | medium | modernization |
+| No linter | Ruff / ESLint config | low | low | quality |
+| `requirements.txt` (unpinned) | `pyproject.toml` with pins | low | low | quality |
+| No `.env.example` | Add `.env.example` template | low | low | devops |
+| React class → hooks | Hooks + functional components | medium | low | modernization |
+
+Function:
+- `recommend_migrations(stack_profile, pattern_findings, version_currency) -> list[MigrationRecommendation]`
+  ```
+  MigrationRecommendation = {
+    "id": "MIG01",
+    "from_state": "JavaScript frontend",
+    "to_state": "TypeScript frontend",
+    "effort": "medium",        # "low" | "medium" | "high"
+    "risk": "low",             # "low" | "medium" | "high"
+    "priority": "high",        # computed from severity + effort + risk
+    "category": "quality",
+    "rationale": "TypeScript catches type errors at compile time...",
+    "steps": [
+      "Add tsconfig.json with strict mode",
+      "Rename .js/.jsx to .ts/.tsx",
+      "Add type annotations incrementally",
+      "Enable strict null checks",
+    ],
+    "forge_automatable": true,  # can Forge builder do this?
+  }
+  ```
+- Priority is computed: high severity + low effort = high priority; low severity + high effort = low priority.
+
+**Tests:** 10 tests — migration matching, priority ranking, empty inputs, combinations.
+
+### 37.4 — Renovation Plan Generator
+
+New function in `app/services/upgrade_service.py`:
+
+The main orchestrator that combines all sub-analyses into a single **Renovation Plan**.
+
+```python
+async def generate_renovation_plan(
+    user_id: UUID,
+    run_id: UUID,          # scout deep-scan run ID
+    include_llm: bool = True,
+) -> RenovationPlan
+```
+
+**Flow:**
+1. Load the Scout dossier from `run_id` (via `get_scout_dossier()`)
+2. Extract `stack_profile`, `architecture`, `dossier`, `file_contents` (from stored results)
+3. Run version currency checks on all detected dependencies
+4. Run pattern analyzer on stack + architecture + files
+5. Run migration recommender using findings from steps 3-4
+6. If `include_llm`: make one LLM call to generate an **executive renovation brief** — a narrative summary of the top 3-5 priorities, explaining why they matter for this specific project
+7. Assemble into `RenovationPlan`:
+
+```
+RenovationPlan = {
+  "id": UUID,
+  "scout_run_id": UUID,
+  "repo_name": "org/repo",
+  "generated_at": "2026-02-17T...",
+  "executive_brief": "This project is a FastAPI+React application... The top priorities are..." | null,
+  "version_report": [
+    {"package": "fastapi", "current": "0.95", "latest": "0.115", "status": "outdated", "detail": "..."},
+    ...
+  ],
+  "pattern_findings": [PatternFinding, ...],
+  "migration_recommendations": [MigrationRecommendation, ...],
+  "summary_stats": {
+    "total_findings": 12,
+    "high_priority": 3,
+    "medium_priority": 5,
+    "low_priority": 4,
+    "automatable_count": 6,       # how many Forge can do automatically
+    "estimated_total_effort": "medium",  # overall effort bucket
+  },
+  "forge_spec": { ... } | null,    # optional forge.json fragment for automated renovation
+}
+```
+
+**DB:** Store renovation plans in `scout_runs.results` as an additional key, or in a new `renovation_plans` table. Decision: extend `scout_runs.results` JSONB to include `"renovation_plan": {...}` — avoids a new table and keeps the data associated with the scan.
+
+**Tests:** 8 tests — full plan generation, LLM fallback, empty dossier, priority sorting.
+
+### 37.5 — Forge Spec Generator (Optional Auto-Fix)
+
+New function `generate_forge_spec()` in `upgrade_service.py`:
+
+For migration recommendations marked `forge_automatable: true`, generate a `forge.json`-compatible specification that Forge's builder could execute. This bridges the gap between "here's what to improve" and "let Forge do it for you".
+
+```python
+def generate_forge_spec(
+    repo_name: str,
+    migrations: list[MigrationRecommendation],
+) -> dict | None
+```
+
+Output example:
+```json
+{
+  "project": "org/repo",
+  "type": "renovation",
+  "tasks": [
+    {
+      "id": "MIG-CI01",
+      "description": "Add GitHub Actions CI pipeline",
+      "action": "create_file",
+      "path": ".github/workflows/ci.yml",
+      "template": "github_actions_python",
+    },
+    {
+      "id": "MIG-ENV01",
+      "description": "Add .env.example",
+      "action": "create_file",
+      "path": ".env.example",
+      "derive_from": ".env",
+    }
+  ]
+}
+```
+
+Only generates specs for **low-risk, template-able** tasks (CI setup, dockerfile, linter config, env template). Does NOT attempt risky refactors (framework migrations, ORM upgrades).
+
+**Tests:** 5 tests — spec generation for automatable tasks, empty when no automatable, correct task structure.
+
+### 37.6 — REST Endpoints
+
+New endpoints in `app/api/routers/scout.py` (extends existing router):
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/scout/runs/{run_id}/upgrade-plan` | Generate renovation plan from a completed deep scan |
+| `GET`  | `/scout/runs/{run_id}/upgrade-plan` | Retrieve a previously generated renovation plan |
+
+Request body for POST:
+```json
+{
+  "include_llm": true
+}
+```
+
+Response: the full `RenovationPlan` object.
+
+**Auth:** Same user-ownership check as existing Scout endpoints.
+
+**Tests:** 6 tests — generate, retrieve, 404, wrong user, not-deep-scan, already-exists.
+
+### 37.7 — Frontend: Upgrade Advisor UI
+
+New UI in `web/src/pages/Scout.tsx` (integrated into existing Scout page):
+
+**Trigger:** After viewing a deep scan dossier, a "Generate Upgrade Plan" button appears. Clicking triggers `POST /scout/runs/{run_id}/upgrade-plan`.
+
+**Plan View** (new view state `'upgrade_plan'`):
+
+1. **Executive Brief** — narrative card at the top (if LLM available)
+2. **Version Report Table** — sortable table showing each dependency, current vs latest, status badge (🟢 Current / 🟡 Outdated / 🔴 EOL)
+3. **Pattern Findings** — cards grouped by category (quality / security / maintainability / devops), severity badges
+4. **Migration Recommendations** — prioritized list with effort/risk badges, expandable detail showing steps
+5. **Summary Bar** — total findings, high/medium/low breakdown, automatable count
+6. **Forge Spec** (if generated) — preview of automatable tasks with "Send to Forge Builder" button (future integration, disabled for now)
+
+**Navigation:** From dossier view → "Generate Upgrade Plan" → plan view. "← Back to Dossier" returns to dossier. History entries for deep scans show "View Plan" button if plan exists.
+
+**Tests:** Frontend component tests for plan view rendering.
+
+### 37.8 — Tests & Exit Criteria
+
+**New test files:**
+- `tests/test_version_db.py` — 10 tests
+- `tests/test_pattern_analyzer.py` — 15 tests
+- `tests/test_migration_advisor.py` — 10 tests
+- `tests/test_upgrade_service.py` — 8 tests
+- `tests/test_upgrade_endpoints.py` — 6 tests
+- Frontend tests for upgrade plan UI
+
+**Exit criteria:**
+- `POST /scout/runs/{run_id}/upgrade-plan` generates a complete renovation plan
+- Version currency check correctly identifies current/outdated/EOL packages
+- Pattern analyzer detects at least 15 anti-patterns across Python and Node stacks
+- Migration recommender produces prioritized, effort-estimated recommendations
+- Priority ranking: high severity + low effort = urgent; low severity + high effort = deferred
+- LLM executive brief provides project-specific narrative; graceful fallback to heuristic-only
+- Forge spec generated only for safe, template-able tasks
+- Frontend displays plan with sortable/filterable tables and expandable recommendations
+- All existing tests pass + 49+ new tests pass
+- `run_audit.ps1` passes all checks
 
 ---
 
