@@ -83,16 +83,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Validate token on mount by calling /auth/me
     fetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
-    }).then((res) => {
+    }).then(async (res) => {
       if (!res.ok) {
         logout();
+        return;
+      }
+      try {
+        const data = await res.json();
+        setUser(data);
+        localStorage.setItem('forgeguard_user', JSON.stringify(data));
+      } catch {
+        // Response wasn't JSON — keep existing user data
       }
     }).catch(() => {
       // Network error -- keep token, user can retry
     }).finally(() => {
       setLoading(false);
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token, logout]);
 
   return (
     <AuthContext.Provider value={{ token, user, loading, login, logout, updateUser, authFetch }}>

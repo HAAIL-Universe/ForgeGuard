@@ -43,6 +43,7 @@ class Settings:
     JWT_SECRET: str = _require("JWT_SECRET")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5174")
     APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
+    DEBUG: bool = os.getenv("DEBUG", "true").lower() in ("1", "true", "yes")
     LLM_QUESTIONNAIRE_MODEL: str = os.getenv(
         "LLM_QUESTIONNAIRE_MODEL", "claude-sonnet-4-5"
     )

@@ -43,7 +43,13 @@ def test_decode_token_rejects_wrong_secret():
 
 def test_decode_token_rejects_expired():
     token = pyjwt.encode(
-        {"sub": "user-123", "exp": int(time.time()) - 100},
+        {
+            "sub": "user-123",
+            "aud": "forgeguard",
+            "iss": "forgeguard",
+            "iat": int(time.time()) - 200,
+            "exp": int(time.time()) - 100,
+        },
         "test-secret-key-for-unit-tests",
         algorithm=ALGORITHM,
     )

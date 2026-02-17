@@ -40,6 +40,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="Repository audit monitoring dashboard",
         lifespan=lifespan,
+        docs_url="/docs" if settings.DEBUG else None,
+        redoc_url="/redoc" if settings.DEBUG else None,
     )
 
     # Global exception handler -- never leak stack traces to clients.
