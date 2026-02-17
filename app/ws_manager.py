@@ -33,11 +33,20 @@ class ConnectionManager:
         async with self._lock:
             conns = list(self._connections.get(user_id, []))
         message = json.dumps(data, default=str)
+        dead = []
         for ws in conns:
             try:
                 await ws.send_text(message)
             except Exception:
-                pass  # dead connection -- will be cleaned up on disconnect
+                dead.append(ws)
+        if dead:
+            async with self._lock:
+                user_conns = self._connections.get(user_id, [])
+                for ws in dead:
+                    if ws in user_conns:
+                        user_conns.remove(ws)
+                if not user_conns:
+                    self._connections.pop(user_id, None)
 
     async def broadcast_audit_update(self, user_id: str, audit_summary: dict) -> None:
         """Broadcast an audit_update event to the given user."""

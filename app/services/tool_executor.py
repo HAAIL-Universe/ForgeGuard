@@ -388,7 +388,7 @@ async def _run_subprocess(
         except _sp.TimeoutExpired:
             return -1, "", f"Error: Command timed out after {timeout}s"
 
-    return await asyncio.get_event_loop().run_in_executor(None, _sync)
+    return await asyncio.to_thread(_sync)
 
 
 # ---------------------------------------------------------------------------

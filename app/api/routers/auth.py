@@ -1,6 +1,7 @@
 """Authentication router -- GitHub OAuth flow, user info, and BYOK API key management."""
 
 import secrets
+import time
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,15 +15,30 @@ from app.services.auth_service import handle_github_callback
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# In-memory state store for CSRF protection (sufficient for single-process MVP)
-_oauth_states: set[str] = set()
+# In-memory state store for CSRF protection (sufficient for single-process MVP).
+# TTL-capped to prevent unbounded growth from abandoned OAuth flows.
+_OAUTH_STATE_TTL = 600  # 10 minutes
+_OAUTH_STATE_MAX = 10_000
+_oauth_states: dict[str, float] = {}  # state_token -> creation_time
+
+
+def _prune_oauth_states() -> None:
+    """Remove expired OAuth state tokens."""
+    cutoff = time.monotonic() - _OAUTH_STATE_TTL
+    expired = [k for k, v in _oauth_states.items() if v < cutoff]
+    for k in expired:
+        _oauth_states.pop(k, None)
 
 
 @router.get("/github")
 async def github_oauth_redirect() -> dict:
     """Return the GitHub OAuth authorization URL with CSRF state."""
+    _prune_oauth_states()
+    if len(_oauth_states) >= _OAUTH_STATE_MAX:
+        raise HTTPException(status_code=503, detail="Too many pending OAuth flows")
+
     state = secrets.token_urlsafe(32)
-    _oauth_states.add(state)
+    _oauth_states[state] = time.monotonic()
 
     params = urlencode({
         "client_id": settings.GITHUB_CLIENT_ID,
@@ -45,7 +61,7 @@ async def github_callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid OAuth state",
         )
-    _oauth_states.discard(state)
+    _oauth_states.pop(state, None)
 
     try:
         result = await handle_github_callback(code)

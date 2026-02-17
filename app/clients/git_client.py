@@ -30,7 +30,7 @@ async def _run_git(args: list[str], cwd: str | Path, env: dict | None = None) ->
             env=merged_env,
         )
 
-    result = await asyncio.get_event_loop().run_in_executor(None, _sync)
+    result = await asyncio.to_thread(_sync)
     out = (result.stdout or "").strip()
     err = (result.stderr or "").strip()
 
