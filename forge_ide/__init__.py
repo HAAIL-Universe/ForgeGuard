@@ -5,6 +5,7 @@ Public API
 Agent loop::
 
     AgentConfig, AgentError, AgentEvent,
+    ContextCompactionEvent,
     ThinkingEvent, ToolCallEvent, ToolResultEvent,
     TextEvent, DoneEvent, ErrorEvent,
     run_agent, stream_agent, run_task,
@@ -117,12 +118,14 @@ from forge_ide.agent import (
     AgentConfig,
     AgentError,
     AgentEvent,
+    ContextCompactionEvent,
     DoneEvent,
     ErrorEvent,
     TextEvent,
     ThinkingEvent,
     ToolCallEvent,
     ToolResultEvent,
+    make_ws_event_bridge,
     run_agent,
     run_task,
     stream_agent,
@@ -256,6 +259,7 @@ __all__ = [
     "AgentConfig",
     "AgentError",
     "AgentEvent",
+    "ContextCompactionEvent",
     "DoneEvent",
     "ErrorEvent",
     "TextEvent",
@@ -265,6 +269,7 @@ __all__ = [
     "run_agent",
     "run_task",
     "stream_agent",
+    "make_ws_event_bridge",
     # Contracts
     "ToolRequest",
     "ToolResponse",

@@ -20,6 +20,7 @@ Everything is injected: API key, model, registry, working directory.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -27,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 from app.clients.llm_client import chat_anthropic
+from forge_ide.context_pack import estimate_tokens
 from forge_ide.contracts import ToolResponse
 from forge_ide.redactor import redact
 from forge_ide.registry import Registry
@@ -40,6 +42,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TURNS = 50
 DEFAULT_MAX_TOKENS = 16384     # per-turn output budget
 MAX_TOOL_RESULT_CHARS = 60_000  # truncate large tool outputs
+CONTEXT_WINDOW_LIMIT = 180_000  # ~180K tokens — soft limit for compaction
+COMPACTION_TARGET = 120_000     # ~120K tokens — target after compaction
+TOOL_RETRY_MAX = 2              # max retries for transient tool failures
+TOOL_RETRY_DELAY = 1.0          # seconds between tool retries
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,10 @@ class AgentConfig:
     max_tokens: int = DEFAULT_MAX_TOKENS
     working_dir: str = "."
     redact_secrets: bool = True
+    context_window_limit: int = CONTEXT_WINDOW_LIMIT
+    compaction_target: int = COMPACTION_TARGET
+    tool_retry_max: int = TOOL_RETRY_MAX
+    tool_retry_delay: float = TOOL_RETRY_DELAY
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +117,15 @@ class DoneEvent(AgentEvent):
 class ErrorEvent(AgentEvent):
     """The loop encountered an unrecoverable error."""
     error: str
+
+
+@dataclass(frozen=True)
+class ContextCompactionEvent(AgentEvent):
+    """The conversation history was compacted to fit the context window."""
+    messages_before: int
+    messages_after: int
+    tokens_before: int
+    tokens_after: int
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +185,14 @@ async def run_agent(
     final_text = ""
 
     for turn in range(1, config.max_turns + 1):
+        # ── Context window management ─────────────────────────────
+        # Check if conversation is approaching the context limit and
+        # compact if needed — preserves the first message (task) and
+        # a summary of older turns, keeping recent tool results intact.
+        messages = await _maybe_compact(
+            messages, config, turn, loop_start, on_event,
+        )
+
         # ── Call Claude ───────────────────────────────────────────
         try:
             response = await chat_anthropic(
@@ -233,7 +260,7 @@ async def run_agent(
             await _emit(on_event, done)
             return done
 
-        # ── Execute tool calls ────────────────────────────────────
+        # ── Execute tool calls with error recovery ────────────────
         if stop_reason == "tool_use" and tool_uses:
             tool_results: list[dict[str, Any]] = []
 
@@ -243,15 +270,11 @@ async def run_agent(
                 tool_id = tool_block["id"]
                 usage.tool_calls += 1
 
-                # Execute via registry
-                try:
-                    result = await registry.dispatch(
-                        tool_name, tool_input, config.working_dir,
-                    )
-                except Exception as exc:
-                    result = ToolResponse.fail(
-                        f"Tool '{tool_name}' raised an exception: {exc}"
-                    )
+                result = await _execute_with_retry(
+                    registry, tool_name, tool_input,
+                    config.working_dir, config.tool_retry_max,
+                    config.tool_retry_delay,
+                )
 
                 await _emit(on_event, ToolResultEvent(
                     turn=turn,
@@ -368,6 +391,7 @@ async def run_task(
 
     registry = Registry()
     register_builtin_tools(registry)
+    _register_apply_patch_tool(registry)
 
     config = AgentConfig(
         api_key=api_key,
@@ -378,6 +402,181 @@ async def run_task(
     )
 
     return await run_agent(task, registry, config, on_event=on_event)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket activity feed bridge
+# ---------------------------------------------------------------------------
+
+def make_ws_event_bridge(
+    user_id: str,
+    build_id: str,
+) -> Callable[[AgentEvent], Any]:
+    """Create an ``on_event`` callback that broadcasts agent events to the
+    WebSocket activity feed.
+
+    This bridges the agent loop's event system into the existing build
+    progress WebSocket protocol that the frontend already renders.
+
+    Usage::
+
+        bridge = make_ws_event_bridge(str(user_id), str(build_id))
+        await run_agent(task, registry, config, on_event=bridge)
+
+    The frontend's ``BuildProgress.tsx`` and ``DevConsole.tsx`` already
+    handle these event types: ``tool_use``, ``build_log``,
+    ``context_compaction``.
+    """
+    from app.ws_manager import manager
+
+    async def _bridge(event: AgentEvent) -> None:
+        if isinstance(event, ToolCallEvent):
+            await manager.send_to_user(user_id, {
+                "type": "tool_use",
+                "payload": {
+                    "build_id": build_id,
+                    "tool_name": event.tool_name,
+                    "input_summary": json.dumps(event.tool_input, default=str)[:200],
+                    "turn": event.turn,
+                },
+            })
+        elif isinstance(event, ToolResultEvent):
+            status = "ok" if event.response.success else "error"
+            summary = (
+                json.dumps(event.response.data, default=str)[:200]
+                if event.response.success
+                else (event.response.error or "")[:200]
+            )
+            await manager.send_to_user(user_id, {
+                "type": "build_log",
+                "payload": {
+                    "build_id": build_id,
+                    "message": f"Tool {event.tool_name}: {status} — {summary}",
+                    "source": "tool",
+                    "level": "info" if event.response.success else "warning",
+                },
+            })
+        elif isinstance(event, TextEvent):
+            await manager.send_to_user(user_id, {
+                "type": "build_log",
+                "payload": {
+                    "build_id": build_id,
+                    "message": event.text[:500],
+                    "source": "agent",
+                    "level": "info",
+                },
+            })
+        elif isinstance(event, ContextCompactionEvent):
+            await manager.send_to_user(user_id, {
+                "type": "context_compaction",
+                "payload": {
+                    "build_id": build_id,
+                    "turn": event.turn,
+                    "messages_before": event.messages_before,
+                    "messages_after": event.messages_after,
+                    "tokens_before": event.tokens_before,
+                    "tokens_after": event.tokens_after,
+                },
+            })
+        elif isinstance(event, DoneEvent):
+            await manager.send_to_user(user_id, {
+                "type": "build_log",
+                "payload": {
+                    "build_id": build_id,
+                    "message": (
+                        f"Agent completed in {event.turn} turns, "
+                        f"{event.tool_calls_made} tool calls, "
+                        f"{event.total_input_tokens + event.total_output_tokens} tokens"
+                    ),
+                    "source": "system",
+                    "level": "info",
+                },
+            })
+        elif isinstance(event, ErrorEvent):
+            await manager.send_to_user(user_id, {
+                "type": "build_log",
+                "payload": {
+                    "build_id": build_id,
+                    "message": f"Agent error: {event.error[:300]}",
+                    "source": "system",
+                    "level": "error",
+                },
+            })
+
+    return _bridge
+
+
+# ---------------------------------------------------------------------------
+# 8th tool — apply_patch
+# ---------------------------------------------------------------------------
+
+def _register_apply_patch_tool(registry: Registry) -> None:
+    """Register the ``apply_patch`` tool for surgical file edits via diffs.
+
+    Unlike ``write_file`` (which overwrites the entire file), this tool
+    applies a unified diff patch to an existing file — preserving content
+    the LLM didn't touch and reducing token cost.
+    """
+    from pydantic import BaseModel as _BaseModel, Field as _Field
+
+    class ApplyPatchRequest(_BaseModel):
+        path: str = _Field(..., min_length=1, description="Relative path to the file to patch")
+        diff: str = _Field(..., min_length=1, description=(
+            "Unified diff to apply. Must start with @@ hunk headers. "
+            "Use standard unified diff format: lines starting with '-' are "
+            "removed, '+' are added, ' ' (space) are context."
+        ))
+
+    def _handle_apply_patch(req: ApplyPatchRequest, working_dir: str) -> ToolResponse:
+        import os
+        from forge_ide.patcher import apply_patch
+        from forge_ide.errors import PatchConflict, ParseError as PError
+
+        full_path = os.path.normpath(os.path.join(working_dir, req.path))
+        # Sandbox check
+        if not full_path.startswith(os.path.normpath(working_dir)):
+            return ToolResponse.fail(f"Path escapes working directory: {req.path}")
+
+        if not os.path.isfile(full_path):
+            return ToolResponse.fail(f"File not found: {req.path}")
+
+        try:
+            content = open(full_path, "r", encoding="utf-8").read()
+        except Exception as exc:
+            return ToolResponse.fail(f"Cannot read {req.path}: {exc}")
+
+        try:
+            result = apply_patch(content, req.diff, path=req.path)
+        except PatchConflict as exc:
+            return ToolResponse.fail(
+                f"Patch conflict in {req.path}: {exc}. "
+                "Read the file first to check current content, then retry."
+            )
+        except PError as exc:
+            return ToolResponse.fail(f"Malformed diff: {exc}")
+
+        try:
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(result.post_content)
+        except Exception as exc:
+            return ToolResponse.fail(f"Cannot write {req.path}: {exc}")
+
+        return ToolResponse.ok({
+            "path": req.path,
+            "hunks_applied": result.hunks_applied,
+            "insertions": result.insertions,
+            "deletions": result.deletions,
+        })
+
+    registry.register(
+        "apply_patch",
+        _handle_apply_patch,
+        ApplyPatchRequest,
+        "Apply a unified diff patch to an existing file. More efficient than "
+        "write_file for surgical edits — only send the changed lines instead "
+        "of the entire file content. The file must already exist. Use standard "
+        "unified diff format with @@ hunk headers.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -423,44 +622,327 @@ async def _emit(
     """Invoke the event callback, handling both sync and async."""
     if callback is None:
         return
-    import asyncio
     result = callback(event)
     if asyncio.iscoroutine(result):
         await result
 
 
 # ---------------------------------------------------------------------------
-# Default system prompt
+# Error recovery — tool execution with retry
 # ---------------------------------------------------------------------------
 
-_DEFAULT_SYSTEM_PROMPT = """You are an expert coding agent embedded in Forge IDE.
-You have access to tools for reading files, writing files, searching code,
-running tests, checking syntax, and executing commands within the project.
+_TRANSIENT_ERRORS = frozenset({
+    "timeout", "timed out", "connection", "temporary",
+    "unavailable", "EAGAIN", "ECONNRESET",
+})
 
-WORKFLOW:
-1. Before editing, ALWAYS read the relevant files first. Never guess at
-   file contents or code structure.
-2. After writing or editing a file, use check_syntax to verify it parses.
-3. Run tests after making changes to verify correctness.
-4. If tests fail, read the failure output, fix the issue, and re-run.
 
-EDITING RULES:
-- Use write_file to create or overwrite files. Provide the COMPLETE file
-  content — never use placeholder comments like "// rest of code here".
-- Before modifying a file, read it first to understand the current state.
-- Follow the existing code style and patterns in the project.
+def _is_transient(error_msg: str) -> bool:
+    """Heuristic: does this error look like a transient/retryable failure?"""
+    lower = error_msg.lower()
+    return any(kw in lower for kw in _TRANSIENT_ERRORS)
 
-INVESTIGATION:
-- Use search_code to find where things are defined or used.
-- Use list_directory to understand project structure.
-- Read imports to understand dependencies before modifying a file.
 
-PLANNING:
-- For complex tasks, think step by step. Explain your plan briefly before
-  starting, then execute systematically.
+async def _execute_with_retry(
+    registry: Registry,
+    tool_name: str,
+    tool_input: dict,
+    working_dir: str,
+    max_retries: int,
+    retry_delay: float,
+) -> ToolResponse:
+    """Execute a tool call with retry logic for transient failures.
+
+    Non-transient errors (validation, sandbox violations, logic errors)
+    are returned immediately without retry.  Transient errors (timeouts,
+    connection issues) are retried up to *max_retries* times with
+    exponential backoff.
+    """
+    last_result: ToolResponse | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            result = await registry.dispatch(tool_name, tool_input, working_dir)
+        except Exception as exc:
+            result = ToolResponse.fail(
+                f"Tool '{tool_name}' raised an exception: {exc}"
+            )
+
+        # Success → return immediately
+        if result.success:
+            return result
+
+        last_result = result
+
+        # Non-transient error → don't retry
+        if not _is_transient(result.error or ""):
+            return result
+
+        # Transient error → retry with backoff
+        if attempt < max_retries:
+            wait = retry_delay * (2 ** attempt)
+            logger.warning(
+                "Tool '%s' transient failure (attempt %d/%d), retrying in %.1fs: %s",
+                tool_name, attempt + 1, max_retries + 1, wait, result.error,
+            )
+            await asyncio.sleep(wait)
+
+    return last_result  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Context window management — conversation compaction
+# ---------------------------------------------------------------------------
+
+
+def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate total tokens across all messages."""
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += estimate_tokens(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    # text blocks, tool_use input, tool_result content
+                    for val in block.values():
+                        if isinstance(val, str):
+                            total += estimate_tokens(val)
+                        elif isinstance(val, dict):
+                            total += estimate_tokens(json.dumps(val, default=str))
+                elif isinstance(block, str):
+                    total += estimate_tokens(block)
+    return total
+
+
+def _compact_messages(
+    messages: list[dict[str, Any]],
+    target_tokens: int,
+) -> list[dict[str, Any]]:
+    """Compact conversation history to fit within *target_tokens*.
+
+    Strategy:
+    1. Always keep the first message (the original task).
+    2. Always keep the last 6 messages (recent context the LLM needs).
+    3. Summarize everything in between into a single condensed message.
+
+    This preserves the task context and recent working memory while
+    discarding verbose intermediate tool results.
+    """
+    if len(messages) <= 8:
+        # Too few messages to compact meaningfully
+        return messages
+
+    first = messages[0]        # Original task
+    recent = messages[-6:]     # Last 6 messages = 3 turns of context
+    middle = messages[1:-6]    # Everything to summarize
+
+    # Build a compressed summary of the middle section
+    summary_parts: list[str] = []
+    summary_parts.append("[CONTEXT COMPACTION — the following summarizes earlier conversation turns]")
+
+    tool_calls_seen: list[str] = []
+    files_modified: set[str] = set()
+    key_decisions: list[str] = []
+
+    for msg in middle:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        if role == "assistant" and isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "tool_use":
+                        name = block.get("name", "?")
+                        inp = block.get("input", {})
+                        # Track file modifications
+                        if name in ("write_file", "apply_patch") and "path" in inp:
+                            files_modified.add(inp["path"])
+                        tool_calls_seen.append(f"{name}({json.dumps(inp, default=str)[:80]})")
+                    elif block.get("type") == "text":
+                        text = block.get("text", "")
+                        # Keep short text fragments — they're often plans/decisions
+                        if len(text) < 200:
+                            key_decisions.append(text.strip())
+
+        elif role == "assistant" and isinstance(content, str):
+            if len(content) < 200:
+                key_decisions.append(content.strip())
+
+    if tool_calls_seen:
+        summary_parts.append(f"Tool calls made: {len(tool_calls_seen)}")
+        # Show first and last few calls
+        shown = tool_calls_seen[:5]
+        if len(tool_calls_seen) > 10:
+            shown.append(f"... ({len(tool_calls_seen) - 10} more) ...")
+            shown.extend(tool_calls_seen[-5:])
+        elif len(tool_calls_seen) > 5:
+            shown.extend(tool_calls_seen[5:])
+        for tc in shown:
+            summary_parts.append(f"  - {tc}")
+
+    if files_modified:
+        summary_parts.append(f"Files modified: {', '.join(sorted(files_modified))}")
+
+    if key_decisions:
+        summary_parts.append("Key decisions/observations:")
+        for d in key_decisions[:10]:
+            summary_parts.append(f"  - {d[:150]}")
+
+    summary_parts.append("[END COMPACTION — recent context follows]")
+    summary_text = "\n".join(summary_parts)
+
+    # Build compacted messages — ensure valid alternation
+    compacted = [first]
+
+    # The summary goes as a user message (to maintain user/assistant alternation)
+    compacted.append({"role": "user", "content": summary_text})
+
+    # Need an assistant acknowledgment to maintain alternation before recent messages
+    if recent and recent[0].get("role") == "user":
+        compacted.append({"role": "assistant", "content": [{"type": "text", "text": "Understood. Continuing from the compacted context."}]})
+
+    compacted.extend(recent)
+
+    # Verify the compacted version is actually smaller
+    compacted_tokens = _estimate_messages_tokens(compacted)
+    if compacted_tokens >= target_tokens:
+        # If still too big, be more aggressive — keep only first + last 4
+        compacted = [first]
+        compacted.append({"role": "user", "content": "[Previous conversation compacted due to length. Continuing with recent context.]"})
+        if messages[-4:][0].get("role") != "assistant":
+            compacted.append({"role": "assistant", "content": [{"type": "text", "text": "Understood."}]})
+        compacted.extend(messages[-4:])
+
+    return compacted
+
+
+async def _maybe_compact(
+    messages: list[dict[str, Any]],
+    config: AgentConfig,
+    turn: int,
+    loop_start: float,
+    on_event: Callable[[AgentEvent], Any] | None,
+) -> list[dict[str, Any]]:
+    """Check if messages exceed the context window limit and compact if needed."""
+    tokens = _estimate_messages_tokens(messages)
+    if tokens <= config.context_window_limit:
+        return messages
+
+    logger.info(
+        "Context window at ~%d tokens (limit %d), compacting...",
+        tokens, config.context_window_limit,
+    )
+
+    messages_before = len(messages)
+    tokens_before = tokens
+
+    compacted = _compact_messages(messages, config.compaction_target)
+
+    tokens_after = _estimate_messages_tokens(compacted)
+    logger.info(
+        "Compacted: %d→%d messages, ~%d→~%d tokens",
+        messages_before, len(compacted), tokens_before, tokens_after,
+    )
+
+    await _emit(on_event, ContextCompactionEvent(
+        turn=turn,
+        elapsed_ms=_elapsed_ms(loop_start),
+        messages_before=messages_before,
+        messages_after=len(compacted),
+        tokens_before=tokens_before,
+        tokens_after=tokens_after,
+    ))
+
+    return compacted
+
+
+# ---------------------------------------------------------------------------
+# Default system prompt — engineered for autonomous coding agent
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SYSTEM_PROMPT = """You are an expert autonomous coding agent embedded in Forge IDE.
+You have access to 8 tools for investigating, modifying, and verifying code within
+the project working directory. You operate in a loop: read → reason → act → verify.
+
+═══════════════════════════════════════════════════════════════════
+AVAILABLE TOOLS (8)
+═══════════════════════════════════════════════════════════════════
+
+Investigation:
+  • read_file(path)           — Read a file's contents (truncated at 50KB)
+  • list_directory(path)      — List files/folders in a directory
+  • search_code(pattern,glob) — Search for patterns across the codebase
+
+Modification:
+  • write_file(path,content)  — Create or overwrite a file (full content required)
+  • apply_patch(path,diff)    — Apply a unified diff to an existing file (surgical edit)
+
+Verification:
+  • check_syntax(file_path)   — Check a file for syntax errors
+  • run_tests(command,timeout) — Run test suite or specific tests
+  • run_command(command,timeout) — Run a sandboxed shell command
+
+═══════════════════════════════════════════════════════════════════
+CORE WORKFLOW — Read → Reason → Act → Verify
+═══════════════════════════════════════════════════════════════════
+
+1. INVESTIGATE FIRST
+   - ALWAYS read relevant files before modifying them. Never guess.
+   - Use list_directory to understand project structure.
+   - Use search_code to find definitions, usages, and patterns.
+   - Read imports and dependencies before modifying a module.
+
+2. PLAN
+   - For complex tasks, think step by step.
+   - Break work into logical units: one concern at a time.
+   - Identify which files need changes and in what order.
+
+3. IMPLEMENT
+   - For new files or full rewrites: use write_file with COMPLETE content.
+     Never use placeholder comments like "// rest of code here".
+   - For surgical edits to existing files: prefer apply_patch — it's more
+     token-efficient and preserves unchanged code.
+   - Follow the existing code style, naming conventions, and patterns.
+
+4. VERIFY EVERY CHANGE
+   - After writing or patching a file, ALWAYS run check_syntax.
+   - After all modifications, run_tests to verify correctness.
+   - If tests fail: read the failure output, diagnose, fix, and re-run.
+   - Do NOT sign off until syntax passes and tests pass.
+
+═══════════════════════════════════════════════════════════════════
+ERROR RECOVERY
+═══════════════════════════════════════════════════════════════════
+
+When something fails, follow this escalation:
+
+1. SYNTAX ERROR after write → Read the file, find the error, fix it.
+2. TEST FAILURE → Read the test output, understand the assertion,
+   read the relevant source, fix the root cause, re-run tests.
+3. PATCH CONFLICT → The file has changed since you last read it.
+   Read the file again to see current content, then retry the patch.
+4. TOOL ERROR → Read the error message. If it's a transient issue,
+   the system will auto-retry. If persistent, try an alternative approach.
+5. STUCK after 3 attempts on the same error → Step back, re-read the
+   relevant files, reconsider your approach, and try a different strategy.
+
+═══════════════════════════════════════════════════════════════════
+CONTEXT WINDOW MANAGEMENT
+═══════════════════════════════════════════════════════════════════
+
+- Your conversation history may be automatically compacted during long tasks.
+- If you notice compacted context, re-read any files you need — don't assume
+  your memory of file contents is accurate after compaction.
+- Prefer apply_patch over write_file for edits — it uses fewer tokens.
+- When reading files, request only the parts you need when possible.
+
+═══════════════════════════════════════════════════════════════════
+COMPLETION
+═══════════════════════════════════════════════════════════════════
+
+- Do NOT ask for permission to continue — keep working until done.
 - Complete one logical unit before starting the next.
-- Always verify your work compiles and tests pass before finishing.
-
-When you are done with the task, provide a brief summary of what you did.
-Do NOT ask for permission to continue — just keep working until the task
-is complete."""
+- When finished, provide a concise summary of what you did.
+- If you cannot complete the task, explain what you tried and why it failed."""

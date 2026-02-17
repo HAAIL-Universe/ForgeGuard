@@ -12,6 +12,7 @@ from forge_ide.agent import (
     AgentConfig,
     AgentError,
     AgentEvent,
+    ContextCompactionEvent,
     DoneEvent,
     ErrorEvent,
     TextEvent,
@@ -19,12 +20,20 @@ from forge_ide.agent import (
     ToolCallEvent,
     ToolResultEvent,
     _UsageAccumulator,
+    _compact_messages,
+    _estimate_messages_tokens,
+    _execute_with_retry,
     _format_tool_result,
+    _is_transient,
+    _register_apply_patch_tool,
+    make_ws_event_bridge,
     run_agent,
     run_task,
     stream_agent,
     DEFAULT_MAX_TURNS,
     MAX_TOOL_RESULT_CHARS,
+    CONTEXT_WINDOW_LIMIT,
+    COMPACTION_TARGET,
 )
 from forge_ide.contracts import ToolResponse
 from forge_ide.registry import Registry
@@ -870,12 +879,14 @@ class TestInitExports:
             AgentConfig,
             AgentError,
             AgentEvent,
+            ContextCompactionEvent,
             DoneEvent,
             ErrorEvent,
             TextEvent,
             ThinkingEvent,
             ToolCallEvent,
             ToolResultEvent,
+            make_ws_event_bridge,
             run_agent,
             run_task,
             stream_agent,
@@ -884,4 +895,499 @@ class TestInitExports:
         assert AgentConfig is not None
         assert callable(run_agent)
         assert callable(stream_agent)
+        assert callable(make_ws_event_bridge)
+
+
+# ---------------------------------------------------------------------------
+# Error recovery — _is_transient & _execute_with_retry
+# ---------------------------------------------------------------------------
+
+
+class TestErrorRecovery:
+    def test_is_transient_timeout(self):
+        assert _is_transient("Connection timeout after 30s")
+
+    def test_is_transient_connection(self):
+        assert _is_transient("ECONNRESET: connection reset by peer")
+
+    def test_is_transient_false_for_logic_error(self):
+        assert not _is_transient("Invalid params for 'read_file': path required")
+
+    def test_is_transient_false_for_sandbox(self):
+        assert not _is_transient("Path escapes working directory")
+
+    @pytest.mark.asyncio
+    async def test_retry_on_transient_success_after_failure(self):
+        """Tool fails with transient error, then succeeds on retry."""
+        registry = Registry()
+        call_count = 0
+
+        from pydantic import BaseModel
+
+        class SimpleReq(BaseModel):
+            x: int
+
+        async def flaky_handler(req, wd):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise TimeoutError("timed out")
+            return ToolResponse.ok({"result": req.x})
+
+        registry.register("flaky", flaky_handler, SimpleReq, "Flaky tool")
+
+        result = await _execute_with_retry(
+            registry, "flaky", {"x": 42}, "/tmp", max_retries=2, retry_delay=0.01,
+        )
+
+        assert result.success
+        assert result.data["result"] == 42
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_non_transient(self):
+        """Non-transient errors are not retried."""
+        registry = Registry()
+        call_count = 0
+
+        from pydantic import BaseModel
+
+        class ValReq(BaseModel):
+            path: str
+
+        async def fail_handler(req, wd):
+            nonlocal call_count
+            call_count += 1
+            return ToolResponse.fail("Invalid path: not found")
+
+        registry.register("val_tool", fail_handler, ValReq, "Validation tool")
+
+        result = await _execute_with_retry(
+            registry, "val_tool", {"path": "x"}, "/tmp", max_retries=2, retry_delay=0.01,
+        )
+
+        assert not result.success
+        assert call_count == 1  # No retry
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted(self):
+        """When all retries fail, the last error is returned."""
+        registry = Registry()
+
+        from pydantic import BaseModel
+
+        class TReq(BaseModel):
+            cmd: str
+
+        async def always_timeout(req, wd):
+            return ToolResponse.fail("Connection timeout")
+
+        registry.register("timeout_tool", always_timeout, TReq, "Always times out")
+
+        result = await _execute_with_retry(
+            registry, "timeout_tool", {"cmd": "x"}, "/tmp", max_retries=2, retry_delay=0.01,
+        )
+
+        assert not result.success
+        assert "timeout" in result.error.lower()
+
+    @pytest.mark.asyncio
+    @patch("forge_ide.agent.chat_anthropic")
+    async def test_tool_retry_integrated_in_loop(self, mock_chat):
+        """Tool retry works within the full agent loop."""
+        call_count = 0
+        registry = Registry()
+
+        from pydantic import BaseModel
+
+        class PingReq(BaseModel):
+            msg: str
+
+        async def flaky_ping(req, wd):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise TimeoutError("timed out")
+            return ToolResponse.ok({"pong": req.msg})
+
+        registry.register("ping", flaky_ping, PingReq, "Ping")
+
+        mock_chat.side_effect = [
+            _tool_use_response("ping", {"msg": "hello"}, tool_id="t1"),
+            _text_response("Got the pong"),
+        ]
+        config = _make_config(tool_retry_max=2, tool_retry_delay=0.01)
+
+        done = await run_agent("ping me", registry, config)
+        assert done.final_text == "Got the pong"
+        assert call_count == 2  # First call failed, second succeeded
+
+
+# ---------------------------------------------------------------------------
+# Context window management
+# ---------------------------------------------------------------------------
+
+
+class TestContextWindowManagement:
+    def test_estimate_messages_tokens_simple(self):
+        msgs = [{"role": "user", "content": "Hello world"}]
+        tokens = _estimate_messages_tokens(msgs)
+        assert tokens > 0
+        assert tokens == len("Hello world") // 4
+
+    def test_estimate_messages_tokens_with_blocks(self):
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "foo.py"}},
+            ]},
+        ]
+        tokens = _estimate_messages_tokens(msgs)
+        assert tokens > 0
+
+    def test_compact_messages_preserves_task(self):
+        """Compaction always keeps the first message (task)."""
+        msgs = [{"role": "user", "content": "Build feature X"}]
+        # Add 10 turn pairs (20 messages)
+        for i in range(10):
+            msgs.append({"role": "assistant", "content": [{"type": "text", "text": f"Step {i}" * 100}]})
+            msgs.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "x" * 500}]})
+
+        compacted = _compact_messages(msgs, target_tokens=5000)
+        assert compacted[0]["content"] == "Build feature X"
+        assert len(compacted) < len(msgs)
+
+    def test_compact_messages_keeps_recent(self):
+        """Compaction keeps the last 6 messages."""
+        msgs = [{"role": "user", "content": "task"}]
+        for i in range(20):
+            msgs.append({"role": "assistant", "content": f"step {i}"})
+            msgs.append({"role": "user", "content": f"result {i}"})
+
+        compacted = _compact_messages(msgs, target_tokens=50000)
+        # Last 6 messages should be preserved
+        assert compacted[-1] == msgs[-1]
+        assert compacted[-2] == msgs[-2]
+
+    def test_compact_too_few_messages_noop(self):
+        """With <=8 messages, compaction is a no-op."""
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "step 1"},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "step 2"},
+        ]
+        compacted = _compact_messages(msgs, target_tokens=100)
+        assert compacted == msgs
+
+    def test_compact_summary_includes_tool_calls(self):
+        """The compaction summary mentions tool calls that were made."""
+        msgs = [{"role": "user", "content": "Build it"}]
+        for i in range(10):
+            msgs.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "write_file", "input": {"path": f"file{i}.py", "content": "x"}},
+            ]})
+            msgs.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": "OK"},
+            ]})
+
+        compacted = _compact_messages(msgs, target_tokens=50000)
+        # The summary message should mention the tool calls
+        summary_msg = compacted[1]
+        assert "Tool calls made" in summary_msg["content"] or "write_file" in summary_msg["content"]
+
+    def test_compact_tracks_files_modified(self):
+        """The compaction summary lists files that were modified."""
+        msgs = [{"role": "user", "content": "task"}]
+        for i in range(10):
+            msgs.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "write_file", "input": {"path": f"src/mod{i}.py", "content": "code"}},
+            ]})
+            msgs.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": "OK"},
+            ]})
+
+        compacted = _compact_messages(msgs, target_tokens=50000)
+        summary_msg = compacted[1]
+        assert "Files modified" in summary_msg["content"]
+
+    @pytest.mark.asyncio
+    @patch("forge_ide.agent.chat_anthropic")
+    async def test_compaction_event_emitted(self, mock_chat):
+        """When context is compacted, a ContextCompactionEvent is emitted."""
+        # Create a config with a very low context window limit
+        config = _make_config(context_window_limit=100, compaction_target=50)
+        registry = Registry()
+        _register_echo_tool(registry)
+
+        # Build up messages that will exceed the limit
+        # First call returns tool_use, second returns end_turn
+        mock_chat.side_effect = [
+            _tool_use_response("echo", {"message": "x" * 500}),
+            _text_response("done"),
+        ]
+
+        events = []
+        done = await run_agent("do stuff " + "x" * 500, registry, config, on_event=events.append)
+
+        # Check for compaction events
+        compaction_events = [e for e in events if isinstance(e, ContextCompactionEvent)]
+        # Should have compacted at least once since our limit is very low
+        assert len(compaction_events) >= 1
+        assert compaction_events[0].messages_before > 0
+        assert compaction_events[0].tokens_before > 0
+
+
+# ---------------------------------------------------------------------------
+# 8th tool — apply_patch
+# ---------------------------------------------------------------------------
+
+
+class TestApplyPatchTool:
+    def test_register_apply_patch(self):
+        """apply_patch can be registered in a registry."""
+        registry = Registry()
+        _register_apply_patch_tool(registry)
+        assert registry.has_tool("apply_patch")
+        names = registry.tool_names()
+        assert "apply_patch" in names
+
+    @pytest.mark.asyncio
+    async def test_apply_patch_success(self, tmp_path):
+        """apply_patch successfully patches a file."""
+        # Create a test file
+        test_file = tmp_path / "hello.py"
+        test_file.write_text("def hello():\n    return 'world'\n")
+
+        registry = Registry()
+        _register_apply_patch_tool(registry)
+
+        diff = (
+            "@@ -1,2 +1,2 @@\n"
+            " def hello():\n"
+            "-    return 'world'\n"
+            "+    return 'universe'\n"
+        )
+
+        result = await registry.dispatch(
+            "apply_patch", {"path": "hello.py", "diff": diff}, str(tmp_path),
+        )
+
+        assert result.success
+        assert result.data["hunks_applied"] == 1
+        assert result.data["insertions"] == 1
+        assert result.data["deletions"] == 1
+
+        # Verify file was actually patched
+        patched = test_file.read_text()
+        assert "universe" in patched
+        assert "world" not in patched
+
+    @pytest.mark.asyncio
+    async def test_apply_patch_file_not_found(self, tmp_path):
+        """apply_patch fails gracefully for missing files."""
+        registry = Registry()
+        _register_apply_patch_tool(registry)
+
+        result = await registry.dispatch(
+            "apply_patch",
+            {"path": "nonexistent.py", "diff": "@@ -1 +1 @@\n-old\n+new\n"},
+            str(tmp_path),
+        )
+
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_apply_patch_sandbox_escape(self, tmp_path):
+        """apply_patch rejects paths that escape the working directory."""
+        registry = Registry()
+        _register_apply_patch_tool(registry)
+
+        result = await registry.dispatch(
+            "apply_patch",
+            {"path": "../../../etc/passwd", "diff": "@@ -1 +1 @@\n-old\n+new\n"},
+            str(tmp_path),
+        )
+
+        assert not result.success
+        assert "escapes" in result.error.lower() or "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_apply_patch_conflict(self, tmp_path):
+        """apply_patch returns a helpful error on patch conflict."""
+        test_file = tmp_path / "code.py"
+        test_file.write_text("line1\nline2\nline3\n")
+
+        registry = Registry()
+        _register_apply_patch_tool(registry)
+
+        # Diff expects content that doesn't match
+        diff = "@@ -1,3 +1,3 @@\n wrong_line1\n-wrong_line2\n+new_line2\n wrong_line3\n"
+
+        result = await registry.dispatch(
+            "apply_patch", {"path": "code.py", "diff": diff}, str(tmp_path),
+        )
+
+        assert not result.success
+        assert "conflict" in result.error.lower() or "patch" in result.error.lower()
+
+    def test_run_task_includes_apply_patch(self):
+        """run_task's auto-registry includes apply_patch as the 8th tool."""
+        from forge_ide.adapters import register_builtin_tools
+
+        registry = Registry()
+        register_builtin_tools(registry)
+        _register_apply_patch_tool(registry)
+
+        tools = registry.list_tools()
+        names = [t["name"] for t in tools]
+        assert len(names) == 8
+        assert "apply_patch" in names
+        # Verify all 8
+        expected = {"read_file", "list_directory", "search_code", "write_file",
+                    "run_tests", "check_syntax", "run_command", "apply_patch"}
+        assert set(names) == expected
+
+
+# ---------------------------------------------------------------------------
+# WebSocket activity feed bridge
+# ---------------------------------------------------------------------------
+
+
+class TestWSEventBridge:
+    @pytest.mark.asyncio
+    async def test_bridge_tool_call_event(self):
+        """ToolCallEvent is broadcast as tool_use WS message."""
+        sent = []
+
+        mock_manager = AsyncMock()
+        mock_manager.send_to_user = AsyncMock(side_effect=lambda uid, data: sent.append(data))
+
+        with patch("app.ws_manager.manager", mock_manager):
+            bridge = make_ws_event_bridge("user-1", "build-1")
+            event = ToolCallEvent(turn=1, elapsed_ms=100, tool_name="read_file",
+                                  tool_input={"path": "foo.py"}, tool_use_id="t1")
+            await bridge(event)
+
+        assert len(sent) == 1
+        assert sent[0]["type"] == "tool_use"
+        assert sent[0]["payload"]["tool_name"] == "read_file"
+        assert sent[0]["payload"]["build_id"] == "build-1"
+
+    @pytest.mark.asyncio
+    async def test_bridge_tool_result_event(self):
+        """ToolResultEvent is broadcast as build_log WS message."""
+        sent = []
+        mock_manager = AsyncMock()
+        mock_manager.send_to_user = AsyncMock(side_effect=lambda uid, data: sent.append(data))
+
+        with patch("app.ws_manager.manager", mock_manager):
+            bridge = make_ws_event_bridge("user-1", "build-1")
+            result = ToolResponse.ok({"content": "file data"})
+            event = ToolResultEvent(turn=1, elapsed_ms=200, tool_name="read_file",
+                                    tool_use_id="t1", response=result)
+            await bridge(event)
+
+        assert len(sent) == 1
+        assert sent[0]["type"] == "build_log"
+        assert "ok" in sent[0]["payload"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_bridge_done_event(self):
+        """DoneEvent is broadcast with summary stats."""
+        sent = []
+        mock_manager = AsyncMock()
+        mock_manager.send_to_user = AsyncMock(side_effect=lambda uid, data: sent.append(data))
+
+        with patch("app.ws_manager.manager", mock_manager):
+            bridge = make_ws_event_bridge("user-1", "build-1")
+            event = DoneEvent(turn=5, elapsed_ms=5000, final_text="All done",
+                              total_input_tokens=1000, total_output_tokens=500,
+                              tool_calls_made=3)
+            await bridge(event)
+
+        assert len(sent) == 1
+        assert "5 turns" in sent[0]["payload"]["message"]
+        assert "3 tool calls" in sent[0]["payload"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_bridge_error_event(self):
+        """ErrorEvent is broadcast with error level."""
+        sent = []
+        mock_manager = AsyncMock()
+        mock_manager.send_to_user = AsyncMock(side_effect=lambda uid, data: sent.append(data))
+
+        with patch("app.ws_manager.manager", mock_manager):
+            bridge = make_ws_event_bridge("user-1", "build-1")
+            event = ErrorEvent(turn=2, elapsed_ms=300, error="API went down")
+            await bridge(event)
+
+        assert len(sent) == 1
+        assert sent[0]["payload"]["level"] == "error"
+        assert "API went down" in sent[0]["payload"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_bridge_context_compaction_event(self):
+        """ContextCompactionEvent is broadcast with metrics."""
+        sent = []
+        mock_manager = AsyncMock()
+        mock_manager.send_to_user = AsyncMock(side_effect=lambda uid, data: sent.append(data))
+
+        with patch("app.ws_manager.manager", mock_manager):
+            bridge = make_ws_event_bridge("user-1", "build-1")
+            event = ContextCompactionEvent(
+                turn=10, elapsed_ms=1000,
+                messages_before=40, messages_after=10,
+                tokens_before=150000, tokens_after=80000,
+            )
+            await bridge(event)
+
+        assert len(sent) == 1
+        assert sent[0]["type"] == "context_compaction"
+        assert sent[0]["payload"]["tokens_before"] == 150000
+
+    @pytest.mark.asyncio
+    async def test_bridge_text_event(self):
+        """TextEvent is broadcast as build_log."""
+        sent = []
+        mock_manager = AsyncMock()
+        mock_manager.send_to_user = AsyncMock(side_effect=lambda uid, data: sent.append(data))
+
+        with patch("app.ws_manager.manager", mock_manager):
+            bridge = make_ws_event_bridge("user-1", "build-1")
+            event = TextEvent(turn=1, elapsed_ms=50, text="Analyzing the code...")
+            await bridge(event)
+
+        assert len(sent) == 1
+        assert sent[0]["type"] == "build_log"
+        assert sent[0]["payload"]["source"] == "agent"
+
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPrompt:
+    def test_default_prompt_mentions_8_tools(self):
+        from forge_ide.agent import _DEFAULT_SYSTEM_PROMPT
+        assert "8 tools" in _DEFAULT_SYSTEM_PROMPT or "AVAILABLE TOOLS (8)" in _DEFAULT_SYSTEM_PROMPT
+
+    def test_default_prompt_mentions_apply_patch(self):
+        from forge_ide.agent import _DEFAULT_SYSTEM_PROMPT
+        assert "apply_patch" in _DEFAULT_SYSTEM_PROMPT
+
+    def test_default_prompt_has_error_recovery(self):
+        from forge_ide.agent import _DEFAULT_SYSTEM_PROMPT
+        assert "ERROR RECOVERY" in _DEFAULT_SYSTEM_PROMPT
+
+    def test_default_prompt_has_context_window(self):
+        from forge_ide.agent import _DEFAULT_SYSTEM_PROMPT
+        assert "CONTEXT WINDOW" in _DEFAULT_SYSTEM_PROMPT
+
+    def test_default_prompt_has_workflow(self):
+        from forge_ide.agent import _DEFAULT_SYSTEM_PROMPT
+        assert "WORKFLOW" in _DEFAULT_SYSTEM_PROMPT or "Read" in _DEFAULT_SYSTEM_PROMPT
         assert callable(run_task)
