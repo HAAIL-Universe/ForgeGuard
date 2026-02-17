@@ -80,13 +80,7 @@ interface ActivityEntry {
   time: string;
   message: string;
   level: 'info' | 'warn' | 'error' | 'system';
-}
-
-interface BuildFile {
-  path: string;
-  size_bytes: number;
-  language: string;
-  created_at: string;
+  category: 'activity' | 'output';
 }
 
 interface PlanTask {
@@ -112,15 +106,14 @@ interface PauseInfo {
 interface ManifestFile {
   path: string;
   purpose: string;
-  status: 'pending' | 'generating' | 'done' | 'error' | 'audited';
+  status: 'pending' | 'generating' | 'done' | 'error';
   language: string;
   estimated_lines: number;
   size_bytes?: number;
   tokens_in?: number;
   tokens_out?: number;
-  audit_verdict?: 'PASS' | 'FAIL';
-  audit_findings?: string;
-  audit_duration_ms?: number;
+  auditStatus?: 'pending' | 'pass' | 'fail' | 'fixing' | 'fixed';
+  auditFindings?: string;
 }
 
 interface VerificationResult {
@@ -128,6 +121,7 @@ interface VerificationResult {
   tests_passed: number;
   tests_failed: number;
   fixes_applied: number;
+  test_output?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -152,17 +146,6 @@ const cardStyle: React.CSSProperties = {
   borderRadius: '8px',
   padding: '16px 20px',
 };
-
-const phaseRowStyle = (isActive: boolean): React.CSSProperties => ({
-  display: 'flex',
-  gap: '10px',
-  padding: '10px 12px',
-  borderRadius: '6px',
-  background: isActive ? '#1E3A5F' : 'transparent',
-  borderLeft: isActive ? '3px solid #2563EB' : '3px solid transparent',
-  transition: 'background 0.2s',
-  cursor: 'pointer',
-});
 
 const metricBoxStyle: React.CSSProperties = {
   display: 'flex',
@@ -191,21 +174,64 @@ const LEVEL_COLOR: Record<string, string> = {
   system: '#2563EB',
 };
 
-const STATUS_ICON: Record<PhaseStatus, string> = {
-  pending: '○',
-  active: '◐',
-  pass: '●',
-  fail: '✕',
-  paused: '⏸',
-};
+/* ------------------------------------------------------------------ */
+/*  Slash command definitions                                         */
+/* ------------------------------------------------------------------ */
 
-const STATUS_COLOR: Record<PhaseStatus, string> = {
-  pending: '#475569',
-  active: '#2563EB',
-  pass: '#22C55E',
-  fail: '#EF4444',
-  paused: '#F59E0B',
-};
+const SLASH_COMMANDS: { cmd: string; icon: string; desc: string; color: string }[] = [
+  { cmd: '/stop',     icon: '\u23F9',        desc: 'Cancel the build immediately',            color: '#DC2626' },
+  { cmd: '/start',    icon: '\u25B6',        desc: 'Resume or start build (optionally: /start phase N)', color: '#16A34A' },
+  { cmd: '/status',   icon: '\uD83D\uDCCA',  desc: 'LLM-generated build status summary',     color: '#0891B2' },
+  { cmd: '/status',   icon: '\uD83D\uDCCA',  desc: 'LLM-generated build status summary',     color: '#0891B2' },
+  { cmd: '/pause',    icon: '\u23F8',        desc: 'Pause after the current file',            color: '#F59E0B' },
+  { cmd: '/push',     icon: '\uD83D\uDE80',  desc: 'Push to GitHub (commits first)',          color: '#EA580C' },
+  { cmd: '/compact',  icon: '\u267B',        desc: 'Compact context before next file',        color: '#7C3AED' },
+  { cmd: '/commit',   icon: '\uD83D\uDCE4',  desc: 'Git add, commit, and push',               color: '#D97706' },
+  { cmd: '/clear',    icon: '\u26A1',        desc: 'Stop and restart with fresh context',     color: '#0EA5E9' },
+  { cmd: '/verify',   icon: '\uD83D\uDD0D',  desc: 'Run verification (syntax + tests)',        color: '#8B5CF6' },
+  { cmd: '/pull',     icon: '\u2B07',        desc: 'Pull from GitHub and continue',             color: '#0D9488' },
+];
+
+/* ------------------------------------------------------------------ */
+/*  ActivityLine — renders a single activity entry, collapsible if long */
+/* ------------------------------------------------------------------ */
+
+function ActivityLine({ entry, isLong }: { entry: ActivityEntry; isLong: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!isLong) {
+    return (
+      <div style={{ color: LEVEL_COLOR[entry.level] ?? LEVEL_COLOR.info, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        <span style={{ color: '#475569' }}>{entry.time}</span>{' '}
+        {entry.message}
+      </div>
+    );
+  }
+
+  // Long messages: show first 200 chars collapsed, full text expanded
+  const preview = entry.message.slice(0, 200) + '…';
+  return (
+    <div style={{ color: LEVEL_COLOR[entry.level] ?? LEVEL_COLOR.info, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+      <span style={{ color: '#475569' }}>{entry.time}</span>{' '}
+      {expanded ? entry.message : preview}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          background: 'none',
+          border: 'none',
+          color: '#3B82F6',
+          cursor: 'pointer',
+          fontSize: '0.7rem',
+          marginLeft: '6px',
+          padding: 0,
+          fontFamily: 'inherit',
+        }}
+      >
+        {expanded ? '▲ Show less' : '▼ Show more'}
+      </button>
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                         */
@@ -223,15 +249,20 @@ function BuildProgress() {
   const [phaseStates, setPhaseStates] = useState<Map<number, PhaseState>>(new Map());
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [totalTokens, setTotalTokens] = useState({ input: 0, output: 0 });
+  const [contextWindowTokens, setContextWindowTokens] = useState({ input: 0, output: 0 });
   const [loading, setLoading] = useState(true);
   const [noBuild, setNoBuild] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
-  const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
-  const [phasesExpanded, setPhasesExpanded] = useState(true);
-  const [buildFiles, setBuildFiles] = useState<BuildFile[]>([]);
-  const [filesExpanded, setFilesExpanded] = useState(true);
+  const [showForceCancelConfirm, setShowForceCancelConfirm] = useState(false);
+
   const [planTasks, setPlanTasks] = useState<PlanTask[]>([]);
   const [planExpanded, setPlanExpanded] = useState(true);
+  const [expandedFile, setExpandedFile] = useState<string | null>(null);
+  const [fileContentCache, setFileContentCache] = useState<Map<string, string>>(new Map());
+  const [fileContentLoading, setFileContentLoading] = useState(false);
+  const [expandedChip, setExpandedChip] = useState<number | null>(null);
+  const [chipGridHeight, setChipGridHeight] = useState<number | null>(null);
+  const chipGridRef = useRef<HTMLDivElement>(null);
   const [overviewPhases, setOverviewPhases] = useState<OverviewPhase[]>([]);
   const [currentPhaseName, setCurrentPhaseName] = useState('');
   const [turnCount, setTurnCount] = useState(0);
@@ -241,25 +272,35 @@ function BuildProgress() {
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [interjectionText, setInterjectionText] = useState('');
   const [sendingInterject, setSendingInterject] = useState(false);
+  const [queuedInterjections, setQueuedInterjections] = useState<{id: number; text: string; time: string; status: 'pending' | 'delivered'}[]>([]);
+  const queueIdRef = useRef(0);
+  const [slashMenuIdx, setSlashMenuIdx] = useState(0);
+  const interjRef = useRef<HTMLInputElement>(null);
   const [resuming, setResuming] = useState(false);
   const [logSearch, setLogSearch] = useState('');
+  const [activityTab, setActivityTab] = useState<'activity' | 'output'>('activity');
   const [devConsoleOpen, setDevConsoleOpen] = useState(false);
   const [devSteps, setDevSteps] = useState<DevStep[]>(createInitialSteps);
   const [manifestFiles, setManifestFiles] = useState<ManifestFile[]>([]);
   const [manifestExpanded, setManifestExpanded] = useState(true);
+  const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
   const [verification, setVerification] = useState<VerificationResult | null>(null);
-  const [previewFile, setPreviewFile] = useState<{ path: string; content: string; language: string } | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  const [verificationExpanded, setVerificationExpanded] = useState(false);
+  const [activityStatus, setActivityStatus] = useState<string>('');
   const feedEndRef = useRef<HTMLDivElement>(null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
   const phaseStartRef = useRef<number>(Date.now());
+  const expandedFileRef = useRef<string | null>(null);
+
+  // Keep ref in sync with state for use in WS callback
+  expandedFileRef.current = expandedFile;
 
   /* ------ helpers ------ */
 
-  const addActivity = useCallback((msg: string, level: ActivityEntry['level'] = 'info') => {
+  const addActivity = useCallback((msg: string, level: ActivityEntry['level'] = 'info', category: ActivityEntry['category'] = 'activity') => {
     const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
-    setActivity((prev) => [...prev, { time, message: msg, level }]);
+    setActivity((prev) => [...prev, { time, message: msg, level, category }]);
   }, []);
 
   const parsePhaseNum = (phaseStr: string): number => {
@@ -267,10 +308,12 @@ function BuildProgress() {
     return m ? parseInt(m[0], 10) : 0;
   };
 
-  /* ------ filtered activity for search ------ */
-  const filteredActivity = logSearch
-    ? activity.filter((e) => e.message.toLowerCase().includes(logSearch.toLowerCase()))
-    : activity;
+  /* ------ filtered activity for search + tab ------ */
+  const filteredActivity = (() => {
+    let items = activity.filter((e) => e.category === activityTab);
+    if (logSearch) items = items.filter((e) => e.message.toLowerCase().includes(logSearch.toLowerCase()));
+    return items;
+  })();
 
   /* ------ auto-scroll feed (only when user is near bottom) ------ */
   useEffect(() => {
@@ -324,8 +367,9 @@ function BuildProgress() {
           return;
         }
 
+        let buildData: BuildStatus | null = null;
         if (statusRes.ok) {
-          const buildData: BuildStatus = await statusRes.json();
+          buildData = await statusRes.json();
           setBuild(buildData);
 
           /* Seed activity from historical logs */
@@ -335,13 +379,20 @@ function BuildProgress() {
               timestamp: string;
               message: string;
               level: string;
+              source?: string;
             }[];
             setActivity(
-              items.map((l) => ({
-                time: new Date(l.timestamp).toLocaleTimeString('en-GB', { hour12: false }),
-                message: l.message,
-                level: (l.level ?? 'info') as ActivityEntry['level'],
-              })),
+              items.map((l) => {
+                const src = l.source ?? '';
+                const cat: ActivityEntry['category'] =
+                  src === 'file' || src === 'builder' ? 'output' : 'activity';
+                return {
+                  time: new Date(l.timestamp).toLocaleTimeString('en-GB', { hour12: false }),
+                  message: l.message,
+                  level: (l.level ?? 'info') as ActivityEntry['level'],
+                  category: cat,
+                };
+              }),
             );
           }
 
@@ -359,16 +410,28 @@ function BuildProgress() {
             }
           } catch { /* best effort */ }
 
-          /* Seed build files */
+          /* Seed file manifest from already-written files (survives refresh) */
           try {
             const filesRes = await fetch(`${API_BASE}/projects/${projectId}/build/files`, {
               headers: hdr, signal: sig,
             });
             if (!ac.signal.aborted && filesRes.ok) {
               const filesData = await filesRes.json();
-              setBuildFiles(filesData.items ?? []);
+              const items = (filesData.items ?? []) as { path: string; size_bytes: number; language: string }[];
+              if (items.length > 0) {
+                setManifestFiles(items.map((f) => ({
+                  path: f.path,
+                  purpose: '',
+                  status: 'done' as const,
+                  language: f.language || '',
+                  estimated_lines: 0,
+                  size_bytes: f.size_bytes,
+                })));
+              }
             }
           } catch { /* best effort */ }
+
+
         } else {
           addToast('Failed to load build');
         }
@@ -379,17 +442,16 @@ function BuildProgress() {
           setPhaseDefs(defs);
 
           /* Build initial phase states from current build status */
-          const statusData: BuildStatus | null = statusRes.ok ? await statusRes.json().catch(() => null) : null;
-          const currentPhaseNum = statusData ? parsePhaseNum(statusData.phase) : 0;
+          const currentPhaseNum = buildData ? parsePhaseNum(buildData.phase) : 0;
 
           const map = new Map<number, PhaseState>();
           for (const def of defs) {
             let status: PhaseStatus = 'pending';
-            if (statusData) {
+            if (buildData) {
               if (def.number < currentPhaseNum) status = 'pass';
               else if (def.number === currentPhaseNum) {
-                if (statusData.status === 'completed') status = 'pass';
-                else if (statusData.status === 'failed') status = 'fail';
+                if (buildData.status === 'completed') status = 'pass';
+                else if (buildData.status === 'failed') status = 'fail';
                 else status = 'active';
               }
             }
@@ -402,6 +464,21 @@ function BuildProgress() {
             });
           }
           setPhaseStates(map);
+
+          /* Seed overview phases grid (survives refresh) */
+          if (buildData && defs.length > 0) {
+            setOverviewPhases(defs.map((d) => {
+              let ovStatus: OverviewPhase['status'] = 'pending';
+              if (d.number < currentPhaseNum) ovStatus = 'passed';
+              else if (d.number === currentPhaseNum) {
+                if (buildData!.status === 'completed') ovStatus = 'passed';
+                else if (buildData!.status === 'failed') ovStatus = 'failed';
+                else if (buildData!.status === 'paused') ovStatus = 'paused';
+                else ovStatus = 'active';
+              }
+              return { number: d.number, name: d.name, objective: d.objective, status: ovStatus };
+            }));
+          }
         }
       } catch {
         if (!ac.signal.aborted) addToast('Network error loading build');
@@ -464,7 +541,10 @@ function BuildProgress() {
           case 'build_log': {
             const msg = (payload.message ?? payload.msg ?? '') as string;
             const lvl = (payload.level ?? 'info') as ActivityEntry['level'];
-            if (msg) addActivity(msg, lvl);
+            const src = (payload.source ?? '') as string;
+            const cat: ActivityEntry['category'] =
+              src === 'file' || src === 'builder' ? 'output' : 'activity';
+            if (msg) addActivity(msg, lvl, cat);
             break;
           }
 
@@ -525,17 +605,29 @@ function BuildProgress() {
 
           case 'context_reset': {
             /* Plan-execute mode: each phase is independent, so reset the
-               running token counters.  The "Context Window" bar now
-               reflects per-phase usage rather than the misleading
-               cumulative total across independent API calls. */
+               context window bar.  Total tokens (cost) are NOT reset —
+               those track cumulative spend. */
             const droppedCount = (payload.dropped ?? 0) as number;
-            setTotalTokens({ input: 0, output: 0 });
+            setContextWindowTokens({ input: 0, output: 0 });
             addActivity(`Context reset — cleared ${droppedCount} cached files`, 'system');
+            break;
+          }
+
+          case 'phase_transition': {
+            const completed = payload.completed_phase as string;
+            const nextPhase = payload.next_phase as string;
+            const nextName = payload.next_phase_name as string;
+            const nextObj = (payload.next_phase_objective ?? '') as string;
+            addActivity(
+              `🔄 ${completed} complete → ${nextPhase}: ${nextName}${nextObj ? ` — ${nextObj}` : ''}`,
+              'system',
+            );
             break;
           }
 
           case 'build_complete': {
             setBuild((prev) => prev ? { ...prev, status: 'completed' } : prev);
+            setActivityStatus('');
             const totalIn = (payload.total_input_tokens ?? 0) as number;
             const totalOut = (payload.total_output_tokens ?? 0) as number;
             if (totalIn || totalOut) {
@@ -557,6 +649,7 @@ function BuildProgress() {
 
           case 'build_error': {
             setBuild((prev) => prev ? { ...prev, status: 'failed', error_detail: (payload.error_detail ?? payload.error ?? '') as string } : prev);
+            setActivityStatus('');
             addActivity(`Build failed: ${payload.error_detail ?? payload.error ?? 'Unknown error'}`, 'error');
 
             /* Mark current active phase as fail */
@@ -572,6 +665,7 @@ function BuildProgress() {
 
           case 'build_cancelled': {
             setBuild((prev) => prev ? { ...prev, status: 'cancelled' } : prev);
+            setActivityStatus('');
             addActivity('Build cancelled by user', 'warn');
             break;
           }
@@ -604,7 +698,7 @@ function BuildProgress() {
             const planText = (payload.plan_text ?? '') as string;
             if (planText) {
               addActivity(
-                `Recovery plan for ${planPhase}:\n${planText.slice(0, 500)}${planText.length > 500 ? '…' : ''}`,
+                `Recovery plan for ${planPhase}:\n${planText}`,
                 'warn',
               );
             }
@@ -637,14 +731,8 @@ function BuildProgress() {
           case 'file_created': {
             const filePath = (payload.path ?? '') as string;
             const sizeBytes = (payload.size_bytes ?? 0) as number;
-            const language = (payload.language ?? '') as string;
             if (filePath) {
-              setBuildFiles((prev) => {
-                // Avoid duplicates (same path)
-                if (prev.some((f) => f.path === filePath)) return prev;
-                return [...prev, { path: filePath, size_bytes: sizeBytes, language, created_at: new Date().toISOString() }];
-              });
-              addActivity(`File created: ${filePath} (${sizeBytes} bytes)`, 'info');
+              addActivity(`File created: ${filePath} (${sizeBytes} bytes)`, 'info', 'output');
             }
             break;
           }
@@ -655,6 +743,8 @@ function BuildProgress() {
             const files = (payload.files ?? []) as ManifestFile[];
             const phase = (payload.phase ?? '') as string;
             setManifestFiles(files.map((f) => ({ ...f, status: 'pending' })));
+            setExpandedFile(null);
+            setFileContentCache(new Map());
             addActivity(`File manifest for ${phase}: ${files.length} files`, 'system');
             break;
           }
@@ -662,10 +752,12 @@ function BuildProgress() {
           case 'file_generating': {
             const genPath = (payload.path ?? '') as string;
             if (genPath) {
-              setManifestFiles((prev) =>
-                prev.map((f) => (f.path === genPath ? { ...f, status: 'generating' as const } : f)),
-              );
-              addActivity(`Generating: ${genPath}`, 'info');
+              setManifestFiles((prev) => {
+                const exists = prev.some((f) => f.path === genPath);
+                if (exists) return prev.map((f) => (f.path === genPath ? { ...f, status: 'generating' as const } : f));
+                return [...prev, { path: genPath, purpose: '', status: 'generating' as const, language: '', estimated_lines: 0 }];
+              });
+              addActivity(`Generating: ${genPath}`, 'info', 'output');
             }
             break;
           }
@@ -673,47 +765,110 @@ function BuildProgress() {
           case 'file_generated': {
             const genPath = (payload.path ?? '') as string;
             const sizeBytes = (payload.size_bytes ?? 0) as number;
-            const language = (payload.language ?? '') as string;
             const tokensIn = (payload.tokens_in ?? 0) as number;
             const tokensOut = (payload.tokens_out ?? 0) as number;
             if (genPath) {
-              setManifestFiles((prev) =>
-                prev.map((f) =>
-                  f.path === genPath
-                    ? { ...f, status: 'done' as const, size_bytes: sizeBytes, tokens_in: tokensIn, tokens_out: tokensOut }
-                    : f,
-                ),
-              );
-              setBuildFiles((prev) => {
-                if (prev.some((f) => f.path === genPath)) return prev;
-                return [...prev, { path: genPath, size_bytes: sizeBytes, language, created_at: new Date().toISOString() }];
+              setManifestFiles((prev) => {
+                const exists = prev.some((f) => f.path === genPath);
+                const updated = exists
+                  ? prev.map((f) =>
+                      f.path === genPath
+                        ? { ...f, status: 'done' as const, size_bytes: sizeBytes, tokens_in: tokensIn, tokens_out: tokensOut, auditStatus: 'pending' as const }
+                        : f,
+                    )
+                  : [...prev, { path: genPath, purpose: '', status: 'done' as const, language: '', estimated_lines: 0, size_bytes: sizeBytes, tokens_in: tokensIn, tokens_out: tokensOut, auditStatus: 'pending' as const }];
+                return updated;
               });
               setTotalTokens((prev) => ({
                 input: prev.input + tokensIn,
                 output: prev.output + tokensOut,
               }));
-              addActivity(`Generated: ${genPath} (${sizeBytes} bytes, ${tokensIn + tokensOut} tokens)`, 'info');
+              // Context window tracks the peak single-call usage (each file is independent)
+              setContextWindowTokens((prev) => {
+                const newTotal = tokensIn + tokensOut;
+                const prevTotal = prev.input + prev.output;
+                return newTotal > prevTotal ? { input: tokensIn, output: tokensOut } : prev;
+              });
+              addActivity(`✓ ${genPath} — generated (${sizeBytes} bytes, ${tokensIn + tokensOut} tokens)`, 'info', 'output');
+              // Auto-fetch content if this file is currently expanded
+              if (expandedFileRef.current === genPath) {
+                fetch(`${API_BASE}/projects/${projectId}/build/files/${encodeURIComponent(genPath)}`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                })
+                  .then((res) => (res.ok ? res.json() : null))
+                  .then((data) => {
+                    if (data?.content) {
+                      setFileContentCache((prev) => new Map(prev).set(genPath, data.content));
+                    }
+                  })
+                  .catch(() => {});
+              }
             }
             break;
           }
 
           case 'file_audited': {
             const auditPath = (payload.path ?? '') as string;
-            const verdict = (payload.verdict ?? 'PASS') as 'PASS' | 'FAIL';
+            const verdict = (payload.verdict ?? 'PASS') as string;
             const findings = (payload.findings ?? '') as string;
-            const auditDur = (payload.duration_ms ?? 0) as number;
+            const durationMs = (payload.duration_ms ?? 0) as number;
             if (auditPath) {
               setManifestFiles((prev) =>
                 prev.map((f) =>
                   f.path === auditPath
-                    ? { ...f, status: 'audited' as const, audit_verdict: verdict, audit_findings: findings, audit_duration_ms: auditDur }
+                    ? {
+                        ...f,
+                        auditStatus: verdict === 'PASS' ? ('pass' as const) : ('fail' as const),
+                        auditFindings: findings || undefined,
+                      }
                     : f,
                 ),
               );
-              const icon = verdict === 'PASS' ? '✓✓' : '✗';
-              const level = verdict === 'PASS' ? 'info' as const : 'warn' as const;
-              addActivity(`${icon} Audit ${verdict}: ${auditPath}${findings ? ' — ' + findings.slice(0, 120) : ''} (${auditDur}ms)`, level);
+              if (verdict === 'PASS') {
+                addActivity(`✓✓ ${auditPath} — audited (pass, ${durationMs}ms)`, 'info');
+              } else {
+                addActivity(`✗ ${auditPath} — audited (FAIL, ${durationMs}ms)`, 'warn');
+              }
             }
+            break;
+          }
+
+          case 'file_fixing': {
+            const fixPath = (payload.path ?? '') as string;
+            const fixer = (payload.fixer ?? 'auditor') as string;
+            if (fixPath) {
+              setManifestFiles((prev) =>
+                prev.map((f) =>
+                  f.path === fixPath
+                    ? { ...f, auditStatus: 'fixing' as const }
+                    : f,
+                ),
+              );
+              addActivity(`🔧 ${fixPath} — ${fixer} fixing...`, 'warn');
+            }
+            break;
+          }
+
+          case 'file_fixed': {
+            const fixedPath = (payload.path ?? '') as string;
+            const fixer = (payload.fixer ?? 'auditor') as string;
+            const rounds = (payload.rounds ?? 1) as number;
+            if (fixedPath) {
+              setManifestFiles((prev) =>
+                prev.map((f) =>
+                  f.path === fixedPath
+                    ? { ...f, auditStatus: 'fixed' as const, auditFindings: undefined }
+                    : f,
+                ),
+              );
+              addActivity(`✓ ${fixedPath} — fixed by ${fixer} (${rounds} round${rounds > 1 ? 's' : ''})`, 'info');
+            }
+            break;
+          }
+
+          case 'build_activity_status': {
+            const status = (payload.status ?? '') as string;
+            setActivityStatus(status);
             break;
           }
 
@@ -723,8 +878,10 @@ function BuildProgress() {
               tests_passed: (payload.tests_passed ?? 0) as number,
               tests_failed: (payload.tests_failed ?? 0) as number,
               fixes_applied: (payload.fixes_applied ?? 0) as number,
+              test_output: (payload.test_output ?? '') as string,
             };
             setVerification(result);
+            setVerificationExpanded(false);
             const parts = [];
             if (result.syntax_errors) parts.push(`${result.syntax_errors} syntax errors`);
             if (result.tests_passed) parts.push(`${result.tests_passed} tests passed`);
@@ -801,6 +958,7 @@ function BuildProgress() {
             const inTok = (payload.input_tokens ?? 0) as number;
             const outTok = (payload.output_tokens ?? 0) as number;
             setTotalTokens({ input: inTok, output: outTok });
+            setContextWindowTokens({ input: inTok, output: outTok });
             break;
           }
 
@@ -849,7 +1007,19 @@ function BuildProgress() {
 
           case 'build_interjection': {
             const msg = (payload.message ?? '') as string;
-            addActivity(`Interjection sent: ${msg.slice(0, 100)}`, 'system');
+            addActivity(`Interjection delivered: ${msg.slice(0, 100)}`, 'system');
+            // Mark the first pending interjection as delivered
+            setQueuedInterjections((prev) => {
+              const idx = prev.findIndex((q) => q.status === 'pending');
+              if (idx < 0) return prev;
+              const next = [...prev];
+              next[idx] = { ...next[idx], status: 'delivered' };
+              // Remove delivered items after 3 seconds
+              setTimeout(() => {
+                setQueuedInterjections((p) => p.filter((q) => q.id !== next[idx].id));
+              }, 3000);
+              return next;
+            });
             break;
           }
         }
@@ -879,6 +1049,25 @@ function BuildProgress() {
     setShowCancelConfirm(false);
   };
 
+  const handleForceCancel = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/force-cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setBuild(updated);
+        addToast('Build force-cancelled', 'info');
+      } else {
+        addToast('Failed to force-cancel build');
+      }
+    } catch {
+      addToast('Network error force-cancelling build');
+    }
+    setShowForceCancelConfirm(false);
+  };
+
   const handleRetryBuild = async () => {
     setDevSteps(createInitialSteps());
     setDevSteps((prev) =>
@@ -903,7 +1092,7 @@ function BuildProgress() {
         setNoBuild(false);
         setActivity([]);
         setTotalTokens({ input: 0, output: 0 });
-        setBuildFiles([]);
+        setContextWindowTokens({ input: 0, output: 0 });
         setOverviewPhases([]);
         addToast('Build restarted', 'success');
       } else {
@@ -912,26 +1101,6 @@ function BuildProgress() {
       }
     } catch {
       addToast('Network error retrying build');
-    }
-  };
-
-  /* ---- File preview handler ---- */
-  const handleFilePreview = async (filePath: string, language: string) => {
-    setPreviewLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}/build/files/${encodeURIComponent(filePath)}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setPreviewFile({ path: filePath, content: data.content ?? data.text ?? '', language });
-      } else {
-        addToast('Failed to load file preview');
-      }
-    } catch {
-      addToast('Network error loading file');
-    } finally {
-      setPreviewLoading(false);
     }
   };
 
@@ -954,6 +1123,7 @@ function BuildProgress() {
         setNoBuild(false);
         setActivity([]);
         setTotalTokens({ input: 0, output: 0 });
+        setContextWindowTokens({ input: 0, output: 0 });
         addToast('Build started', 'success');
       } else {
         const data = await res.json().catch(() => ({ detail: 'Failed to start build' }));
@@ -987,13 +1157,53 @@ function BuildProgress() {
     }
   };
 
+  /* -- Slash command autocomplete -- */
+  const slashPrefix = interjectionText.trim().toLowerCase();
+  const showSlashMenu = slashPrefix.startsWith('/') && slashPrefix.length < 10;
+  const filteredSlash = showSlashMenu
+    ? SLASH_COMMANDS.filter((c) => c.cmd.startsWith(slashPrefix) && c.cmd !== slashPrefix)
+    : [];
+
+  const pickSlashCmd = (cmd: string) => {
+    setInterjectionText(cmd);
+    setSlashMenuIdx(0);
+    interjRef.current?.focus();
+  };
+
+  const handleSlashKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (filteredSlash.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashMenuIdx((p) => (p + 1) % filteredSlash.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashMenuIdx((p) => (p - 1 + filteredSlash.length) % filteredSlash.length);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && filteredSlash.length > 0 && slashPrefix !== filteredSlash[slashMenuIdx]?.cmd)) {
+        e.preventDefault();
+        pickSlashCmd(filteredSlash[slashMenuIdx].cmd);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setInterjectionText('');
+        return;
+      }
+    }
+    if (e.key === 'Enter') handleInterject();
+  };
+
   const handleInterject = async () => {
     if (!interjectionText.trim()) return;
     const trimmed = interjectionText.trim().toLowerCase();
     setSendingInterject(true);
 
     // Slash commands route through the same interject endpoint (backend handles routing)
-    const isSlashCmd = ['/stop', '/pause', '/start', '/compact', '/clear'].includes(trimmed);
+    const isSlashCmd = ['/stop', '/pause', '/start', '/compact', '/clear', '/commit', '/push', '/pull', '/status', '/verify', '/fix', '/continue'].includes(trimmed)
+      || trimmed.startsWith('/start ') || trimmed.startsWith('/continue ') || trimmed.startsWith('/verify ') || trimmed.startsWith('/fix ');
 
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
@@ -1009,13 +1219,19 @@ function BuildProgress() {
             pause_requested: 'Pause requested \u2014 will pause after current file',
             resumed: 'Build resumed',
             started: 'Build started',
+            continued: 'Build continuing from next phase',
             already_running: 'Build is already running',
             compact_requested: 'Context compaction requested \u2014 will compact before next file',
             cleared: 'Build cleared and restarting \u2014 fresh context',
+            pushed: 'Pushed to GitHub',
+            verifying: 'Running verification...',
+            fix_queued: 'Fix request sent to builder',
+            fix_started: 'Targeted fix in progress...',
+            pulled: 'Pulled from GitHub — continuing build',
           };
           addToast(msgs[data.status] || data.message || 'Command sent', 'success');
-          // Refresh build state after /stop or /start
-          if (['stopped', 'started', 'resumed', 'cleared'].includes(data.status)) {
+          // Refresh build state after /stop or /start or /continue
+          if (['stopped', 'started', 'resumed', 'cleared', 'continued', 'pulled'].includes(data.status)) {
             const bres = await fetch(`${API_BASE}/projects/${projectId}/build/status`, {
               headers: { Authorization: `Bearer ${token}` },
             });
@@ -1027,6 +1243,10 @@ function BuildProgress() {
           }
         } else {
           addToast('Interjection sent', 'success');
+          // Track queued interjection
+          const qId = ++queueIdRef.current;
+          const qTime = new Date().toLocaleTimeString('en-GB', { hour12: false });
+          setQueuedInterjections((prev) => [...prev, { id: qId, text: interjectionText.trim(), time: qTime, status: 'pending' }]);
         }
         setInterjectionText('');
       } else {
@@ -1045,8 +1265,8 @@ function BuildProgress() {
   const isActive = build && ['pending', 'running', 'paused'].includes(build.status);
   const buildModel = 'claude-opus-4-6';
   const contextWindow = 200_000;
-  const totalTok = totalTokens.input + totalTokens.output;
-  const ctxPercent = Math.min(100, (totalTok / contextWindow) * 100);
+  const ctxTok = contextWindowTokens.input + contextWindowTokens.output;
+  const ctxPercent = Math.min(100, (ctxTok / contextWindow) * 100);
   const ctxColor = ctxPercent > 80 ? '#EF4444' : ctxPercent > 50 ? '#F59E0B' : '#22C55E';
   const estimatedCost = getTokenCost(buildModel, totalTokens.input, totalTokens.output);
   const elapsedStr = elapsed > 0 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : '0s';
@@ -1102,6 +1322,10 @@ function BuildProgress() {
 
   return (
     <AppShell>
+      <style>{`
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
       <div style={pageStyle}>
         {/* ---- Header ---- */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
@@ -1146,7 +1370,7 @@ function BuildProgress() {
                 lineHeight: 1,
               }}
             >
-              🖥
+              🛠
             </button>
             {build?.status === 'completed' && (
               <button
@@ -1198,93 +1422,167 @@ function BuildProgress() {
                 }}
               >
                 Cancel Build
+              
+            {isActive && (
+              <button
+                onClick={() => setShowForceCancelConfirm(true)}
+                title="Force-cancel: kills the build task immediately (use if Cancel doesn't respond)"
+                style={{
+                  background: 'transparent',
+                  color: '#DC2626',
+                  border: '1px solid #7F1D1D',
+                  borderRadius: '6px',
+                  padding: '6px 16px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  opacity: 0.7,
+                }}
+              >
+                Force Cancel
               </button>
+            )}</button>
             )}
           </div>
         </div>
 
-        {/* Phase Overview Grid removed — the expandable Phases panel below
-           provides the same info with richer detail (tokens, deliverables). */}
-
         {/* ---- Two-column layout ---- */}
         <div style={twoColStyle}>
 
-          {/* ======== LEFT: Phase Checklist + Files ======== */}
+          {/* ======== LEFT: Phase Chips + Files ======== */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ ...cardStyle, padding: '12px 16px' }}>
-            <div
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: phasesExpanded ? '12px' : 0 }}
-              onClick={() => setPhasesExpanded(!phasesExpanded)}
-            >
-              <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
-                Phases ({doneCount}/{totalPhases})
-              </h3>
-              <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: phasesExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
-            </div>
-            {phasesExpanded && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                {(phaseStates.size > 0
-                  ? Array.from(phaseStates.entries()).sort((a, b) => a[0] - b[0]).map(([num, ps]) => ({ num, ps }))
-                  : phaseDefs.map((d) => ({ num: d.number, ps: { def: d, status: 'pending' as PhaseStatus, input_tokens: 0, output_tokens: 0, elapsed_ms: 0 } }))
-                ).map(({ num, ps }) => {
-                  const isExp = expandedPhase === num;
-                  const isActivePhase = ps.status === 'active';
-                  const phaseElapsed = ps.elapsed_ms > 0 ? `${Math.floor(ps.elapsed_ms / 60000)}m ${Math.floor((ps.elapsed_ms % 60000) / 1000)}s` : '';
+          <div style={{ ...cardStyle, padding: '12px 16px', minHeight: chipGridHeight != null && expandedChip !== null ? chipGridHeight : undefined, transition: 'min-height 0.2s ease' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#F8FAFC' }}>
+              Phases ({doneCount}/{totalPhases})
+            </h3>
+            {(() => {
+              const chips = overviewPhases.length > 0
+                ? overviewPhases
+                : phaseDefs.map((d) => ({ number: d.number, name: d.name, objective: d.objective, status: 'pending' as OverviewPhase['status'] }));
+              const chipColors: Record<string, string> = {
+                pending: '#475569', active: '#3B82F6', passed: '#22C55E', failed: '#EF4444', paused: '#F59E0B',
+              };
+              const chipBg: Record<string, string> = {
+                pending: '#0F172A', active: '#1E3A5F', passed: '#0D2818', failed: '#7F1D1D', paused: '#78350F',
+              };
 
-                  return (
-                    <div key={num}>
-                      <div
-                        style={phaseRowStyle(isActivePhase)}
-                        onClick={() => setExpandedPhase(isExp ? null : num)}
+              /* ── Expanded detail view ── */
+              if (expandedChip !== null) {
+                const ep = chips.find((p) => p.number === expandedChip);
+                if (!ep) { setExpandedChip(null); return null; }
+                const c = chipColors[ep.status] ?? '#475569';
+                const b = chipBg[ep.status] ?? '#0F172A';
+                const ps = phaseStates.get(ep.number);
+                const deliverables = ps?.def.deliverables ?? phaseDefs.find((d) => d.number === ep.number)?.deliverables ?? [];
+                const phaseElapsed = ps && ps.elapsed_ms > 0 ? `${Math.floor(ps.elapsed_ms / 60000)}m ${Math.floor((ps.elapsed_ms % 60000) / 1000)}s` : '';
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {/* Header bar */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <button
+                        onClick={() => setExpandedChip(null)}
+                        style={{
+                          background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer',
+                          fontSize: '0.8rem', padding: '4px 8px', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '4px',
+                        }}
+                        onMouseOver={(e) => (e.currentTarget.style.color = '#F8FAFC')}
+                        onMouseOut={(e) => (e.currentTarget.style.color = '#64748B')}
                       >
-                        {/* Status icon */}
-                        <span style={{ color: STATUS_COLOR[ps.status], fontSize: '1rem', width: '20px', textAlign: 'center', flexShrink: 0 }}>
-                          {isActivePhase ? (
-                            <span style={{ display: 'inline-block', animation: 'spin 1.2s linear infinite' }}>◐</span>
-                          ) : (
-                            STATUS_ICON[ps.status]
-                          )}
-                        </span>
-
-                        {/* Phase name + objective */}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: '0.8rem', fontWeight: 600, color: STATUS_COLOR[ps.status] }}>
-                            Phase {num} — {ps.def.name}
-                          </div>
-                          <div style={{ fontSize: '0.68rem', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {ps.def.objective}
-                          </div>
-                        </div>
-
-                        {/* Per-phase tokens (when done) */}
-                        {ps.status === 'pass' && (ps.input_tokens > 0 || ps.output_tokens > 0) && (
-                          <div style={{ fontSize: '0.6rem', color: '#64748B', textAlign: 'right', flexShrink: 0 }}>
-                            <div>{ps.input_tokens.toLocaleString()} in</div>
-                            <div>{ps.output_tokens.toLocaleString()} out</div>
-                            {phaseElapsed && <div>{phaseElapsed}</div>}
-                          </div>
-                        )}
-
-                        {/* Expand chevron */}
-                        <span style={{ color: '#475569', fontSize: '0.65rem', flexShrink: 0, transition: 'transform 0.15s', transform: isExp ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
-                      </div>
-
-                      {/* Expanded deliverables */}
-                      {isExp && ps.def.deliverables.length > 0 && (
-                        <div style={{ paddingLeft: '40px', paddingRight: '12px', paddingBottom: '8px' }}>
-                          {ps.def.deliverables.map((d, i) => (
-                            <div key={i} style={{ fontSize: '0.68rem', color: '#94A3B8', paddingTop: '3px', display: 'flex', gap: '6px' }}>
-                              <span style={{ color: '#475569' }}>•</span>
-                              <span>{d}</span>
-                            </div>
-                          ))}
+                        ← All phases
+                      </button>
+                      <div style={{ flex: 1 }} />
+                      {ps && (ps.input_tokens > 0 || ps.output_tokens > 0) && (
+                        <div style={{ display: 'flex', gap: '12px', fontSize: '0.65rem', color: '#64748B' }}>
+                          <span>{ps.input_tokens.toLocaleString()} in</span>
+                          <span>{ps.output_tokens.toLocaleString()} out</span>
+                          {phaseElapsed && <span>{phaseElapsed}</span>}
                         </div>
                       )}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+
+                    {/* Phase card */}
+                    <div style={{
+                      padding: '14px 16px', borderRadius: '8px', background: b, border: `1px solid ${c}44`,
+                      ...(ep.status === 'active' ? { borderColor: c, boxShadow: `0 0 10px ${c}25` } : {}),
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 700, color: c }}>{ep.number}</span>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: c }}>{ep.name}</span>
+                        <span style={{
+                          marginLeft: 'auto', fontSize: '0.6rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em',
+                          padding: '2px 8px', borderRadius: '4px', background: `${c}20`, color: c,
+                        }}>
+                          {ep.status}
+                        </span>
+                      </div>
+                      <p style={{ margin: '0 0 10px', fontSize: '0.75rem', lineHeight: 1.6, color: '#CBD5E1' }}>
+                        {ep.objective}
+                      </p>
+                      {deliverables.length > 0 && (
+                        <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>
+                            Deliverables
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            {deliverables.map((d, i) => (
+                              <div key={i} style={{ fontSize: '0.7rem', color: '#94A3B8', display: 'flex', gap: '6px' }}>
+                                <span style={{ color: '#475569', flexShrink: 0 }}>•</span>
+                                <span>{d}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+
+              /* ── Chips grid ── */
+              return (
+                <div ref={chipGridRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  {chips.map((op) => {
+                    const c = chipColors[op.status] ?? '#475569';
+                    const b = chipBg[op.status] ?? '#0F172A';
+                    const isActiveChip = op.status === 'active';
+                    return (
+                      <div
+                        key={op.number}
+                        title={op.objective || op.name}
+                        onClick={() => {
+                          if (chipGridRef.current) {
+                            setChipGridHeight(chipGridRef.current.closest('[style]')?.getBoundingClientRect().height ?? null);
+                          }
+                          setExpandedChip(op.number);
+                        }}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '2px',
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          background: b,
+                          border: `1px solid ${c}44`,
+                          cursor: 'pointer',
+                          ...(isActiveChip ? { borderColor: c, boxShadow: `0 0 8px ${c}30` } : {}),
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '0.7rem', fontWeight: 700, color: c, flexShrink: 0 }}>{op.number}</span>
+                          <span style={{ fontSize: '0.7rem', fontWeight: 600, color: c, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {op.name}
+                          </span>
+                        </div>
+                        <span style={{ fontSize: '0.6rem', color: '#64748B', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>
+                          {op.objective}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
 
           {/* ======== Build Plan Panel ======== */}
@@ -1328,137 +1626,318 @@ function BuildProgress() {
           )}
 
           {/* ======== Manifest Panel (Phase 21 — plan-execute) ======== */}
-          {manifestFiles.length > 0 && (
-            <div style={{ ...cardStyle, padding: '12px 16px' }}>
-              <div
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: manifestExpanded ? '10px' : 0 }}
-                onClick={() => setManifestExpanded(!manifestExpanded)}
-              >
-                <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
-                  File Manifest ({manifestFiles.filter((f) => f.status === 'done' || f.status === 'audited').length}/{manifestFiles.length})
-                  {manifestFiles.some((f) => f.status === 'audited') && (
-                    <span style={{ fontSize: '0.65rem', color: '#22C55E', marginLeft: '8px', fontWeight: 400 }}>
-                      {manifestFiles.filter((f) => f.status === 'audited' && f.audit_verdict === 'PASS').length} audited
-                    </span>
-                  )}
-                </h3>
+          <div style={{ ...cardStyle, padding: '12px 16px' }}>
+            <div
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: manifestFiles.length > 0 ? 'pointer' : 'default', marginBottom: manifestExpanded && manifestFiles.length > 0 ? '10px' : 0 }}
+              onClick={() => manifestFiles.length > 0 && setManifestExpanded(!manifestExpanded)}
+            >
+              <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
+                Files{manifestFiles.length > 0 ? ` (${manifestFiles.filter((f) => f.status === 'done').length}/${manifestFiles.length})` : ''}
+                {manifestFiles.some((f) => f.auditStatus) && (
+                  <span style={{ fontSize: '0.7rem', color: '#64748B', marginLeft: '8px' }}>
+                    audited {manifestFiles.filter((f) => f.auditStatus === 'pass' || f.auditStatus === 'fail' || f.auditStatus === 'fixing' || f.auditStatus === 'fixed').length}/{manifestFiles.filter((f) => f.status === 'done').length}
+                    {manifestFiles.some((f) => f.auditStatus === 'fixing') && (
+                      <span style={{ color: '#F59E0B', marginLeft: '4px' }}>
+                        ({manifestFiles.filter((f) => f.auditStatus === 'fixing').length} fixing)
+                      </span>
+                    )}
+                    {manifestFiles.some((f) => f.auditStatus === 'fixed') && (
+                      <span style={{ color: '#22C55E', marginLeft: '4px' }}>
+                        ({manifestFiles.filter((f) => f.auditStatus === 'fixed').length} fixed)
+                      </span>
+                    )}
+                    {manifestFiles.some((f) => f.auditStatus === 'fail') && (
+                      <span style={{ color: '#EF4444', marginLeft: '4px' }}>
+                        ({manifestFiles.filter((f) => f.auditStatus === 'fail').length} failed)
+                      </span>
+                    )}
+                  </span>
+                )}
+              </h3>
+              {manifestFiles.length > 0 && (
                 <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: manifestExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
-              </div>
-              {manifestExpanded && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', maxHeight: '280px', overflowY: 'auto' }} data-testid="manifest-panel">
-                  {manifestFiles.map((f) => (
-                    <div
-                      key={f.path}
-                      onClick={() => (f.status === 'done' || f.status === 'audited') ? handleFilePreview(f.path, f.language) : undefined}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        padding: '5px 8px',
-                        borderRadius: '4px',
-                        background: f.status === 'audited'
-                          ? (f.audit_verdict === 'FAIL' ? '#2D1215' : '#0D2818')
-                          : f.status === 'done' ? '#0D2818'
-                          : f.status === 'generating' ? '#1E3A5F'
-                          : '#0F172A',
-                        fontSize: '0.72rem',
-                        transition: 'background 0.3s',
-                        cursor: (f.status === 'done' || f.status === 'audited') ? 'pointer' : 'default',
-                      }}
-                      title={f.audit_findings ? `Audit: ${f.audit_findings.slice(0, 200)}` : f.purpose}
-                    >
-                      <span style={{
-                        color: f.status === 'audited'
-                          ? (f.audit_verdict === 'FAIL' ? '#EF4444' : '#22C55E')
-                          : f.status === 'done' ? '#22C55E'
-                          : f.status === 'generating' ? '#3B82F6'
-                          : f.status === 'error' ? '#EF4444'
-                          : '#475569',
-                        flexShrink: 0,
-                        animation: f.status === 'generating' ? 'pulse 1.5s infinite' : 'none',
-                      }}>
-                        {f.status === 'audited'
-                          ? (f.audit_verdict === 'PASS' ? '✓✓' : '✗')
-                          : f.status === 'done' ? '✓'
-                          : f.status === 'generating' ? '⏳'
-                          : f.status === 'error' ? '✗'
-                          : '○'}
-                      </span>
-                      <span style={{
-                        color: f.status === 'audited'
-                          ? (f.audit_verdict === 'FAIL' ? '#FCA5A5' : '#22C55E')
-                          : f.status === 'done' ? '#22C55E'
-                          : '#94A3B8',
-                        flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {f.path}
-                      </span>
-                      {f.status === 'audited' && f.audit_verdict === 'FAIL' && (
-                        <span style={{ color: '#EF4444', fontSize: '0.6rem', flexShrink: 0, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {f.audit_findings?.split('\n')[0]?.slice(0, 60) || 'FAIL'}
-                        </span>
-                      )}
-                      <span style={{ color: '#475569', flexShrink: 0, fontSize: '0.62rem' }}>
-                        {f.language && <span style={{ marginRight: '4px' }}>{f.language}</span>}
-                        {(f.status === 'done' || f.status === 'audited') && f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)}k` : `~${f.estimated_lines}L`}
-                        {f.audit_duration_ms ? ` ${f.audit_duration_ms}ms` : ''}
-                      </span>
-                    </div>
-                  ))}
-                </div>
               )}
+            </div>
+            {manifestFiles.length === 0 ? (
+              <div style={{ padding: '12px 0 4px', fontSize: '0.72rem', color: '#475569', fontStyle: 'italic' }}>
+                Waiting for file manifest…
+              </div>
+            ) : manifestExpanded ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', maxHeight: expandedFile ? '520px' : '280px', overflowY: 'auto', transition: 'max-height 0.3s ease' }} data-testid="manifest-panel">
+                  {manifestFiles.map((f) => {
+                    const isExpanded = expandedFile === f.path;
+                    const isClickable = f.status === 'done' || f.status === 'generating';
+                    return (
+                      <div key={f.path}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '5px 8px',
+                            borderRadius: isExpanded ? '4px 4px 0 0' : '4px',
+                            background: f.auditStatus === 'fail' ? '#2D1215'
+                              : f.auditStatus === 'fixing' ? '#2D2215'
+                              : f.status === 'done' ? '#0D2818'
+                              : f.status === 'generating' ? '#1E3A5F'
+                              : '#0F172A',
+                            fontSize: '0.72rem',
+                            transition: 'background 0.3s',
+                            cursor: isClickable ? 'pointer' : 'default',
+                            userSelect: 'none',
+                          }}
+                          onClick={() => {
+                            if (!isClickable) return;
+                            if (isExpanded) {
+                              setExpandedFile(null);
+                              return;
+                            }
+                            setExpandedFile(f.path);
+                            // Fetch content for completed files
+                            if (f.status === 'done' && !fileContentCache.has(f.path)) {
+                              setFileContentLoading(true);
+                              fetch(`${API_BASE}/projects/${projectId}/build/files/${encodeURIComponent(f.path)}`, {
+                                headers: { Authorization: `Bearer ${token}` },
+                              })
+                                .then((res) => (res.ok ? res.json() : null))
+                                .then((data) => {
+                                  if (data?.content) {
+                                    setFileContentCache((prev) => new Map(prev).set(f.path, data.content));
+                                  }
+                                })
+                                .catch(() => {})
+                                .finally(() => setFileContentLoading(false));
+                            }
+                          }}
+                        >
+                          <span style={{
+                            color: f.auditStatus === 'fail' ? '#EF4444'
+                              : f.auditStatus === 'fixing' ? '#F59E0B'
+                              : f.auditStatus === 'fixed' ? '#22C55E'
+                              : f.auditStatus === 'pass' ? '#22C55E'
+                              : f.status === 'done' ? '#22C55E'
+                              : f.status === 'generating' ? '#3B82F6'
+                              : f.status === 'error' ? '#EF4444'
+                              : '#475569',
+                            flexShrink: 0,
+                            animation: f.status === 'generating' || f.auditStatus === 'fixing' ? 'pulse 1.5s infinite' : 'none',
+                          }}>
+                            {f.auditStatus === 'fixed' ? '✓✓'
+                              : f.auditStatus === 'fixing' ? '🔧'
+                              : f.auditStatus === 'pass' ? '✓✓'
+                              : f.auditStatus === 'fail' ? '✗'
+                              : f.status === 'done' ? '✓'
+                              : f.status === 'generating' ? '⟳'
+                              : f.status === 'error' ? '✗'
+                              : '○'}
+                          </span>
+                          <span style={{ color: f.auditStatus === 'fail' ? '#EF4444' : f.auditStatus === 'fixing' ? '#F59E0B' : f.status === 'done' ? '#22C55E' : '#94A3B8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {f.path}
+                          </span>
+                          <span style={{ color: '#475569', flexShrink: 0, fontSize: '0.62rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            {f.auditStatus === 'fixing' && (
+                              <span style={{ color: '#F59E0B', fontSize: '0.58rem', animation: 'pulse 1.5s infinite' }}>fixing</span>
+                            )}
+                            {f.auditStatus === 'pending' && f.status === 'done' && (
+                              <span style={{ color: '#F59E0B', fontSize: '0.58rem', animation: 'pulse 1.5s infinite' }}>auditing</span>
+                            )}
+                            {f.language && <span>{f.language}</span>}
+                            {f.status === 'done' && f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)}k` : `~${f.estimated_lines}L`}
+                            {isClickable && (
+                              <span style={{ marginLeft: '4px', fontSize: '0.6rem', color: '#64748B', transition: 'transform 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)', display: 'inline-block' }}>
+                                ▼
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        {/* ── Expanded code preview ── */}
+                        {isExpanded && (
+                          <div style={{
+                            background: '#0B1120',
+                            border: '1px solid #1E293B',
+                            borderTop: 'none',
+                            borderRadius: '0 0 4px 4px',
+                            padding: '0',
+                            maxHeight: '320px',
+                            overflow: 'auto',
+                            position: 'relative',
+                          }}>
+                            {f.status === 'generating' ? (
+                              <div style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: '#3B82F6', fontSize: '0.72rem' }}>
+                                <span style={{ animation: 'pulse 1.5s infinite' }}>⟳</span>
+                                <span>Generating — content will appear when complete…</span>
+                              </div>
+                            ) : fileContentLoading && !fileContentCache.has(f.path) ? (
+                              <div style={{ padding: '16px', color: '#64748B', fontSize: '0.72rem' }}>Loading…</div>
+                            ) : fileContentCache.has(f.path) ? (
+                              (() => {
+                                const code = fileContentCache.get(f.path) || '';
+                                const lines = code.split('\n');
+                                // Parse audit findings for line-number annotations
+                                const lineAnnotations = new Map<number, string>();
+                                if (f.auditStatus === 'fail' && f.auditFindings) {
+                                  const findingLines = f.auditFindings.split('\n');
+                                  for (const fl of findingLines) {
+                                    const m = fl.match(/^L(\d+)(?:\s*-\s*L?(\d+))?:\s*(.+)/);
+                                    if (m) {
+                                      const start = parseInt(m[1], 10);
+                                      const end = m[2] ? parseInt(m[2], 10) : start;
+                                      const desc = m[3].trim();
+                                      for (let ln = start; ln <= end; ln++) {
+                                        lineAnnotations.set(ln, lineAnnotations.has(ln)
+                                          ? lineAnnotations.get(ln) + '; ' + desc : desc);
+                                      }
+                                    }
+                                  }
+                                }
+                                const hasAnnotations = lineAnnotations.size > 0;
+                                const gutterW = String(lines.length).length;
+                                return (
+                                  <div style={{ margin: 0, padding: '10px 0', fontSize: '0.68rem', lineHeight: '1.5', color: '#CBD5E1', fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace", overflowX: 'auto', tabSize: 2 }}>
+                                    {/* Findings summary banner */}
+                                    {f.auditStatus === 'fail' && f.auditFindings && (
+                                      <div style={{ padding: '6px 12px', marginBottom: '6px', background: '#3B1219', borderLeft: '3px solid #EF4444', fontSize: '0.66rem', color: '#FCA5A5' }}>
+                                        <span style={{ fontWeight: 600, marginRight: '6px' }}>⚠ Audit findings:</span>
+                                        {lineAnnotations.size > 0
+                                          ? `${lineAnnotations.size} line${lineAnnotations.size > 1 ? 's' : ''} flagged`
+                                          : f.auditFindings.split('\n').filter((l: string) => l.trim() && !l.includes('VERDICT:')).length + ' issue(s)'}
+                                      </div>
+                                    )}
+                                    {lines.map((line, i) => {
+                                      const lineNum = i + 1;
+                                      const annotation = lineAnnotations.get(lineNum);
+                                      const isFlagged = !!annotation;
+                                      return (
+                                        <div key={i}>
+                                          <div style={{
+                                            display: 'flex',
+                                            background: isFlagged ? 'rgba(239,68,68,0.12)' : 'transparent',
+                                            borderLeft: isFlagged ? '3px solid #EF4444' : '3px solid transparent',
+                                          }}>
+                                            {hasAnnotations && (
+                                              <span style={{
+                                                display: 'inline-block',
+                                                width: `${gutterW + 1}ch`,
+                                                textAlign: 'right',
+                                                paddingRight: '8px',
+                                                paddingLeft: '8px',
+                                                color: isFlagged ? '#EF4444' : '#475569',
+                                                userSelect: 'none',
+                                                flexShrink: 0,
+                                              }}>{lineNum}</span>
+                                            )}
+                                            <span style={{ paddingLeft: hasAnnotations ? '0' : '12px', paddingRight: '12px', whiteSpace: 'pre' }}>{line}</span>
+                                          </div>
+                                          {isFlagged && annotation && (
+                                            <div style={{
+                                              display: 'flex',
+                                              alignItems: 'flex-start',
+                                              paddingLeft: hasAnnotations ? `calc(${gutterW + 1}ch + 19px)` : '24px',
+                                              paddingRight: '12px',
+                                              paddingBottom: '2px',
+                                              background: 'rgba(239,68,68,0.06)',
+                                              borderLeft: '3px solid #EF4444',
+                                            }}>
+                                              <span style={{ color: '#F87171', fontSize: '0.62rem', fontStyle: 'italic', fontFamily: 'system-ui, sans-serif' }}>
+                                                ↳ {annotation}
+                                              </span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()
+                            ) : (
+                              <div style={{ padding: '16px', color: '#64748B', fontSize: '0.72rem' }}>Unable to load content</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
               {verification && (
-                <div style={{ marginTop: '8px', padding: '8px 10px', background: '#0F172A', borderRadius: '4px', fontSize: '0.72rem' }}>
-                  <span style={{ color: '#64748B', marginRight: '8px' }}>Verification:</span>
-                  {verification.syntax_errors > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{verification.syntax_errors} syntax errors</span>}
-                  {verification.tests_passed > 0 && <span style={{ color: '#22C55E', marginRight: '8px' }}>{verification.tests_passed} tests passed</span>}
-                  {verification.tests_failed > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{verification.tests_failed} tests failed</span>}
-                  {verification.fixes_applied > 0 && <span style={{ color: '#F59E0B', marginRight: '8px' }}>{verification.fixes_applied} fixes applied</span>}
-                  {!verification.syntax_errors && !verification.tests_failed && <span style={{ color: '#22C55E' }}>Clean</span>}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ======== Files Panel ======== */}
-          {buildFiles.length > 0 && (
-            <div style={{ ...cardStyle, padding: '12px 16px' }}>
-              <div
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: filesExpanded ? '10px' : 0 }}
-                onClick={() => setFilesExpanded(!filesExpanded)}
-              >
-                <h3 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
-                  Files ({buildFiles.length})
-                </h3>
-                <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: filesExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
-              </div>
-              {filesExpanded && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '260px', overflowY: 'auto' }} data-testid="build-files-panel">
-                  {buildFiles.map((f) => (
-                    <div
-                      key={f.path}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        padding: '5px 8px',
-                        borderRadius: '4px',
-                        background: '#0F172A',
-                        fontSize: '0.72rem',
-                      }}
-                    >
-                      <span style={{ color: '#64748B', flexShrink: 0 }}>📄</span>
-                      <span style={{ color: '#F8FAFC', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
-                      <span style={{ color: '#475569', flexShrink: 0, fontSize: '0.65rem' }}>
-                        {f.language && <span style={{ marginRight: '6px', color: '#64748B' }}>{f.language}</span>}
-                        {f.size_bytes > 0 && `${(f.size_bytes / 1024).toFixed(1)}k`}
-                      </span>
+                <div style={{ marginTop: '8px' }}>
+                  <div
+                    style={{
+                      padding: '8px 10px', background: '#0F172A', borderRadius: verificationExpanded ? '4px 4px 0 0' : '4px',
+                      fontSize: '0.72rem', cursor: 'pointer', display: 'flex', alignItems: 'center',
+                      userSelect: 'none',
+                    }}
+                    onClick={() => setVerificationExpanded(!verificationExpanded)}
+                  >
+                    <span style={{ color: '#64748B', marginRight: '8px' }}>Verification:</span>
+                    {verification.syntax_errors > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{verification.syntax_errors} syntax errors</span>}
+                    {verification.tests_passed > 0 && <span style={{ color: '#22C55E', marginRight: '8px' }}>{verification.tests_passed} tests passed</span>}
+                    {verification.tests_failed > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{verification.tests_failed} tests failed</span>}
+                    {verification.fixes_applied > 0 && <span style={{ color: '#F59E0B', marginRight: '8px' }}>{verification.fixes_applied} fixes applied</span>}
+                    {!verification.syntax_errors && !verification.tests_failed && <span style={{ color: '#22C55E' }}>Clean</span>}
+                    <span style={{ marginLeft: 'auto', color: '#475569', fontSize: '0.6rem', transition: 'transform 0.2s', transform: verificationExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+                    {/* Fix button — only shown when there are errors */}
+                    {(verification.syntax_errors > 0 || verification.tests_failed > 0) && verification.test_output && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!verificationExpanded) {
+                            // First click: expand to show the error
+                            setVerificationExpanded(true);
+                            return;
+                          }
+                          // Second click: send fix command to builder
+                          const fixMsg = `/fix Fix the following verification error with minimal diff. Do not change unrelated code.\n\n--- Verification Output ---\n${verification.test_output}`;
+                          fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message: fixMsg }),
+                          })
+                            .then((res) => {
+                              if (res.ok) addToast('Fix request sent to builder', 'success');
+                              else addToast('Failed to send fix request', 'error');
+                            })
+                            .catch(() => addToast('Failed to send fix request', 'error'));
+                        }}
+                        style={{
+                          marginLeft: '8px',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          border: 'none',
+                          fontSize: '0.65rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          background: verificationExpanded ? '#16A34A' : '#1E293B',
+                          color: verificationExpanded ? '#FFFFFF' : '#475569',
+                          transition: 'all 0.2s',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          flexShrink: 0,
+                        }}
+                        title={verificationExpanded ? 'Send error to builder to fix' : 'Click to view errors first'}
+                      >
+                        🔧 {verificationExpanded ? 'Fix' : '?'}
+                      </button>
+                    )}
+                  </div>
+                  {verificationExpanded && verification.test_output && (
+                    <div style={{
+                      background: '#0B1120', border: '1px solid #1E293B', borderTop: 'none',
+                      borderRadius: '0 0 4px 4px', maxHeight: '240px', overflow: 'auto',
+                    }}>
+                      <pre style={{
+                        margin: 0, padding: '10px 12px', fontSize: '0.65rem', lineHeight: 1.5,
+                        color: '#CBD5E1', fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      }}>{verification.test_output}</pre>
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
             </div>
-          )}
+
+
           </div>
 
           {/* ======== RIGHT: Metrics + Activity Feed ======== */}
@@ -1505,7 +1984,7 @@ function BuildProgress() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: '#94A3B8' }}>
                   <span>Context Window</span>
-                  <span>{totalTok.toLocaleString()} / {contextWindow.toLocaleString()} ({ctxPercent.toFixed(1)}%)</span>
+                  <span>{ctxTok.toLocaleString()} / {contextWindow.toLocaleString()} ({ctxPercent.toFixed(1)}%)</span>
                 </div>
                 <div style={{ width: '100%', height: '8px', background: '#0F172A', borderRadius: '4px', overflow: 'hidden' }}>
                   <div style={{ width: `${ctxPercent}%`, height: '100%', background: ctxColor, borderRadius: '4px', transition: 'width 0.4s ease' }} />
@@ -1523,7 +2002,37 @@ function BuildProgress() {
             {/* -- Activity Feed -- */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <h3 style={{ margin: 0, fontSize: '0.85rem', color: '#94A3B8' }}>Activity</h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {(['activity', 'output'] as const).map((tab) => {
+                    const active = activityTab === tab;
+                    const count = activity.filter((e) => e.category === tab).length;
+                    return (
+                      <button
+                        key={tab}
+                        onClick={() => setActivityTab(tab)}
+                        data-testid={`tab-${tab}`}
+                        style={{
+                          background: active ? '#1E293B' : 'transparent',
+                          color: active ? '#F8FAFC' : '#64748B',
+                          border: active ? '1px solid #334155' : '1px solid transparent',
+                          borderRadius: '6px',
+                          padding: '3px 10px',
+                          cursor: 'pointer',
+                          fontSize: '0.78rem',
+                          fontWeight: active ? 600 : 400,
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {tab === 'activity' ? 'Activity' : 'Build Output'}
+                        {count > 0 && (
+                          <span style={{ marginLeft: '5px', opacity: 0.6, fontSize: '0.7rem' }}>
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
                 <input
                   type="text"
                   placeholder="Search logs..."
@@ -1542,30 +2051,163 @@ function BuildProgress() {
                   }}
                 />
               </div>
+              {/* Live activity status bar */}
+              {activityStatus && (
+                <div
+                  data-testid="activity-status-bar"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '6px 12px',
+                    background: 'linear-gradient(90deg, #0F172A 0%, #1E293B 100%)',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    marginBottom: '6px',
+                    fontSize: '0.75rem',
+                    color: '#94A3B8',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: '14px',
+                      height: '14px',
+                      border: '2px solid #334155',
+                      borderTopColor: '#3B82F6',
+                      borderRadius: '50%',
+                      animation: 'spin 0.8s linear infinite',
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ color: '#E2E8F0' }}>{activityStatus}</span>
+                </div>
+              )}
               <div ref={feedContainerRef} onScroll={handleFeedScroll} style={feedStyle} data-testid="build-activity-feed">
                 {filteredActivity.length === 0 ? (
-                  <div style={{ color: '#475569' }}>{logSearch ? 'No matching logs' : 'Waiting for build output...'}</div>
+                  <div style={{ color: '#475569' }}>
+                    {logSearch
+                      ? 'No matching logs'
+                      : activityTab === 'output'
+                        ? 'No build output yet...'
+                        : 'Waiting for build activity...'}
+                  </div>
                 ) : (
-                  filteredActivity.map((entry, i) => (
-                    <div key={i} style={{ color: LEVEL_COLOR[entry.level] ?? LEVEL_COLOR.info }}>
-                      <span style={{ color: '#475569' }}>{entry.time}</span>{' '}
-                      {entry.message}
-                    </div>
-                  ))
+                  filteredActivity.map((entry, i) => {
+                    const isLong = entry.message.length > 300;
+                    return (
+                      <ActivityLine key={i} entry={entry} isLong={isLong} />
+                    );
+                  })
                 )}
                 <div ref={feedEndRef} />
               </div>
             </div>
 
+            {/* -- Queued Interjections -- */}
+            {queuedInterjections.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px', padding: '0 2px' }}>
+                {queuedInterjections.map((q) => (
+                  <div
+                    key={q.id}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '3px 10px',
+                      borderRadius: '12px',
+                      fontSize: '0.65rem',
+                      background: q.status === 'delivered' ? '#0D2818' : '#1E293B',
+                      border: `1px solid ${q.status === 'delivered' ? '#22C55E40' : '#475569'}`,
+                      color: q.status === 'delivered' ? '#22C55E' : '#94A3B8',
+                      transition: 'all 0.3s',
+                      maxWidth: '300px',
+                    }}
+                  >
+                    <span style={{
+                      width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0,
+                      background: q.status === 'delivered' ? '#22C55E' : '#F59E0B',
+                      animation: q.status === 'pending' ? 'pulse 1.5s infinite' : 'none',
+                    }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {q.text.length > 60 ? q.text.slice(0, 57) + '...' : q.text}
+                    </span>
+                    <span style={{ color: '#475569', fontSize: '0.58rem', flexShrink: 0 }}>
+                      {q.status === 'delivered' ? '✓' : q.time}
+                    </span>
+                    {q.status === 'pending' && (
+                      <button
+                        onClick={() => setQueuedInterjections((prev) => prev.filter((i) => i.id !== q.id))}
+                        style={{
+                          background: 'none', border: 'none', color: '#64748B', cursor: 'pointer',
+                          padding: '0 2px', fontSize: '0.6rem', lineHeight: 1, flexShrink: 0,
+                        }}
+                        title="Dismiss"
+                      >×</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* -- Interjection Input -- */}
             {(isActive || build?.status === 'completed' || build?.status === 'failed' || build?.status === 'cancelled') && (
-              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }} data-testid="interjection-bar">
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px', position: 'relative' }} data-testid="interjection-bar">
+                {/* Slash command autocomplete */}
+                {filteredSlash.length > 0 && (
+                  <div style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: 0,
+                    marginBottom: '4px',
+                    background: '#1E293B',
+                    border: '1px solid #475569',
+                    borderRadius: '8px',
+                    padding: '4px 0',
+                    minWidth: '280px',
+                    zIndex: 50,
+                    boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
+                  }}>
+                    {filteredSlash.map((c, i) => (
+                      <div
+                        key={c.cmd}
+                        onClick={() => pickSlashCmd(c.cmd)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          padding: '6px 12px',
+                          cursor: 'pointer',
+                          background: i === slashMenuIdx ? '#334155' : 'transparent',
+                          fontSize: '0.8rem',
+                        }}
+                        onMouseEnter={() => setSlashMenuIdx(i)}
+                      >
+                        <span style={{
+                          width: '22px',
+                          height: '22px',
+                          borderRadius: '4px',
+                          background: c.color,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '0.7rem',
+                          flexShrink: 0,
+                        }}>{c.icon}</span>
+                        <span style={{ color: '#F8FAFC', fontWeight: 600 }}>{c.cmd}</span>
+                        <span style={{ color: '#94A3B8', fontSize: '0.72rem', marginLeft: 'auto' }}>{c.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <input
+                  ref={interjRef}
                   type="text"
-                  placeholder={isActive ? 'Send feedback or /stop /pause /start /compact /clear...' : '/start to begin a new build...'}
+                  placeholder={isActive ? 'Type / for commands or send feedback...' : '/start to begin a new build...'}
                   value={interjectionText}
-                  onChange={(e) => setInterjectionText(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleInterject(); }}
+                  onChange={(e) => { setInterjectionText(e.target.value); setSlashMenuIdx(0); }}
+                  onKeyDown={handleSlashKey}
                   style={{
                     flex: 1,
                     background: '#0F172A',
@@ -1581,12 +2223,7 @@ function BuildProgress() {
                   onClick={handleInterject}
                   disabled={sendingInterject || !interjectionText.trim()}
                   style={{
-                    background: interjectionText.trim().toLowerCase() === '/stop' ? '#DC2626'
-                      : interjectionText.trim().toLowerCase() === '/pause' ? '#F59E0B'
-                      : interjectionText.trim().toLowerCase() === '/start' ? '#16A34A'
-                      : interjectionText.trim().toLowerCase() === '/compact' ? '#7C3AED'
-                      : interjectionText.trim().toLowerCase() === '/clear' ? '#0EA5E9'
-                      : '#2563EB',
+                    background: SLASH_COMMANDS.find((c) => c.cmd === interjectionText.trim().toLowerCase())?.color ?? '#2563EB',
                     color: '#fff',
                     border: 'none',
                     borderRadius: '6px',
@@ -1597,13 +2234,21 @@ function BuildProgress() {
                     opacity: sendingInterject || !interjectionText.trim() ? 0.5 : 1,
                   }}
                 >
-                  {sendingInterject ? 'Sending...'
-                    : interjectionText.trim().toLowerCase() === '/stop' ? '\u23F9 Stop'
-                    : interjectionText.trim().toLowerCase() === '/pause' ? '\u23F8 Pause'
-                    : interjectionText.trim().toLowerCase() === '/start' ? '\u25B6 Start'
-                    : interjectionText.trim().toLowerCase() === '/compact' ? '\u267B Compact'
-                    : interjectionText.trim().toLowerCase() === '/clear' ? '\u26A1 Clear'
-                    : 'Interject'}
+                  {(() => {
+                    if (sendingInterject) return 'Sending...';
+                    const match = SLASH_COMMANDS.find((c) => c.cmd === interjectionText.trim().toLowerCase());
+        
+
+      {showForceCancelConfirm && (
+        <ConfirmDialog
+          title="Force Cancel Build"
+          message="This will immediately kill the build task and mark it as failed. Use this only if the normal Cancel isn't responding. This cannot be undone."
+          confirmLabel="Force Cancel"
+          onConfirm={handleForceCancel}
+          onCancel={() => setShowForceCancelConfirm(false)}
+        />
+      )}            return match ? `${match.icon} ${match.cmd.slice(1).charAt(0).toUpperCase()}${match.cmd.slice(2)}` : 'Interject';
+                  })()}
                 </button>
               </div>
             )}
@@ -1641,7 +2286,20 @@ function BuildProgress() {
             maxWidth: '480px',
             width: '100%',
             boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+            position: 'relative',
           }}>
+            <button
+              onClick={() => { setShowPauseModal(false); setPauseInfo(null); }}
+              style={{
+                position: 'absolute', top: '12px', right: '12px',
+                background: 'transparent', border: 'none', color: '#64748B',
+                fontSize: '1.2rem', cursor: 'pointer', padding: '4px 8px',
+                lineHeight: 1,
+              }}
+              title="Dismiss"
+            >
+              ✕
+            </button>
             <h3 style={{ margin: '0 0 8px', color: '#F59E0B', fontSize: '1rem' }}>
               ⏸ Build Paused
             </h3>
@@ -1695,94 +2353,6 @@ function BuildProgress() {
               >
                 Abort Build
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---- File Preview Modal ---- */}
-      {(previewFile || previewLoading) && (
-        <div
-          data-testid="file-preview-modal"
-          onClick={() => { setPreviewFile(null); setPreviewLoading(false); }}
-          style={{
-            position: 'fixed', inset: 0,
-            background: 'rgba(0,0,0,0.7)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 110,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: '#0F172A',
-              borderRadius: '12px',
-              border: '1px solid #334155',
-              maxWidth: '800px',
-              width: '90%',
-              maxHeight: '80vh',
-              display: 'flex',
-              flexDirection: 'column',
-              boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-            }}
-          >
-            {/* Header */}
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '12px 16px',
-              borderBottom: '1px solid #1E293B',
-              flexShrink: 0,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: '#64748B' }}>📄</span>
-                <span style={{ color: '#F8FAFC', fontSize: '0.85rem', fontWeight: 600 }}>
-                  {previewFile?.path ?? 'Loading...'}
-                </span>
-                {previewFile?.language && (
-                  <span style={{ color: '#64748B', fontSize: '0.65rem', background: '#1E293B', padding: '2px 6px', borderRadius: '4px' }}>
-                    {previewFile.language}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={() => { setPreviewFile(null); setPreviewLoading(false); }}
-                style={{
-                  background: 'transparent', border: 'none', color: '#64748B',
-                  cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1, padding: '4px',
-                }}
-              >
-                ✕
-              </button>
-            </div>
-            {/* Content */}
-            <div style={{
-              flex: 1,
-              overflow: 'auto',
-              padding: '12px 0',
-            }}>
-              {previewLoading ? (
-                <div style={{ padding: '24px', color: '#64748B', textAlign: 'center' }}>Loading file...</div>
-              ) : (
-                <pre style={{
-                  margin: 0,
-                  padding: '0 16px',
-                  fontSize: '0.72rem',
-                  lineHeight: '1.5',
-                  color: '#E2E8F0',
-                  fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
-                  whiteSpace: 'pre',
-                  overflowX: 'auto',
-                }}>
-                  {previewFile?.content.split('\n').map((line, i) => (
-                    <div key={i} style={{ display: 'flex' }}>
-                      <span style={{ color: '#475569', minWidth: '40px', textAlign: 'right', paddingRight: '12px', userSelect: 'none', flexShrink: 0 }}>
-                        {i + 1}
-                      </span>
-                      <span>{line}</span>
-                    </div>
-                  ))}
-                </pre>
-              )}
             </div>
           </div>
         </div>
