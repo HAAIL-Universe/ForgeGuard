@@ -22,8 +22,6 @@ def _make_mock_client(response_data):
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
     return mock_client
 
 
@@ -33,8 +31,8 @@ def _make_mock_client(response_data):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_success(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_success(mock_get_client):
     """Successful chat returns text content."""
     mock_client = _make_mock_client({
         "content": [{"type": "text", "text": "Hello from Haiku!"}],
@@ -42,7 +40,7 @@ async def test_chat_success(mock_client_cls):
         "role": "assistant",
         "usage": {"input_tokens": 10, "output_tokens": 20},
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     result = await chat(
         api_key="test-key",
@@ -62,11 +60,11 @@ async def test_chat_success(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_empty_content(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_empty_content(mock_get_client):
     """Empty content raises ValueError."""
     mock_client = _make_mock_client({"content": []})
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     with pytest.raises(ValueError, match="Empty response"):
         await chat(
@@ -78,13 +76,13 @@ async def test_chat_empty_content(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_no_text_block(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_no_text_block(mock_get_client):
     """Response with no text block raises ValueError."""
     mock_client = _make_mock_client({
         "content": [{"type": "tool_use", "id": "xyz", "name": "tool", "input": {}}]
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     with pytest.raises(ValueError, match="No text block"):
         await chat(
@@ -96,13 +94,13 @@ async def test_chat_no_text_block(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_sends_correct_headers(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_sends_correct_headers(mock_get_client):
     """Verify correct headers are sent to Anthropic API."""
     mock_client = _make_mock_client({
         "content": [{"type": "text", "text": "ok"}]
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     await chat(
         api_key="sk-ant-test123",
@@ -118,13 +116,13 @@ async def test_chat_sends_correct_headers(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_max_tokens_parameter(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_max_tokens_parameter(mock_get_client):
     """Custom max_tokens is passed through."""
     mock_client = _make_mock_client({
         "content": [{"type": "text", "text": "ok"}]
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     await chat(
         api_key="test-key",
@@ -145,14 +143,14 @@ async def test_chat_max_tokens_parameter(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_openai_success(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_openai_success(mock_get_client):
     """Successful OpenAI chat returns message content."""
     mock_client = _make_mock_client({
         "choices": [{"message": {"role": "assistant", "content": "Hello from GPT!"}}],
         "usage": {"prompt_tokens": 5, "completion_tokens": 15},
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     result = await chat_openai(
         api_key="sk-test",
@@ -173,11 +171,11 @@ async def test_chat_openai_success(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_openai_empty_choices(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_openai_empty_choices(mock_get_client):
     """Empty choices raises ValueError."""
     mock_client = _make_mock_client({"choices": []})
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     with pytest.raises(ValueError, match="Empty response from OpenAI"):
         await chat_openai(
@@ -189,13 +187,13 @@ async def test_chat_openai_empty_choices(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_openai_no_content(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_openai_no_content(mock_get_client):
     """Missing content in choice raises ValueError."""
     mock_client = _make_mock_client({
         "choices": [{"message": {"role": "assistant", "content": ""}}],
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     with pytest.raises(ValueError, match="No content in OpenAI"):
         await chat_openai(
@@ -207,13 +205,13 @@ async def test_chat_openai_no_content(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_openai_sends_correct_headers(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_openai_sends_correct_headers(mock_get_client):
     """Verify correct headers are sent to OpenAI API."""
     mock_client = _make_mock_client({
         "choices": [{"message": {"role": "assistant", "content": "ok"}}],
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     await chat_openai(
         api_key="sk-proj-test123",
@@ -233,14 +231,14 @@ async def test_chat_openai_sends_correct_headers(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_dispatches_to_openai(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_dispatches_to_openai(mock_get_client):
     """chat(provider='openai') routes to OpenAI endpoint."""
     mock_client = _make_mock_client({
         "choices": [{"message": {"role": "assistant", "content": "dispatched"}}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0},
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     result = await chat(
         api_key="sk-test",
@@ -257,14 +255,14 @@ async def test_chat_dispatches_to_openai(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_chat_defaults_to_anthropic(mock_client_cls):
+@patch("app.clients.llm_client._get_client")
+async def test_chat_defaults_to_anthropic(mock_get_client):
     """chat() defaults to Anthropic."""
     mock_client = _make_mock_client({
         "content": [{"type": "text", "text": "default"}],
         "usage": {"input_tokens": 0, "output_tokens": 0},
     })
-    mock_client_cls.return_value = mock_client
+    mock_get_client.return_value = mock_client
 
     result = await chat(
         api_key="sk-ant-test",
@@ -396,40 +394,30 @@ class TestRetryOnTransient:
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_anthropic_timeout_is_300s(mock_client_cls):
-    """Verify Anthropic client uses 300s timeout."""
-    mock_client = _make_mock_client({
-        "content": [{"type": "text", "text": "ok"}],
-        "usage": {"input_tokens": 0, "output_tokens": 0},
-    })
-    mock_client_cls.return_value = mock_client
-
-    await chat_anthropic(
-        api_key="test-key",
-        model="claude-sonnet-4-5",
-        system_prompt="System",
-        messages=[{"role": "user", "content": "Hi"}],
-    )
-
-    mock_client_cls.assert_called_with(timeout=300.0)
+async def test_anthropic_timeout_is_300s():
+    """Verify LLM singleton is created with 300s timeout."""
+    import app.clients.llm_client as mod
+    old = mod._client
+    mod._client = None
+    try:
+        client = mod._get_client()
+        assert client.timeout == httpx.Timeout(300.0)
+    finally:
+        if mod._client is not None:
+            await mod._client.aclose()
+        mod._client = old
 
 
 @pytest.mark.asyncio
-@patch("app.clients.llm_client.httpx.AsyncClient")
-async def test_openai_timeout_is_300s(mock_client_cls):
-    """Verify OpenAI client uses 300s timeout."""
-    mock_client = _make_mock_client({
-        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-    })
-    mock_client_cls.return_value = mock_client
-
-    await chat_openai(
-        api_key="sk-test",
-        model="gpt-4o",
-        system_prompt="System",
-        messages=[{"role": "user", "content": "Hi"}],
-    )
-
-    mock_client_cls.assert_called_with(timeout=300.0)
+async def test_openai_timeout_is_300s():
+    """Verify LLM singleton is created with 300s timeout (shared with Anthropic)."""
+    import app.clients.llm_client as mod
+    old = mod._client
+    mod._client = None
+    try:
+        client = mod._get_client()
+        assert client.timeout == httpx.Timeout(300.0)
+    finally:
+        if mod._client is not None:
+            await mod._client.aclose()
+        mod._client = old

@@ -7,6 +7,26 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# ── Shared HTTP client (connection pooling) ─────────────────────────────────
+
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return (or create) the shared httpx client for LLM API calls."""
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=300.0)
+    return _client
+
+
+async def close_client() -> None:
+    """Close the shared LLM HTTP client.  Called during app shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
 # ---------------------------------------------------------------------------
 # Retry configuration
 # ---------------------------------------------------------------------------
@@ -127,19 +147,19 @@ async def chat_anthropic(
         if tools:
             body["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(
-                ANTHROPIC_MESSAGES_URL,
-                headers=_anthropic_headers(api_key),
-                json=body,
-            )
-            if response.status_code >= 400:
-                try:
-                    err_body = response.json()
-                    err_msg = err_body.get("error", {}).get("message", response.text)
-                except Exception:
-                    err_msg = response.text
-                raise ValueError(f"Anthropic API {response.status_code}: {err_msg}")
+        client = _get_client()
+        response = await client.post(
+            ANTHROPIC_MESSAGES_URL,
+            headers=_anthropic_headers(api_key),
+            json=body,
+        )
+        if response.status_code >= 400:
+            try:
+                err_body = response.json()
+                err_msg = err_body.get("error", {}).get("message", response.text)
+            except Exception:
+                err_msg = response.text
+            raise ValueError(f"Anthropic API {response.status_code}: {err_msg}")
 
         data = response.json()
         usage = data.get("usage", {})
@@ -202,16 +222,16 @@ async def chat_openai(
     body["max_completion_tokens"] = max_tokens
 
     async def _call():
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(
-                OPENAI_CHAT_URL,
-                headers=_openai_headers(api_key),
-                json=body,
-            )
-            if response.status_code == 400:
-                detail = response.json().get("error", {}).get("message", response.text)
-                raise ValueError(f"OpenAI API error: {detail}")
-            response.raise_for_status()
+        client = _get_client()
+        response = await client.post(
+            OPENAI_CHAT_URL,
+            headers=_openai_headers(api_key),
+            json=body,
+        )
+        if response.status_code == 400:
+            detail = response.json().get("error", {}).get("message", response.text)
+            raise ValueError(f"OpenAI API error: {detail}")
+        response.raise_for_status()
 
         data = response.json()
         choices = data.get("choices", [])

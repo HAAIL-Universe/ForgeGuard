@@ -16,12 +16,11 @@ def _mock_response(data, status_code=200):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.github_client.httpx.AsyncClient")
-async def test_list_commits_returns_commits(mock_client_cls):
+@patch("app.clients.github_client._get_client")
+async def test_list_commits_returns_commits(mock_get_client):
     """list_commits parses commit data from GitHub API."""
     mock_client = AsyncMock()
-    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_get_client.return_value = mock_client
 
     mock_client.get.return_value = _mock_response([
         {
@@ -50,12 +49,11 @@ async def test_list_commits_returns_commits(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.github_client.httpx.AsyncClient")
-async def test_list_commits_empty_repo(mock_client_cls):
+@patch("app.clients.github_client._get_client")
+async def test_list_commits_empty_repo(mock_get_client):
     """list_commits returns empty list for repo with no commits."""
     mock_client = AsyncMock()
-    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_get_client.return_value = mock_client
 
     mock_client.get.return_value = _mock_response([])
 
@@ -64,12 +62,11 @@ async def test_list_commits_empty_repo(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.github_client.httpx.AsyncClient")
-async def test_list_commits_passes_since_param(mock_client_cls):
+@patch("app.clients.github_client._get_client")
+async def test_list_commits_passes_since_param(mock_get_client):
     """list_commits passes since parameter to API."""
     mock_client = AsyncMock()
-    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_get_client.return_value = mock_client
 
     mock_client.get.return_value = _mock_response([])
 
@@ -83,12 +80,11 @@ async def test_list_commits_passes_since_param(mock_client_cls):
 
 
 @pytest.mark.asyncio
-@patch("app.clients.github_client.httpx.AsyncClient")
-async def test_create_github_repo_returns_repo_info(mock_client_cls):
+@patch("app.clients.github_client._get_client")
+async def test_create_github_repo_returns_repo_info(mock_get_client):
     """create_github_repo POSTs to /user/repos and returns parsed data."""
     mock_client = AsyncMock()
-    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_get_client.return_value = mock_client
 
     mock_client.post.return_value = _mock_response({
         "id": 98765,

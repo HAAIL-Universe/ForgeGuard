@@ -7,6 +7,29 @@ GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
 GITHUB_API_BASE = "https://api.github.com"
 
+# ── Shared HTTP client (connection pooling) ─────────────────────────────────
+
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return (or create) the shared httpx client for GitHub API calls."""
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=30.0)
+    return _client
+
+
+async def close_client() -> None:
+    """Close the shared HTTP client.  Called during app shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _auth_headers(access_token: str) -> dict:
     """Return standard GitHub API auth headers."""
@@ -22,39 +45,39 @@ async def exchange_code_for_token(
     code: str,
 ) -> str:
     """Exchange an OAuth authorization code for an access token."""
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            GITHUB_TOKEN_URL,
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code,
-            },
-            headers={"Accept": "application/json"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        token = data.get("access_token")
-        if not token:
-            error = data.get("error_description", data.get("error", "Unknown error"))
-            raise ValueError(f"GitHub OAuth error: {error}")
-        return token
+    client = _get_client()
+    response = await client.post(
+        GITHUB_TOKEN_URL,
+        json={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+        },
+        headers={"Accept": "application/json"},
+    )
+    response.raise_for_status()
+    data = response.json()
+    token = data.get("access_token")
+    if not token:
+        error = data.get("error_description", data.get("error", "Unknown error"))
+        raise ValueError(f"GitHub OAuth error: {error}")
+    return token
 
 
 async def get_github_user(access_token: str) -> dict:
     """Fetch the authenticated GitHub user profile."""
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            GITHUB_USER_URL,
-            headers=_auth_headers(access_token),
-        )
-        response.raise_for_status()
-        data = response.json()
-        return {
-            "github_id": data["id"],
-            "login": data["login"],
-            "avatar_url": data.get("avatar_url"),
-        }
+    client = _get_client()
+    response = await client.get(
+        GITHUB_USER_URL,
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "github_id": data["id"],
+        "login": data["login"],
+        "avatar_url": data.get("avatar_url"),
+    }
 
 
 async def list_user_repos(access_token: str) -> list[dict]:
@@ -66,33 +89,33 @@ async def list_user_repos(access_token: str) -> list[dict]:
     repos: list[dict] = []
     page = 1
     per_page = 100
-    async with httpx.AsyncClient() as client:
-        while page <= 3:  # cap at 300 repos
-            response = await client.get(
-                f"{GITHUB_API_BASE}/user/repos",
-                params={
-                    "per_page": per_page,
-                    "page": page,
-                    "sort": "updated",
-                    "direction": "desc",
-                    "affiliation": "owner,collaborator,organization_member",
-                },
-                headers=_auth_headers(access_token),
-            )
-            response.raise_for_status()
-            data = response.json()
-            if not data:
-                break
-            for repo in data:
-                repos.append({
-                    "github_repo_id": repo["id"],
-                    "full_name": repo["full_name"],
-                    "default_branch": repo.get("default_branch", "main"),
-                    "private": repo.get("private", False),
-                })
-            if len(data) < per_page:
-                break
-            page += 1
+    client = _get_client()
+    while page <= 3:  # cap at 300 repos
+        response = await client.get(
+            f"{GITHUB_API_BASE}/user/repos",
+            params={
+                "per_page": per_page,
+                "page": page,
+                "sort": "updated",
+                "direction": "desc",
+                "affiliation": "owner,collaborator,organization_member",
+            },
+            headers=_auth_headers(access_token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            break
+        for repo in data:
+            repos.append({
+                "github_repo_id": repo["id"],
+                "full_name": repo["full_name"],
+                "default_branch": repo.get("default_branch", "main"),
+                "private": repo.get("private", False),
+            })
+        if len(data) < per_page:
+            break
+        page += 1
     return repos
 
 
@@ -110,30 +133,30 @@ async def create_github_repo(
     safe_desc = (description or "").replace("\r", " ").replace("\n", " ")
     safe_desc = safe_desc[:350]
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{GITHUB_API_BASE}/user/repos",
-            json={
-                "name": name,
-                "description": safe_desc,
-                "private": private,
-                "auto_init": True,
-            },
-            headers=_auth_headers(access_token),
-        )
-        if response.status_code == 422:
-            errors = response.json().get("errors", [])
-            msgs = [e.get("message", "") for e in errors]
-            msg = response.json().get("message", "Validation failed")
-            raise ValueError(f"{msg}: {'; '.join(msgs)}" if msgs else msg)
-        response.raise_for_status()
-        data = response.json()
-        return {
-            "github_repo_id": data["id"],
-            "full_name": data["full_name"],
-            "default_branch": data.get("default_branch", "main"),
-            "private": data.get("private", False),
-        }
+    client = _get_client()
+    response = await client.post(
+        f"{GITHUB_API_BASE}/user/repos",
+        json={
+            "name": name,
+            "description": safe_desc,
+            "private": private,
+            "auto_init": True,
+        },
+        headers=_auth_headers(access_token),
+    )
+    if response.status_code == 422:
+        errors = response.json().get("errors", [])
+        msgs = [e.get("message", "") for e in errors]
+        msg = response.json().get("message", "Validation failed")
+        raise ValueError(f"{msg}: {'; '.join(msgs)}" if msgs else msg)
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "github_repo_id": data["id"],
+        "full_name": data["full_name"],
+        "default_branch": data.get("default_branch", "main"),
+        "private": data.get("private", False),
+    }
 
 
 async def create_webhook(
@@ -146,24 +169,24 @@ async def create_webhook(
 
     Returns the webhook ID from GitHub.
     """
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{GITHUB_API_BASE}/repos/{full_name}/hooks",
-            json={
-                "name": "web",
-                "active": True,
-                "events": ["push"],
-                "config": {
-                    "url": webhook_url,
-                    "content_type": "json",
-                    "secret": webhook_secret,
-                    "insecure_ssl": "0",
-                },
+    client = _get_client()
+    response = await client.post(
+        f"{GITHUB_API_BASE}/repos/{full_name}/hooks",
+        json={
+            "name": "web",
+            "active": True,
+            "events": ["push"],
+            "config": {
+                "url": webhook_url,
+                "content_type": "json",
+                "secret": webhook_secret,
+                "insecure_ssl": "0",
             },
-            headers=_auth_headers(access_token),
-        )
-        response.raise_for_status()
-        return response.json()["id"]
+        },
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    return response.json()["id"]
 
 
 async def delete_webhook(
@@ -172,14 +195,14 @@ async def delete_webhook(
     webhook_id: int,
 ) -> None:
     """Delete a webhook from a GitHub repo."""
-    async with httpx.AsyncClient() as client:
-        response = await client.delete(
-            f"{GITHUB_API_BASE}/repos/{full_name}/hooks/{webhook_id}",
-            headers=_auth_headers(access_token),
-        )
-        # 404 is fine -- webhook may already be gone
-        if response.status_code != 404:
-            response.raise_for_status()
+    client = _get_client()
+    response = await client.delete(
+        f"{GITHUB_API_BASE}/repos/{full_name}/hooks/{webhook_id}",
+        headers=_auth_headers(access_token),
+    )
+    # 404 is fine -- webhook may already be gone
+    if response.status_code != 404:
+        response.raise_for_status()
 
 
 async def get_repo_file_content(
@@ -194,19 +217,19 @@ async def get_repo_file_content(
     """
     import base64
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{GITHUB_API_BASE}/repos/{full_name}/contents/{path}",
-            params={"ref": ref},
-            headers=_auth_headers(access_token),
-        )
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        data = response.json()
-        if data.get("encoding") == "base64":
-            return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-        return data.get("content", "")
+    client = _get_client()
+    response = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}/contents/{path}",
+        params={"ref": ref},
+        headers=_auth_headers(access_token),
+    )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    data = response.json()
+    if data.get("encoding") == "base64":
+        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+    return data.get("content", "")
 
 
 async def get_commit_files(
@@ -215,14 +238,14 @@ async def get_commit_files(
     commit_sha: str,
 ) -> list[str]:
     """Fetch the list of changed file paths for a specific commit."""
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{GITHUB_API_BASE}/repos/{full_name}/commits/{commit_sha}",
-            headers=_auth_headers(access_token),
-        )
-        response.raise_for_status()
-        data = response.json()
-        return [f["filename"] for f in data.get("files", [])]
+    client = _get_client()
+    response = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}/commits/{commit_sha}",
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    data = response.json()
+    return [f["filename"] for f in data.get("files", [])]
 
 
 async def get_repo_tree(
@@ -239,23 +262,23 @@ async def get_repo_tree(
     params: dict[str, str | int] = {}
     if recursive:
         params["recursive"] = "1"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(
-            f"{GITHUB_API_BASE}/repos/{full_name}/git/trees/{sha}",
-            params=params,
-            headers=_auth_headers(access_token),
-        )
-        response.raise_for_status()
-        data = response.json()
-        tree = data.get("tree", [])
-        return [
-            {
-                "path": item["path"],
-                "type": item["type"],
-                "size": item.get("size", 0),
-            }
-            for item in tree
-        ]
+    client = _get_client()
+    response = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/trees/{sha}",
+        params=params,
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    data = response.json()
+    tree = data.get("tree", [])
+    return [
+        {
+            "path": item["path"],
+            "type": item["type"],
+            "size": item.get("size", 0),
+        }
+        for item in tree
+    ]
 
 
 async def get_repo_languages(
@@ -266,13 +289,13 @@ async def get_repo_languages(
 
     Returns e.g. {"Python": 45000, "TypeScript": 32000}.
     """
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            f"{GITHUB_API_BASE}/repos/{full_name}/languages",
-            headers=_auth_headers(access_token),
-        )
-        response.raise_for_status()
-        return response.json()
+    client = _get_client()
+    response = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}/languages",
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 async def get_repo_metadata(
@@ -284,25 +307,25 @@ async def get_repo_metadata(
     Returns dict with stargazers_count, forks_count, size, license, topics,
     created_at, updated_at, default_branch, description, private.
     """
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            f"{GITHUB_API_BASE}/repos/{full_name}",
-            headers=_auth_headers(access_token),
-        )
-        response.raise_for_status()
-        data = response.json()
-        return {
-            "stargazers_count": data.get("stargazers_count", 0),
-            "forks_count": data.get("forks_count", 0),
-            "size": data.get("size", 0),
-            "license": (data.get("license") or {}).get("spdx_id"),
-            "topics": data.get("topics", []),
-            "created_at": data.get("created_at"),
-            "updated_at": data.get("updated_at"),
-            "default_branch": data.get("default_branch", "main"),
-            "description": data.get("description"),
-            "private": data.get("private", False),
-        }
+    client = _get_client()
+    response = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}",
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "stargazers_count": data.get("stargazers_count", 0),
+        "forks_count": data.get("forks_count", 0),
+        "size": data.get("size", 0),
+        "license": (data.get("license") or {}).get("spdx_id"),
+        "topics": data.get("topics", []),
+        "created_at": data.get("created_at"),
+        "updated_at": data.get("updated_at"),
+        "default_branch": data.get("default_branch", "main"),
+        "description": data.get("description"),
+        "private": data.get("private", False),
+    }
 
 
 async def list_commits(
@@ -325,32 +348,32 @@ async def list_commits(
     """
     commits: list[dict] = []
     page = 1
-    async with httpx.AsyncClient() as client:
-        while page <= max_pages:
-            params: dict[str, str | int] = {"per_page": per_page, "page": page}
-            if branch:
-                params["sha"] = branch
-            if since:
-                params["since"] = since
-            response = await client.get(
-                f"{GITHUB_API_BASE}/repos/{full_name}/commits",
-                params=params,
-                headers=_auth_headers(access_token),
-            )
-            response.raise_for_status()
-            data = response.json()
-            if not data:
-                break
-            for c in data:
-                commit_data = c.get("commit", {})
-                author_data = commit_data.get("author", {})
-                commits.append({
-                    "sha": c["sha"],
-                    "message": commit_data.get("message", ""),
-                    "author": author_data.get("name", ""),
-                    "date": author_data.get("date", ""),
-                })
-            if len(data) < per_page:
-                break
-            page += 1
+    client = _get_client()
+    while page <= max_pages:
+        params: dict[str, str | int] = {"per_page": per_page, "page": page}
+        if branch:
+            params["sha"] = branch
+        if since:
+            params["since"] = since
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/commits",
+            params=params,
+            headers=_auth_headers(access_token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            break
+        for c in data:
+            commit_data = c.get("commit", {})
+            author_data = commit_data.get("author", {})
+            commits.append({
+                "sha": c["sha"],
+                "message": commit_data.get("message", ""),
+                "author": author_data.get("name", ""),
+                "date": author_data.get("date", ""),
+            })
+        if len(data) < per_page:
+            break
+        page += 1
     return commits

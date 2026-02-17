@@ -704,8 +704,8 @@ class TestChatAnthropicToolUse:
     """Tests for the tools parameter added to chat_anthropic."""
 
     @pytest.mark.asyncio
-    @patch("app.clients.llm_client.httpx.AsyncClient")
-    async def test_tools_in_request_body(self, mock_client_cls):
+    @patch("app.clients.llm_client._get_client")
+    async def test_tools_in_request_body(self, mock_get_client):
         """When tools are provided, they appear in the request body."""
         from unittest.mock import MagicMock
         from app.clients.llm_client import chat_anthropic
@@ -720,9 +720,7 @@ class TestChatAnthropicToolUse:
         mock_response.json.return_value = response_data
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
+        mock_get_client.return_value = mock_client
 
         tools = [{"name": "echo", "description": "Echo", "input_schema": {"type": "object", "properties": {}}}]
         result = await chat_anthropic(
@@ -743,8 +741,8 @@ class TestChatAnthropicToolUse:
         assert body["tools"] == tools
 
     @pytest.mark.asyncio
-    @patch("app.clients.llm_client.httpx.AsyncClient")
-    async def test_no_tools_returns_simplified(self, mock_client_cls):
+    @patch("app.clients.llm_client._get_client")
+    async def test_no_tools_returns_simplified(self, mock_get_client):
         """Without tools, the simplified dict is returned."""
         from unittest.mock import MagicMock
         from app.clients.llm_client import chat_anthropic
@@ -759,9 +757,7 @@ class TestChatAnthropicToolUse:
         mock_response.json.return_value = response_data
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
+        mock_get_client.return_value = mock_client
 
         result = await chat_anthropic(
             api_key="k",
@@ -779,8 +775,8 @@ class TestChatAnthropicToolUse:
         assert "tools" not in body
 
     @pytest.mark.asyncio
-    @patch("app.clients.llm_client.httpx.AsyncClient")
-    async def test_tool_use_response_returned_fully(self, mock_client_cls):
+    @patch("app.clients.llm_client._get_client")
+    async def test_tool_use_response_returned_fully(self, mock_get_client):
         """When LLM returns tool_use blocks, the full response is passed through."""
         from unittest.mock import MagicMock
         from app.clients.llm_client import chat_anthropic
@@ -798,9 +794,7 @@ class TestChatAnthropicToolUse:
         mock_response.json.return_value = response_data
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
+        mock_get_client.return_value = mock_client
 
         tools = [{"name": "read_file", "description": "Read", "input_schema": {"type": "object"}}]
         result = await chat_anthropic(

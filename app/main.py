@@ -17,6 +17,7 @@ from app.api.routers.repos import router as repos_router
 from app.api.routers.scout import router as scout_router
 from app.api.routers.webhooks import router as webhooks_router
 from app.api.routers.ws import router as ws_router
+from app.clients import github_client, llm_client
 from app.config import settings
 from app.errors import ForgeError
 from app.repos.db import close_pool, get_pool
@@ -30,6 +31,8 @@ async def lifespan(application: FastAPI):
     if "pytest" not in sys.modules:
         await get_pool()  # fail-fast if DB unreachable
     yield
+    await github_client.close_client()
+    await llm_client.close_client()
     await close_pool()
 
 
