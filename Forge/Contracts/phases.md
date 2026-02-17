@@ -2318,3 +2318,270 @@ A headless IDE gives the builder and auditor structured, deterministic tools for
 - All existing backend tests pass + 11 new governance tests pass
 - All existing frontend tests pass
 - `run_audit.ps1` passes all checks
+
+---
+
+## Phase 35 — Build Spend Cap / Circuit Breaker / Cost Gate
+
+**Status:** ✅ COMPLETE (committed `4f3b9ad`)
+
+**Objective:** Protect users from runaway API costs. User-configurable per-build spend cap, real-time cost ticker via WebSocket, circuit breaker for immediate kill, warning/exceeded banners in the UI.
+
+**Deliverables:** DB migration 017 (build_spend_cap column), cost gate system in build_service.py (~165 lines), circuit-break + live-cost REST endpoints, spend-cap auth endpoints, frontend cost ticker + circuit breaker UI in BuildProgress.tsx, spend cap settings in Settings.tsx. 19 new tests. 685 total tests passing.
+
+---
+
+## Phase 36 — Scout Enhancement: Project Intelligence Report  *(TODO)*
+
+**Status:** 🔲 NOT STARTED
+
+**Objective:** Transform Scout from a compliance-only checker into a full **project intelligence engine**. When pointed at any connected GitHub repo, Scout should produce a comprehensive "Project Dossier" — a structured report covering the complete stack, architecture, dependencies, patterns, risk areas, and contract foundations. The dossier becomes the upstream input for the Forge Upgrade Advisor (Phase 37) and the Forge Seal certificate (Phase 38).
+
+**Background:** Today's Scout fetches one commit's changed files and runs A/W audit checks. It has no concept of what the project *is* — its stack, architecture, patterns, or health. This phase adds a deep analysis layer on top of the existing GitHub API plumbing.
+
+### 36.1 — GitHub Client: Repository Introspection APIs
+
+New async functions in `app/clients/github_client.py`:
+
+| Function | GitHub API | Returns |
+|---|---|---|
+| `get_repo_tree(token, full_name, sha, recursive=True)` | `GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1` | Full file tree (paths + sizes) |
+| `get_repo_languages(token, full_name)` | `GET /repos/{owner}/{repo}/languages` | `{ "Python": 45000, "TypeScript": 32000, ... }` (byte counts) |
+| `get_repo_metadata(token, full_name)` | `GET /repos/{owner}/{repo}` | Stars, forks, size, license, topics, created_at, updated_at, default_branch |
+| `get_repo_package_json(token, full_name, ref)` | wrapper on `get_repo_file_content` | Parsed `package.json` or `None` |
+| `get_repo_requirements(token, full_name, ref)` | wrapper on `get_repo_file_content` | Parsed `requirements.txt` / `pyproject.toml` / `Pipfile` or `None` |
+
+Also add `list_directory(token, full_name, path, ref)` — fetches a directory listing at a specific path (for targeted exploration without pulling the whole tree).
+
+**Tests:** 6 new tests mocking httpx responses for each new function.
+
+### 36.2 — Stack Detector Module
+
+New module `app/services/stack_detector.py`:
+
+- **Input:** file tree (list of paths), language byte counts, manifest contents (package.json, requirements.txt, etc.)
+- **Output:** `StackProfile` dict:
+  ```
+  {
+    "languages": {"Python": 52.3, "TypeScript": 38.1, ...},  # percentages
+    "primary_language": "Python",
+    "backend": {
+      "framework": "FastAPI",          # detected from imports/deps
+      "version": "0.104.1",           # from requirements
+      "runtime": "Python 3.12",        # from pyproject/Dockerfile
+      "orm": "SQLAlchemy" | "raw SQL" | null,
+      "db": "PostgreSQL" | "SQLite" | null,
+    },
+    "frontend": {
+      "framework": "React",
+      "version": "18.2.0",
+      "bundler": "Vite",
+      "language": "TypeScript",
+      "ui_library": "Tailwind" | "MUI" | null,
+    } | null,
+    "infrastructure": {
+      "containerized": true/false,      # Dockerfile present
+      "ci_cd": "GitHub Actions" | null, # .github/workflows/
+      "hosting": "Render" | null,       # render.yaml
+    },
+    "testing": {
+      "backend_framework": "pytest",
+      "frontend_framework": "vitest" | "jest",
+      "has_tests": true/false,
+    },
+    "project_type": "web_app" | "api" | "cli" | "library" | "monorepo",
+    "manifest_files": ["requirements.txt", "package.json", ...],
+  }
+  ```
+- Detection is **heuristic-based** (no LLM) — pattern matching on filenames, directory structure, dependency names, import patterns.
+- Framework detection rules:
+  - FastAPI: `fastapi` in requirements
+  - Django: `django` in requirements
+  - Express: `express` in package.json
+  - Next.js: `next` in package.json
+  - React: `react` in package.json + no `next`
+  - Vue: `vue` in package.json
+  - etc. (extensible registry pattern)
+
+**Tests:** 10+ tests covering detection of common stacks (Python/FastAPI, Node/Express, React/Vite, Django, Next.js, monorepo, bare HTML).
+
+### 36.3 — Architecture Mapper Module
+
+New module `app/services/architecture_mapper.py`:
+
+- **Input:** file tree, stack profile, selected file contents (entry points, config, route files)
+- **Output:** `ArchitectureMap` dict:
+  ```
+  {
+    "structure_type": "layered" | "flat" | "monorepo" | "microservices",
+    "entry_points": ["app/main.py", "web/src/main.tsx"],
+    "directories": {
+      "app/api/routers/": "API route handlers",
+      "app/services/": "Business logic layer",
+      "app/repos/": "Data access layer",
+      ...
+    },
+    "route_map": [
+      {"method": "GET", "path": "/api/projects", "handler": "app/api/routers/projects.py"},
+      ...
+    ],
+    "data_models": ["users", "projects", "builds", ...],  # from migrations or ORM models
+    "external_integrations": ["GitHub API", "Anthropic API", "PostgreSQL"],
+    "config_sources": [".env", "app/config.py"],
+    "boundaries": { ... } | null,   # if boundaries.json found
+    "file_count": 142,
+    "total_lines": 28500,          # estimated from tree sizes
+    "test_coverage_indicator": "high" | "medium" | "low" | "none",
+  }
+  ```
+- Route detection: scan for `@router.get`, `@app.route`, `app.get(`, `router.post(` patterns in route files identified by directory convention.
+- Data model detection: scan migration files or ORM model files for table/model names.
+- Integration detection: scan imports for known client libraries (httpx→external API, asyncpg→Postgres, boto3→AWS, etc.).
+
+**Tests:** 8+ tests covering different architecture patterns.
+
+### 36.4 — Dossier Generator (LLM-Assisted Summary)
+
+New function in `app/services/scout_service.py`: `_generate_project_dossier()`
+
+- Collects: stack profile + architecture map + raw file samples (README, main entry point, config, 1-2 route files, 1-2 service files — capped at ~8K tokens total).
+- Makes **one LLM call** (via existing `llm_client`) with a structured prompt:
+  > "You are a senior software architect. Given the following project analysis data and code samples, produce a Project Dossier in the specified JSON schema. Include: executive summary, intent assessment, quality assessment, risk areas, and recommendations."
+- LLM output parsed into `ProjectDossier`:
+  ```
+  {
+    "executive_summary": "ForgeGuard is a full-stack web application...",
+    "intent": "Automated code auditing and build governance platform",
+    "quality_assessment": {
+      "score": 82,                    # 0-100
+      "strengths": ["Comprehensive test coverage", "Clean layered architecture"],
+      "weaknesses": ["No type hints in some modules", "Missing CI/CD pipeline"],
+    },
+    "risk_areas": [
+      {"area": "Security", "severity": "medium", "detail": "API keys stored in .env without rotation"},
+      ...
+    ],
+    "recommendations": [
+      {"priority": "high", "suggestion": "Add GitHub Actions CI pipeline"},
+      ...
+    ],
+    "contracts_detected": {
+      "has_boundaries": true/false,
+      "has_physics": true/false,
+      "has_forge_json": true/false,
+    },
+  }
+  ```
+- LLM call is **optional** — if user has no API key or opts out, the dossier returns everything except `executive_summary`, `intent`, and `quality_assessment` (pure heuristic mode).
+- Cost tracking: the LLM call goes through `_record_phase_cost()` / `_accumulate_cost()` so it shows up in spend tracking.
+
+**Tests:** 5 tests (mock LLM response, heuristic-only mode, malformed LLM response fallback, cost tracking, empty-repo edge case).
+
+### 36.5 — Scout Service: New `deep_scan` Mode
+
+Extend `scout_service.py`:
+
+- New function `start_deep_scan(user_id, repo_id, hypothesis=None, include_llm=True)` — replaces the shallow commit-only scan with a full-repo analysis.
+- Execution flow:
+  1. Fetch repo metadata + languages via new GitHub client functions
+  2. Fetch full file tree
+  3. Run stack detector → `StackProfile`
+  4. Identify key files to fetch (entry points, configs, routes, tests) — **cap at 20 files, 100KB total**
+  5. Fetch key file contents
+  6. Run architecture mapper → `ArchitectureMap`
+  7. Run audit engine checks (existing A/W checks on fetched files)
+  8. If `include_llm`: generate dossier via LLM
+  9. Merge all results into `ScoutReport`
+  10. Stream progress via WS (`scout_progress` with step names)
+  11. Store in `scout_runs.results` JSONB
+- The existing `start_scout_run()` remains as "quick scan" (single-commit audit).
+- Add `scan_type` column to `scout_runs` table: `'quick'` (default, existing) or `'deep'`.
+
+**DB migration 018:** `ALTER TABLE scout_runs ADD COLUMN scan_type VARCHAR(10) NOT NULL DEFAULT 'quick';`
+
+**Tests:** 8 tests covering deep scan flow, file cap enforcement, WS streaming, fallback on errors.
+
+### 36.6 — Scout Router: Deep Scan Endpoint
+
+New endpoint in `app/api/routers/scout.py`:
+
+- `POST /scout/{repo_id}/deep-scan` — triggers `start_deep_scan()`, returns `{ id, status, scan_type: "deep" }`
+- `GET /scout/runs/{run_id}/dossier` — returns the full dossier from a completed deep scan (parsed from `results` JSONB)
+
+**Tests:** 4 tests (trigger, auth, dossier retrieval, 404 on quick-scan run).
+
+### 36.7 — Frontend: Scout Deep Scan UI
+
+Update Scout-related pages:
+
+- Add "Deep Scan" button alongside existing "Quick Scan" on the repo detail / Scout dashboard
+- Deep scan progress: show step-by-step progress (fetching tree → detecting stack → mapping architecture → running checks → generating dossier)
+- Dossier view: structured display of the full report — stack profile cards, architecture tree, quality gauge, risk table, recommendations list
+- Quick scan results remain unchanged
+
+**Tests:** Frontend component tests for new UI elements.
+
+### 36.8 — Tests & Exit Criteria
+
+**New test files:**
+- `tests/test_stack_detector.py` — 10+ tests
+- `tests/test_architecture_mapper.py` — 8+ tests
+- `tests/test_scout_deep_scan.py` — 12+ tests (service + router + integration)
+- Frontend tests for deep scan UI
+
+**Exit criteria:**
+- `POST /scout/{repo_id}/deep-scan` triggers full analysis and streams progress via WS
+- Stack detector correctly identifies Python/FastAPI, Node/Express, React/Vite, Django, Next.js, bare HTML, monorepo stacks
+- Architecture mapper produces route map, data models, integrations, structure classification
+- Dossier includes LLM-generated summary when API key available, graceful fallback to heuristic-only
+- File fetching capped at 20 files / 100KB (no runaway API calls)
+- Results stored in `scout_runs.results` JSONB, retrievable via `/dossier` endpoint
+- Existing quick scan unaffected
+- All existing tests pass + 30+ new tests pass
+- `run_audit.ps1` passes all checks
+
+---
+
+## Phase 37 — Forge Upgrade Advisor  *(TODO)*
+
+**Status:** 🔲 NOT STARTED
+
+**Objective:** Build a tool that takes Scout's Project Dossier as input and produces a prioritized **Renovation Plan** — identifying outdated dependencies, legacy patterns, missing best practices, and modernization opportunities. The plan should be actionable: each recommendation includes what to change, why, estimated effort, risk level, and optionally a `forge.json`-compatible spec so Forge can execute the renovation.
+
+**Background:** Scout (Phase 36) tells you *what* a project is. The Upgrade Advisor tells you *what it should become*. It compares the detected stack against known current versions, identifies anti-patterns, and produces a structured modernization roadmap.
+
+**Depends on:** Phase 36 (Scout Enhancement) — requires StackProfile and ArchitectureMap as inputs.
+
+**Detailed phased plan to be appended upon Phase 36 sign-off.**
+
+**High-level deliverables:**
+- Version currency database (known latest versions of major frameworks/libraries)
+- Pattern analyzer (detect anti-patterns: callback hell, no TypeScript, inline SQL, no tests, etc.)
+- Migration path recommender (jQuery → vanilla JS, class components → hooks, Express → Fastify, etc.)
+- Renovation plan generator (prioritized, effort-estimated, risk-rated)
+- REST endpoint + frontend UI for viewing and acting on plans
+- Optional: generate `forge.json` spec for automated renovation via Forge builder
+
+---
+
+## Phase 38 — Forge Seal: Build Certificate & Handoff  *(TODO)*
+
+**Status:** 🔲 NOT STARTED
+
+**Objective:** Create a comprehensive **build certificate** tool that aggregates data from every ForgeGuard system (audit engine, test runner, governance gate, cost tracker, Scout dossier) into a formal handoff document. The certificate provides a quality benchmark, consistency score, and professional sign-off for any Forge-built application.
+
+**Background:** When a user receives a completed build from Forge, they should get more than just code. The Forge Seal is a verifiable certificate that documents exactly what was built, how it was verified, and how confident the system is in the output. It's the "certificate of authenticity" for AI-built software.
+
+**Depends on:** Phase 36 (Scout Enhancement) for project analysis capabilities. Phases 1-35 for all the systems being aggregated.
+
+**Detailed phased plan to be appended upon Phase 37 sign-off.**
+
+**High-level deliverables:**
+- Data aggregator: pull from audit ledger, test runs, governance checks, build costs, Scout dossier
+- Scoring engine: weighted consistency score across all dimensions (test pass rate, audit compliance, governance, security, cost efficiency)
+- Certificate sections: Project Identity, Build Integrity, Test Coverage, Compliance Score, Governance, Security, Cost Summary, Consistency Benchmark, Suggestions, Overall Verdict
+- Verdict classification: CERTIFIED (≥90%) / CONDITIONAL (70-89%) / FLAGGED (<70%)
+- Certificate renderer: styled HTML + PDF + machine-readable JSON
+- REST endpoint: `GET /projects/{id}/certificate`
+- Frontend: certificate viewer + download
+- Verification: certificate includes a hash so recipients can verify authenticity
