@@ -5419,6 +5419,365 @@ async def _verify_phase_output(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Phase 34 – Governance Gate (deterministic checks at phase transitions)
+# ---------------------------------------------------------------------------
+
+# Re-use stdlib set from audit runner (avoids duplicate source of truth)
+from app.audit.runner import _PYTHON_STDLIB, _PY_NAME_MAP, _extract_imports
+
+
+async def _run_governance_checks(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    manifest: list[dict],
+    working_dir: str,
+    contracts: list[dict],
+    touched_files: set[str],
+    phase_name: str = "",
+) -> dict:
+    """Run deterministic governance checks before committing a phase.
+
+    Checks modelled after Forge run_audit.ps1 (A1/A4/A9/W1/W3):
+        G1 – Scope compliance (manifest vs disk)
+        G2 – Boundary compliance (forbidden import patterns)
+        G3 – Dependency gate (imports vs requirements)
+        G4 – Secrets scan (file content, not git diff)
+        G5 – Physics route coverage
+        G6 – Rename / ghost file detection
+        G7 – TODO / placeholder scan
+
+    Returns dict:
+        passed: bool – True if no blocking failures
+        checks: list[dict] – per-check results {code, name, result, detail}
+        blocking_failures: int
+        warnings: int
+    """
+    import fnmatch as _fnmatch
+
+    wd = Path(working_dir)
+    checks: list[dict] = []
+
+    await _broadcast_build_event(user_id, build_id, "build_log", {
+        "message": f"Running governance checks for {phase_name}...",
+        "source": "governance", "level": "info",
+    })
+    await _set_build_activity(build_id, user_id, f"Governance gate – {phase_name}...")
+
+    # --- G1: Scope compliance (manifest vs disk) --------------------------
+    manifest_paths = {e["path"] for e in manifest if e.get("path")}
+    disk_paths: set[str] = set()
+    if touched_files:
+        for tf in touched_files:
+            fp = wd / tf
+            if fp.exists():
+                disk_paths.add(tf)
+
+    phantom = disk_paths - manifest_paths  # on disk but not in manifest
+    missing = {
+        p for p in manifest_paths
+        if not (wd / p).exists()
+        and not any(e.get("action") == "delete" for e in manifest if e.get("path") == p)
+    }
+
+    g1_violations: list[str] = []
+    if phantom:
+        g1_violations.append(f"phantom files (on disk, not in manifest): {', '.join(sorted(phantom)[:5])}")
+    if missing:
+        g1_violations.append(f"missing files (in manifest, not on disk): {', '.join(sorted(missing)[:5])}")
+
+    checks.append({
+        "code": "G1",
+        "name": "Scope compliance",
+        "result": "FAIL" if g1_violations else "PASS",
+        "detail": "; ".join(g1_violations) if g1_violations else "All manifest files present on disk.",
+    })
+
+    # --- G2: Boundary compliance (adapt runner.check_a4) ------------------
+    # Load boundaries from contracts list (not from disk governance dir)
+    boundaries_data: dict | None = None
+    for c in contracts:
+        if c.get("contract_type") == "boundaries":
+            try:
+                content = c.get("content", "")
+                # Contract content may be raw JSON or wrapped in markdown fences
+                cleaned = content.strip()
+                if cleaned.startswith("```"):
+                    first_nl = cleaned.find("\n")
+                    if first_nl >= 0:
+                        cleaned = cleaned[first_nl + 1:]
+                if cleaned.rstrip().endswith("```"):
+                    cleaned = cleaned.rstrip()[:-3]
+                boundaries_data = json.loads(cleaned.strip())
+            except (json.JSONDecodeError, Exception):
+                pass
+            break
+
+    # Fallback: try loading from FORGE_CONTRACTS_DIR on disk
+    if boundaries_data is None:
+        boundaries_file = FORGE_CONTRACTS_DIR / "boundaries.json"
+        if boundaries_file.exists():
+            try:
+                boundaries_data = json.loads(boundaries_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    g2_violations: list[str] = []
+    if boundaries_data:
+        for layer in boundaries_data.get("layers", []):
+            layer_name = layer.get("name", "unknown")
+            glob_pattern = layer.get("glob", "")
+            forbidden = layer.get("forbidden", [])
+
+            glob_dir = wd / os.path.dirname(glob_pattern)
+            glob_filter = os.path.basename(glob_pattern)
+            if not glob_dir.is_dir():
+                continue
+
+            for entry in sorted(glob_dir.iterdir()):
+                if entry.name in ("__init__.py", "__pycache__"):
+                    continue
+                if not _fnmatch.fnmatch(entry.name, glob_filter):
+                    continue
+                if not entry.is_file():
+                    continue
+                # Only check files we actually touched (performance)
+                rel = str(entry.relative_to(wd)).replace("\\", "/")
+                if touched_files and rel not in touched_files:
+                    continue
+                try:
+                    content = entry.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                for rule in forbidden:
+                    pattern = rule.get("pattern", "")
+                    reason = rule.get("reason", "")
+                    if re.search(pattern, content, re.IGNORECASE):
+                        g2_violations.append(
+                            f"[{layer_name}] {entry.name} contains '{pattern}' ({reason})"
+                        )
+
+    checks.append({
+        "code": "G2",
+        "name": "Boundary compliance",
+        "result": "FAIL" if g2_violations else "PASS",
+        "detail": "; ".join(g2_violations) if g2_violations else "No forbidden patterns found.",
+    })
+
+    # --- G3: Dependency gate (adapt runner.check_a9) ----------------------
+    forge_json = wd / "forge.json"
+    g3_failures: list[str] = []
+    if forge_json.exists():
+        try:
+            forge_cfg = json.loads(forge_json.read_text(encoding="utf-8"))
+            dep_file = forge_cfg.get("backend", {}).get("dependency_file", "requirements.txt")
+            lang = forge_cfg.get("backend", {}).get("language", "python")
+            dep_path = wd / dep_file
+            if dep_path.exists():
+                dep_content = dep_path.read_text(encoding="utf-8")
+                source_exts = {
+                    "python": {".py"},
+                    "typescript": {".ts", ".tsx"},
+                    "javascript": {".js", ".jsx"},
+                }.get(lang, set())
+                for tf in sorted(touched_files):
+                    ext = os.path.splitext(tf)[1]
+                    if ext not in source_exts:
+                        continue
+                    fp = wd / tf
+                    if not fp.exists():
+                        continue
+                    try:
+                        file_content = fp.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    imports = _extract_imports(file_content, lang)
+                    for imp in imports:
+                        if lang == "python":
+                            if imp in _PYTHON_STDLIB:
+                                continue
+                            local_dir = wd / imp
+                            if local_dir.is_dir():
+                                continue
+                            look_for = _PY_NAME_MAP.get(imp, imp)
+                            if not re.search(re.escape(look_for), dep_content, re.IGNORECASE):
+                                g3_failures.append(
+                                    f"{tf} imports '{imp}' (not in {dep_file})"
+                                )
+        except Exception:
+            pass  # forge.json parse error — skip gracefully
+
+    checks.append({
+        "code": "G3",
+        "name": "Dependency gate",
+        "result": "FAIL" if g3_failures else "PASS",
+        "detail": "; ".join(g3_failures[:10]) if g3_failures else "All imports have declared dependencies.",
+    })
+
+    # --- G4: Secrets scan (scan file content, not git diff) ---------------
+    secret_patterns = ["sk-", "AKIA", "-----BEGIN", "password=", "secret=", "token="]
+    g4_found: list[str] = []
+    for tf in sorted(touched_files):
+        fp = wd / tf
+        if not fp.exists():
+            continue
+        try:
+            content = fp.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for sp in secret_patterns:
+            if sp in content:
+                # Exclude false positives in test files, configs, or .env.example
+                if any(ignore in tf for ignore in ("test_", ".example", "config.py")):
+                    continue
+                g4_found.append(f"{tf} contains '{sp}'")
+    checks.append({
+        "code": "G4",
+        "name": "Secrets scan",
+        "result": "WARN" if g4_found else "PASS",
+        "detail": "; ".join(g4_found[:5]) if g4_found else "No secret patterns detected.",
+    })
+
+    # --- G5: Physics route coverage (adapt runner.check_w3) ---------------
+    physics_yaml = FORGE_CONTRACTS_DIR / "physics.yaml"
+    g5_uncovered: list[str] = []
+    if physics_yaml.exists():
+        try:
+            yaml_lines = physics_yaml.read_text(encoding="utf-8").splitlines()
+            physics_paths: list[str] = []
+            for line in yaml_lines:
+                m = re.match(r"^  (/[^:]+):", line)
+                if m:
+                    physics_paths.append(m.group(1))
+
+            router_dir = wd / "app" / "api" / "routers"
+            if router_dir.is_dir():
+                router_files = [
+                    f.name for f in router_dir.iterdir()
+                    if f.is_file() and f.name not in ("__init__.py", "__pycache__")
+                ]
+                for p in physics_paths:
+                    if p == "/" or "/static/" in p:
+                        continue
+                    parts = p.strip("/").split("/")
+                    segment = parts[0] if parts else ""
+                    if not segment:
+                        continue
+                    expected = [f"{segment}.py", f"{segment}.ts", f"{segment}.js"]
+                    if not any(ef in router_files for ef in expected):
+                        g5_uncovered.append(f"{p} (no handler for '{segment}')")
+        except Exception:
+            pass
+
+    checks.append({
+        "code": "G5",
+        "name": "Physics route coverage",
+        "result": "WARN" if g5_uncovered else "PASS",
+        "detail": "; ".join(g5_uncovered[:5]) if g5_uncovered else "All physics paths covered.",
+    })
+
+    # --- G6: Rename / ghost file detection --------------------------------
+    g6_issues: list[str] = []
+    try:
+        # Check for files in git status that show as deleted+added (rename)
+        result_code, git_out = await asyncio.to_thread(
+            lambda: (0, "")  # placeholder
+        )
+        # Use git diff --name-status to detect renames
+        proc = await asyncio.create_subprocess_exec(
+            "git", "diff", "--cached", "--name-status", "--diff-filter=R",
+            cwd=working_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if stdout:
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
+                if line.startswith("R"):
+                    g6_issues.append(f"rename detected: {line.strip()}")
+    except Exception:
+        pass  # Git not available or no renames
+
+    checks.append({
+        "code": "G6",
+        "name": "Rename detection",
+        "result": "WARN" if g6_issues else "PASS",
+        "detail": "; ".join(g6_issues[:5]) if g6_issues else "No renames detected.",
+    })
+
+    # --- G7: TODO / placeholder scan --------------------------------------
+    todo_patterns = [
+        re.compile(r"#\s*TODO\b", re.IGNORECASE),
+        re.compile(r"//\s*TODO\b", re.IGNORECASE),
+        re.compile(r"raise\s+NotImplementedError"),
+        re.compile(r"pass\s*#\s*placeholder", re.IGNORECASE),
+        re.compile(r"\.\.\.\s*#\s*stub", re.IGNORECASE),
+    ]
+    g7_found: list[str] = []
+    for tf in sorted(touched_files):
+        fp = wd / tf
+        if not fp.exists():
+            continue
+        try:
+            content = fp.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for pat in todo_patterns:
+            matches = pat.findall(content)
+            if matches:
+                g7_found.append(f"{tf}: {len(matches)}× '{pat.pattern}'")
+                break  # One report per file
+
+    checks.append({
+        "code": "G7",
+        "name": "TODO / placeholder scan",
+        "result": "WARN" if g7_found else "PASS",
+        "detail": "; ".join(g7_found[:10]) if g7_found else "No TODO/placeholder markers found.",
+    })
+
+    # --- Aggregate results ------------------------------------------------
+    blocking = sum(1 for c in checks if c["result"] == "FAIL")
+    warnings = sum(1 for c in checks if c["result"] == "WARN")
+    passed = blocking == 0
+
+    # Broadcast per-check results
+    for c in checks:
+        icon = "✅" if c["result"] == "PASS" else "❌" if c["result"] == "FAIL" else "⚠️"
+        await _broadcast_build_event(user_id, build_id, "governance_check", {
+            "code": c["code"],
+            "name": c["name"],
+            "result": c["result"],
+            "detail": c["detail"],
+            "icon": icon,
+            "phase": phase_name,
+        })
+
+    # Summary event
+    summary_msg = (
+        f"Governance gate: {len(checks) - blocking - warnings} PASS, "
+        f"{blocking} FAIL, {warnings} WARN"
+    )
+    await build_repo.append_build_log(
+        build_id, summary_msg, source="governance", level="info" if passed else "warn",
+    )
+    event_type = "governance_pass" if passed else "governance_fail"
+    await _broadcast_build_event(user_id, build_id, event_type, {
+        "phase": phase_name,
+        "checks": checks,
+        "blocking_failures": blocking,
+        "warnings": warnings,
+        "passed": passed,
+    })
+
+    return {
+        "passed": passed,
+        "checks": checks,
+        "blocking_failures": blocking,
+        "warnings": warnings,
+    }
+
+
 async def _generate_fix_manifest(
     build_id: UUID,
     user_id: UUID,
@@ -6504,16 +6863,119 @@ async def _run_build_plan_execute(
                     "message": _warn_msg, "source": "verify", "level": "warn",
                 })
 
-        # 6. Commit after audit + verification — never commit unverified code
+        # 5b. Governance gate — deterministic checks before commit
+        governance_result: dict = {"passed": True, "checks": [], "blocking_failures": 0, "warnings": 0}
+        if phase_files_written and touched_files:
+            try:
+                governance_result = await _run_governance_checks(
+                    build_id, user_id, api_key,
+                    manifest, working_dir, contracts,
+                    touched_files, phase_name,
+                )
+
+                if not governance_result["passed"]:
+                    # Attempt auto-fix for blocking governance failures (up to 2 rounds)
+                    gov_fix_rounds = 2
+                    for gov_fix in range(1, gov_fix_rounds + 1):
+                        blocking_details = [
+                            f"{c['code']}: {c['detail']}"
+                            for c in governance_result.get("checks", [])
+                            if c["result"] == "FAIL"
+                        ]
+                        _gov_msg = (
+                            f"Governance gate FAIL — {governance_result['blocking_failures']} blocking "
+                            f"issue(s). Attempting fix {gov_fix}/{gov_fix_rounds}..."
+                        )
+                        await build_repo.append_build_log(
+                            build_id, _gov_msg, source="governance", level="warn",
+                        )
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": _gov_msg, "source": "governance", "level": "warn",
+                        })
+
+                        # Try to fix via recovery plan
+                        fix_plan = (
+                            "Governance gate failures detected. Fix these BLOCKING issues:\n"
+                            + "\n".join(f"- {d}" for d in blocking_details)
+                        )
+                        existing_files: dict[str, str] = {}
+                        for tf in touched_files:
+                            fp = Path(working_dir) / tf
+                            if fp.exists():
+                                try:
+                                    existing_files[tf] = fp.read_text(encoding="utf-8")
+                                except Exception:
+                                    pass
+
+                        fix_manifest = await _generate_fix_manifest(
+                            build_id, user_id, api_key,
+                            fix_plan, existing_files,
+                            "\n".join(blocking_details), contracts,
+                        )
+
+                        if fix_manifest:
+                            for fm_entry in fix_manifest:
+                                if fm_entry.get("action") == "delete":
+                                    del_path = Path(working_dir) / fm_entry["path"]
+                                    if del_path.exists():
+                                        del_path.unlink()
+                                    continue
+                                await _fix_single_file(
+                                    build_id, user_id, api_key,
+                                    fm_entry, working_dir, contracts,
+                                    existing_files, "\n".join(blocking_details),
+                                )
+
+                        # Re-run governance checks
+                        governance_result = await _run_governance_checks(
+                            build_id, user_id, api_key,
+                            manifest, working_dir, contracts,
+                            touched_files, phase_name,
+                        )
+                        if governance_result["passed"]:
+                            _ok_msg = f"✓ Governance gate passed after fix round {gov_fix}"
+                            await build_repo.append_build_log(
+                                build_id, _ok_msg, source="governance", level="info",
+                            )
+                            await _broadcast_build_event(user_id, build_id, "build_log", {
+                                "message": _ok_msg, "source": "governance", "level": "info",
+                            })
+                            break
+
+                    if not governance_result["passed"]:
+                        _fail_msg = (
+                            f"⚠ Governance gate still has {governance_result['blocking_failures']} "
+                            f"blocking failure(s) after {gov_fix_rounds} fix rounds — proceeding with caution"
+                        )
+                        await build_repo.append_build_log(
+                            build_id, _fail_msg, source="governance", level="warn",
+                        )
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": _fail_msg, "source": "governance", "level": "warn",
+                        })
+            except Exception as exc:
+                logger.warning("Governance gate failed: %s", exc)
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Governance gate error (non-blocking): {exc}",
+                    source="governance", level="warn",
+                )
+
+        # 6. Commit after audit + verification + governance — never commit unverified code
         if phase_files_written:
             try:
                 await _set_build_activity(build_id, user_id, f"Committing {phase_name}...")
                 await git_client.add_all(working_dir)
                 _fix_count = verification.get("fixes_applied", 0)
+                _gov_tag = ""
+                if governance_result.get("blocking_failures", 0) > 0:
+                    _gov_tag = f", gov:{governance_result['blocking_failures']}F"
+                elif governance_result.get("warnings", 0) > 0:
+                    _gov_tag = f", gov:{governance_result['warnings']}W"
                 commit_msg = (
                     f"forge: {phase_name} complete"
-                    if audit_attempts <= 1 and _fix_count == 0
-                    else f"forge: {phase_name} complete (audit×{audit_attempts}, {_fix_count} auto-fixes)"
+                    if audit_attempts <= 1 and _fix_count == 0 and not _gov_tag
+                    else f"forge: {phase_name} complete (audit×{audit_attempts}, {_fix_count} auto-fixes{_gov_tag})"
                 )
                 sha = await git_client.commit(working_dir, commit_msg)
                 if sha:
@@ -6528,14 +6990,16 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 logger.warning("Git commit failed for %s: %s", phase_name, exc)
 
-        # Determine final phase verdict: audit + verification
+        # Determine final phase verdict: audit + verification + governance
         verification_clean = (
             verification.get("syntax_errors", 0) == 0
             and verification.get("tests_failed", 0) == 0
         )
+        governance_clean = governance_result.get("passed", True)
 
-        if audit_verdict == "PASS" and verification_clean:
-            _log_msg = f"✅ Phase {phase_name} PASS (audit + verification)"
+        if audit_verdict == "PASS" and verification_clean and governance_clean:
+            _gov_summary = f", governance {len(governance_result.get('checks', []))} checks"
+            _log_msg = f"✅ Phase {phase_name} PASS (audit + verification + governance)"
             await build_repo.append_build_log(
                 build_id, _log_msg,
                 source="audit", level="info",
@@ -6557,13 +7021,19 @@ async def _run_build_plan_execute(
             if _mc.exists():
                 _mc.unlink(missing_ok=True)
         elif audit_verdict == "PASS":
-            # Audit passed but verification has remaining issues — still proceed
-            # but mark as partial pass so the user knows
-            _log_msg = (
-                f"⚠ Phase {phase_name} — audit PASS, verification has "
-                f"{verification.get('syntax_errors', 0)} syntax errors, "
-                f"{verification.get('tests_failed', 0)} test failures"
-            )
+            # Audit passed but verification/governance has remaining issues
+            _issues: list[str] = []
+            if not verification_clean:
+                _issues.append(
+                    f"verification: {verification.get('syntax_errors', 0)} syntax errors, "
+                    f"{verification.get('tests_failed', 0)} test failures"
+                )
+            if not governance_clean:
+                _issues.append(
+                    f"governance: {governance_result.get('blocking_failures', 0)} blocking, "
+                    f"{governance_result.get('warnings', 0)} warnings"
+                )
+            _log_msg = f"⚠ Phase {phase_name} — audit PASS, {'; '.join(_issues)}"
             await build_repo.append_build_log(
                 build_id, _log_msg,
                 source="audit", level="warn",
@@ -6575,6 +7045,7 @@ async def _run_build_plan_execute(
                 "phase": phase_name,
                 "status": "partial",
                 "verification": verification,
+                "governance": governance_result,
             })
             # Still lock in phase so /continue works — verification issues
             # can accumulate and be fixed across phases

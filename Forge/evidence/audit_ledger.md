@@ -7390,3 +7390,223 @@ A5: PASS -- No TODO: placeholders in updatedifflog.md.
 W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
 W2: PASS -- audit_ledger.md exists and is non-empty.
 W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 34 -- changes staged) -- Iteration 150
+Timestamp: 2026-02-17T17:17:03Z
+AEM Cycle: Phase 34 -- changes staged)
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Claimed but not in diff: _git_adds.txt, app/api/routers/builds.py, app/api/routers/projects.py, app/api/routers/repos.py, app/api/routers/scout.py, app/audit/engine.py, app/clients/git_client.py, app/clients/github_client.py, app/config.py, app/main.py, app/repos/build_repo.py, app/repos/project_repo.py, app/repos/scout_repo.py, app/services/build_service.py (_run_governance_checks function + pipeline wiring), app/services/project_service.py, app/services/scout_service.py, app/services/tool_executor.py, db/migrations/013_contract_snapshots.sql, db/migrations/014_build_contract_batch.sql, db/migrations/015_scout_runs.sql, db/migrations/016_build_completed_phases.sql, forge_ide/__init__.py, forge_ide/adapters.py, forge_ide/backoff.py, forge_ide/build_helpers.py, forge_ide/context_pack.py, forge_ide/contracts.py, forge_ide/diagnostics.py, forge_ide/diff_generator.py, forge_ide/errors.py, forge_ide/file_index.py, forge_ide/git_ops.py, forge_ide/lang/__init__.py, forge_ide/lang/python_intel.py, forge_ide/lang/ts_intel.py, forge_ide/log_parser.py, forge_ide/patcher.py, forge_ide/reader.py, forge_ide/redactor.py, forge_ide/registry.py, forge_ide/relevance.py, forge_ide/response_parser.py, forge_ide/runner.py, forge_ide/sanitiser.py, forge_ide/searcher.py, forge_ide/workspace.py, Forge/Contracts/phases.md (Phase 34 spec appended), Forge/evidence/audit_ledger.md, Forge/evidence/updatedifflog.md (this file), Forge/IDE/tests/test_context_pack.py, Forge/IDE/tests/test_contracts.py, Forge/IDE/tests/test_diagnostics.py, Forge/IDE/tests/test_diff_generator.py, Forge/IDE/tests/test_errors.py, Forge/IDE/tests/test_file_index.py, Forge/IDE/tests/test_git_ops.py, Forge/IDE/tests/test_log_parser.py, Forge/IDE/tests/test_patcher.py, Forge/IDE/tests/test_python_intel.py, Forge/IDE/tests/test_reader.py, Forge/IDE/tests/test_redactor.py, Forge/IDE/tests/test_registry.py, Forge/IDE/tests/test_relevance.py, Forge/IDE/tests/test_response_parser.py, Forge/IDE/tests/test_runner.py, Forge/IDE/tests/test_sanitiser.py, Forge/IDE/tests/test_searcher.py, Forge/IDE/tests/test_smoke.py, Forge/IDE/tests/test_ts_intel.py, Forge/IDE/tests/test_workspace.py, Forge/scripts/run_audit.ps1, Forge/scripts/watch_audit.ps1, tests/test_audit_engine.py, tests/test_build_service.py, tests/test_builds_router.py, tests/test_contract_snapshots.py, tests/test_git_client.py, tests/test_governance_gate.py (14 new tests — NEW FILE), tests/test_project_service.py, tests/test_projects_router.py, tests/test_scout_router.py, tests/test_scout_service.py, web/package-lock.json, web/src/__tests__/Build.test.tsx, web/src/App.tsx, web/src/components/AppShell.tsx, web/src/components/BranchPickerModal.tsx, web/src/components/ContractProgress.tsx, web/src/components/CreateProjectModal.tsx, web/src/components/QuestionnaireModal.tsx, web/src/components/Skeleton.tsx, web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card), web/src/pages/ProjectDetail.tsx, web/src/pages/Scout.tsx, web/tsconfig.json, web/vite.config.ts.
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Claimed but not in diff: _git_adds.txt, app/api/routers/builds.py, app/api/routers/projects.py, app/api/routers/repos.py, app/api/routers/scout.py, app/audit/engine.py, app/clients/git_client.py, app/clients/github_client.py, app/config.py, app/main.py, app/repos/build_repo.py, app/repos/project_repo.py, app/repos/scout_repo.py, app/services/build_service.py (_run_governance_checks function + pipeline wiring), app/services/project_service.py, app/services/scout_service.py, app/services/tool_executor.py, db/migrations/013_contract_snapshots.sql, db/migrations/014_build_contract_batch.sql, db/migrations/015_scout_runs.sql, db/migrations/016_build_completed_phases.sql, forge_ide/__init__.py, forge_ide/adapters.py, forge_ide/backoff.py, forge_ide/build_helpers.py, forge_ide/context_pack.py, forge_ide/contracts.py, forge_ide/diagnostics.py, forge_ide/diff_generator.py, forge_ide/errors.py, forge_ide/file_index.py, forge_ide/git_ops.py, forge_ide/lang/__init__.py, forge_ide/lang/python_intel.py, forge_ide/lang/ts_intel.py, forge_ide/log_parser.py, forge_ide/patcher.py, forge_ide/reader.py, forge_ide/redactor.py, forge_ide/registry.py, forge_ide/relevance.py, forge_ide/response_parser.py, forge_ide/runner.py, forge_ide/sanitiser.py, forge_ide/searcher.py, forge_ide/workspace.py, Forge/Contracts/phases.md (Phase 34 spec appended), Forge/evidence/audit_ledger.md, Forge/evidence/updatedifflog.md (this file), Forge/IDE/tests/test_context_pack.py, Forge/IDE/tests/test_contracts.py, Forge/IDE/tests/test_diagnostics.py, Forge/IDE/tests/test_diff_generator.py, Forge/IDE/tests/test_errors.py, Forge/IDE/tests/test_file_index.py, Forge/IDE/tests/test_git_ops.py, Forge/IDE/tests/test_log_parser.py, Forge/IDE/tests/test_patcher.py, Forge/IDE/tests/test_python_intel.py, Forge/IDE/tests/test_reader.py, Forge/IDE/tests/test_redactor.py, Forge/IDE/tests/test_registry.py, Forge/IDE/tests/test_relevance.py, Forge/IDE/tests/test_response_parser.py, Forge/IDE/tests/test_runner.py, Forge/IDE/tests/test_sanitiser.py, Forge/IDE/tests/test_searcher.py, Forge/IDE/tests/test_smoke.py, Forge/IDE/tests/test_ts_intel.py, Forge/IDE/tests/test_workspace.py, Forge/scripts/run_audit.ps1, Forge/scripts/watch_audit.ps1, tests/test_audit_engine.py, tests/test_build_service.py, tests/test_builds_router.py, tests/test_contract_snapshots.py, tests/test_git_client.py, tests/test_governance_gate.py (14 new tests — NEW FILE), tests/test_project_service.py, tests/test_projects_router.py, tests/test_scout_router.py, tests/test_scout_service.py, web/package-lock.json, web/src/__tests__/Build.test.tsx, web/src/App.tsx, web/src/components/AppShell.tsx, web/src/components/BranchPickerModal.tsx, web/src/components/ContractProgress.tsx, web/src/components/CreateProjectModal.tsx, web/src/components/QuestionnaireModal.tsx, web/src/components/Skeleton.tsx, web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card), web/src/pages/ProjectDetail.tsx, web/src/pages/Scout.tsx, web/tsconfig.json, web/vite.config.ts.
+
+### Files Changed
+- _git_adds.txt
+- app/api/routers/builds.py
+- app/api/routers/projects.py
+- app/api/routers/repos.py
+- app/api/routers/scout.py
+- app/audit/engine.py
+- app/clients/git_client.py
+- app/clients/github_client.py
+- app/config.py
+- app/main.py
+- app/repos/build_repo.py
+- app/repos/project_repo.py
+- app/repos/scout_repo.py
+- app/services/build_service.py
+- app/services/build_service.py (_run_governance_checks function + pipeline wiring)
+- app/services/project_service.py
+- app/services/scout_service.py
+- app/services/tool_executor.py
+- db/migrations/013_contract_snapshots.sql
+- db/migrations/014_build_contract_batch.sql
+- db/migrations/015_scout_runs.sql
+- db/migrations/016_build_completed_phases.sql
+- forge_ide/__init__.py
+- forge_ide/adapters.py
+- forge_ide/backoff.py
+- forge_ide/build_helpers.py
+- forge_ide/context_pack.py
+- forge_ide/contracts.py
+- forge_ide/diagnostics.py
+- forge_ide/diff_generator.py
+- forge_ide/errors.py
+- forge_ide/file_index.py
+- forge_ide/git_ops.py
+- forge_ide/lang/__init__.py
+- forge_ide/lang/python_intel.py
+- forge_ide/lang/ts_intel.py
+- forge_ide/log_parser.py
+- forge_ide/patcher.py
+- forge_ide/reader.py
+- forge_ide/redactor.py
+- forge_ide/registry.py
+- forge_ide/relevance.py
+- forge_ide/response_parser.py
+- forge_ide/runner.py
+- forge_ide/sanitiser.py
+- forge_ide/searcher.py
+- forge_ide/workspace.py
+- Forge/Contracts/phases.md (Phase 34 spec appended)
+- Forge/evidence/audit_ledger.md
+- Forge/evidence/updatedifflog.md
+- Forge/evidence/updatedifflog.md (this file)
+- Forge/IDE/tests/test_context_pack.py
+- Forge/IDE/tests/test_contracts.py
+- Forge/IDE/tests/test_diagnostics.py
+- Forge/IDE/tests/test_diff_generator.py
+- Forge/IDE/tests/test_errors.py
+- Forge/IDE/tests/test_file_index.py
+- Forge/IDE/tests/test_git_ops.py
+- Forge/IDE/tests/test_log_parser.py
+- Forge/IDE/tests/test_patcher.py
+- Forge/IDE/tests/test_python_intel.py
+- Forge/IDE/tests/test_reader.py
+- Forge/IDE/tests/test_redactor.py
+- Forge/IDE/tests/test_registry.py
+- Forge/IDE/tests/test_relevance.py
+- Forge/IDE/tests/test_response_parser.py
+- Forge/IDE/tests/test_runner.py
+- Forge/IDE/tests/test_sanitiser.py
+- Forge/IDE/tests/test_searcher.py
+- Forge/IDE/tests/test_smoke.py
+- Forge/IDE/tests/test_ts_intel.py
+- Forge/IDE/tests/test_workspace.py
+- Forge/scripts/run_audit.ps1
+- Forge/scripts/watch_audit.ps1
+- tests/test_audit_engine.py
+- tests/test_build_service.py
+- tests/test_builds_router.py
+- tests/test_contract_snapshots.py
+- tests/test_git_client.py
+- tests/test_governance_gate.py (14 new tests — NEW FILE)
+- tests/test_project_service.py
+- tests/test_projects_router.py
+- tests/test_scout_router.py
+- tests/test_scout_service.py
+- web/package-lock.json
+- web/src/__tests__/Build.test.tsx
+- web/src/App.tsx
+- web/src/components/AppShell.tsx
+- web/src/components/BranchPickerModal.tsx
+- web/src/components/ContractProgress.tsx
+- web/src/components/CreateProjectModal.tsx
+- web/src/components/QuestionnaireModal.tsx
+- web/src/components/Skeleton.tsx
+- web/src/pages/BuildProgress.tsx
+- web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card)
+- web/src/pages/ProjectDetail.tsx
+- web/src/pages/Scout.tsx
+- web/tsconfig.json
+- web/vite.config.ts
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 34 -- changes staged) -- Iteration 151
+Timestamp: 2026-02-17T17:17:33Z
+AEM Cycle: Phase 34 -- changes staged)
+Outcome: FAIL
+
+### Checklist
+- A1 Scope compliance:      FAIL -- Unclaimed in diff: app/services/build_service.py, web/src/pages/BuildProgress.tsx. Claimed but not in diff: app/services/build_service.py (_run_governance_checks function + pipeline wiring), Forge/Contracts/phases.md (Phase 34 spec appended), Forge/evidence/updatedifflog.md (this file), tests/test_governance_gate.py (14 new tests — NEW FILE), web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Fix Plan (FAIL items)
+- A1: FAIL -- Unclaimed in diff: app/services/build_service.py, web/src/pages/BuildProgress.tsx. Claimed but not in diff: app/services/build_service.py (_run_governance_checks function + pipeline wiring), Forge/Contracts/phases.md (Phase 34 spec appended), Forge/evidence/updatedifflog.md (this file), tests/test_governance_gate.py (14 new tests — NEW FILE), web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card).
+
+### Files Changed
+- app/services/build_service.py (_run_governance_checks function + pipeline wiring)
+- Forge/Contracts/phases.md (Phase 34 spec appended)
+- Forge/evidence/updatedifflog.md (this file)
+- tests/test_governance_gate.py (14 new tests — NEW FILE)
+- web/src/pages/BuildProgress.tsx (GovernanceResult interface + WS handlers + display card)
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: unknown -- Iteration 152
+Timestamp: 2026-02-17T17:18:47Z
+AEM Cycle: unknown
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (6 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/services/build_service.py
+- Forge/Contracts/phases.md
+- Forge/evidence/updatedifflog.md
+- tests/test_governance_gate.py
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.
+
+---
+## Audit Entry: Phase 34 -- Iteration 153
+Timestamp: 2026-02-17T17:18:55Z
+AEM Cycle: Phase 34
+Outcome: SIGNED-OFF (awaiting AUTHORIZED)
+
+### Checklist
+- A1 Scope compliance:      PASS -- git diff matches claimed files exactly (6 files).
+- A2 Minimal-diff:          PASS -- No renames; diff is minimal.
+- A3 Evidence completeness: PASS -- test_runs_latest.md=PASS, updatedifflog.md present.
+- A4 Boundary compliance:   PASS -- No forbidden patterns found in any boundary layer.
+- A6 Authorization Gate:    PASS -- No prior AUTHORIZED entry; first AEM cycle.
+- A7 Verification order:    PASS -- Verification keywords appear in correct order (Static > Runtime > Behavior > Contract).
+- A8 Test gate:             PASS -- test_runs_latest.md reports PASS.
+- A9 Dependency gate:       PASS -- All imports in changed files have declared dependencies.
+- A5 Diff Log Gate:         PASS -- No TODO: placeholders in updatedifflog.md.
+
+### Files Changed
+- app/services/build_service.py
+- Forge/Contracts/phases.md
+- Forge/evidence/updatedifflog.md
+- tests/test_governance_gate.py
+- web/src/pages/BuildProgress.tsx
+
+### Notes
+A5: PASS -- No TODO: placeholders in updatedifflog.md.
+W1: WARN -- Potential secrets found: sk-, AKIA, -----BEGIN, password=, secret=, token=
+W2: PASS -- audit_ledger.md exists and is non-empty.
+W3: PASS -- All physics paths have corresponding handler files.

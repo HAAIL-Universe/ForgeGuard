@@ -2246,3 +2246,75 @@ A headless IDE gives the builder and auditor structured, deterministic tools for
 - Approving the plan triggers a scoped micro-build
 - Micro-build produces minimal diff and runs tests
 - All existing tests pass + new remediation tests pass
+
+---
+
+## Phase 34 — Phase Transition Governance Gate
+
+**Objective:** Add deterministic, non-LLM governance checks that run at every phase boundary before commit. Mirrors the Forge `run_audit.ps1` checks (A1/A4/A9/W1/W3) but runs in-process against the target project's contracts. This replaces the need for a separate "final audit phase" — governance runs inline at every phase transition, alongside the existing parallel per-file audit and syntax verification.
+
+**Execution note:** Should be built BEFORE Phase 32 (Scout Dashboard) since it improves the build pipeline that subsequent phases will use.
+
+**Deliverables:**
+
+#### 34.1 — `_run_governance_checks()` function
+
+- `app/services/build_service.py`:
+  - New async function `_run_governance_checks(build_id, user_id, api_key, manifest, working_dir, contracts, touched_files) → dict`
+  - Returns `{ "passed": bool, "checks": [...], "blocking_failures": int, "warnings": int, "fixes_applied": int }`
+  - Runs 7 deterministic checks (no LLM calls) — reuses existing functions from `app/audit/runner.py` where possible
+
+#### 34.2 — Governance checks (7 checks)
+
+| Check | Description | Blocking? | Reuses |
+|---|---|---|---|
+| G1 Scope compliance | `set(files_written)` == `set(manifest_paths)` — flag phantom or unclaimed files | Yes | new |
+| G2 Boundary compliance | Load target project's `boundaries` contract, run forbidden-pattern check on touched files | Yes | `check_a4_boundary_compliance` |
+| G3 Dependency gate | Parse imports in touched .py/.ts files, verify against `requirements.txt`/`package.json` on disk | Yes | `check_a9_dependency_gate` |
+| G4 Secrets scan | Scan content of all generated files for secret patterns (`sk-`, `AKIA`, `password=`, etc.) | Yes | `check_w1_secrets_in_diff` adapted |
+| G5 Physics route coverage | If target project has a `physics` contract, verify declared paths have handler files | No (warn) | `check_w3_physics_route_coverage` |
+| G6 Rename detection | Check `git diff --summary` in working dir for unexpected renames | No (warn) | new |
+| G7 TODO placeholder scan | Scan generated files for `TODO:`, `FIXME:`, `HACK:` in code (not comments) | No (warn) | new |
+
+#### 34.3 — Pipeline integration
+
+- Insert governance gate between verification (step 5) and commit (step 6) in the phase loop
+- On blocking failure: enter fix loop (2 rounds via `_fix_single_file`), then pause if still failing
+- On warn: log + broadcast, never block
+- On all-pass: broadcast `governance_pass` and proceed to commit
+- Governance results included in the commit message metadata
+
+#### 34.4 — WS events for BuildProgress.tsx
+
+- `governance_check` — per-check result streamed as they run (path, check_code, result, detail)
+- `governance_pass` — all blocking checks passed
+- `governance_fail` — one or more blocking checks failed with fix plan
+- Frontend: `BuildProgress.tsx` renders governance check results in the phase activity panel (✅/❌/⚠ per check, expandable detail)
+
+#### 34.5 — Tests
+
+- `tests/test_build_service.py` additions:
+  - `test_governance_checks_all_pass` — clean files, no violations
+  - `test_governance_g1_scope_phantom` — file on disk not in manifest
+  - `test_governance_g1_scope_missing` — manifest file not on disk
+  - `test_governance_g2_boundary_violation` — SQL in router file
+  - `test_governance_g3_dependency_missing` — import not in requirements.txt
+  - `test_governance_g4_secrets_detected` — sk- pattern in generated code
+  - `test_governance_g5_physics_coverage` — missing route handler
+  - `test_governance_g6_rename_detected` — git rename in diff
+  - `test_governance_g7_todo_placeholder` — TODO: in code
+  - `test_governance_blocking_triggers_fix` — blocking failure enters fix round
+  - `test_governance_warn_does_not_block` — warn check doesn't block commit
+- Frontend: existing tests still pass + governance events render
+
+**Schema coverage:** No new tables — governance results stored as build logs.
+
+**Exit criteria:**
+- Governance gate runs at every phase transition (between verify and commit)
+- G1-G4 blocking checks prevent commit on failure
+- G5-G7 warnings logged but don't block
+- Blocking failures trigger fix loop (2 rounds), then pause
+- WS events stream per-check results to BuildProgress.tsx
+- All existing backend tests pass + 11 new governance tests pass
+- All existing frontend tests pass
+- `run_audit.ps1` passes all checks

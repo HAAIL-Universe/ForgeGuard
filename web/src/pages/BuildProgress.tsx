@@ -124,6 +124,22 @@ interface VerificationResult {
   test_output?: string;
 }
 
+interface GovernanceCheck {
+  code: string;
+  name: string;
+  result: 'PASS' | 'FAIL' | 'WARN';
+  detail: string;
+  icon?: string;
+  phase?: string;
+}
+
+interface GovernanceResult {
+  passed: boolean;
+  checks: GovernanceCheck[];
+  blocking_failures: number;
+  warnings: number;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Styles                                                            */
 /* ------------------------------------------------------------------ */
@@ -286,6 +302,8 @@ function BuildProgress() {
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [verificationExpanded, setVerificationExpanded] = useState(false);
+  const [governance, setGovernance] = useState<GovernanceResult | null>(null);
+  const [governanceExpanded, setGovernanceExpanded] = useState(false);
   const [activityStatus, setActivityStatus] = useState<string>('');
   const feedEndRef = useRef<HTMLDivElement>(null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
@@ -597,6 +615,7 @@ function BuildProgress() {
             /* Reset manifest for next phase */
             setManifestFiles([]);
             setVerification(null);
+            setGovernance(null);
 
             setBuild((prev) => prev ? { ...prev, phase: phase } : prev);
             phaseStartRef.current = Date.now();
@@ -888,6 +907,28 @@ function BuildProgress() {
             if (result.tests_failed) parts.push(`${result.tests_failed} tests failed`);
             if (result.fixes_applied) parts.push(`${result.fixes_applied} fixes applied`);
             addActivity(`Verification: ${parts.join(', ') || 'clean'}`, result.syntax_errors || result.tests_failed ? 'warn' : 'system');
+            break;
+          }
+
+          case 'governance_check': {
+            const code = (payload.code ?? '') as string;
+            const name = (payload.name ?? '') as string;
+            const result = (payload.result ?? '') as string;
+            const icon = result === 'PASS' ? '✅' : result === 'FAIL' ? '❌' : '⚠️';
+            addActivity(`${icon} ${code}: ${name} — ${result}`, result === 'FAIL' ? 'error' : result === 'WARN' ? 'warn' : 'system');
+            break;
+          }
+
+          case 'governance_pass':
+          case 'governance_fail': {
+            const checks = (payload.checks ?? []) as GovernanceCheck[];
+            const passed = Boolean(payload.passed);
+            const blocking = (payload.blocking_failures ?? 0) as number;
+            const warnings = (payload.warnings ?? 0) as number;
+            setGovernance({ passed, checks, blocking_failures: blocking, warnings });
+            setGovernanceExpanded(!passed);
+            const summary = `Governance: ${checks.length - blocking - warnings} pass, ${blocking} fail, ${warnings} warn`;
+            addActivity(summary, passed ? 'system' : 'warn');
             break;
           }
 
@@ -1931,6 +1972,47 @@ function BuildProgress() {
                         color: '#CBD5E1', fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
                         whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                       }}>{verification.test_output}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+              {governance && (
+                <div style={{ marginTop: '8px' }}>
+                  <div
+                    style={{
+                      padding: '8px 10px', background: '#0F172A', borderRadius: governanceExpanded ? '4px 4px 0 0' : '4px',
+                      fontSize: '0.72rem', cursor: 'pointer', display: 'flex', alignItems: 'center',
+                      userSelect: 'none',
+                    }}
+                    onClick={() => setGovernanceExpanded(!governanceExpanded)}
+                  >
+                    <span style={{ color: '#64748B', marginRight: '8px' }}>Governance:</span>
+                    {governance.passed
+                      ? <span style={{ color: '#22C55E' }}>All checks passed</span>
+                      : (
+                        <>
+                          {governance.blocking_failures > 0 && <span style={{ color: '#EF4444', marginRight: '8px' }}>{governance.blocking_failures} blocking</span>}
+                          {governance.warnings > 0 && <span style={{ color: '#F59E0B', marginRight: '8px' }}>{governance.warnings} warnings</span>}
+                        </>
+                      )
+                    }
+                    <span style={{ marginLeft: 'auto', color: '#475569', fontSize: '0.6rem', transition: 'transform 0.2s', transform: governanceExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+                  </div>
+                  {governanceExpanded && (
+                    <div style={{
+                      background: '#0B1120', border: '1px solid #1E293B', borderTop: 'none',
+                      borderRadius: '0 0 4px 4px', padding: '8px 12px',
+                    }}>
+                      {governance.checks.map((c) => (
+                        <div key={c.code} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '4px 0', fontSize: '0.68rem', borderBottom: '1px solid #1E293B' }}>
+                          <span style={{ flexShrink: 0 }}>{c.result === 'PASS' ? '✅' : c.result === 'FAIL' ? '❌' : '⚠️'}</span>
+                          <span style={{ color: '#94A3B8', fontWeight: 600, minWidth: '24px' }}>{c.code}</span>
+                          <span style={{ color: '#CBD5E1' }}>{c.name}</span>
+                          <span style={{ color: c.result === 'PASS' ? '#475569' : '#F59E0B', marginLeft: 'auto', textAlign: 'right', fontSize: '0.62rem', maxWidth: '50%', wordBreak: 'break-word' }}>
+                            {c.detail}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
