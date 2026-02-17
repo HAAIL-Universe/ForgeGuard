@@ -13,6 +13,7 @@ import QuestionnaireModal from '../components/QuestionnaireModal';
 import ContractProgress from '../components/ContractProgress';
 import BuildTargetModal, { type BuildTarget } from '../components/BuildTargetModal';
 import BranchPickerModal, { type BranchChoice } from '../components/BranchPickerModal';
+import CertificateModal from '../components/CertificateModal';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const BG_TOTAL_CONTRACTS = 9;
@@ -87,6 +88,7 @@ function ProjectDetail() {
   const [showBranchPicker, setShowBranchPicker] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState('main');
   const [selectedContractBatch, setSelectedContractBatch] = useState<number | null>(null);
+  const [showCertificate, setShowCertificate] = useState(false);
 
   /* Background contract generation tracking */
   const [bgGenActive, setBgGenActive] = useState(false);
@@ -558,6 +560,27 @@ function ProjectDetail() {
             <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Builds</span>
             <span style={{ color: '#94A3B8', fontSize: '0.7rem' }}>
               {buildHistory.length} total
+            </span>
+          </div>
+
+          <div
+            onClick={() => setShowCertificate(true)}
+            style={{
+              background: '#1E293B',
+              borderRadius: '8px',
+              padding: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              cursor: 'pointer',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#263348')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#1E293B')}
+          >
+            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>🛡️ Forge Seal</span>
+            <span style={{ color: '#94A3B8', fontSize: '0.7rem' }}>
+              Build certificate
             </span>
           </div>
         </div>
@@ -1162,6 +1185,13 @@ function ProjectDetail() {
             />
           </div>
         </div>
+      )}
+      {showCertificate && project && (
+        <CertificateModal
+          projectId={project.id}
+          token={token!}
+          onClose={() => setShowCertificate(false)}
+        />
       )}
     </AppShell>
   );

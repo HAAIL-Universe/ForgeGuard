@@ -4,9 +4,13 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
+from app.services.certificate_aggregator import aggregate_certificate_data
+from app.services.certificate_renderer import render_certificate
+from app.services.certificate_scorer import compute_certificate_scores
 from app.services.project_service import (
     ContractCancelled,
     cancel_contract_generation,
@@ -382,3 +386,68 @@ async def edit_contract(
         "version": result["version"],
         "updated_at": result["updated_at"],
     }
+
+
+# ── Forge Seal: Build Certificate ────────────────────────────────
+
+
+@router.get("/{project_id}/certificate")
+async def get_certificate(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Generate a Forge Seal build certificate (JSON)."""
+    try:
+        data = await aggregate_certificate_data(project_id, current_user["id"])
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail)
+    scores = compute_certificate_scores(data)
+    return render_certificate(scores, "json")
+
+
+@router.get("/{project_id}/certificate/html", response_class=HTMLResponse)
+async def get_certificate_html(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> HTMLResponse:
+    """Generate a Forge Seal build certificate (styled HTML)."""
+    try:
+        data = await aggregate_certificate_data(project_id, current_user["id"])
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail)
+    scores = compute_certificate_scores(data)
+    html = render_certificate(scores, "html")
+    return HTMLResponse(content=html)
+
+
+@router.get("/{project_id}/certificate/text")
+async def get_certificate_text(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Generate a Forge Seal build certificate (plain text)."""
+    try:
+        data = await aggregate_certificate_data(project_id, current_user["id"])
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail)
+    scores = compute_certificate_scores(data)
+    text = render_certificate(scores, "text")
+    return {"format": "text", "certificate": text}

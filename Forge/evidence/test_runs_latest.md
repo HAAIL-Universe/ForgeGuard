@@ -1,51 +1,20 @@
 Status: PASS
-Start: 2026-02-18T12:00:00Z
-End: 2026-02-18T12:02:00Z
+Phase: 38 — Forge Seal: Build Certificate & Handoff
 Branch: master
-HEAD: d310a99
-Runtime: Z:\ForgeCollection\ForgeGuard\.venv\Scripts\python.exe
-compileall exit: 0
-pytest exit: 0
-import_sanity exit: 0
-Backend: 674 passed, 1 pre-existing failure (test_cors_allows_valid_origin)
-Frontend: 61 passed
-Total: 735 tests
-git status -sb:
-```
-## master...origin/master [ahead 5]
- M Forge/Contracts/physics.yaml
- M Forge/Contracts/schema.md
- M Forge/evidence/updatedifflog.md
- M Forge/scripts/run_audit.ps1
- M USER_INSTRUCTIONS.md
- M app/api/routers/builds.py
- M app/config.py
- M app/repos/build_repo.py
- M app/services/build_service.py
- M tests/test_build_repo.py
- M tests/test_build_service.py
- M tests/test_builds_router.py
- M web/src/pages/BuildProgress.tsx
- M web/src/pages/Settings.tsx
-?? app/templates/contracts/planner_prompt.md
-?? db/migrations/009_build_pause.sql
-```
-git diff --stat:
-```
- Forge/Contracts/physics.yaml    |    40 +
- Forge/Contracts/schema.md       |     7 +-
- Forge/evidence/updatedifflog.md | 32303 +-------------------------------------
- Forge/scripts/run_audit.ps1     |    59 +-
- USER_INSTRUCTIONS.md            |     3 +-
- app/api/routers/builds.py       |    53 +
- app/config.py                   |     9 +-
- app/repos/build_repo.py         |    50 +-
- app/services/build_service.py   |   252 +-
- tests/test_build_repo.py        |    83 +
- tests/test_build_service.py     |   483 +-
- tests/test_builds_router.py     |   136 +
- web/src/pages/BuildProgress.tsx |   232 +-
- web/src/pages/Settings.tsx      |    19 +-
- 14 files changed, 1375 insertions(+), 32354 deletions(-)
-```
-
+Backend: 804 passed, 1 pre-existing failure (test_cors_allows_valid_origin)
+Frontend: 68 passed
+Total: 872 tests
+New tests: 68 backend (aggregator=17, scorer=28, renderer=23) + 7 frontend (CertificateModal)
+Files created:
+  - app/services/certificate_aggregator.py (315 lines)
+  - app/services/certificate_scorer.py (391 lines)
+  - app/services/certificate_renderer.py (276 lines)
+  - web/src/components/CertificateModal.tsx
+  - tests/test_certificate_aggregator.py
+  - tests/test_certificate_scorer.py
+  - tests/test_certificate_renderer.py
+  - web/src/__tests__/Certificate.test.tsx
+Files modified:
+  - app/api/routers/projects.py (added 3 certificate endpoints)
+  - web/src/pages/ProjectDetail.tsx (added Forge Seal card + CertificateModal integration)
+  - Forge/Contracts/phases.md (Phase 38 status -> DONE)

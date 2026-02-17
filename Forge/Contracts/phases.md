@@ -2842,9 +2842,11 @@ New UI in `web/src/pages/Scout.tsx` (integrated into existing Scout page):
 
 ---
 
-## Phase 38 — Forge Seal: Build Certificate & Handoff  *(TODO)*
+## Phase 38 — Forge Seal: Build Certificate & Handoff  *(DONE)*
 
-**Status:** 🔲 NOT STARTED
+**Status:** ✅ COMPLETE  
+**Commit:** *(pending)*  
+**Tests:** 804 backend (68 new) + 68 frontend (7 new) = 872 total
 
 **Objective:** Create a comprehensive **build certificate** tool that aggregates data from every ForgeGuard system (audit engine, test runner, governance gate, cost tracker, Scout dossier) into a formal handoff document. The certificate provides a quality benchmark, consistency score, and professional sign-off for any Forge-built application.
 
@@ -2852,14 +2854,73 @@ New UI in `web/src/pages/Scout.tsx` (integrated into existing Scout page):
 
 **Depends on:** Phase 36 (Scout Enhancement) for project analysis capabilities. Phases 1-35 for all the systems being aggregated.
 
-**Detailed phased plan to be appended upon Phase 37 sign-off.**
+---
 
-**High-level deliverables:**
-- Data aggregator: pull from audit ledger, test runs, governance checks, build costs, Scout dossier
-- Scoring engine: weighted consistency score across all dimensions (test pass rate, audit compliance, governance, security, cost efficiency)
-- Certificate sections: Project Identity, Build Integrity, Test Coverage, Compliance Score, Governance, Security, Cost Summary, Consistency Benchmark, Suggestions, Overall Verdict
-- Verdict classification: CERTIFIED (≥90%) / CONDITIONAL (70-89%) / FLAGGED (<70%)
-- Certificate renderer: styled HTML + PDF + machine-readable JSON
-- REST endpoint: `GET /projects/{id}/certificate`
-- Frontend: certificate viewer + download
-- Verification: certificate includes a hash so recipients can verify authenticity
+### 38.1 — Data Aggregator (`app/services/certificate_aggregator.py`)
+
+Pulls data from every ForgeGuard subsystem into a unified `CertificateData` dict:
+
+| Source | Table / Service | Data pulled |
+|--------|----------------|-------------|
+| **Project** | `project_repo.get_project_by_id` | name, description, repo, status |
+| **Build** | `build_repo.get_latest_build_for_project`, `get_build_stats`, `get_build_cost_summary` | phase, status, loop_count, stats (turns, commits, files), cost (tokens, USD) |
+| **Audit** | `audit_repo.get_audit_runs_by_repo` | recent audit runs, overall_result frequency |
+| **Governance** | `audit_repo.get_audit_run_detail` → per check | check pass/fail/warn breakdown |
+| **Scout** | `scout_repo.get_scout_runs_by_repo` → latest deep scan | stack_profile, architecture, dossier quality_assessment, checks |
+| **Contracts** | `project_repo.get_contracts_by_project` | contract types and count |
+
+Function: `async def aggregate_certificate_data(project_id: UUID, user_id: UUID) -> CertificateData`
+
+### 38.2 — Scoring Engine (`app/services/certificate_scorer.py`)
+
+Pure-function scoring across 6 dimensions, each 0–100:
+
+| Dimension | Weight | Inputs | Scoring logic |
+|-----------|--------|--------|---------------|
+| **Build Integrity** | 20% | build status, loop_count, error_detail | completed=100, error penalties, loop bonus |
+| **Test Coverage** | 20% | checks_passed / total, warnings | pass_rate × 100, warn penalty |
+| **Audit Compliance** | 20% | audit pass rate across recent runs | avg(overall=="PASS") × 100 |
+| **Governance** | 15% | per-check breakdown (A1-A9, W1-W3) | weighted pass rate |
+| **Security** | 15% | W1 secrets scan, Scout patterns | clean=100, secrets found=penalty |
+| **Cost Efficiency** | 10% | cost_usd, whether under cap | under_cap + reasonable_cost bonus |
+
+Overall = weighted sum → Verdict: **CERTIFIED** (≥90) / **CONDITIONAL** (70–89) / **FLAGGED** (<70)
+
+Function: `def compute_certificate_scores(data: CertificateData) -> CertificateScores`
+
+### 38.3 — Certificate Renderer (`app/services/certificate_renderer.py`)
+
+Produces three output formats from `CertificateScores`:
+
+1. **JSON** — machine-readable, includes all scores, sections, metadata, integrity hash
+2. **HTML** — styled certificate page with ForgeGuard branding, score gauges, section cards, verification hash
+3. **Plain text** — compact summary for logs/CLI
+
+Verification hash: `SHA-256(json_payload + Settings.SECRET_KEY)` — recipients can verify by recomputing
+
+Function: `def render_certificate(scores: CertificateScores, format: str) -> str`
+
+### 38.4 — REST Endpoints (in `app/api/routers/projects.py`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/projects/{id}/certificate` | Generate & return JSON certificate |
+| `GET` | `/projects/{id}/certificate/html` | Return styled HTML certificate |
+
+### 38.5 — Frontend Certificate UI (`web/src/pages/Projects.tsx` or new component)
+
+- "View Certificate" button on project detail (if build completed)
+- Certificate modal/page with:
+  - Overall verdict badge (CERTIFIED / CONDITIONAL / FLAGGED)
+  - Score radial gauges per dimension
+  - Section breakdown cards
+  - Download JSON / View HTML buttons
+  - Verification hash display
+
+### 38.6 — Tests + Audit + Commit
+
+- `tests/test_certificate_aggregator.py` — ~8 tests  
+- `tests/test_certificate_scorer.py` — ~12 tests  
+- `tests/test_certificate_renderer.py` — ~6 tests  
+- `tests/test_certificate_endpoint.py` — ~4 tests  
+- Full suite regression, evidence, commit + push
