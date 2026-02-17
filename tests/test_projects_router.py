@@ -214,8 +214,10 @@ def test_get_project_not_found(mock_project, mock_get_user):
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
 @patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
 @patch("app.services.project_service.repo_delete_project", new_callable=AsyncMock)
-def test_delete_project(mock_delete, mock_project, mock_get_user):
+@patch("app.repos.build_repo.has_active_builds", new_callable=AsyncMock)
+def test_delete_project(mock_active, mock_delete, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
+    mock_active.return_value = False
     mock_project.return_value = {
         "id": UUID(PROJECT_ID),
         "user_id": UUID(USER_ID),

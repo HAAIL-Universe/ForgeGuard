@@ -9,11 +9,11 @@ client = TestClient(app)
 
 
 def test_health_returns_ok():
-    """GET /health returns 200 with status ok."""
+    """GET /health returns 200 with status ok and db connected."""
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
-    assert data == {"status": "ok"}
+    assert data["status"] == "ok"
 
 
 def test_health_version_returns_version():

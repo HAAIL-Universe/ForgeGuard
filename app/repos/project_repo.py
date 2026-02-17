@@ -206,26 +206,29 @@ async def snapshot_contracts(project_id: UUID) -> int | None:
     """Copy all current project_contracts into contract_snapshots as a new batch.
 
     Returns the new batch number, or None if there were no contracts to snapshot.
+    Uses a transaction to prevent concurrent calls from picking the same batch number.
     """
     pool = await get_pool()
-    # Determine the next batch number
-    max_batch = await pool.fetchval(
-        "SELECT COALESCE(MAX(batch), 0) FROM contract_snapshots WHERE project_id = $1",
-        project_id,
-    )
-    new_batch = max_batch + 1
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Determine the next batch number
+            max_batch = await conn.fetchval(
+                "SELECT COALESCE(MAX(batch), 0) FROM contract_snapshots WHERE project_id = $1",
+                project_id,
+            )
+            new_batch = max_batch + 1
 
-    # Copy current contracts into snapshots
-    inserted = await pool.execute(
-        """
-        INSERT INTO contract_snapshots (project_id, batch, contract_type, content)
-        SELECT project_id, $2, contract_type, content
-        FROM project_contracts
-        WHERE project_id = $1
-        """,
-        project_id,
-        new_batch,
-    )
+            # Copy current contracts into snapshots
+            inserted = await conn.execute(
+                """
+                INSERT INTO contract_snapshots (project_id, batch, contract_type, content)
+                SELECT project_id, $2, contract_type, content
+                FROM project_contracts
+                WHERE project_id = $1
+                """,
+                project_id,
+                new_batch,
+            )
     # inserted is like 'INSERT 0 9' — extract count
     count = int(inserted.split()[-1])
     return new_batch if count > 0 else None

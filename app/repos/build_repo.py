@@ -161,6 +161,15 @@ async def delete_builds(build_ids: list[UUID]) -> int:
     return int(parts[1]) if len(parts) == 2 else 0
 
 
+async def has_active_builds(project_id: UUID) -> bool:
+    """Return True if the project has any pending/running/paused builds."""
+    pool = await get_pool()
+    return await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM builds WHERE project_id = $1 AND status IN ('pending', 'running', 'paused'))",
+        project_id,
+    )
+
+
 async def cancel_build(build_id: UUID) -> bool:
     """Cancel an active build. Returns True if updated."""
     pool = await get_pool()

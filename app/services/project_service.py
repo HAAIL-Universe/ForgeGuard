@@ -170,10 +170,19 @@ async def get_project_detail(user_id: UUID, project_id: UUID) -> dict:
 
 
 async def delete_user_project(user_id: UUID, project_id: UUID) -> bool:
-    """Delete a project if owned by user. Returns True if deleted."""
+    """Delete a project if owned by user.  Returns True if deleted.
+
+    Raises ValueError if the project has active builds (pending/running/paused).
+    """
     project = await get_project_by_id(project_id)
     if not project or str(project["user_id"]) != str(user_id):
         raise ValueError("Project not found")
+
+    # Prevent deletion while builds are still active.
+    from app.repos.build_repo import has_active_builds
+    if await has_active_builds(project_id):
+        raise ValueError("Cannot delete project with active builds")
+
     return await repo_delete_project(project_id)
 
 

@@ -1,6 +1,7 @@
 """ForgeGuard -- FastAPI application entry point."""
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -18,7 +19,7 @@ from app.api.routers.webhooks import router as webhooks_router
 from app.api.routers.ws import router as ws_router
 from app.config import settings
 from app.errors import ForgeError
-from app.repos.db import close_pool
+from app.repos.db import close_pool, get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Application lifespan: startup and shutdown hooks."""
+    if "pytest" not in sys.modules:
+        await get_pool()  # fail-fast if DB unreachable
     yield
     await close_pool()
 
