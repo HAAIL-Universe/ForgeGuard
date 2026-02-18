@@ -91,10 +91,55 @@ interface ChecklistItem {
   status: 'pending' | 'written' | 'auditing' | 'passed' | 'failed' | 'rejected';
 }
 
+/* ---------- Build mode types ---------- */
+
+interface BuildPhase {
+  number: number;
+  name: string;
+  objective: string;
+  deliverables?: string[];
+}
+
+interface CostData {
+  total_cost_usd: number;
+  api_calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  spend_cap: number | null;
+  pct_used: number;
+}
+
+/* Per-million pricing (matches backend _MODEL_PRICING) */
+const TOKEN_PRICING = {
+  opus:   { input: 15, output: 75 },
+  sonnet: { input: 3,  output: 15 },
+  haiku:  { input: 1,  output: 5 },
+};
+
+function estimateCost(usage: TokenUsage): number {
+  return (
+    (usage.opus.input * TOKEN_PRICING.opus.input +
+     usage.opus.output * TOKEN_PRICING.opus.output +
+     usage.sonnet.input * TOKEN_PRICING.sonnet.input +
+     usage.sonnet.output * TOKEN_PRICING.sonnet.output +
+     usage.haiku.input * TOKEN_PRICING.haiku.input +
+     usage.haiku.output * TOKEN_PRICING.haiku.output) / 1_000_000
+  );
+}
+
+function fmtCost(n: number): string {
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(3)}`;
+  if (n > 0) return `$${n.toFixed(4)}`;
+  return '$0.00';
+}
+
 interface ForgeIDEModalProps {
-  runId: string;
+  runId?: string;            // upgrade mode
+  projectId?: string;        // build mode
   repoName: string;
   onClose: () => void;
+  mode?: 'upgrade' | 'build';
 }
 
 /* ---------- Level colors ---------- */
@@ -366,11 +411,17 @@ const LogPane = memo(function LogPane({
 
 /* ---------- Component ---------- */
 
-export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModalProps) {
+export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mode = 'upgrade' }: ForgeIDEModalProps) {
   const { token } = useAuth();
+  const isBuild = mode === 'build';
+  const entityId = isBuild ? projectId! : runId!;
 
   /* State */
   const [tasks, setTasks] = useState<UpgradeTask[]>([]);
+  /* Build mode state */
+  const [buildId, setBuildId] = useState('');
+  const [costData, setCostData] = useState<CostData | null>(null);
+  const [phases, setPhases] = useState<BuildPhase[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [fileDiffs, setFileDiffs] = useState<FileDiff[]>([]);
   const [status, setStatus] = useState<'preparing' | 'ready' | 'running' | 'paused' | 'stopping' | 'stopped' | 'completed' | 'error'>('preparing');
@@ -395,7 +446,18 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const rightColRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
-  const SLASH_COMMANDS: Record<string, string> = {
+  const SLASH_COMMANDS: Record<string, string> = isBuild ? {
+    '/start':   'Start or resume the build',
+    '/pause':   'Pause after the current file finishes',
+    '/resume':  'Resume a paused build',
+    '/stop':    'Cancel the build immediately',
+    '/push':    'Commit and push to GitHub',
+    '/compact': 'Compact context before next file',
+    '/commit':  'Git add, commit, and push',
+    '/status':  'Print current progress summary',
+    '/clear':   'Clear the activity log',
+    '/verify':  'Run verification (syntax + tests)',
+  } : {
     '/start':  'Begin the upgrade execution',
     '/pause':  'Pause execution after current task finishes',
     '/resume': 'Resume a paused execution',
@@ -458,55 +520,410 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     if (startedRef.current) return;
     startedRef.current = true;
 
-    const prepare = async () => {
-      // 1. Fetch upgrade preview (task list, repo info)
-      try {
-        const previewRes = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-preview`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (previewRes.ok) {
-          const preview = await previewRes.json();
-          setTotalTasks(preview.total_tasks || 0);
-          if (Array.isArray(preview.tasks)) {
-            setTasks(preview.tasks.map((t: any) => ({ ...t, status: 'pending' })));
+    if (isBuild) {
+      /* ── Build mode init ── */
+      const prepareBuild = async () => {
+        const hdr = { Authorization: `Bearer ${token}` };
+        // 1. Fetch phases → map to tasks
+        try {
+          const phasesRes = await fetch(`${API_BASE}/projects/${projectId}/build/phases`, { headers: hdr });
+          if (phasesRes.ok) {
+            const phasesData: BuildPhase[] = await phasesRes.json();
+            setPhases(phasesData);
+            setTotalTasks(phasesData.length);
+            setTasks(phasesData.map((ph) => ({
+              id: `phase_${ph.number}`,
+              name: `Phase ${ph.number}: ${ph.name}`,
+              priority: 'high',
+              effort: 'large',
+              forge_automatable: true,
+              category: ph.objective?.substring(0, 50) || 'Build phase',
+              status: 'pending' as const,
+            })));
           }
-        }
-      } catch { /* silent */ }
+        } catch { /* silent */ }
 
-      // 2. Clone repository in background (WS events show progress)
-      try {
-        const prepRes = await fetch(`${API_BASE}/scout/runs/${runId}/prepare-upgrade`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (prepRes.ok) {
-          const prepData = await prepRes.json();
-          setStatus('ready');
-          // If backend recovered a stash from a previous failed push,
-          // pre-fill /push instead of /start so the user can retry.
-          if (prepData.stash_recovered) {
-            setCmdInput('/push');
-            return;
+        // 2. Fetch current build status (may resume existing build)
+        try {
+          const statusRes = await fetch(`${API_BASE}/projects/${projectId}/build/status`, { headers: hdr });
+          if (statusRes.ok) {
+            const sd = await statusRes.json();
+            setBuildId(sd.id || '');
+            const currentPhaseNum = (() => { const m = (sd.phase || '').match(/\d+/); return m ? parseInt(m[0], 10) : 0; })();
+            // Map build status to IDE status
+            if (sd.status === 'running') {
+              setStatus('running');
+              // Mark phases that are already done
+              setTasks((prev) => prev.map((t) => {
+                const phNum = parseInt(t.id.replace('phase_', ''), 10);
+                if (phNum < currentPhaseNum) return { ...t, status: 'proposed' as const };
+                if (phNum === currentPhaseNum) return { ...t, status: 'running' as const };
+                return t;
+              }));
+              setCompletedTasks(currentPhaseNum);
+            } else if (sd.status === 'paused') setStatus('paused');
+            else if (sd.status === 'completed') { setStatus('completed'); setCompletedTasks(phases.length); }
+            else if (sd.status === 'failed') setStatus('error');
+            else setStatus('ready');
+          } else {
+            setStatus('ready');
           }
-        } else {
-          // Clone failed but still allow IDE usage (analysis works)
+        } catch {
           setStatus('ready');
         }
-      } catch {
-        setStatus('ready');
-      }
-      setCmdInput('/start');
-    };
-    prepare();
+
+        // 3. Fetch live cost
+        try {
+          const costRes = await fetch(`${API_BASE}/projects/${projectId}/build/live-cost`, { headers: hdr });
+          if (costRes.ok) {
+            const cd = await costRes.json();
+            setCostData(cd);
+            // Map cost tokens to tokenUsage (all as Opus since build uses Opus primarily)
+            if (cd.tokens_in || cd.tokens_out) {
+              setTokenUsage((prev) => ({
+                ...prev,
+                opus: { input: cd.tokens_in || 0, output: cd.tokens_out || 0, total: (cd.tokens_in || 0) + (cd.tokens_out || 0) },
+                total: (cd.tokens_in || 0) + (cd.tokens_out || 0),
+              }));
+            }
+          }
+        } catch { /* silent */ }
+
+        // 4. Seed logs from history
+        try {
+          const logsRes = await fetch(`${API_BASE}/projects/${projectId}/build/logs?limit=200`, { headers: hdr });
+          if (logsRes.ok) {
+            const logData = await logsRes.json();
+            const items = (logData.items ?? []) as { timestamp: string; message: string; level: string; source?: string }[];
+            setLogs(items.map((l) => ({
+              timestamp: l.timestamp,
+              source: l.source || 'system',
+              level: l.level || 'info',
+              message: l.message,
+              worker: classifyWorker(l.message || ''),
+            })));
+          }
+        } catch { /* silent */ }
+
+        setCmdInput('/start');
+      };
+      prepareBuild();
+    } else {
+      /* ── Upgrade mode init (existing) ── */
+      const prepare = async () => {
+        // 1. Fetch upgrade preview (task list, repo info)
+        try {
+          const previewRes = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-preview`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (previewRes.ok) {
+            const preview = await previewRes.json();
+            setTotalTasks(preview.total_tasks || 0);
+            if (Array.isArray(preview.tasks)) {
+              setTasks(preview.tasks.map((t: any) => ({ ...t, status: 'pending' })));
+            }
+          }
+        } catch { /* silent */ }
+
+        // 2. Clone repository in background (WS events show progress)
+        try {
+          const prepRes = await fetch(`${API_BASE}/scout/runs/${runId}/prepare-upgrade`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (prepRes.ok) {
+            const prepData = await prepRes.json();
+            setStatus('ready');
+            // If backend recovered a stash from a previous failed push,
+            // pre-fill /push instead of /start so the user can retry.
+            if (prepData.stash_recovered) {
+              setCmdInput('/push');
+              return;
+            }
+          } else {
+            // Clone failed but still allow IDE usage (analysis works)
+            setStatus('ready');
+          }
+        } catch {
+          setStatus('ready');
+        }
+        setCmdInput('/start');
+      };
+      prepare();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, token]);
+  }, [entityId, token]);
 
   /* WS event handler */
   useWebSocket(
     useCallback(
       (data: { type: string; payload: any }) => {
         const p = data.payload;
-        if (!p || p.run_id !== runId) return;
+        if (!p) return;
+
+        /* ────── Build mode WS events ────── */
+        if (isBuild) {
+          switch (data.type) {
+            case 'build_started':
+              setBuildId(p.id || '');
+              setStatus('running');
+              break;
+
+            case 'build_overview': {
+              const phList: BuildPhase[] = (p.phases || []).map((ph: any) => ({
+                number: ph.number, name: ph.name, objective: ph.objective || '',
+                deliverables: ph.deliverables || [],
+              }));
+              setPhases(phList);
+              setTotalTasks(phList.length);
+              setTasks(phList.map((ph) => ({
+                id: `phase_${ph.number}`,
+                name: `Phase ${ph.number}: ${ph.name}`,
+                priority: 'high', effort: 'large', forge_automatable: true,
+                category: ph.objective?.substring(0, 50) || '',
+                status: 'pending' as const,
+              })));
+              break;
+            }
+
+            case 'build_log': {
+              const msg = (p.message ?? p.msg ?? '') as string;
+              if (!msg) break;
+              setLogs((prev) => [...prev, {
+                timestamp: p.timestamp || new Date().toISOString(),
+                source: p.source || 'system',
+                level: p.level || 'info',
+                message: msg,
+                worker: classifyWorker(msg),
+              }]);
+              break;
+            }
+
+            case 'build_turn':
+              // Informational — token/context metric
+              break;
+
+            case 'token_update':
+              setTokenUsage((prev) => ({
+                ...prev,
+                opus: {
+                  input: p.input_tokens || 0,
+                  output: p.output_tokens || 0,
+                  total: (p.input_tokens || 0) + (p.output_tokens || 0),
+                },
+                total: p.total_tokens || (p.input_tokens || 0) + (p.output_tokens || 0),
+              }));
+              break;
+
+            case 'cost_ticker':
+              setCostData({
+                total_cost_usd: p.total_cost_usd || 0,
+                api_calls: p.api_calls || 0,
+                tokens_in: p.tokens_in || 0,
+                tokens_out: p.tokens_out || 0,
+                spend_cap: p.spend_cap ?? null,
+                pct_used: p.pct_used || 0,
+              });
+              break;
+
+            case 'phase_plan':
+              // Could map plan tasks under current phase — for now log it
+              break;
+
+            case 'phase_complete': {
+              const phaseStr = (p.phase || '') as string;
+              const phNum = parseInt(phaseStr.match(/\d+/)?.[0] || '0', 10);
+              setTasks((prev) => prev.map((t) =>
+                t.id === `phase_${phNum}` ? { ...t, status: 'proposed' as const } : t
+              ));
+              setCompletedTasks((prev) => Math.max(prev, phNum + 1));
+              if (p.input_tokens && p.output_tokens) {
+                setTokenUsage((prev) => ({
+                  ...prev,
+                  opus: {
+                    input: (prev.opus.input || 0) + (p.input_tokens || 0),
+                    output: (prev.opus.output || 0) + (p.output_tokens || 0),
+                    total: (prev.opus.total || 0) + (p.input_tokens || 0) + (p.output_tokens || 0),
+                  },
+                  total: (prev.total || 0) + (p.input_tokens || 0) + (p.output_tokens || 0),
+                }));
+              }
+              break;
+            }
+
+            case 'phase_transition': {
+              const msg = (p.message ?? '') as string;
+              if (msg) {
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system', level: 'system', message: msg, worker: 'system',
+                }]);
+              }
+              // Mark next phase as running
+              const nextPhStr = msg.match(/Phase\s+(\d+)/g);
+              if (nextPhStr && nextPhStr.length >= 2) {
+                const nextNum = parseInt(nextPhStr[1].match(/\d+/)?.[0] || '0', 10);
+                setTasks((prev) => prev.map((t) =>
+                  t.id === `phase_${nextNum}` ? { ...t, status: 'running' as const } : t
+                ));
+              }
+              break;
+            }
+
+            case 'file_manifest':
+              setFileChecklist(
+                (p.files || []).map((f: any) => ({
+                  file: f.path || f.file,
+                  action: 'modify',
+                  description: f.purpose || '',
+                  status: f.status === 'done' ? 'passed' as const : 'pending' as const,
+                })),
+              );
+              break;
+
+            case 'file_generating':
+              setFileChecklist((prev) => prev.map((c) =>
+                c.file === p.path ? { ...c, status: 'written' as const } : c
+              ));
+              break;
+
+            case 'file_generated':
+              setFileChecklist((prev) => prev.map((c) =>
+                c.file === p.path ? { ...c, status: p.skipped ? 'pending' as const : 'written' as const } : c
+              ));
+              break;
+
+            case 'file_audited':
+              setFileChecklist((prev) => prev.map((c) =>
+                c.file === p.path ? { ...c, status: p.verdict === 'PASS' ? 'passed' as const : 'failed' as const } : c
+              ));
+              break;
+
+            case 'file_created':
+              setFileDiffs((prev) => [...prev, {
+                task_id: 'build',
+                file: p.path,
+                action: 'create',
+                description: `${p.size_bytes || 0} bytes · ${p.language || ''}`,
+              }]);
+              break;
+
+            case 'tool_use':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'tool', level: 'info',
+                message: `🔧 ${p.tool_name}: ${p.result_summary || p.input_summary || ''}`,
+                worker: 'opus',
+              }]);
+              break;
+
+            case 'build_complete':
+              setStatus('completed');
+              if (p.total_input_tokens || p.total_output_tokens) {
+                setTokenUsage((prev) => ({
+                  ...prev,
+                  opus: {
+                    input: p.total_input_tokens || prev.opus.input,
+                    output: p.total_output_tokens || prev.opus.output,
+                    total: (p.total_input_tokens || 0) + (p.total_output_tokens || 0) || prev.opus.total,
+                  },
+                  total: (p.total_input_tokens || 0) + (p.total_output_tokens || 0) || prev.total,
+                }));
+              }
+              if (p.total_cost_usd != null) {
+                setCostData((prev) => ({ ...(prev || { api_calls: 0, tokens_in: 0, tokens_out: 0, spend_cap: null, pct_used: 0 }),
+                  total_cost_usd: p.total_cost_usd }));
+              }
+              break;
+
+            case 'build_error':
+            case 'build_failed':
+              setStatus('error');
+              if (p.error_detail || p.error) {
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system', level: 'error',
+                  message: p.error_detail || p.error || 'Build failed',
+                  worker: 'system',
+                }]);
+              }
+              break;
+
+            case 'build_cancelled':
+              setStatus('stopped');
+              break;
+
+            case 'build_paused':
+              setStatus('paused');
+              setPendingPrompt(true);
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'warn',
+                message: `⏸ Build paused — ${p.audit_findings || 'awaiting user action'}. Options: ${(p.options || []).join(', ')}`,
+                worker: 'system',
+              }]);
+              setTimeout(() => cmdInputRef.current?.focus(), 100);
+              break;
+
+            case 'build_resumed':
+              setStatus('running');
+              setPendingPrompt(false);
+              break;
+
+            case 'audit_pass':
+            case 'audit_fail': {
+              const verdict = data.type === 'audit_pass' ? '✅ PASS' : '❌ FAIL';
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'audit', level: data.type === 'audit_pass' ? 'info' : 'warn',
+                message: `Audit ${verdict} — ${p.phase || ''}`,
+                worker: 'system',
+              }]);
+              break;
+            }
+
+            case 'build_activity_status':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'thinking',
+                message: `${p.status}…`,
+                worker: 'opus',
+              }]);
+              break;
+
+            case 'context_reset':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'system',
+                message: `♻ Context reset for ${p.phase || 'next phase'} (dropped ${p.dropped || 0} messages)`,
+                worker: 'system',
+              }]);
+              break;
+
+            case 'verification_result':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'verify', level: (p.tests_failed || 0) > 0 ? 'warn' : 'info',
+                message: `Verification: ${p.tests_passed || 0} passed, ${p.tests_failed || 0} failed, ${p.syntax_errors || 0} syntax errors`,
+                worker: 'system',
+              }]);
+              break;
+
+            case 'governance_pass':
+            case 'governance_fail':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'governance', level: data.type === 'governance_pass' ? 'info' : 'warn',
+                message: `Governance ${data.type === 'governance_pass' ? '✅ PASS' : '❌ FAIL'}`,
+                worker: 'system',
+              }]);
+              break;
+          }
+          return;
+        }
+
+        /* ────── Upgrade mode WS events (existing) ────── */
+        if (p.run_id !== runId) return;
 
         switch (data.type) {
           case 'upgrade_started':
@@ -687,7 +1104,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             break;
         }
       },
-      [runId],
+      [isBuild, runId, entityId],
     ),
   );
 
@@ -695,14 +1112,16 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   useEffect(() => {
     if (status !== 'running' && status !== 'paused') return;
     let consecutiveFailures = 0;
+    const pollUrl = isBuild
+      ? `${API_BASE}/projects/${projectId}/build/status`
+      : `${API_BASE}/scout/runs/${runId}/upgrade-status`;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-status`, {
+        const res = await fetch(pollUrl, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) {
           consecutiveFailures++;
-          // Session no longer exists — stop polling after a few failures
           if (res.status === 404 && consecutiveFailures >= 3) {
             setStatus((prev) =>
               prev === 'running' || prev === 'paused' ? 'completed' : prev,
@@ -713,24 +1132,44 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         }
         consecutiveFailures = 0;
         const data = await res.json();
-        setCompletedTasks(data.completed_tasks || 0);
-        if (data.tokens) {
-          setTokenUsage({
-            opus: data.tokens.opus || { ...EMPTY_BUCKET },
-            sonnet: data.tokens.sonnet || { ...EMPTY_BUCKET },
-            haiku: data.tokens.haiku || { ...EMPTY_BUCKET },
-            total: data.tokens.total || 0,
-          });
-        }
-        if (data.narrator_enabled != null) setNarratorEnabled(data.narrator_enabled);
-        if (data.status === 'paused') setStatus('paused');
-        else if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
-          setStatus(data.status as any);
-          clearInterval(interval);
-        }
-        // Backfill logs if WS missed them (use ref to avoid stale closure)
-        if (Array.isArray(data.logs) && data.logs.length > logsLenRef.current) {
-          setLogs(data.logs.map((l: any) => ({ ...l, worker: classifyWorker(l.message || '') })));
+
+        if (isBuild) {
+          // Build mode polling
+          if (data.status === 'running') setStatus('running');
+          else if (data.status === 'paused') setStatus('paused');
+          else if (data.status === 'completed') { setStatus('completed'); clearInterval(interval); }
+          else if (data.status === 'failed') { setStatus('error'); clearInterval(interval); }
+          // Also poll live cost
+          try {
+            const costRes = await fetch(`${API_BASE}/projects/${projectId}/build/live-cost`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (costRes.ok) {
+              const cd = await costRes.json();
+              setCostData(cd);
+            }
+          } catch { /* silent */ }
+        } else {
+          // Upgrade mode polling (existing)
+          setCompletedTasks(data.completed_tasks || 0);
+          if (data.tokens) {
+            setTokenUsage({
+              opus: data.tokens.opus || { ...EMPTY_BUCKET },
+              sonnet: data.tokens.sonnet || { ...EMPTY_BUCKET },
+              haiku: data.tokens.haiku || { ...EMPTY_BUCKET },
+              total: data.tokens.total || 0,
+            });
+          }
+          if (data.narrator_enabled != null) setNarratorEnabled(data.narrator_enabled);
+          if (data.status === 'paused') setStatus('paused');
+          else if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
+            setStatus(data.status as any);
+            clearInterval(interval);
+          }
+          // Backfill logs if WS missed them (use ref to avoid stale closure)
+          if (Array.isArray(data.logs) && data.logs.length > logsLenRef.current) {
+            setLogs(data.logs.map((l: any) => ({ ...l, worker: classifyWorker(l.message || '') })));
+          }
         }
       } catch { /* silent */ }
     }, 4000);
@@ -753,33 +1192,64 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         level: 'system',
         message: '> /start',
       }]);
-      // Call execute-upgrade
-      try {
-        const res = await fetch(`${API_BASE}/scout/runs/${runId}/execute-upgrade`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setStatus('running');
-          setTotalTasks(data.total_tasks);
-        } else {
-          const err = await res.json().catch(() => ({ detail: 'Failed to start' }));
-          const detail = err.detail || 'Failed to start upgrade';
-          if (typeof detail === 'string' && detail.toLowerCase().includes('already in progress')) {
+
+      if (isBuild) {
+        // Build mode: start build
+        try {
+          const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setBuildId(data.id || '');
             setStatus('running');
-            return;
+          } else {
+            const err = await res.json().catch(() => ({ detail: 'Failed to start build' }));
+            const detail = err.detail || 'Failed to start build';
+            if (typeof detail === 'string' && (detail.toLowerCase().includes('already') || detail.toLowerCase().includes('running'))) {
+              setStatus('running');
+              return;
+            }
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(), source: 'system', level: 'error', message: typeof detail === 'string' ? detail : JSON.stringify(detail),
+            }]);
           }
+        } catch {
           setLogs((prev) => [...prev, {
-            timestamp: new Date().toISOString(), source: 'system', level: 'error', message: detail,
+            timestamp: new Date().toISOString(), source: 'system', level: 'error', message: 'Network error starting build',
           }]);
           setStatus('error');
         }
-      } catch {
-        setLogs((prev) => [...prev, {
-          timestamp: new Date().toISOString(), source: 'system', level: 'error', message: 'Network error starting upgrade',
-        }]);
-        setStatus('error');
+      } else {
+        // Upgrade mode: start upgrade
+        try {
+          const res = await fetch(`${API_BASE}/scout/runs/${runId}/execute-upgrade`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setStatus('running');
+            setTotalTasks(data.total_tasks);
+          } else {
+            const err = await res.json().catch(() => ({ detail: 'Failed to start' }));
+            const detail = err.detail || 'Failed to start upgrade';
+            if (typeof detail === 'string' && detail.toLowerCase().includes('already in progress')) {
+              setStatus('running');
+              return;
+            }
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(), source: 'system', level: 'error', message: detail,
+            }]);
+            setStatus('error');
+          }
+        } catch {
+          setLogs((prev) => [...prev, {
+            timestamp: new Date().toISOString(), source: 'system', level: 'error', message: 'Network error starting upgrade',
+          }]);
+          setStatus('error');
+        }
       }
       return;
     }
@@ -798,37 +1268,95 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
       message: `> ${trimmed}`,
     }]);
 
-    try {
-      const res = await fetch(`${API_BASE}/scout/runs/${runId}/command`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ command: trimmed }),
-      });
-      // Surface the backend response as a local log line so the user
-      // always sees feedback even if the WS relay is stale/slow.
+    if (isBuild) {
+      // Build mode: route commands to build endpoints
+      const lower = trimmed.toLowerCase();
       try {
-        const body = await res.json();
-        if (body.message) {
-          setLogs((prev) => [...prev, {
-            timestamp: new Date().toISOString(),
-            source: 'command-ack',
-            level: body.ok === false ? 'error' : 'system',
-            message: body.message,
-          }]);
+        let res: Response;
+        if (lower === '/stop') {
+          res = await fetch(`${API_BASE}/projects/${projectId}/build/cancel`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        } else if (lower === '/resume' || lower.startsWith('/resume ')) {
+          // Extract action from /resume or default to 'retry'
+          const action = trimmed.split(/\s+/)[1] || 'retry';
+          res = await fetch(`${API_BASE}/projects/${projectId}/build/resume`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+          });
+        } else if (lower === '/status') {
+          res = await fetch(`${API_BASE}/projects/${projectId}/build/status`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          try {
+            const body = await res.json();
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(), source: 'command-ack', level: 'system',
+              message: `Status: ${body.status || 'unknown'} · Phase: ${body.phase || '?'} · Loop: ${body.loop_count || 0}`,
+            }]);
+          } catch { /* silent */ }
+          return;
+        } else if (lower === '/clear') {
+          setLogs([]);
+          return;
+        } else {
+          // All other commands → interject
+          res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: trimmed }),
+          });
         }
-      } catch { /* response may not be JSON — ignore */ }
-    } catch {
-      setLogs((prev) => [...prev, {
-        timestamp: new Date().toISOString(),
-        source: 'system',
-        level: 'error',
-        message: 'Failed to send command (network error)',
-      }]);
+        try {
+          const body = await res.json();
+          if (body.message || body.status) {
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(), source: 'command-ack',
+              level: body.ok === false ? 'error' : 'system',
+              message: body.message || `Status: ${body.status}`,
+            }]);
+          }
+        } catch { /* silent */ }
+      } catch {
+        setLogs((prev) => [...prev, {
+          timestamp: new Date().toISOString(), source: 'system', level: 'error',
+          message: 'Failed to send command (network error)',
+        }]);
+      }
+    } else {
+      // Upgrade mode: existing command handling
+      try {
+        const res = await fetch(`${API_BASE}/scout/runs/${runId}/command`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ command: trimmed }),
+        });
+        try {
+          const body = await res.json();
+          if (body.message) {
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(),
+              source: 'command-ack',
+              level: body.ok === false ? 'error' : 'system',
+              message: body.message,
+            }]);
+          }
+        } catch { /* response may not be JSON — ignore */ }
+      } catch {
+        setLogs((prev) => [...prev, {
+          timestamp: new Date().toISOString(),
+          source: 'system',
+          level: 'error',
+          message: 'Failed to send command (network error)',
+        }]);
+      }
     }
-  }, [runId, token]);
+  }, [isBuild, runId, projectId, token]);
 
   /* Command input change — filter suggestions */
   const handleCmdChange = useCallback((val: string) => {
@@ -844,6 +1372,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
 
   /* Signal backend when narrator tab is toggled — deduplicated */
   useEffect(() => {
+    if (isBuild) return; // Narrator not available in build mode
     const watching = leftTab === 'narrator';
     if (lastNarratorWatching.current === watching) return;
     lastNarratorWatching.current = watching;
@@ -854,7 +1383,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
       body: JSON.stringify({ watching }),
     }).catch(() => { /* silent */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leftTab, runId, token]);
+  }, [leftTab, runId, token, isBuild]);
 
   /* Progress percentage */
   const pct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
@@ -877,7 +1406,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           animation: status === 'running' ? 'pulse 1.5s ease-in-out infinite' : status === 'ready' ? 'pulse 2s ease-in-out infinite' : status === 'paused' ? 'pulse 2.5s ease-in-out infinite' : status === 'preparing' ? 'pulse 1s ease-in-out infinite' : 'none',
         }} />
         <span style={{ fontFamily: 'monospace', fontSize: '0.85rem', fontWeight: 600, color: '#F1F5F9' }}>
-          FORGE IDE
+          {isBuild ? 'FORGE BUILD' : 'FORGE IDE'}
         </span>
         <span style={{ color: '#64748B', fontSize: '0.75rem' }}>—</span>
         <span style={{ color: '#94A3B8', fontSize: '0.75rem', fontFamily: 'monospace' }}>
@@ -918,7 +1447,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
               }} />
             </div>
             <div style={{ fontSize: '0.6rem', color: '#64748B', marginTop: '2px', textAlign: 'right' }}>
-              {completedTasks}/{totalTasks} tasks — {pct}%
+              {completedTasks}/{totalTasks} {isBuild ? 'phases' : 'tasks'} — {pct}%
             </div>
           </div>
         )}
@@ -989,6 +1518,23 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                 Σ {fmtTokens(tokenUsage.total)}
               </span>
             </div>
+            {/* Cost estimate */}
+            <div style={{ borderLeft: '1px solid #334155', paddingLeft: '8px' }}>
+              <span style={{
+                fontSize: '0.65rem', fontFamily: 'monospace', color: '#22C55E',
+                fontWeight: 600,
+              }}>
+                {costData ? fmtCost(costData.total_cost_usd) : fmtCost(estimateCost(tokenUsage))}
+              </span>
+              {costData?.spend_cap != null && (
+                <span style={{
+                  fontSize: '0.5rem', color: (costData.pct_used || 0) > 80 ? '#EF4444' : '#64748B',
+                  marginLeft: '4px',
+                }}>
+                  / ${costData.spend_cap.toFixed(0)}
+                </span>
+              )}
+            </div>
           </div>
         )}
 
@@ -1032,7 +1578,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   textTransform: 'uppercase', letterSpacing: '0.5px',
                 }}
               >
-                {tab === 'tasks' ? `Tasks (${tasks.length})` : `🎙️ Narrator${narratorEnabled ? '' : ' ⏻'}`}
+                {tab === 'tasks' ? (isBuild ? `Phases (${tasks.length})` : `Tasks (${tasks.length})`) : `🎙️ Narrator${narratorEnabled ? '' : ' ⏻'}`}
               </button>
             ))}
           </div>
@@ -1401,7 +1947,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                       setCmdSuggestions([]);
                     }
                   }}
-                  placeholder={pendingPrompt ? 'Type Y or N…' : status === 'ready' ? 'Press Enter to start upgrade…' : 'Type / for commands…'}
+                  placeholder={pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : status === 'ready' ? (isBuild ? 'Press Enter to start build…' : 'Press Enter to start upgrade…') : 'Type / for commands…'}
                   style={{
                     flex: 1, background: 'transparent', border: 'none', outline: 'none',
                     color: pendingPrompt ? '#FBBF24'
@@ -1618,11 +2164,14 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0,
         }}>
           <span style={{ fontSize: '0.8rem', color: status === 'stopped' ? '#F97316' : '#22C55E' }}>
-            {status === 'stopped' ? '🛑 Execution stopped by user' : '✅ Upgrade analysis complete'}
+            {status === 'stopped' ? '🛑 Execution stopped by user' : isBuild ? '✅ Build complete' : '✅ Upgrade analysis complete'}
           </span>
           <span style={{ color: '#64748B', fontSize: '0.75rem' }}>
-            {fileDiffs.length} file change(s) proposed across {completedTasks} task(s)
-            {tokenUsage.total > 0 && ` · ${fmtTokens(tokenUsage.total)} tokens used`}
+            {isBuild
+              ? `${completedTasks} phase(s) completed`
+              : `${fileDiffs.length} file change(s) proposed across ${completedTasks} task(s)`}
+            {tokenUsage.total > 0 && ` · ${fmtTokens(tokenUsage.total)} tokens`}
+            {(costData?.total_cost_usd || estimateCost(tokenUsage) > 0) && ` · ${costData ? fmtCost(costData.total_cost_usd) : fmtCost(estimateCost(tokenUsage))}`}
           </span>
           <div style={{ flex: 1 }} />
           {fileDiffs.length > 0 && (
