@@ -2478,7 +2478,7 @@ async def _run_upgrade(
                 if verifications:
                     await _log(user_id, run_id, "✅ [Opus] Verification:", "info")
                     for v in verifications:
-                        await _log(user_id, run_id, f"  → {v}", "info")
+                        await _log(user_id, run_id, f"  → [Opus] {v}", "info")
 
                 n_changes = len(changes)
                 result_entry = {
@@ -3287,7 +3287,7 @@ async def _run_retry(
                 if verifications:
                     await _log(user_id, run_id, "✅ [Opus] Verification:", "info")
                     for v in verifications:
-                        await _log(user_id, run_id, f"  → {v}", "info")
+                        await _log(user_id, run_id, f"  → [Opus] {v}", "info")
 
                 n_changes = len(changes)
                 new_entry = {

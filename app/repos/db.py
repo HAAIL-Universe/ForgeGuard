@@ -104,16 +104,19 @@ async def get_pool() -> _ResilientPool:  # type: ignore[override]
         _pool = None
         _wrapper = None
     if _pool is None:
-        _pool = await asyncpg.create_pool(
-            dsn=settings.DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            command_timeout=60,
-            max_inactive_connection_lifetime=60.0,     # expire idle conns after 1 min
-            server_settings={
-                "statement_timeout": "30000",                    # 30s max query
-                "idle_in_transaction_session_timeout": "60000",  # 60s
-            },
+        _pool = await asyncio.wait_for(
+            asyncpg.create_pool(
+                dsn=settings.DATABASE_URL,
+                min_size=2,
+                max_size=10,
+                command_timeout=60,
+                max_inactive_connection_lifetime=60.0,     # expire idle conns after 1 min
+                server_settings={
+                    "statement_timeout": "30000",                    # 30s max query
+                    "idle_in_transaction_session_timeout": "60000",  # 60s
+                },
+            ),
+            timeout=15,  # fail fast if DB unreachable
         )
         _pool_loop = loop
         _wrapper = _ResilientPool(_pool)
