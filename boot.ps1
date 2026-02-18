@@ -12,11 +12,15 @@
 #   pwsh -File boot.ps1
 #   pwsh -File boot.ps1 -SkipFrontend
 #   pwsh -File boot.ps1 -MigrateOnly
+#   pwsh -File boot.ps1 -TestOnly       # run pytest then exit
+#   pwsh -File boot.ps1 -Check          # ruff + mypy then exit
 
 [CmdletBinding()]
 param(
   [switch]$SkipFrontend,
-  [switch]$MigrateOnly
+  [switch]$MigrateOnly,
+  [switch]$TestOnly,      # Run all tests then exit
+  [switch]$Check           # Lint + type-check then exit
 )
 
 Set-StrictMode -Version Latest
@@ -147,6 +151,38 @@ if (Test-Path $migrationFile) {
 
 if ($MigrateOnly) {
   Ok "Migration complete. Exiting."
+  exit 0
+}
+
+# ── 5b. -TestOnly: run pytest then exit ──────────────────────────────────
+
+if ($TestOnly) {
+  Info "Running test suite..."
+  & $activePython -m pytest tests/ -q
+  $code = $LASTEXITCODE
+  if ($code -eq 0) { Ok "All tests passed." }
+  else { Err "Tests failed (exit code $code)." }
+  exit $code
+}
+
+# ── 5c. -Check: lint + type-check then exit ──────────────────────────────
+
+if ($Check) {
+  $fail = $false
+  Info "Running ruff check..."
+  & $activePython -m ruff check .
+  if ($LASTEXITCODE -ne 0) { $fail = $true }
+
+  Info "Running ruff format --check..."
+  & $activePython -m ruff format --check .
+  if ($LASTEXITCODE -ne 0) { $fail = $true }
+
+  Info "Running mypy..."
+  & $activePython -m mypy app/ --ignore-missing-imports
+  if ($LASTEXITCODE -ne 0) { $fail = $true }
+
+  if ($fail) { Err "Quality checks failed."; exit 1 }
+  Ok "All quality checks passed."
   exit 0
 }
 
