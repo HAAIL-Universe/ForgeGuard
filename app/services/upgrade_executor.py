@@ -1349,7 +1349,13 @@ def _detect_test_command(working_dir: str) -> tuple[str, list[str]]:
             pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
             test_script = pkg.get("scripts", {}).get("test", "")
             if test_script and "no test" not in test_script.lower():
-                return f"npm test ({test_script})", ["npm", "test"]
+                # Only select npm if it's actually installed
+                if shutil.which("npm"):
+                    return f"npm test ({test_script})", ["npm", "test"]
+                else:
+                    logger.warning(
+                        "package.json has test script but npm is "
+                        "not on PATH — skipping npm test runner")
         except Exception:
             pass
 
@@ -2632,10 +2638,13 @@ current_state, target_state, rationale, and key_considerations.
   – "implementation_notes" — sequencing and cross-file dependencies.
 • "workspace_files" — actual file contents keyed by relative path. \
 These are the REAL files from the cloned repository. Use them verbatim.
-• "prior_changes" (optional) — summaries of file changes already \
-completed for earlier files in the same task. Reference these when \
-the current file depends on imports, classes, or functions that were \
-added or modified in a prior change.
+• "prior_changes" (optional) — changes already completed for \
+earlier files in the same task. Each entry contains "file", \
+"action", "description", and (when available) "after_snippet" — \
+the actual code that was written. Use after_snippet to replicate \
+patterns, import from newly-created modules, or ensure consistency \
+with earlier changes. Do NOT guess at what prior files contain — \
+reference the after_snippet directly.
 
 If the planner flagged risks, address every one — either directly in \
 your code or by explaining in "warnings" why a risk is inapplicable.
@@ -4005,19 +4014,33 @@ async def _run_upgrade(
                             **(current_plan or {}),
                             "plan": [_file_entry],
                         }
-                        # Inject summaries of already-built files
-                        # so Opus knows what it wrote previously.
+                        # Inject already-built files WITH code so
+                        # Opus can reference imports / classes /
+                        # functions it wrote for earlier files.
                         if _prior_changes:
-                            _sf_plan["prior_changes"] = [
-                                {
+                            _pc_budget = 60_000  # ~60 KB cap
+                            _pc_list: list[dict] = []
+                            for pc in _prior_changes:
+                                _pc_entry: dict = {
                                     "file": pc.get("file", ""),
                                     "action": pc.get(
                                         "action", "modify"),
                                     "description": pc.get(
                                         "description", ""),
                                 }
-                                for pc in _prior_changes
-                            ]
+                                _snip = pc.get(
+                                    "after_snippet", "")
+                                if _snip and _pc_budget > 0:
+                                    _snip = _snip[
+                                        :_pc_budget]
+                                    _pc_entry[
+                                        "after_snippet"
+                                    ] = _snip
+                                    _pc_budget -= len(
+                                        _snip)
+                                _pc_list.append(_pc_entry)
+                            _sf_plan[
+                                "prior_changes"] = _pc_list
                         _sf_res, _sf_usg = (
                             await _build_task_with_llm(
                                 user_id, run_id,
