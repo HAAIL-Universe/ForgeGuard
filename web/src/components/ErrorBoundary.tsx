@@ -28,6 +28,25 @@ export default class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: ErrorInfo) {
     // eslint-disable-next-line no-console
     console.error('[ErrorBoundary]', error, info.componentStack);
+
+    // Auto-reload once on chunk / dynamic-import failures so the user
+    // doesn't have to manually click "Try Again" after a deploy or
+    // Vite HMR cache invalidation.
+    const msg = error.message ?? '';
+    if (
+      msg.includes('Failed to fetch dynamically imported module') ||
+      msg.includes('Loading chunk') ||
+      msg.includes('Loading CSS chunk')
+    ) {
+      const key = 'chunk_error_reload';
+      if (!sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, '1');
+        window.location.reload();
+        return;
+      }
+      // Already tried once — fall through to error UI
+      sessionStorage.removeItem(key);
+    }
   }
 
   handleRetry = () => {

@@ -4,17 +4,49 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import ErrorBoundary from './components/ErrorBoundary';
 
-// Lazy-loaded pages — each chunk loaded on demand
-const Login = React.lazy(() => import('./pages/Login'));
-const AuthCallback = React.lazy(() => import('./pages/AuthCallback'));
-const Dashboard = React.lazy(() => import('./pages/Dashboard'));
-const CommitTimeline = React.lazy(() => import('./pages/CommitTimeline'));
-const AuditDetailPage = React.lazy(() => import('./pages/AuditDetail'));
-const ProjectDetail = React.lazy(() => import('./pages/ProjectDetail'));
-const BuildProgress = React.lazy(() => import('./pages/BuildProgress'));
-const BuildComplete = React.lazy(() => import('./pages/BuildComplete'));
-const Settings = React.lazy(() => import('./pages/Settings'));
-const Scout = React.lazy(() => import('./pages/Scout'));
+/**
+ * Retry a dynamic import up to `retries` times, then force-reload the page.
+ * Handles stale module URLs after Vite HMR rebuilds or cache clears.
+ */
+function lazyWithRetry(
+  factory: () => Promise<{ default: React.ComponentType<unknown> }>,
+  retries = 2,
+): React.LazyExoticComponent<React.ComponentType<unknown>> {
+  return React.lazy(() => {
+    const attempt = (remaining: number): Promise<{ default: React.ComponentType<unknown> }> =>
+      factory().catch((err: unknown) => {
+        if (remaining <= 0) {
+          // Last resort: full page reload once (sessionStorage guard prevents loop)
+          const reloadKey = 'chunk_reload';
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            window.location.reload();
+          }
+          throw err;
+        }
+        return new Promise<{ default: React.ComponentType<unknown> }>((resolve) =>
+          setTimeout(() => resolve(attempt(remaining - 1)), 500),
+        );
+      });
+    // Clear the reload guard on successful load
+    return attempt(retries).then((mod) => {
+      sessionStorage.removeItem('chunk_reload');
+      return mod;
+    });
+  });
+}
+
+// Lazy-loaded pages — each chunk loaded on demand (with retry)
+const Login = lazyWithRetry(() => import('./pages/Login'));
+const AuthCallback = lazyWithRetry(() => import('./pages/AuthCallback'));
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
+const CommitTimeline = lazyWithRetry(() => import('./pages/CommitTimeline'));
+const AuditDetailPage = lazyWithRetry(() => import('./pages/AuditDetail'));
+const ProjectDetail = lazyWithRetry(() => import('./pages/ProjectDetail'));
+const BuildProgress = lazyWithRetry(() => import('./pages/BuildProgress'));
+const BuildComplete = lazyWithRetry(() => import('./pages/BuildComplete'));
+const Settings = lazyWithRetry(() => import('./pages/Settings'));
+const Scout = lazyWithRetry(() => import('./pages/Scout'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token, loading } = useAuth();
