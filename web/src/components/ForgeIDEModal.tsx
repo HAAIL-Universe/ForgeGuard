@@ -294,7 +294,7 @@ const LogPane = memo(function LogPane({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minHeight: 0 }}>
       {/* Panel header */}
       <div style={{
         padding: '4px 12px', borderBottom: '1px solid #1E293B',
