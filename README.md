@@ -1,8 +1,8 @@
 # ForgeGuard
 
-**Automated repository audit monitoring dashboard.**
+**AI-powered repository governance platform.**
 
-ForgeGuard connects to your GitHub repositories, listens for push events via webhooks, and runs automated audit checks on every commit — surfacing violations before they ship.
+ForgeGuard connects to your GitHub repositories, runs automated audit checks on every commit, generates project contracts via AI-guided questionnaires, orchestrates LLM-driven code builds, and provides deep-scan repository analysis — all from a single real-time dashboard.
 
 > **Status:** Private beta · Not open source · All rights reserved
 
@@ -13,42 +13,91 @@ ForgeGuard connects to your GitHub repositories, listens for push events via web
 ```
 ┌─────────────┐      ┌──────────────┐      ┌────────────┐
 │  React SPA  │◄────►│  FastAPI     │◄────►│ PostgreSQL │
-│  (Vite)     │  WS  │  Backend     │      │  (Neon)    │
-│  :5173      │      │  :8000       │      │            │
+│  (Vite)     │  WS  │  Backend     │      │            │
+│  :5174      │      │  :8000       │      │            │
 └─────────────┘      └──────┬───────┘      └────────────┘
                             │
-                    ┌───────▼───────┐
-                    │  GitHub API   │
-                    │  + Webhooks   │
-                    └───────────────┘
+               ┌────────────┼────────────┐
+               ▼            ▼            ▼
+        ┌───────────┐ ┌──────────┐ ┌──────────┐
+        │ GitHub    │ │ Anthropic│ │ OpenAI   │
+        │ API +     │ │ Claude   │ │ GPT-4o   │
+        │ Webhooks  │ │          │ │          │
+        └───────────┘ └──────────┘ └──────────┘
 ```
 
 | Layer | Tech | Purpose |
 |-------|------|---------|
-| Frontend | React 19, TypeScript, Vite 6, React Router 7 | Single-page dashboard |
-| Backend | Python 3.12+, FastAPI 0.115, Uvicorn | REST API + WebSocket server |
-| Database | PostgreSQL 15+ (via asyncpg) | Users, repos, audit runs, checks |
+| Frontend | React 19, TypeScript, Vite 6, React Router 7 | Single-page dashboard with lazy-loaded pages |
+| Backend | Python 3.12+, FastAPI 0.115, Uvicorn | REST API (~60 endpoints) + WebSocket server |
+| Database | PostgreSQL 15+ (via asyncpg, 11 tables) | Users, repos, projects, builds, audits, scouts |
 | Auth | GitHub OAuth2 + JWT (HS256, 24h expiry) | Stateless session tokens |
-| Webhooks | GitHub push events, HMAC-SHA256 verification | Real-time commit ingestion |
-| Audit | Pluggable check engine (A1–A9 checks) | Automated code review |
+| LLM | Anthropic Claude / OpenAI GPT-4o (BYOK) | Contract generation, build orchestration, repo analysis |
+| Webhooks | GitHub push events, HMAC-SHA256 | Real-time commit ingestion |
+| Migrations | Alembic (async mode with asyncpg) | Versioned schema management with rollback |
+| Config | pydantic-settings (BaseSettings + .env) | Type-safe, validated configuration |
 
 ---
 
 ## Features
 
+### Core
+
 - **GitHub OAuth login** — one-click sign in, no passwords
-- **Repo connection** — browse and connect any repo you have access to
+- **Repo connection** — browse, create, and connect any repo you have access to
 - **Webhook auto-registration** — ForgeGuard sets up the GitHub webhook for you
 - **Push event processing** — every commit triggers an audit run
-- **9-check audit engine** — scope compliance, boundary checks, diff analysis, dependency gates
+
+### Audit Engine
+
+- **9-check audit engine** (A1–A9) — scope compliance, boundary checks, diff analysis, dependency gates
 - **Real-time dashboard** — WebSocket-powered live updates as audits complete
 - **Commit timeline** — per-repo history of all audited commits
 - **Audit detail view** — drill into individual check results (pass/fail/warn)
 - **Health badges** — green/yellow/red/pending status per repo
-- **Rate limiting** — sliding-window protection on webhook endpoint (30 req/60s per IP)
-- **Input validation** — Pydantic field constraints on all API inputs
-- **Error containment** — global exception handler, no stack trace leaks
-- **CORS hardening** — explicit method and header allowlists
+
+### Project Intake & Contracts
+
+- **AI-guided questionnaire** — multi-turn LLM chat builds project specification
+- **Contract generation** — AI generates scope, architecture, and dependency contracts
+- **Contract versioning** — numbered batch snapshots with full history
+- **Contract push** — push approved contracts to the repo as governance files
+
+### Build Orchestration
+
+- **Plan-execute architecture** — LLM plans phases, then executes sequentially
+- **Live build logs** — streaming WebSocket output as code is generated
+- **Phase progress** — granular tracking of build phases with completion counts
+- **Pause / resume / interject** — human-in-the-loop controls during builds
+- **Cost tracking** — per-phase token usage and estimated USD cost
+- **Spend caps** — per-user budget limits with configurable warning thresholds
+- **Circuit breaker** — emergency stop with automatic cleanup
+- **BYOK** — bring your own Anthropic/OpenAI API keys (per-user, dual-key pool)
+
+### Scout (Repository Analysis)
+
+- **Quick scan** — lightweight audit of repo structure and health
+- **Deep scan** — comprehensive architecture mapping with LLM-powered analysis
+- **Dossier generation** — AI-generated detailed repository report
+- **Score history** — track repo quality over time with computed scores
+- **Upgrade plans** — AI-recommended improvement roadmaps
+
+### Infrastructure
+
+- **WebSocket reliability** — heartbeat loop (30s), per-user connection limit (3), exponential backoff on client
+- **Request ID tracing** — `X-Request-ID` header injection on every request
+- **Rate limiting** — sliding-window protection on critical endpoints
+- **API pagination** — `limit`/`offset` on all list endpoints
+- **GitHub API caching** — TTLCache (5 min) on read-only GitHub endpoints
+- **Error boundary** — React error boundary with retry UI
+- **Lazy loading** — all 10 pages code-split via `React.lazy()`
+
+### Developer Experience
+
+- **One-command setup** — `boot.ps1` with `-SkipFrontend`, `-MigrateOnly`, `-TestOnly`, `-Check` flags
+- **Docker Compose** — full local stack (Postgres + backend + frontend)
+- **Pre-commit hooks** — ruff lint + format on every commit
+- **929 backend + 66 frontend tests** — full coverage, 0 failures
 
 ---
 
@@ -58,49 +107,65 @@ ForgeGuard connects to your GitHub repositories, listens for push events via web
 |------|---------|----------|
 | Python | 3.12+ | Yes |
 | Node.js | 18+ | Yes (frontend) |
-| PostgreSQL | 15+ | Yes (local or hosted) |
+| PostgreSQL | 15+ | Yes (local, hosted, or via Docker Compose) |
 | Git | 2.x | Yes |
-| ngrok | 3.x | For local webhook testing |
+| Docker | 24+ | Optional (for `docker compose up`) |
+| ngrok | 3.x | Optional (for local webhook testing) |
 
 ---
 
 ## Quick Start
 
+### Option A: boot.ps1 (recommended)
+
 ```powershell
-# One command does everything:
 pwsh -File boot.ps1
 ```
 
 This will:
 1. Verify prerequisites (Python 3.12+, Node 18+, psql)
-2. Create a Python virtual environment
-3. Install backend dependencies
-4. Validate `.env` configuration
-5. Run database migrations
-6. Install frontend dependencies
-7. Start both backend (`:8000`) and frontend (`:5173`) servers
+2. Create a Python virtual environment and install dependencies
+3. Validate `.env` configuration
+4. Run database migrations
+5. Install frontend dependencies
+6. Start both backend (`:8000`) and frontend (`:5174`) servers
 
----
+Other modes:
 
-## Manual Setup
+```powershell
+pwsh -File boot.ps1 -SkipFrontend     # Backend only
+pwsh -File boot.ps1 -MigrateOnly      # Run migrations then exit
+pwsh -File boot.ps1 -TestOnly         # Run pytest then exit
+pwsh -File boot.ps1 -Check            # Run ruff + mypy then exit
+```
 
-### 1. Clone
+### Option B: Docker Compose
+
+```powershell
+docker compose up -d                  # Start Postgres + backend + frontend
+docker compose exec backend alembic upgrade head   # Run migrations
+```
+
+### Option C: Manual Setup
+
+#### 1. Clone
 
 ```powershell
 git clone https://github.com/HAAIL-Universe/ForgeGuard.git
 cd ForgeGuard
 ```
 
-### 2. Backend
+#### 2. Backend
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1          # Windows
 # source .venv/bin/activate         # Linux/macOS
 pip install -r requirements.txt
+pip install -r requirements-dev.txt  # Optional: ruff, mypy, pre-commit
 ```
 
-### 3. Frontend
+#### 3. Frontend
 
 ```powershell
 cd web
@@ -108,7 +173,7 @@ npm install
 cd ..
 ```
 
-### 4. Environment Variables
+#### 4. Environment Variables
 
 Create a `.env` file in the project root:
 
@@ -118,47 +183,65 @@ GITHUB_CLIENT_ID=your_oauth_client_id
 GITHUB_CLIENT_SECRET=your_oauth_client_secret
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
 JWT_SECRET=your_jwt_secret
-FRONTEND_URL=http://localhost:5173
+FRONTEND_URL=http://localhost:5174
 APP_URL=http://localhost:8000
 ```
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `GITHUB_CLIENT_ID` | Yes | From your GitHub OAuth App |
-| `GITHUB_CLIENT_SECRET` | Yes | From your GitHub OAuth App |
-| `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret for webhook HMAC validation |
-| `JWT_SECRET` | Yes | Secret for signing JWT session tokens |
-| `FRONTEND_URL` | No | Defaults to `http://localhost:5173` |
-| `APP_URL` | No | Defaults to `http://localhost:8000` |
+<details>
+<summary>All environment variables</summary>
 
-### 5. GitHub OAuth App
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `GITHUB_CLIENT_ID` | Yes | — | From your GitHub OAuth App |
+| `GITHUB_CLIENT_SECRET` | Yes | — | From your GitHub OAuth App |
+| `GITHUB_WEBHOOK_SECRET` | Yes | — | Shared secret for webhook HMAC validation |
+| `JWT_SECRET` | Yes | — | Secret for signing JWT session tokens |
+| `FRONTEND_URL` | No | `http://localhost:5174` | Frontend origin for CORS |
+| `APP_URL` | No | `http://localhost:8000` | Backend public URL |
+| `DEBUG` | No | `true` | Enable debug mode |
+| `LOG_LEVEL` | No | `INFO` | Python logging level |
+| `ANTHROPIC_API_KEY` | No | — | Server-level Anthropic API key |
+| `OPENAI_API_KEY` | No | — | Server-level OpenAI API key |
+| `LLM_PROVIDER` | No | auto | `anthropic`, `openai`, or auto-detect |
+| `LLM_BUILDER_MODEL` | No | `claude-opus-4-6` | Model for build orchestration |
+| `LLM_PLANNER_MODEL` | No | `claude-sonnet-4-5` | Model for build planning |
+| `LLM_QUESTIONNAIRE_MODEL` | No | `claude-sonnet-4-5` | Model for questionnaire |
+| `BUILD_MODE` | No | `plan_execute` | `plan_execute` or `conversation` |
+| `BUILD_MAX_COST_USD` | No | `50.00` | Server-level build cost cap |
+| `BUILD_COST_WARN_PCT` | No | `80` | Cost warning threshold (%) |
+| `PAUSE_THRESHOLD` | No | `3` | Auto-pause after N consecutive errors |
+
+</details>
+
+#### 5. GitHub OAuth App
 
 1. Go to **GitHub → Settings → Developer Settings → OAuth Apps → New OAuth App**
-2. Set **Homepage URL** to `http://localhost:5173`
-3. Set **Callback URL** to `http://localhost:5173/auth/callback`
+2. Set **Homepage URL** to `http://localhost:5174`
+3. Set **Callback URL** to `http://localhost:5174/auth/callback`
 4. Copy Client ID and Client Secret into `.env`
 
-### 6. Database
+#### 6. Database
 
 ```powershell
-# If using a local PostgreSQL:
-createdb forgeguard
-psql postgresql://user:pass@localhost:5432/forgeguard -f db/migrations/001_initial_schema.sql
+# Option A — Alembic (recommended):
+alembic upgrade head
 
-# If using Neon/Supabase, paste the connection string into DATABASE_URL
-# Then run the migration script:
-python _migrate.py
+# Option B — Raw SQL:
+psql $DATABASE_URL -f db/migrations/001_initial_schema.sql
+python _migrate.py   # runs all 19 migration files
+
+# Option C — Docker Compose spins up Postgres for you (see above)
 ```
 
-### 7. Webhook Tunnel (local dev)
+#### 7. Webhook Tunnel (local dev)
 
 ```powershell
 ngrok http 8000
 # Copy the https://xxx.ngrok-free.app URL into APP_URL in .env
 ```
 
-### 8. Run
+#### 8. Run
 
 ```powershell
 # Terminal 1 — Backend
@@ -168,38 +251,140 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 cd web && npm run dev
 ```
 
-Open **http://localhost:5173** and sign in with GitHub.
+Open **http://localhost:5174** and sign in with GitHub.
 
 ---
 
 ## API Endpoints
 
+<details>
+<summary>Full endpoint list (~60 endpoints across 9 routers)</summary>
+
+### Health
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/health` | No | Health check |
-| `GET` | `/auth/github` | No | Start OAuth flow → returns `redirect_url` |
-| `GET` | `/auth/github/callback` | No | Exchange code for JWT token |
+| `GET` | `/health/version` | No | App version |
+
+### Auth
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/auth/github` | No | Start OAuth flow |
+| `GET` | `/auth/github/callback` | No | Exchange code for JWT |
 | `GET` | `/auth/me` | Bearer | Current user profile |
-| `GET` | `/repos` | Bearer | List connected repos (with health status) |
-| `POST` | `/repos/connect` | Bearer | Connect a repo + register webhook |
-| `DELETE` | `/repos/{id}` | Bearer | Disconnect a repo + remove webhook |
-| `GET` | `/repos/{id}/audits` | Bearer | List audit runs for a repo |
+| `PUT` | `/auth/api-key` | Bearer | Set Anthropic API key |
+| `DELETE` | `/auth/api-key` | Bearer | Remove API key |
+| `PUT` | `/auth/api-key-2` | Bearer | Set second API key (pool) |
+| `DELETE` | `/auth/api-key-2` | Bearer | Remove second key |
+| `PUT` | `/auth/audit-toggle` | Bearer | Toggle LLM audit |
+| `PUT` | `/auth/spend-cap` | Bearer | Set per-build spend cap |
+| `DELETE` | `/auth/spend-cap` | Bearer | Remove spend cap |
+
+### Repos
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/repos` | Bearer | List connected repos (paginated) |
+| `GET` | `/repos/available` | Bearer | List available GitHub repos (paginated) |
+| `GET` | `/repos/all` | Bearer | List all repos (paginated) |
+| `POST` | `/repos/create` | Bearer | Create new GitHub repo |
+| `POST` | `/repos/connect` | Bearer | Connect repo + register webhook |
+| `DELETE` | `/repos/{id}/disconnect` | Bearer | Disconnect repo + remove webhook |
+| `POST` | `/repos/{id}/sync` | Bearer | Sync repo metadata |
+| `GET` | `/repos/{id}/audits` | Bearer | List audit runs |
 | `GET` | `/repos/{id}/audits/{audit_id}` | Bearer | Get audit detail with checks |
+
+### Projects
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/projects` | Bearer | Create project |
+| `GET` | `/projects` | Bearer | List projects (paginated) |
+| `GET` | `/projects/{id}` | Bearer | Get project detail |
+| `DELETE` | `/projects/{id}` | Bearer | Delete project |
+| `POST` | `/projects/{id}/questionnaire` | Bearer | Send questionnaire message |
+| `GET` | `/projects/{id}/questionnaire/state` | Bearer | Get questionnaire state |
+| `DELETE` | `/projects/{id}/questionnaire` | Bearer | Reset questionnaire |
+| `POST` | `/projects/{id}/contracts/generate` | Bearer | Generate contracts via AI |
+| `POST` | `/projects/{id}/contracts/cancel` | Bearer | Cancel generation |
+| `GET` | `/projects/{id}/contracts` | Bearer | List contracts |
+| `GET` | `/projects/{id}/contracts/history` | Bearer | Contract version history |
+| `GET` | `/projects/{id}/contracts/history/{batch}` | Bearer | Get specific batch |
+| `POST` | `/projects/{id}/contracts/push` | Bearer | Push contracts to repo |
+| `GET` | `/projects/{id}/contracts/{type}` | Bearer | Get specific contract |
+| `PUT` | `/projects/{id}/contracts/{type}` | Bearer | Update contract |
+| `GET` | `/projects/{id}/certificate` | Bearer | Get project certificate |
+| `GET` | `/projects/{id}/certificate/html` | Bearer | Certificate (HTML) |
+| `GET` | `/projects/{id}/certificate/text` | Bearer | Certificate (text) |
+
+### Builds
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/projects/{id}/build` | Bearer + Rate | Start build |
+| `GET` | `/projects/{id}/builds` | Bearer | List builds |
+| `DELETE` | `/projects/{id}/builds` | Bearer | Delete builds |
+| `POST` | `/projects/{id}/build/cancel` | Bearer | Cancel build |
+| `POST` | `/projects/{id}/build/force-cancel` | Bearer | Force cancel |
+| `POST` | `/projects/{id}/build/resume` | Bearer | Resume paused build |
+| `POST` | `/projects/{id}/build/interject` | Bearer | Send message during build |
+| `GET` | `/projects/{id}/build/files` | Bearer | List generated files |
+| `GET` | `/projects/{id}/build/files/{path}` | Bearer | Get file content |
+| `GET` | `/projects/{id}/build/status` | Bearer | Build status |
+| `GET` | `/projects/{id}/build/logs` | Bearer | Build logs |
+| `GET` | `/projects/{id}/build/phases` | Bearer | Phase progress |
+| `GET` | `/projects/{id}/build/summary` | Bearer | Build summary |
+| `GET` | `/projects/{id}/build/instructions` | Bearer | Build instructions |
+| `POST` | `/projects/{id}/build/circuit-break` | Bearer | Emergency stop |
+| `GET` | `/projects/{id}/build/live-cost` | Bearer | Real-time cost |
+
+### Scout
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/scout/{repo_id}/run` | Bearer | Start quick scan |
+| `POST` | `/scout/{repo_id}/deep-scan` | Bearer | Start deep scan |
+| `GET` | `/scout/history` | Bearer | All scan history |
+| `GET` | `/scout/runs/{run_id}` | Bearer | Scan detail |
+| `GET` | `/scout/runs/{run_id}/dossier` | Bearer | AI-generated dossier |
+| `GET` | `/scout/{repo_id}/history` | Bearer | Per-repo scan history |
+| `GET` | `/scout/{repo_id}/score-history` | Bearer | Score trend data |
+| `POST` | `/scout/runs/{run_id}/upgrade-plan` | Bearer | Generate upgrade plan |
+| `GET` | `/scout/runs/{run_id}/upgrade-plan` | Bearer | Get upgrade plan |
+
+### Other
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
 | `POST` | `/webhooks/github` | HMAC | Receive GitHub push events |
-| `WS` | `/ws?token=JWT` | Query | Real-time audit updates |
+| `WS` | `/ws?token=JWT` | Query | Real-time updates (builds, audits, scouts) |
+| `GET` | `/audit/run` | Bearer | Manual audit trigger |
+
+</details>
 
 ---
 
 ## Database Schema
 
-Four tables managed by raw SQL (no ORM):
+11 tables managed via Alembic (async mode, asyncpg) — no ORM, parameterised SQL only.
 
-- **`users`** — GitHub-authenticated users (id, github_id, login, avatar, access_token)
-- **`repos`** — Connected repositories (github_repo_id, full_name, webhook_id, webhook_active)
-- **`audit_runs`** — One per push event (commit_sha, status, overall_result, timestamps)
-- **`audit_checks`** — Individual check results per audit (check_code, result, detail)
+| Table | Purpose |
+|-------|---------|
+| `users` | GitHub-authenticated users + API keys + spend caps |
+| `repos` | Connected repositories + webhook state |
+| `audit_runs` | One per push event (commit, status, result) |
+| `audit_checks` | Individual check results per audit (A1–A9) |
+| `projects` | Project intake records + questionnaire state |
+| `project_contracts` | Live governance contracts per project |
+| `contract_snapshots` | Contract version history (numbered batches) |
+| `builds` | Build orchestration runs + phase tracking |
+| `build_logs` | Streaming builder output per build |
+| `build_costs` | Token usage and estimated cost per phase |
+| `scout_runs` | Quick/deep scan results + computed scores |
 
-Migration: [`db/migrations/001_initial_schema.sql`](db/migrations/001_initial_schema.sql)
+Migrations: `db/migrations/` (19 raw SQL files) + `db/alembic/` (versioned with rollback).
 
 ---
 
@@ -207,49 +392,74 @@ Migration: [`db/migrations/001_initial_schema.sql`](db/migrations/001_initial_sc
 
 ```
 ForgeGuard/
-├── app/                        # Python backend
-│   ├── main.py                 # FastAPI app factory + lifespan
-│   ├── config.py               # Env var validation + settings
-│   ├── auth.py                 # JWT creation + verification
-│   ├── webhooks.py             # HMAC-SHA256 signature validation
-│   ├── ws_manager.py           # WebSocket connection manager
+├── app/                          # Python backend
+│   ├── main.py                   # FastAPI app + lifespan (heartbeat, pool)
+│   ├── config.py                 # pydantic BaseSettings (env + .env)
+│   ├── auth.py                   # JWT creation + verification
+│   ├── webhooks.py               # HMAC-SHA256 signature validation
+│   ├── ws_manager.py             # WebSocket manager (heartbeat, connection limits)
+│   ├── middleware/                # RequestIDMiddleware (X-Request-ID)
 │   ├── api/
-│   │   ├── deps.py             # Auth dependency injection
-│   │   ├── rate_limit.py       # Sliding-window rate limiter
-│   │   └── routers/            # Route handlers
-│   │       ├── auth.py         # OAuth + JWT endpoints
-│   │       ├── health.py       # Health check
-│   │       ├── repos.py        # Repo CRUD + validation
-│   │       ├── webhooks.py     # GitHub webhook receiver
-│   │       └── ws.py           # WebSocket endpoint
+│   │   ├── deps.py               # Auth dependency (HTTPBearer)
+│   │   ├── rate_limit.py         # Sliding-window rate limiter
+│   │   └── routers/              # 9 route modules (~60 endpoints)
 │   ├── audit/
-│   │   └── engine.py           # Audit check engine (A1–A9)
+│   │   ├── engine.py             # Pluggable audit check engine (A1–A9)
+│   │   └── runner.py             # Background audit runner
 │   ├── clients/
-│   │   └── github_client.py    # GitHub API wrapper
+│   │   ├── github_client.py      # GitHub API (cached, connection-pooled)
+│   │   ├── llm_client.py         # Anthropic + OpenAI wrapper
+│   │   ├── git_client.py         # Git CLI operations
+│   │   └── agent_client.py       # Agent orchestration client
 │   ├── repos/
-│   │   ├── db.py               # asyncpg connection pool
-│   │   ├── user_repo.py        # User queries
-│   │   ├── repo_repo.py        # Repo queries + health
-│   │   └── audit_repo.py       # Audit run/check queries
+│   │   ├── db.py                 # asyncpg connection pool
+│   │   ├── user_repo.py          # User queries
+│   │   ├── repo_repo.py          # Repo queries + health badges
+│   │   ├── audit_repo.py         # Audit run/check queries
+│   │   ├── project_repo.py       # Project + contract queries
+│   │   ├── build_repo.py         # Build + log + cost queries
+│   │   └── scout_repo.py         # Scout run queries
 │   └── services/
-│       ├── auth_service.py     # OAuth token exchange
-│       ├── repo_service.py     # Repo connect/disconnect + health
-│       └── audit_service.py    # Push event processing + WS broadcast
-├── web/                        # React frontend
-│   ├── src/
-│   │   ├── App.tsx             # Router + protected routes
-│   │   ├── main.tsx            # Entry point
-│   │   ├── context/            # Auth + Toast providers
-│   │   ├── hooks/              # useWebSocket
-│   │   ├── pages/              # Dashboard, Timeline, AuditDetail, Login
-│   │   └── components/         # AppShell, RepoCard, Skeleton, etc.
-│   ├── vite.config.ts          # Dev server + API proxy
-│   └── package.json
-├── db/migrations/              # SQL migrations
-├── tests/                      # 70 backend tests (pytest)
-├── boot.ps1                    # One-click setup + run
-├── requirements.txt            # Python dependencies
-└── .env                        # Environment config (not committed)
+│       ├── auth_service.py       # OAuth token exchange
+│       ├── repo_service.py       # Repo connect/disconnect + health
+│       ├── audit_service.py      # Push event processing + WS broadcast
+│       ├── build/                # Build orchestration (decomposed)
+│       │   ├── _state.py         # Shared state + in-memory tracking
+│       │   ├── context.py        # Build context builder
+│       │   ├── cost.py           # Cost tracking + spend caps
+│       │   ├── planner.py        # LLM phase planner
+│       │   └── verification.py   # Build output verification
+│       ├── project/              # Project management (decomposed)
+│       │   ├── questionnaire.py  # Multi-turn LLM questionnaire
+│       │   └── contract_generator.py  # AI contract generation
+│       ├── scout/                # Repository analysis (decomposed)
+│       │   ├── quick_scan.py     # Lightweight audit scan
+│       │   ├── deep_scan.py      # LLM-powered architecture analysis
+│       │   ├── dossier_builder.py # AI-generated repo report
+│       │   └── _utils.py         # Shared helpers
+│       └── tool_executor.py      # Build tool execution engine
+├── web/                          # React frontend
+│   └── src/
+│       ├── App.tsx               # Router + lazy loading + ErrorBoundary
+│       ├── pages/                # 10 pages (lazy-loaded)
+│       ├── components/           # 22 reusable components
+│       ├── context/              # Auth + Toast providers
+│       └── hooks/                # useWebSocket (exponential backoff)
+├── db/
+│   ├── migrations/               # 19 raw SQL migration files
+│   └── alembic/                  # Alembic config + versioned migrations
+├── tests/                        # 44 test files (929 backend tests)
+├── Forge/                        # Governance contracts + evidence
+├── forge_ide/                    # ForgeIDE integration layer
+├── boot.ps1                      # One-click setup (4 modes)
+├── docker-compose.yml            # Postgres + backend + frontend
+├── Dockerfile                    # Backend container image
+├── pyproject.toml                # ruff + mypy + pytest config
+├── .pre-commit-config.yaml       # ruff lint + format hooks
+├── requirements.txt              # Runtime dependencies
+├── requirements-dev.txt          # Dev dependencies (ruff, mypy, pre-commit)
+├── alembic.ini                   # Alembic configuration
+└── .env                          # Environment config (not committed)
 ```
 
 ---
@@ -257,41 +467,55 @@ ForgeGuard/
 ## Testing
 
 ```powershell
-# Backend (70 tests)
-python -m pytest tests/ -v
+# Full backend suite (929 tests)
+python -m pytest tests/ -q
 
-# Frontend (15 tests)
+# Frontend tests (66 tests)
 cd web && npx vitest run
 
-# Static analysis
-python -m compileall app/ tests/ -q
-```
+# Quick mode via boot.ps1
+pwsh -File boot.ps1 -TestOnly
 
-All 85 tests pass on every commit — enforced by the Forge governance framework.
+# Lint + type check
+pwsh -File boot.ps1 -Check
+# …or manually:
+ruff check .
+ruff format --check .
+mypy app/ --ignore-missing-imports
+```
 
 ---
 
 ## Security
 
-- **No secrets in code** — all credentials via environment variables
+- **No secrets in code** — all credentials via pydantic-settings + `.env`
 - **JWT tokens** — HS256-signed, 24-hour expiry
 - **Webhook HMAC** — SHA-256 signature verification on every payload
-- **Rate limiting** — 30 requests per 60 seconds per IP on webhook endpoint
+- **Rate limiting** — sliding-window protection on critical endpoints
 - **Input validation** — Pydantic Field constraints (regex, min/max, ge)
-- **Error containment** — global exception handler strips stack traces
+- **Error containment** — global exception handler strips stack traces, domain exceptions
 - **CORS** — explicit origin, method, and header allowlists
+- **WebSocket auth** — JWT validation on connection, message size limits
+- **Request tracing** — X-Request-ID on every request/response
 - **No ORM** — parameterised SQL queries only (no injection surface)
 
 ---
 
 ## Deployment
 
-Designed for deployment on **Render** (or any platform supporting Python + Node):
+### Docker Compose (local / staging)
 
-1. Set all environment variables in your hosting provider
+```powershell
+docker compose up -d
+docker compose exec backend alembic upgrade head
+```
+
+### Manual (Render / Fly.io / any platform)
+
+1. Set all required environment variables in your hosting provider
 2. Set `APP_URL` to your public domain
-3. Update your GitHub OAuth App callback URL to match
-4. Run the database migration against your production PostgreSQL
+3. Update your GitHub OAuth App callback URL
+4. Run migrations: `alembic upgrade head`
 5. Deploy backend: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 6. Deploy frontend: `cd web && npm run build` → serve `web/dist/`
 
