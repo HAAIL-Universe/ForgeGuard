@@ -47,13 +47,28 @@ class ConnectionManager:
     async def connect(self, user_id: str, websocket) -> None:  # noqa: ANN001
         """Register a WebSocket connection for a user.
 
-        Enforces MAX_CONNECTIONS_PER_USER — oldest connection is evicted
+        Prunes dead connections first, then enforces
+        MAX_CONNECTIONS_PER_USER — oldest connection is evicted
         when the limit is reached.
         """
         async with self._lock:
             if user_id not in self._connections:
                 self._connections[user_id] = []
             conns = self._connections[user_id]
+
+            # Prune stale / already-closed sockets before checking capacity.
+            # This prevents unnecessary evictions when dead sockets linger.
+            alive: list = []
+            for ws in conns:
+                try:
+                    state = getattr(ws, "client_state", None)
+                    # Starlette WebSocket states: CONNECTING=0, CONNECTED=1, DISCONNECTED=2
+                    if state is not None and state.value == 2:
+                        continue  # already closed — drop silently
+                    alive.append(ws)
+                except Exception:
+                    pass  # broken ref — drop it
+            conns[:] = alive
 
             # Evict oldest if at capacity
             while len(conns) >= MAX_CONNECTIONS_PER_USER:

@@ -29,6 +29,8 @@ async def get_pool() -> asyncpg.Pool:
             dsn=settings.DATABASE_URL,
             min_size=2,
             max_size=10,
+            command_timeout=60,                       # asyncpg-level timeout per query
+            max_inactive_connection_lifetime=120.0,    # expire idle conns after 2 min
             server_settings={
                 "statement_timeout": "30000",                    # 30s max query
                 "idle_in_transaction_session_timeout": "60000",  # 60s

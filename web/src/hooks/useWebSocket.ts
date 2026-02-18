@@ -36,8 +36,15 @@ export function useWebSocket(onMessage: MessageHandler) {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (wsRef.current !== ws) return; // stale socket
+
+      // Don't reconnect on intentional server-side closures:
+      //  1008 = evicted (connection limit reached)
+      //  4001 = auth failure (invalid/expired token)
+      const NO_RECONNECT_CODES = [1008, 4001];
+      if (NO_RECONNECT_CODES.includes(event.code)) return;
+
       if (attemptRef.current >= MAX_RETRIES) {
         // Could dispatch a "connection lost" event here
         return;
