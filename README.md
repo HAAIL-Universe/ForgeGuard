@@ -488,6 +488,21 @@ mypy app/ --ignore-missing-imports
 
 ---
 
+## Code Quality
+
+This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, configured in `pyproject.toml`.
+
+```powershell
+ruff check .              # Lint (report violations)
+ruff check . --fix        # Lint + auto-fix
+ruff format .             # Format all Python files
+ruff format --check .     # Check formatting (CI mode)
+```
+
+Pre-commit hooks enforce Ruff on every commit. Install with `pre-commit install`.
+
+---
+
 ## Security
 
 - **No secrets in code** — all credentials via pydantic-settings + `.env`
