@@ -590,16 +590,22 @@ async def test_send_command_push_no_working_dir():
             patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
             patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
         ):
+            # /push now shows confirmation prompt
             r = await send_command("u1", rid, "/push")
+            assert r["ok"] is True
+            assert "Y/N" in r["message"]
+            assert _active_upgrades[rid].get("pending_prompt") == "push_test_confirm"
+            # Answer N (skip tests, push directly) → triggers _push_changes
+            r = await send_command("u1", rid, "n")
             assert r["ok"] is False
-            assert "No working directory" in r["message"]
+            assert "applied" in r["message"].lower() or "No" in r["message"]
     finally:
         _active_upgrades.pop(rid, None)
 
 
 @pytest.mark.asyncio
 async def test_send_command_push_with_working_dir(tmp_path):
-    """Push with a real working_dir applies changes and pushes via git."""
+    """Push with a real working_dir: /push → N (skip tests) → applies and pushes."""
     import asyncio
 
     rid = "cmd-push-wd-test"
@@ -637,7 +643,13 @@ async def test_send_command_push_with_working_dir(tmp_path):
             mock_git.pull_rebase = AsyncMock()
             mock_git.push = AsyncMock()
 
+            # Step 1: /push shows confirmation prompt
             r = await send_command("u1", rid, "/push")
+            assert r["ok"] is True
+            assert _active_upgrades[rid].get("pending_prompt") == "push_test_confirm"
+
+            # Step 2: Answer N (skip tests, push directly)
+            r = await send_command("u1", rid, "n")
             assert r["ok"] is True
             assert "Pushed" in r["message"]
 
@@ -690,6 +702,103 @@ def test_set_narrator_watching_toggle():
         assert _active_upgrades[rid]["narrator_watching"] is True
         assert set_narrator_watching(rid, False) is True
         assert _active_upgrades[rid]["narrator_watching"] is False
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+# -----------------------------------------------------------------------
+# _detect_test_command
+# -----------------------------------------------------------------------
+
+def test_detect_test_command_python_pytest(tmp_path):
+    """Repos with a tests/ dir should get pytest."""
+    (tmp_path / "tests").mkdir()
+    from app.services.upgrade_executor import _detect_test_command
+    label, cmd = _detect_test_command(str(tmp_path))
+    assert "pytest" in label.lower()
+    assert cmd[0] == "python"
+
+def test_detect_test_command_node(tmp_path):
+    """Repos with package.json + test script should get npm test."""
+    import json as _json
+    (tmp_path / "package.json").write_text(_json.dumps({
+        "scripts": {"test": "vitest run"}
+    }))
+    from app.services.upgrade_executor import _detect_test_command
+    label, cmd = _detect_test_command(str(tmp_path))
+    assert "npm" in label.lower()
+    assert cmd == ["npm", "test"]
+
+def test_detect_test_command_empty(tmp_path):
+    """Empty repos with no recognisable config should return empty."""
+    from app.services.upgrade_executor import _detect_test_command
+    label, cmd = _detect_test_command(str(tmp_path))
+    assert cmd == []
+
+
+# -----------------------------------------------------------------------
+# Push prompt flow — Y path with test runner
+# -----------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_push_prompt_y_runs_tests(tmp_path):
+    """Answering Y to push prompt should apply changes and run tests."""
+    import asyncio
+
+    rid = "cmd-push-y-test"
+    (tmp_path / "a.py").write_text("old content")
+    (tmp_path / "tests").mkdir()  # so _detect_test_command picks pytest
+
+    _active_upgrades[rid] = {
+        "status": "completed",
+        "logs": [],
+        "repo_name": "test/repo",
+        "working_dir": str(tmp_path),
+        "access_token": "ghp_test",
+        "branch": "main",
+        "task_results": [
+            {"status": "proposed", "task_name": "Upgrade A", "changes_count": 1,
+             "llm_result": {"changes": [
+                {"file": "a.py", "action": "modify",
+                 "before_snippet": "old content",
+                 "after_snippet": "new content"}
+             ]}},
+        ],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor.git_client") as mock_git,
+            patch("asyncio.create_subprocess_exec") as mock_proc,
+        ):
+            # Mock test run — pass
+            proc_mock = AsyncMock()
+            proc_mock.communicate.return_value = (b"1 passed\n", b"")
+            proc_mock.returncode = 0
+            mock_proc.return_value = proc_mock
+
+            mock_git.add_all = AsyncMock()
+            mock_git.commit = AsyncMock(return_value="abc12345")
+            mock_git._run_git = AsyncMock(return_value="main")
+            mock_git.set_remote = AsyncMock()
+            mock_git.pull_rebase = AsyncMock()
+            mock_git.push = AsyncMock()
+
+            # Step 1: /push
+            r = await send_command("u1", rid, "/push")
+            assert _active_upgrades[rid].get("pending_prompt") == "push_test_confirm"
+
+            # Step 2: Y
+            r = await send_command("u1", rid, "y")
+            assert r["ok"] is True
+            assert "Pushed" in r["message"]
+
+            # File modified + git called
+            assert (tmp_path / "a.py").read_text() == "new content"
+            mock_git.push.assert_awaited_once()
     finally:
         _active_upgrades.pop(rid, None)
 

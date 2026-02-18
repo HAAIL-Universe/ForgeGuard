@@ -124,6 +124,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [tick, setTick] = useState(0);           // triggers re-render for elapsed timer
+  const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const cmdInputRef = useRef<HTMLInputElement>(null);
 
   const SLASH_COMMANDS: Record<string, string> = {
@@ -324,6 +325,12 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             setNarrations((prev) => [...prev, { text: p.text, timestamp: p.timestamp }]);
             setNarratorLoading(false);
             break;
+
+          case 'upgrade_prompt':
+            setPendingPrompt(true);
+            // Auto-focus the command input
+            setTimeout(() => cmdInputRef.current?.focus(), 100);
+            break;
         }
       },
       [runId],
@@ -427,6 +434,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     setHistoryIdx(-1);
     setCmdInput('');
     setCmdSuggestions([]);
+    setPendingPrompt(false);
 
     // Render user input as a log line locally
     setLogs((prev) => [...prev, {
@@ -858,7 +866,8 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   }
                 }
                 return logs.map((log, i) => {
-                  const color = LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info;
+                  const isBox = /^[╔╗╚╝║═]/.test(log.message) || /[╔╗╚╝║═]{2,}/.test(log.message);
+                  const color = isBox ? '#FBBF24' : (LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info);
                   const icon = LEVEL_ICONS[log.level] ?? '';
                   const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
                   const isThinking = log.level === 'thinking';
@@ -915,10 +924,10 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           {activeTab === 'activity' && (
             <div style={{
               flexShrink: 0,
-              borderTop: status === 'ready' ? '1px solid #22C55E33' : '1px solid #1E293B',
-              background: '#0F172A', padding: '0', position: 'relative',
-              boxShadow: status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : 'none',
-              transition: 'box-shadow 0.3s ease, border-color 0.3s ease',
+              borderTop: pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : '1px solid #1E293B',
+              background: pendingPrompt ? '#1C1510' : '#0F172A', padding: '0', position: 'relative',
+              boxShadow: pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : 'none',
+              transition: 'box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease',
             }}>
               {/* Autocomplete dropdown */}
               {cmdSuggestions.length > 0 && status !== 'ready' && (
@@ -1003,13 +1012,15 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                       setCmdSuggestions([]);
                     }
                   }}
-                  placeholder={status === 'ready' ? 'Press Enter to start upgrade…' : 'Type / for commands…'}
+                  placeholder={pendingPrompt ? 'Type Y or N…' : status === 'ready' ? 'Press Enter to start upgrade…' : 'Type / for commands…'}
                   style={{
                     flex: 1, background: 'transparent', border: 'none', outline: 'none',
-                    color: status === 'ready' && cmdInput.trim().toLowerCase() === '/start' ? '#22C55E' : '#E2E8F0',
+                    color: pendingPrompt ? '#FBBF24'
+                      : status === 'ready' && cmdInput.trim().toLowerCase() === '/start' ? '#22C55E' : '#E2E8F0',
                     fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
-                    fontSize: '0.8rem', caretColor: '#22C55E',
-                    fontWeight: status === 'ready' && cmdInput.trim().toLowerCase() === '/start' ? 700 : 400,
+                    fontSize: '0.8rem', caretColor: pendingPrompt ? '#FBBF24' : '#22C55E',
+                    fontWeight: pendingPrompt ? 700
+                      : status === 'ready' && cmdInput.trim().toLowerCase() === '/start' ? 700 : 400,
                   }}
                   autoComplete="off"
                   spellCheck={false}

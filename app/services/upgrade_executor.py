@@ -111,6 +111,92 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
     cmd = command.strip().lower()
     state = _active_upgrades.get(run_id)
 
+    # ── Handle pending Y/N prompts ──────────────────────────────────
+    if state and state.get("pending_prompt"):
+        prompt_id = state["pending_prompt"]
+        answer = cmd.strip().lower()
+        if answer not in ("y", "n", "yes", "no"):
+            await _log(user_id, run_id,
+                       "⚠ Please type Y or N.", "warn", "command")
+            return {"ok": False, "message": "Expected Y or N."}
+
+        is_yes = answer in ("y", "yes")
+        state["pending_prompt"] = None
+
+        if prompt_id == "push_test_confirm":
+            all_changes = state.pop("_push_changes", [])
+            task_results = state.pop("_push_task_results", [])
+            if is_yes:
+                # Apply changes first, then run tests
+                await _log(user_id, run_id, "", "system", "command")
+                await _log(user_id, run_id,
+                           "🧪 Applying changes and running tests…",
+                           "system", "command")
+                apply_ok = await _apply_all_changes(
+                    user_id, run_id, state, all_changes)
+                if not apply_ok:
+                    return {"ok": False,
+                            "message": "Failed to apply changes."}
+                passed, output = await _run_tests(
+                    user_id, run_id, state)
+                if passed:
+                    await _log(user_id, run_id,
+                               "✅ Tests passed!", "system", "command")
+                    return await _commit_and_push(
+                        user_id, run_id, state, all_changes, task_results)
+                else:
+                    # Tests failed — ask whether to force push
+                    state["_push_changes"] = all_changes
+                    state["_push_task_results"] = task_results
+                    await _log(user_id, run_id, "", "system", "command")
+                    await _log(user_id, run_id,
+                               "╔══════════════════════════════════════════════════╗",
+                               "system", "command")
+                    await _log(user_id, run_id,
+                               "║  ❌ Tests failed — push anyway?                  ║",
+                               "system", "command")
+                    await _log(user_id, run_id,
+                               "║                                                  ║",
+                               "system", "command")
+                    await _log(user_id, run_id,
+                               "║  [Y] Push despite failures                       ║",
+                               "system", "command")
+                    await _log(user_id, run_id,
+                               "║  [N] Cancel push — fix issues first              ║",
+                               "system", "command")
+                    await _log(user_id, run_id,
+                               "╚══════════════════════════════════════════════════╝",
+                               "system", "command")
+                    state["pending_prompt"] = "push_force_confirm"
+                    await _emit(user_id, "upgrade_prompt", {
+                        "run_id": run_id,
+                        "prompt_id": "push_force_confirm"})
+                    return {"ok": True, "message": "Tests failed. Y/N?"}
+            else:
+                # User chose N — skip tests, push directly
+                await _log(user_id, run_id,
+                           "⏩ Skipping tests — pushing directly…",
+                           "system", "command")
+                return await _push_changes(
+                    user_id, run_id, state, all_changes, task_results)
+
+        elif prompt_id == "push_force_confirm":
+            all_changes = state.pop("_push_changes", [])
+            task_results = state.pop("_push_task_results", [])
+            if is_yes:
+                await _log(user_id, run_id,
+                           "⚠ Force pushing despite test failures…",
+                           "warn", "command")
+                return await _commit_and_push(
+                    user_id, run_id, state, all_changes, task_results)
+            else:
+                await _log(user_id, run_id,
+                           "🛑 Push cancelled. Fix the issues and try "
+                           "/push again.", "system", "command")
+                return {"ok": True, "message": "Push cancelled."}
+
+        return {"ok": False, "message": "Unknown prompt."}
+
     # /help and /clear don't need an active session
     if cmd == "/help":
         lines = ["Available commands:"]
@@ -192,7 +278,24 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
             for f in files:
                 await _log(user_id, run_id, f"  {icon} {act}: {f}", "info", "command")
 
-        return await _push_changes(user_id, run_id, state, all_changes, task_results)
+        # Stash changes for the prompt flow
+        state["_push_changes"] = all_changes
+        state["_push_task_results"] = task_results
+
+        # Show confirmation box
+        await _log(user_id, run_id, "", "system", "command")
+        await _log(user_id, run_id, "╔══════════════════════════════════════════════════╗", "system", "command")
+        await _log(user_id, run_id, "║  🧪 Run tests before committing and pushing?     ║", "system", "command")
+        await _log(user_id, run_id, "║                                                  ║", "system", "command")
+        await _log(user_id, run_id, "║  [Y] Run tests first  (recommended)              ║", "system", "command")
+        await _log(user_id, run_id, "║  [N] Push directly — skip tests                  ║", "system", "command")
+        await _log(user_id, run_id, "╚══════════════════════════════════════════════════╝", "system", "command")
+        await _log(user_id, run_id, "", "system", "command")
+
+        state["pending_prompt"] = "push_test_confirm"
+        await _emit(user_id, "upgrade_prompt", {
+            "run_id": run_id, "prompt_id": "push_test_confirm"})
+        return {"ok": True, "message": "Awaiting Y/N response."}
 
     if cmd == "/status":
         completed = state.get("completed_tasks", 0)
@@ -285,28 +388,20 @@ def _apply_file_change(working_dir: str, change: dict) -> None:
         raise ValueError(f"Unknown action: {action}")
 
 
-async def _push_changes(
+async def _apply_all_changes(
     user_id: str,
     run_id: str,
     state: dict,
     all_changes: list[dict],
-    task_results: list[dict],
-) -> dict:
-    """Apply file changes to the cloned workspace, commit, and push."""
+) -> bool:
+    """Apply file changes to the cloned workspace.  Returns True if any succeeded."""
     working_dir = state.get("working_dir")
-    access_token = state.get("access_token", "")
-    repo_name = state.get("repo_name", "unknown")
-
     if not working_dir or not Path(working_dir).exists():
         await _log(user_id, run_id,
                    "❌ No working directory — repository was not cloned.",
                    "error", "command")
-        await _log(user_id, run_id,
-                   "💡 Close the IDE and re-open to trigger cloning.",
-                   "info", "command")
-        return {"ok": False, "message": "No working directory available."}
+        return False
 
-    # ── Apply file changes ──────────────────────────────────────────
     await _log(user_id, run_id,
                f"📝 Applying {len(all_changes)} file change(s)…",
                "system", "command")
@@ -328,20 +423,133 @@ async def _push_changes(
     if failed:
         summary += f" ({failed} failed)"
     await _log(user_id, run_id, summary, "system", "command")
+    state["_applied_count"] = applied
+    return applied > 0
 
-    if applied == 0:
-        return {"ok": False, "message": "No changes could be applied."}
+
+def _detect_test_command(working_dir: str) -> tuple[str, list[str]]:
+    """Detect the appropriate test command for the repo.
+
+    Returns ``(label, [cmd, args…])``.
+    Checks for common config files to pick the right runner.
+    """
+    wd = Path(working_dir)
+
+    # Python — prefer pytest, fall back to unittest
+    if (wd / "pytest.ini").exists() or (wd / "pyproject.toml").exists() \
+            or (wd / "setup.cfg").exists() or (wd / "tests").is_dir() \
+            or (wd / "test").is_dir():
+        return "pytest", ["python", "-m", "pytest", "--tb=short", "-q"]
+
+    # Node / JS — package.json with test script
+    pkg_json = wd / "package.json"
+    if pkg_json.exists():
+        try:
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+            test_script = pkg.get("scripts", {}).get("test", "")
+            if test_script and "no test" not in test_script.lower():
+                return f"npm test ({test_script})", ["npm", "test"]
+        except Exception:
+            pass
+
+    # Go
+    if (wd / "go.mod").exists():
+        return "go test", ["go", "test", "./..."]
+
+    # Rust
+    if (wd / "Cargo.toml").exists():
+        return "cargo test", ["cargo", "test"]
+
+    # Fallback — try pytest anyway (many Python repos lack config)
+    if any(wd.glob("*.py")) or any(wd.glob("**/*test*.py")):
+        return "pytest (auto-detected)", ["python", "-m", "pytest", "--tb=short", "-q"]
+
+    return "", []
+
+
+async def _run_tests(
+    user_id: str,
+    run_id: str,
+    state: dict,
+) -> tuple[bool, str]:
+    """Run the repo's test suite in the cloned workspace.
+
+    Returns ``(passed: bool, output: str)``.
+    """
+    working_dir = state.get("working_dir", "")
+    label, cmd = _detect_test_command(working_dir)
+
+    if not cmd:
+        await _log(user_id, run_id,
+                   "⚠ No test runner detected — skipping tests.",
+                   "warn", "command")
+        return True, ""  # no tests = pass
+
+    await _log(user_id, run_id,
+               f"🧪 Running tests: {label}…", "thinking", "command")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=working_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env={**__import__("os").environ, "CI": "1"},
+        )
+        stdout_bytes, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=120)
+        output = stdout_bytes.decode("utf-8", errors="replace")
+
+        # Limit log output to last 40 lines
+        lines = output.strip().splitlines()
+        if len(lines) > 40:
+            display = ["  …(truncated)…"] + [f"  {l}" for l in lines[-40:]]
+        else:
+            display = [f"  {l}" for l in lines]
+
+        for line in display:
+            await _log(user_id, run_id, line, "info", "command")
+
+        passed = proc.returncode == 0
+        if passed:
+            await _log(user_id, run_id,
+                       f"✅ Tests passed (exit code 0)", "system", "command")
+        else:
+            await _log(user_id, run_id,
+                       f"❌ Tests failed (exit code {proc.returncode})",
+                       "error", "command")
+        return passed, output
+
+    except asyncio.TimeoutError:
+        await _log(user_id, run_id,
+                   "⏱️ Tests timed out after 120s.", "error", "command")
+        return False, "Timeout after 120s"
+    except Exception as exc:
+        await _log(user_id, run_id,
+                   f"⚠ Test runner error: {exc}", "error", "command")
+        return False, str(exc)
+
+
+async def _commit_and_push(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    all_changes: list[dict],
+    task_results: list[dict],
+) -> dict:
+    """Git add → commit → push.  Assumes changes are already applied."""
+    working_dir = state.get("working_dir")
+    access_token = state.get("access_token", "")
+    repo_name = state.get("repo_name", "unknown")
+    applied = state.get("_applied_count", len(all_changes))
 
     if not access_token:
         await _log(user_id, run_id,
                    "❌ No GitHub access token — connect GitHub in Settings.",
                    "error", "command")
-        await _log(user_id, run_id,
-                   "💡 Changes applied locally. Connect GitHub to push.",
-                   "info", "command")
         return {"ok": False, "message": "No GitHub access token."}
 
-    # ── Build commit message ────────────────────────────────────────
+    # Build commit message
     task_lines = []
     for tr in task_results:
         if tr.get("status") == "proposed":
@@ -355,7 +563,6 @@ async def _push_changes(
         + "\n\nGenerated by ForgeGuard Upgrade IDE"
     )
 
-    # ── Git add → commit → push ─────────────────────────────────────
     try:
         await _log(user_id, run_id, "📋 Staging changes…", "system", "command")
         await git_client.add_all(working_dir)
@@ -366,7 +573,6 @@ async def _push_changes(
             await _log(user_id, run_id,
                        f"  Commit {sha[:8]}", "info", "command")
 
-        # Detect branch
         try:
             branch = (await git_client._run_git(
                 ["rev-parse", "--abbrev-ref", "HEAD"], cwd=working_dir,
@@ -377,7 +583,6 @@ async def _push_changes(
         remote_url = f"https://github.com/{repo_name}.git"
         await git_client.set_remote(working_dir, remote_url)
 
-        # Pull rebase first
         force = False
         try:
             await _log(user_id, run_id,
@@ -416,6 +621,21 @@ async def _push_changes(
         await _log(user_id, run_id,
                    f"❌ Push failed: {exc}", "error", "command")
         return {"ok": False, "message": f"Push failed: {exc}"}
+
+
+async def _push_changes(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    all_changes: list[dict],
+    task_results: list[dict],
+) -> dict:
+    """Apply file changes, commit, and push (no tests)."""
+    ok = await _apply_all_changes(user_id, run_id, state, all_changes)
+    if not ok:
+        return {"ok": False, "message": "No changes could be applied."}
+    return await _commit_and_push(
+        user_id, run_id, state, all_changes, task_results)
 
 
 # ---------------------------------------------------------------------------
