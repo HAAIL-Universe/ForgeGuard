@@ -1,13 +1,17 @@
-"""Request-ID middleware — assigns a unique ID to every HTTP request.
+"""Middleware package for ForgeGuard.
 
-Implemented as a pure ASGI middleware (not BaseHTTPMiddleware) so it
-cannot interfere with WebSocket connections.
+Exports
+-------
+* :class:`RequestIDMiddleware` — assigns a unique ID to every HTTP request.
+* :func:`setup_exception_handlers` — registers global exception handlers.
 """
 
 import uuid
 from typing import Any, Callable
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from .exception_handler import setup_exception_handlers  # noqa: F401
 
 
 class RequestIDMiddleware:

@@ -39,3 +39,12 @@ def test_request_id_header_echoed():
     custom_id = "my-trace-123"
     response = client.get("/health", headers={"X-Request-ID": custom_id})
     assert response.headers["X-Request-ID"] == custom_id
+
+
+def test_nonexistent_route_returns_json_error():
+    """A request to an unknown path returns structured JSON, not HTML."""
+    response = client.get("/nonexistent-route-that-does-not-exist")
+    assert response.status_code == 404
+    data = response.json()
+    assert "error" in data
+    assert "request_id" in data
