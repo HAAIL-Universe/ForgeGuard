@@ -2686,7 +2686,7 @@ async def _run_upgrade(
                     "_plan": plan_result,
                 }
                 await _log(user_id, run_id,
-                            f"✅ Task {task_id} complete — "
+                            f"✅ Task {task_index + 1} complete — "
                             f"{n_changes} changes proposed", "system")
             else:
                 result_entry = {
@@ -2704,7 +2704,7 @@ async def _run_upgrade(
                     "_retry_plan": plan_result,
                 }
                 await _log(user_id, run_id,
-                            f"⏭️ Task {task_id} skipped (no result)",
+                            f"⏭️ Task {task_index + 1} skipped (no result)",
                             "warn")
 
             # State update
@@ -2811,7 +2811,7 @@ async def _run_upgrade(
                             for pf in plan_files:
                                 await _log(
                                     user_id, run_id,
-                                    f"  📄 {pf.get('file', '?')} — "
+                                    f"  📄 [Sonnet] {pf.get('file', '?')} — "
                                     f"{pf.get('description', '')}",
                                     "info",
                                 )
@@ -3478,7 +3478,7 @@ async def _run_retry(
                                 "info")
                     for pf in plan_files:
                         await _log(user_id, run_id,
-                                    f"  📄 {pf.get('file', '?')} — {pf.get('description', '')}",
+                                    f"  📄 [Sonnet] {pf.get('file', '?')} — {pf.get('description', '')}",
                                     "info")
                 for risk in plan_result.get("risks", []):
                     await _log(user_id, run_id, f"  ⚠ [Sonnet] {risk}", "warn")
@@ -3631,7 +3631,7 @@ async def _run_retry(
                     "_plan": plan_result,
                 }
                 await _log(user_id, run_id,
-                            f"✅ Task {task_id} complete — "
+                            f"✅ Retry {completed + 1} complete — "
                             f"{n_changes} changes proposed", "system")
             else:
                 # Still failed — keep retry data for another attempt
@@ -3646,7 +3646,7 @@ async def _run_retry(
                     "_retry_plan": plan_result,
                 }
                 await _log(user_id, run_id,
-                            f"⏭️ Task {task_id} still failed on retry",
+                            f"⏭️ Retry {completed + 1} still failed",
                             "warn")
 
             # Replace the old entry in-place
@@ -4044,15 +4044,26 @@ async def _build_task_with_llm(
             # Surface extended thinking to the UI (real chain-of-thought)
             if isinstance(result, dict) and result.get("thinking"):
                 _raw_thinking = result["thinking"]
-                # Chunk long thinking into readable segments
-                for _chunk in _raw_thinking.split("\n\n"):
-                    _chunk = _chunk.strip()
-                    if _chunk:
-                        _disp = (_chunk[:300] + "…"
-                                 if len(_chunk) > 300 else _chunk)
-                        await _log(user_id, run_id,
-                                   f"💭 [Opus] {_disp}", "thinking")
-                        await asyncio.sleep(0.05)
+                # Chunk long thinking into readable segments.
+                # Cap display at 5 chunks to avoid flooding the panel.
+                _chunks = [
+                    c.strip() for c in _raw_thinking.split("\n\n")
+                    if c.strip()
+                ]
+                _display_max = 5
+                for _chunk in _chunks[:_display_max]:
+                    _disp = (_chunk[:300] + "…"
+                             if len(_chunk) > 300 else _chunk)
+                    await _log(user_id, run_id,
+                               f"💭 [Opus] {_disp}", "thinking")
+                    await asyncio.sleep(0.05)
+                if len(_chunks) > _display_max:
+                    await _log(
+                        user_id, run_id,
+                        f"💭 [Opus] … ({len(_chunks) - _display_max} "
+                        f"more reasoning steps)",
+                        "thinking",
+                    )
 
             text: str = (result["text"] if isinstance(result, dict)
                          else str(result))
