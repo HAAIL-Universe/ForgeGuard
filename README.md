@@ -1,5 +1,7 @@
 # ForgeGuard
 
+[![CI](https://github.com/HAAIL-Universe/ForgeGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/HAAIL-Universe/ForgeGuard/actions/workflows/ci.yml)
+
 **AI-powered repository governance platform.**
 
 ForgeGuard connects to your GitHub repositories, runs automated audit checks on every commit, generates project contracts via AI-guided questionnaires, orchestrates LLM-driven code builds, and provides deep-scan repository analysis — all from a single real-time dashboard.
@@ -483,6 +485,21 @@ ruff check .
 ruff format --check .
 mypy app/ --ignore-missing-imports
 ```
+
+---
+
+## Code Quality
+
+This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, configured in `pyproject.toml`.
+
+```powershell
+ruff check .              # Lint (report violations)
+ruff check . --fix        # Lint + auto-fix
+ruff format .             # Format all Python files
+ruff format --check .     # Check formatting (CI mode)
+```
+
+Pre-commit hooks enforce Ruff on every commit. Install with `pre-commit install`.
 
 ---
 

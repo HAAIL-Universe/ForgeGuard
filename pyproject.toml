@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+extend-exclude = ["db/alembic/versions", ".vite"]
 
 [tool.ruff.lint]
 select = [
@@ -29,6 +30,10 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["app", "forge_ide"]
 
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
 # ── Mypy ─────────────────────────────────────────────────────────────────
 [tool.mypy]
 python_version = "3.12"
@@ -42,3 +47,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests requiring external services (database, cache, etc.)",
+]

@@ -21,6 +21,7 @@ from app.clients import github_client, llm_client
 from app.config import settings
 from app.errors import ForgeError
 from app.middleware import RequestIDMiddleware
+from app.middleware.exception_handler import setup_exception_handlers
 from app.repos.db import close_pool, get_pool
 from app.services.upgrade_executor import shutdown_all as _shutdown_upgrades
 from app.ws_manager import manager as ws_manager

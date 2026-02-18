@@ -276,6 +276,12 @@ try {
         $runtimePath = $py
         Info "Python: $py"
 
+        # Static: ruff lint
+        $ruffOutLines = & $py -m ruff check . 2>&1
+        $exitCodes["ruff"] = $LASTEXITCODE
+        $outputCaptures["ruff"] = $ruffOutLines
+        if ($LASTEXITCODE -eq 0) { Info "ruff check: ok" } else { Err "ruff check failed ($LASTEXITCODE)" }
+
         # Static: compileall
         $compileOutLines = & $py -m compileall app 2>&1
         $exitCodes["compileall"] = $LASTEXITCODE
