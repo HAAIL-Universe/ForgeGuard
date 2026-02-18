@@ -812,6 +812,7 @@ async def _generate_remediation_plan(
     api_key: str,
     model: str,
     tokens: Any,
+    planner_risks: list[str] | None = None,
 ) -> dict | None:
     """Generate a fix plan for an audit failure.
 
@@ -825,10 +826,18 @@ async def _generate_remediation_plan(
 
     # Slow path — Sonnet LLM
     try:
+        risk_section = ""
+        if planner_risks:
+            risk_section = (
+                "\n\nPlanner risk warnings (from Sonnet):\n"
+                + "\n".join(f"  ⚠ {r}" for r in planner_risks)
+                + "\n\nConsider these risks when generating your fix."
+            )
         prompt = (
             f"File: {file_path}\n"
             f"Findings:\n" +
             "\n".join(f"  - {f}" for f in findings) +
+            risk_section +
             f"\n\nOriginal content (first 2000 chars):\n"
             f"{(original_change.get('after_snippet', ''))[:2000]}\n\n"
             f"Generate a minimal fix plan."
@@ -1385,6 +1394,9 @@ async def _single_fix_attempt(
         else _FIX_PLANNER_PROMPT
     )
 
+    # Include accumulated planner risks so Sonnet
+    # can factor them into its test-failure diagnosis.
+    _accum_risks = state.get("accumulated_risks", [])
     user_payload = json.dumps({
         "test_output": test_output[-8000:],  # last 8 KB of output
         "parsed_failures": failures,
@@ -1395,6 +1407,9 @@ async def _single_fix_attempt(
         ],
         "current_file_contents": file_contents,
         "previous_attempts": attempt_history,
+        **({
+            "planner_risk_warnings": _accum_risks
+        } if _accum_risks else {}),
     }, indent=2)
 
     try:
@@ -2516,6 +2531,16 @@ async def _run_upgrade(
                                 "file": change.get("file", ""),
                                 "findings": findings,
                             })
+                            # Drop FAIL'd files — they'll be retried
+                            # by the per-task verify loop or the
+                            # remediation pool, NOT applied as-is.
+                            await _log(user_id, run_id,
+                                        f"    🚫 [Opus] Dropping "
+                                        f"{change.get('file', '?')} "
+                                        f"— will retry after audit",
+                                        "warn")
+                            changes.remove(change)
+                            continue
 
                 # Surface builder objections to the user
                 for objection in code_result.get("objections", []):
@@ -2685,6 +2710,13 @@ async def _run_upgrade(
                             await _log(user_id, run_id,
                                         f"  ⚠ [Sonnet] {risk}", "warn")
 
+                    # Accumulate planner risks in state so
+                    # downstream fix paths can reference them.
+                    if plan_result and plan_result.get("risks"):
+                        state.setdefault(
+                            "accumulated_risks", []
+                        ).extend(plan_result["risks"])
+
                     # Push to pool — Opus will pick it up when ready.
                     # If planning failed (plan_result is None), still
                     # enqueue so Opus can emit the skip/failure status
@@ -2767,6 +2799,8 @@ async def _run_upgrade(
                             api_key=sonnet_worker.api_key,
                             model=sonnet_worker.model,
                             tokens=tokens,
+                            planner_risks=state.get(
+                                "accumulated_risks", []),
                         )
 
                         _rem_seq += 1
@@ -2949,6 +2983,12 @@ async def _run_upgrade(
                             f.get("file", "?"): f.get("findings", [])
                             for f in task_failures
                         }
+                        # Carry forward Sonnet's risk
+                        # warnings so Opus can consider them.
+                        _plan_risks = (
+                            current_plan.get("risks", [])
+                            if current_plan else []
+                        )
                         retry_plan = {
                             "analysis": (
                                 f"Inline audit failures in "
@@ -2971,7 +3011,7 @@ async def _run_upgrade(
                                 }
                                 for ff in task_failures
                             ],
-                            "risks": [],
+                            "risks": _plan_risks,
                             "verification_strategy": [
                                 "Re-run inline audit — all PASS"
                             ],
@@ -3336,6 +3376,12 @@ async def _run_retry(
                 for risk in plan_result.get("risks", []):
                     await _log(user_id, run_id, f"  ⚠ [Sonnet] {risk}", "warn")
 
+                # Accumulate retry-flow risks too
+                if plan_result.get("risks"):
+                    state.setdefault(
+                        "accumulated_risks", []
+                    ).extend(plan_result["risks"])
+
             # ── Opus builds ──
             await _log(user_id, run_id,
                         f"⚡ [Opus] Writing code for task {task_id}…",
@@ -3440,6 +3486,16 @@ async def _run_retry(
                                 "file": change.get("file", ""),
                                 "findings": findings,
                             })
+                            # Drop FAIL'd files in retry flow — same
+                            # treatment as main flow: remove and let
+                            # the next retry iteration handle them.
+                            await _log(user_id, run_id,
+                                        f"    🚫 [Opus] Dropping "
+                                        f"{change.get('file', '?')} "
+                                        f"— will retry after audit",
+                                        "warn")
+                            changes.remove(change)
+                            continue
 
                 # Surface builder objections to the user
                 for objection in code_result.get("objections", []):
