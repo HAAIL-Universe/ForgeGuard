@@ -10,8 +10,8 @@ tasks using a role-based architecture:
   Writes concrete code changes from Sonnet's plans.  Tokens tracked
   under the ``opus`` bucket.  Runs in parallel with Sonnet (pipeline).
 - **Opus-2 (Key 2)** — ``anthropic_api_key_2`` + ``LLM_BUILDER_MODEL``
-  When Key 2 is available AND a plan exceeds ``_MAX_BUILD_FILES``,
-  sub-batches are processed in parallel across both Opus workers.
+  When Key 2 is available, pairs of files are built in parallel
+  across both Opus workers (one file per key).
 - **Haiku (Key 2)** — ``anthropic_api_key_2`` + ``LLM_NARRATOR_MODEL``
   Non-blocking plain-English narrator (fires after key events).
 If only one key is available, narration is disabled but execution works.
@@ -2632,6 +2632,10 @@ current_state, target_state, rationale, and key_considerations.
   – "implementation_notes" — sequencing and cross-file dependencies.
 • "workspace_files" — actual file contents keyed by relative path. \
 These are the REAL files from the cloned repository. Use them verbatim.
+• "prior_changes" (optional) — summaries of file changes already \
+completed for earlier files in the same task. Reference these when \
+the current file depends on imports, classes, or functions that were \
+added or modified in a prior change.
 
 If the planner flagged risks, address every one — either directly in \
 your code or by explaining in "warnings" why a risk is inapplicable.
@@ -3338,9 +3342,9 @@ async def _run_upgrade(
     """Background coroutine — pipelined dual-worker execution.
 
     Sonnet plans task N+1 **in parallel** with Opus coding task N.
-    When a plan exceeds ``_MAX_BUILD_FILES``, it is split into
-    sub-batches.  If *opus_worker_2* is available (Key 2), pairs of
-    sub-batches run in parallel across both API keys.
+    Each file is built individually for focused context and
+    responsive /stop handling.  If *opus_worker_2* is available
+    (Key 2), pairs of files build in parallel across both keys.
     Haiku narrates (non-blocking) after each task completes.
     """
     state = _active_upgrades[run_id]
@@ -3945,222 +3949,230 @@ async def _run_upgrade(
                             },
                         )
 
-                    # ── Code the task ────────────────────────
-                    # When the plan has many files, split into
-                    # sub-batches so Opus gets a focused context
-                    # window and the UI shows incremental progress.
-                    # If Key 2 supplied an opus_worker_2, pairs of
-                    # sub-batches run in parallel on both keys.
-                    if _pf and len(_pf) > _MAX_BUILD_FILES:
-                        _chunks = [
-                            _pf[ci:ci + _MAX_BUILD_FILES]
-                            for ci in range(
-                                0, len(_pf), _MAX_BUILD_FILES)
-                        ]
-                        _all_changes: list[dict] = []
-                        _all_objections: list[str] = []
-                        _all_warnings: list[str] = []
-                        _all_verifs: list[str] = []
-                        _agg_usage: dict = {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                        }
-                        _dual = opus_worker_2 is not None
+                    # ── Code the task: per-file sequential build ──
+                    # Each file gets its own LLM call so the builder
+                    # can focus, the UI updates per-file, and /stop
+                    # can interrupt between files.
+                    # With dual keys, pairs of files build in parallel.
+                    _all_changes: list[dict] = []
+                    _all_objections: list[str] = []
+                    _all_warnings: list[str] = []
+                    _all_verifs: list[str] = []
+                    _agg_usage: dict = {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                    }
+                    _dual = opus_worker_2 is not None
+                    _completed_changes: list[dict] = []
 
-                        async def _run_sub_batch(
-                            _sb_idx: int,
-                            _sb_chunk: list[dict],
-                            _sb_worker: _WorkerSlot,
-                        ) -> tuple[dict | None, dict, int]:
-                            """Execute one sub-batch build.
-                            Returns (result, usage, index)."""
-                            _sb_cf = [p.get("file", "?")
-                                      for p in _sb_chunk]
-                            _wb = ("Opus-2" if _sb_worker.label
-                                   == "opus-2" else "Opus")
-                            await _log(
-                                user_id, run_id,
-                                f"  🔨 [{_wb}] Sub-batch "
-                                f"{_sb_idx + 1}/"
-                                f"{len(_chunks)}: "
-                                f"{', '.join(_sb_cf)}…",
-                                "thinking",
-                            )
-                            _sb_plan = {
-                                **current_plan,
-                                "plan": _sb_chunk,
-                            }
-                            _sb_res, _sb_usg = (
-                                await _build_task_with_llm(
-                                    user_id, run_id,
-                                    repo_name,
-                                    stack_profile, task,
-                                    _sb_plan,
-                                    api_key=_sb_worker.api_key,
-                                    model=_sb_worker.model,
-                                    working_dir=state.get(
-                                        "working_dir", ""),
-                                )
-                            )
-                            return _sb_res, _sb_usg, _sb_idx
+                    async def _build_single_file(
+                        _file_entry: dict,
+                        _file_idx: int,
+                        _worker: _WorkerSlot,
+                        _prior_changes: list[dict],
+                    ) -> tuple[dict | None, dict, int]:
+                        """Build one file from the plan.
 
-                        if _dual:
-                            await _log(
-                                user_id, run_id,
-                                f"  ⚡ [Opus] Dual-key "
-                                f"parallel build: "
-                                f"{len(_chunks)} sub-batch(es) "
-                                f"across 2 API keys",
-                                "info",
-                            )
-
-                        # Process chunks — in pairs if dual,
-                        # sequentially otherwise.
-                        _ci = 0
-                        while _ci < len(_chunks):
-                            if state["_stop_flag"].is_set():
-                                break
-
-                            if (_dual
-                                    and _ci + 1 < len(_chunks)):
-                                # Run two sub-batches in parallel
-                                _r1, _r2 = await asyncio.gather(
-                                    _run_sub_batch(
-                                        _ci, _chunks[_ci],
-                                        opus_worker),
-                                    _run_sub_batch(
-                                        _ci + 1,
-                                        _chunks[_ci + 1],
-                                        opus_worker_2),
-                                )
-                                _results_pair = [_r1, _r2]
-                                _ci += 2
-                            else:
-                                # Single sub-batch (odd remainder
-                                # or no dual key)
-                                _r1 = await _run_sub_batch(
-                                    _ci, _chunks[_ci],
-                                    opus_worker)
-                                _results_pair = [_r1]
-                                _ci += 1
-
-                            for (_sb_res, _sb_usg,
-                                 _sb_i) in _results_pair:
-                                _si = _sb_usg.get(
-                                    "input_tokens", 0)
-                                _so = _sb_usg.get(
-                                    "output_tokens", 0)
-                                _agg_usage[
-                                    "input_tokens"] += _si
-                                _agg_usage[
-                                    "output_tokens"] += _so
-                                tokens.add("opus", _si, _so)
-                                await _emit(
-                                    user_id,
-                                    "upgrade_token_tick",
-                                    {"run_id": run_id,
-                                     **tokens.snapshot()},
-                                )
-                                if _sb_res:
-                                    _sc = _sb_res.get(
-                                        "changes", [])
-                                    _all_changes.extend(_sc)
-                                    _all_objections.extend(
-                                        _sb_res.get(
-                                            "objections", []))
-                                    _all_warnings.extend(
-                                        _sb_res.get(
-                                            "warnings", []))
-                                    _all_verifs.extend(
-                                        _sb_res.get(
-                                            "verification_steps",
-                                            []))
-                                    for _ch in _sc:
-                                        await _emit(
-                                            user_id,
-                                            "upgrade_file_"
-                                            "progress",
-                                            {
-                                                "run_id":
-                                                    run_id,
-                                                "task_id":
-                                                    task_id,
-                                                "file":
-                                                    _ch.get(
-                                                        "file",
-                                                        ""),
-                                                "status":
-                                                    "written",
-                                            },
-                                        )
-                                    await _log(
-                                        user_id, run_id,
-                                        f"  ✅ [Opus] Sub-batch"
-                                        f" {_sb_i + 1}: "
-                                        f"{len(_sc)} file(s)"
-                                        f" done",
-                                        "info",
-                                    )
-                                else:
-                                    await _log(
-                                        user_id, run_id,
-                                        f"  ⚠ [Opus] Sub-batch"
-                                        f" {_sb_i + 1}:"
-                                        f" no result",
-                                        "warn",
-                                    )
-
-                        # Merge sub-batch results
-                        code_result: dict | None = (
-                            {
-                                "changes": _all_changes,
-                                "objections": _all_objections,
-                                "warnings": _all_warnings,
-                                "verification_steps":
-                                    _all_verifs,
-                            }
-                            if _all_changes
-                            else None
+                        Includes prior completed changes as context
+                        so Opus can reference code it already wrote
+                        for earlier files in the same task.
+                        """
+                        _wb = ("Opus-2" if _worker.label
+                               == "opus-2" else "Opus")
+                        _fname = _file_entry.get("file", "?")
+                        await _log(
+                            user_id, run_id,
+                            f"  🔨 [{_wb}] File "
+                            f"{_file_idx + 1}/"
+                            f"{len(_pf)}: {_fname}",
+                            "thinking",
                         )
-                        code_usage = _agg_usage
-                    else:
-                        # Single build call (plan ≤ threshold)
-                        code_result, code_usage = (
+                        await _emit(
+                            user_id,
+                            "upgrade_file_progress",
+                            {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": _fname,
+                                "status": "building",
+                            },
+                        )
+                        # Build a focused single-file plan
+                        # but keep the full plan's analysis,
+                        # risks, and implementation_notes for
+                        # cross-file dependency context.
+                        _sf_plan: dict = {
+                            **(current_plan or {}),
+                            "plan": [_file_entry],
+                        }
+                        # Inject summaries of already-built files
+                        # so Opus knows what it wrote previously.
+                        if _prior_changes:
+                            _sf_plan["prior_changes"] = [
+                                {
+                                    "file": pc.get("file", ""),
+                                    "action": pc.get(
+                                        "action", "modify"),
+                                    "description": pc.get(
+                                        "description", ""),
+                                }
+                                for pc in _prior_changes
+                            ]
+                        _sf_res, _sf_usg = (
                             await _build_task_with_llm(
-                                user_id, run_id, repo_name,
+                                user_id, run_id,
+                                repo_name,
                                 stack_profile, task,
-                                current_plan,
-                                api_key=opus_worker.api_key,
-                                model=opus_worker.model,
+                                _sf_plan,
+                                api_key=_worker.api_key,
+                                model=_worker.model,
                                 working_dir=state.get(
                                     "working_dir", ""),
                             )
                         )
-                        c_in = code_usage.get(
-                            "input_tokens", 0)
-                        c_out = code_usage.get(
-                            "output_tokens", 0)
-                        tokens.add("opus", c_in, c_out)
-                        await _emit(
-                            user_id, "upgrade_token_tick",
-                            {"run_id": run_id,
-                             **tokens.snapshot()},
+                        return _sf_res, _sf_usg, _file_idx
+
+                    if _dual:
+                        await _log(
+                            user_id, run_id,
+                            f"  ⚡ [Opus] Dual-key per-file "
+                            f"build: {len(_pf)} file(s) "
+                            f"across 2 API keys",
+                            "info",
                         )
-                        # File progress for single-batch builds
-                        if code_result:
-                            for _ch in code_result.get(
-                                    "changes", []):
+
+                    _fi = 0
+                    while _fi < len(_pf):
+                        if state["_stop_flag"].is_set():
+                            await _log(
+                                user_id, run_id,
+                                f"  🛑 [Opus] Stop requested "
+                                f"after {_fi}/{len(_pf)} "
+                                f"file(s)", "warn",
+                            )
+                            break
+
+                        if (_dual
+                                and _fi + 1 < len(_pf)):
+                            # Two files in parallel on both keys
+                            _r1, _r2 = await asyncio.gather(
+                                _build_single_file(
+                                    _pf[_fi], _fi,
+                                    opus_worker,
+                                    _completed_changes),
+                                _build_single_file(
+                                    _pf[_fi + 1], _fi + 1,
+                                    opus_worker_2,
+                                    _completed_changes),
+                            )
+                            _results_pair = [_r1, _r2]
+                            _fi += 2
+                        else:
+                            _r1 = await _build_single_file(
+                                _pf[_fi], _fi,
+                                opus_worker,
+                                _completed_changes)
+                            _results_pair = [_r1]
+                            _fi += 1
+
+                        for (_sf_res, _sf_usg,
+                             _sf_i) in _results_pair:
+                            _si = _sf_usg.get(
+                                "input_tokens", 0)
+                            _so = _sf_usg.get(
+                                "output_tokens", 0)
+                            _agg_usage[
+                                "input_tokens"] += _si
+                            _agg_usage[
+                                "output_tokens"] += _so
+                            tokens.add("opus", _si, _so)
+                            await _emit(
+                                user_id,
+                                "upgrade_token_tick",
+                                {"run_id": run_id,
+                                 **tokens.snapshot()},
+                            )
+                            if _sf_res:
+                                _sc = _sf_res.get(
+                                    "changes", [])
+                                _all_changes.extend(_sc)
+                                _completed_changes.extend(
+                                    _sc)
+                                _all_objections.extend(
+                                    _sf_res.get(
+                                        "objections", []))
+                                _all_warnings.extend(
+                                    _sf_res.get(
+                                        "warnings", []))
+                                _all_verifs.extend(
+                                    _sf_res.get(
+                                        "verification_steps",
+                                        []))
+                                for _ch in _sc:
+                                    await _emit(
+                                        user_id,
+                                        "upgrade_file_"
+                                        "progress",
+                                        {
+                                            "run_id":
+                                                run_id,
+                                            "task_id":
+                                                task_id,
+                                            "file":
+                                                _ch.get(
+                                                    "file",
+                                                    ""),
+                                            "status":
+                                                "written",
+                                        },
+                                    )
+                                await _log(
+                                    user_id, run_id,
+                                    f"  ✅ [Opus] File"
+                                    f" {_sf_i + 1}: "
+                                    f"{_pf[_sf_i].get('file', '?')}"
+                                    f" done",
+                                    "info",
+                                )
+                            else:
+                                _fname = _pf[_sf_i].get(
+                                    "file", "?")
+                                await _log(
+                                    user_id, run_id,
+                                    f"  ⚠ [Opus] File"
+                                    f" {_sf_i + 1}: "
+                                    f"{_fname}"
+                                    f" — no result",
+                                    "warn",
+                                )
                                 await _emit(
                                     user_id,
-                                    "upgrade_file_progress",
+                                    "upgrade_file_"
+                                    "progress",
                                     {
-                                        "run_id": run_id,
-                                        "task_id": task_id,
-                                        "file": _ch.get(
-                                            "file", ""),
-                                        "status": "written",
+                                        "run_id":
+                                            run_id,
+                                        "task_id":
+                                            task_id,
+                                        "file": _fname,
+                                        "status":
+                                            "failed",
                                     },
                                 )
+
+                    # Merge per-file results into task result
+                    code_result: dict | None = (
+                        {
+                            "changes": _all_changes,
+                            "objections": _all_objections,
+                            "warnings": _all_warnings,
+                            "verification_steps":
+                                _all_verifs,
+                        }
+                        if _all_changes
+                        else None
+                    )
+                    code_usage = _agg_usage
 
                     # Emit results + inline audit
                     await _emit_task_results(
