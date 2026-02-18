@@ -309,6 +309,9 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
             return {"ok": False,
                     "message": "Wait for the run to finish before retrying."}
 
+        # Tell _run_upgrade's finally block NOT to clean up this session
+        state["_cleanup_cancelled"] = True
+
         # Collect all skipped/failed entries that have retry data
         failed_entries = [
             (idx, tr) for idx, tr in enumerate(state["task_results"])
@@ -2412,10 +2415,15 @@ async def _run_upgrade(
     finally:
         state["current_task"] = None
         # NOTE: Do NOT clean up working_dir here — the user may still
-        # want to /push.  Cleanup happens when the session expires or
-        # after a successful push.
-        await asyncio.sleep(600)
-        # Clean up workspace on session expiry
+        # want to /push or /retry.  Cleanup happens on session expiry
+        # UNLESS a /retry re-activated the session (flag check below).
+        try:
+            await asyncio.sleep(600)
+        except asyncio.CancelledError:
+            pass
+        # If /retry relaunched the session, don't nuke the state.
+        if state.get("_cleanup_cancelled"):
+            return
         wd = state.get("working_dir")
         if wd:
             parent = str(Path(wd).parent)
@@ -2732,6 +2740,10 @@ async def _run_retry(
             "status": "error",
             "tokens": tokens.snapshot(),
         })
+    finally:
+        # Reset the cleanup_cancelled flag so a future 600s timer
+        # from this retry (if we add one) can proceed.
+        state.pop("_cleanup_cancelled", None)
 
 
 def _fmt_tokens(n: int) -> str:

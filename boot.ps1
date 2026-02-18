@@ -228,4 +228,4 @@ Start-Job -ScriptBlock {
   Start-Process "http://localhost:5174"
 } | Out-Null
 
-& $activePython -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+& $activePython -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
