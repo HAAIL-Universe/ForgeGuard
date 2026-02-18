@@ -4026,6 +4026,7 @@ async def _build_task_with_llm(
 
     _max_tokens = settings.LLM_BUILDER_MAX_TOKENS
     _thinking = settings.LLM_THINKING_BUDGET
+    _total_usage: dict = {"input_tokens": 0, "output_tokens": 0}
 
     for _attempt in range(1, 3):  # up to 2 attempts (retry on truncation)
         try:
@@ -4040,6 +4041,9 @@ async def _build_task_with_llm(
             )
             usage = (result.get("usage", {}) if isinstance(result, dict)
                      else {"input_tokens": 0, "output_tokens": 0})
+            # Accumulate across retries so the caller sees total spend
+            _total_usage["input_tokens"] += usage.get("input_tokens", 0)
+            _total_usage["output_tokens"] += usage.get("output_tokens", 0)
 
             # Surface extended thinking to the UI (real chain-of-thought)
             if isinstance(result, dict) and result.get("thinking"):
@@ -4071,11 +4075,11 @@ async def _build_task_with_llm(
                     if isinstance(result, dict) else "end_turn")
 
             # ── Truncation detection ────────────────────────────
-            if stop == "max_tokens" or (
-                text.rstrip() and not text.rstrip().endswith("}")
-            ):
+            # Only treat explicit max_tokens stop as truncation.
+            # The previous heuristic (text not ending with "}") caused
+            # false positives when Opus wrapped JSON in markdown fences.
+            if stop == "max_tokens":
                 if _attempt < 2:
-                    # Retry once with doubled budget
                     _old_max = _max_tokens
                     _max_tokens = min(_max_tokens * 2, 65_536)
                     await _log(
@@ -4094,7 +4098,7 @@ async def _build_task_with_llm(
                         f"{task.get('id')} after retry — dropping task",
                         "error",
                     )
-                    return None, usage
+                    return None, _total_usage
 
             text = _strip_codeblock(text)
 
@@ -4103,20 +4107,20 @@ async def _build_task_with_llm(
                            f"⚠ [Opus] Empty response for task "
                            f"{task.get('id')} — model returned "
                            f"no content", "error")
-                return None, usage
+                return None, _total_usage
 
             parsed = json.loads(text)
             # Attach extended thinking to result so callers can see it
             if isinstance(result, dict) and result.get("thinking"):
                 parsed["_extended_thinking"] = result["thinking"]
-            return parsed, usage
+            return parsed, _total_usage
         except json.JSONDecodeError as exc:
-            if _attempt < 2 and stop == "max_tokens":
-                # Truncation caused invalid JSON — retry
+            if _attempt < 2:
+                # Response might be truncated JSON — retry with more tokens
                 _max_tokens = min(_max_tokens * 2, 65_536)
                 await _log(
                     user_id, run_id,
-                    f"⚠ [Opus] Truncated JSON for {task.get('id')} "
+                    f"⚠ [Opus] Invalid JSON for {task.get('id')} "
                     f"— retrying with {_max_tokens} tokens…",
                     "warn",
                 )
@@ -4129,19 +4133,17 @@ async def _build_task_with_llm(
                        f"⚠ [Opus] Invalid JSON for task "
                        f"{task.get('id')}: {short}",
                        "error")
-            return (None,
-                    usage if "usage" in dir()
-                    else {"input_tokens": 0, "output_tokens": 0})
+            return None, _total_usage
         except Exception as exc:
             logger.exception("Opus build failed for %s", task.get("id"))
             short = f"{type(exc).__name__}: {str(exc)[:180]}"
             await _log(user_id, run_id,
                        f"Build failed for task {task.get('id')}: "
                        f"{short}", "error")
-            return None, {"input_tokens": 0, "output_tokens": 0}
+            return None, _total_usage
 
     # Should not reach here, but safety net
-    return None, {"input_tokens": 0, "output_tokens": 0}
+    return None, _total_usage
 
 
 # ---------------------------------------------------------------------------
