@@ -140,6 +140,47 @@ interface GovernanceResult {
   warnings: number;
 }
 
+/* -- Phase 45: Cognitive Dashboard types -- */
+
+interface ReconData {
+  total_files: number;
+  total_lines: number;
+  test_count: number;
+  symbols_count: number;
+  tables: string[];
+}
+
+interface DAGTask {
+  id: string;
+  title: string;
+  file_path: string | null;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked' | 'skipped';
+  depends_on: string[];
+}
+
+interface DAGProgressData {
+  total: number;
+  completed: number;
+  failed: number;
+  blocked: number;
+  in_progress: number;
+  pending: number;
+  skipped: number;
+  percentage: number;
+}
+
+interface InvariantEntry {
+  passed: boolean;
+  expected: number;
+  actual: number;
+  constraint: string;
+}
+
+interface JournalEvent {
+  timestamp: string;
+  message: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Styles                                                            */
 /* ------------------------------------------------------------------ */
@@ -310,6 +351,15 @@ function BuildProgress() {
   const [costWarning, setCostWarning] = useState<string | null>(null);
   const [costExceeded, setCostExceeded] = useState<string | null>(null);
   const [circuitBreaking, setCircuitBreaking] = useState(false);
+  /* Phase 45: Cognitive Dashboard state */
+  const [reconData, setReconData] = useState<ReconData | null>(null);
+  const [dagTasks, setDagTasks] = useState<DAGTask[]>([]);
+  const [dagProgress, setDagProgress] = useState<DAGProgressData | null>(null);
+  const [dagExpanded, setDagExpanded] = useState(false);
+  const [invariants, setInvariants] = useState<Map<string, InvariantEntry>>(new Map());
+  const [journalEvents, setJournalEvents] = useState<JournalEvent[]>([]);
+  const [journalExpanded, setJournalExpanded] = useState(false);
+  const [compactionCount, setCompactionCount] = useState(0);
   const feedEndRef = useRef<HTMLDivElement>(null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
@@ -568,6 +618,13 @@ function BuildProgress() {
             const cat: ActivityEntry['category'] =
               src === 'file' || src === 'builder' ? 'output' : 'activity';
             if (msg) addActivity(msg, lvl, cat);
+            /* Phase 45: capture journal checkpoint events */
+            if (src === 'journal_checkpoint') {
+              setJournalEvents((prev) => [...prev, {
+                timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
+                message: msg,
+              }]);
+            }
             break;
           }
 
@@ -995,7 +1052,8 @@ function BuildProgress() {
             const compacted = payload.compacted as boolean;
             setTurnCount(turn);
             if (compacted) {
-              addActivity(`Context compacted at turn ${turn}`, 'warn');
+              setCompactionCount((c) => c + 1);
+              addActivity(`🔄 Context compacted at turn ${turn}`, 'warn');
             }
             break;
           }
@@ -1092,6 +1150,93 @@ function BuildProgress() {
             const msg = (payload.message ?? '') as string;
             setCostExceeded(msg);
             addActivity(`🛑 Cost exceeded: ${msg}`, 'error');
+            break;
+          }
+
+          /* ---- Phase 45: Cognitive Dashboard events ---- */
+
+          case 'recon_complete': {
+            setReconData({
+              total_files: (payload.total_files ?? 0) as number,
+              total_lines: (payload.total_lines ?? 0) as number,
+              test_count: (payload.test_count ?? 0) as number,
+              symbols_count: (payload.symbols_count ?? 0) as number,
+              tables: (payload.tables ?? []) as string[],
+            });
+            break;
+          }
+
+          case 'dag_initialized': {
+            const dag = payload.dag as Record<string, unknown> | undefined;
+            if (dag && Array.isArray(dag.nodes)) {
+              const tasks: DAGTask[] = (dag.nodes as Record<string, unknown>[]).map((n) => ({
+                id: (n.id ?? '') as string,
+                title: (n.title ?? '') as string,
+                file_path: (n.file_path ?? null) as string | null,
+                status: (n.status ?? 'pending') as DAGTask['status'],
+                depends_on: (n.depends_on ?? []) as string[],
+              }));
+              setDagTasks(tasks);
+              setDagExpanded(true);
+            }
+            break;
+          }
+
+          case 'task_started': {
+            const tid = (payload.task_id ?? '') as string;
+            setDagTasks((prev) => prev.map((t) =>
+              t.id === tid ? { ...t, status: 'in_progress' as const } : t,
+            ));
+            break;
+          }
+
+          case 'task_completed': {
+            const tid = (payload.task_id ?? '') as string;
+            setDagTasks((prev) => prev.map((t) =>
+              t.id === tid ? { ...t, status: 'completed' as const } : t,
+            ));
+            break;
+          }
+
+          case 'task_failed': {
+            const tid = (payload.task_id ?? '') as string;
+            setDagTasks((prev) => prev.map((t) =>
+              t.id === tid ? { ...t, status: 'failed' as const } : t,
+            ));
+            break;
+          }
+
+          case 'dag_progress': {
+            setDagProgress({
+              total: (payload.total ?? 0) as number,
+              completed: (payload.completed ?? 0) as number,
+              failed: (payload.failed ?? 0) as number,
+              blocked: (payload.blocked ?? 0) as number,
+              in_progress: (payload.in_progress ?? 0) as number,
+              pending: (payload.pending ?? 0) as number,
+              skipped: (payload.skipped ?? 0) as number,
+              percentage: (payload.percentage ?? 0) as number,
+            });
+            break;
+          }
+
+          case 'invariant_check': {
+            const name = (payload.name ?? '') as string;
+            if (name) {
+              setInvariants((prev) => {
+                const next = new Map(prev);
+                next.set(name, {
+                  passed: Boolean(payload.passed),
+                  expected: (payload.expected ?? 0) as number,
+                  actual: (payload.actual ?? 0) as number,
+                  constraint: (payload.constraint ?? '') as string,
+                });
+                return next;
+              });
+              if (!payload.passed) {
+                addActivity(`❌ Invariant violation: ${name} (expected ${payload.expected}, got ${payload.actual})`, 'error');
+              }
+            }
             break;
           }
         }
@@ -1537,6 +1682,54 @@ function BuildProgress() {
             )}
           </div>
         </div>
+
+        {/* ---- Phase 45: Recon Summary ---- */}
+        {reconData && (
+          <div data-testid="recon-summary" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '8px 16px', marginBottom: '12px', background: '#0F172A', borderRadius: '6px', border: '1px solid #1E293B', fontSize: '0.72rem', color: '#64748B', flexWrap: 'wrap' }}>
+            <span>📂 {reconData.total_files.toLocaleString()} files</span>
+            <span>·</span>
+            <span>{reconData.total_lines.toLocaleString()} lines</span>
+            <span>·</span>
+            <span>{reconData.symbols_count.toLocaleString()} symbols</span>
+            <span>·</span>
+            <span>{reconData.test_count.toLocaleString()} tests</span>
+            <span>·</span>
+            <span>{reconData.tables.length} tables</span>
+            {compactionCount > 0 && (
+              <>
+                <span>·</span>
+                <span style={{ color: '#A78BFA' }}>🔄 {compactionCount} compaction{compactionCount > 1 ? 's' : ''}</span>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ---- Phase 45: Invariant Strip ---- */}
+        {invariants.size > 0 && (
+          <div data-testid="invariant-strip" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 16px', marginBottom: '12px', flexWrap: 'wrap' }}>
+            {Array.from(invariants.entries()).map(([name, inv]) => {
+              const ok = inv.passed;
+              const arrow = inv.constraint === 'monotonic_up' ? ' \u2191' : inv.constraint === 'monotonic_down' ? ' \u2193' : '';
+              return (
+                <span
+                  key={name}
+                  data-testid={`invariant-badge-${name}`}
+                  title={`${name}: expected ${inv.expected}, actual ${inv.actual} (${inv.constraint})`}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                    padding: '2px 10px', borderRadius: '12px', fontSize: '0.68rem', fontWeight: 600,
+                    background: ok ? '#0D2818' : '#7F1D1D',
+                    color: ok ? '#22C55E' : '#FCA5A5',
+                    border: `1px solid ${ok ? '#16532D' : '#DC2626'}`,
+                    ...(ok ? {} : { boxShadow: '0 0 8px #DC262644' }),
+                  }}
+                >
+                  {name.replace(/_/g, ' ')}: {inv.actual}{arrow} {ok ? '\u2713' : '\u2717'}
+                </span>
+              );
+            })}
+          </div>
+        )}
 
         {/* ---- Two-column layout ---- */}
         <div style={twoColStyle}>
@@ -2069,6 +2262,65 @@ function BuildProgress() {
                 </div>
               )}
             </div>
+
+            {/* ---- Phase 45: Task DAG Panel ---- */}
+            {dagTasks.length > 0 && (
+              <div data-testid="dag-panel" style={cardStyle}>
+                <div
+                  onClick={() => setDagExpanded(!dagExpanded)}
+                  style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}
+                >
+                  <h3 style={{ margin: 0, fontSize: '0.8rem', color: '#F8FAFC', flex: 1 }}>
+                    Task DAG{dagProgress ? ` (${dagProgress.completed}/${dagProgress.total} — ${Math.round(dagProgress.percentage)}%)` : ''}
+                  </h3>
+                  <span style={{ color: '#475569', fontSize: '0.6rem', transition: 'transform 0.2s', transform: dagExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+                </div>
+                {dagExpanded && dagProgress && (
+                  <div style={{ margin: '8px 0 6px', height: '4px', borderRadius: '2px', background: '#1E293B', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: '2px', width: `${dagProgress.percentage}%`, background: dagProgress.failed > 0 ? '#EF4444' : '#22C55E', transition: 'width 0.3s ease' }} />
+                  </div>
+                )}
+                {dagExpanded && dagTasks.map((t) => {
+                  const icons: Record<string, string> = { pending: '\u23f3', in_progress: '\u2699\ufe0f', completed: '\u2705', failed: '\u274c', blocked: '\ud83d\udeab', skipped: '\u23ed' };
+                  const colors: Record<string, string> = { pending: '#475569', in_progress: '#3B82F6', completed: '#22C55E', failed: '#EF4444', blocked: '#F59E0B', skipped: '#334155' };
+                  return (
+                    <div key={t.id} data-testid={`dag-task-${t.id}`} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 0', fontSize: '0.68rem', color: colors[t.status] ?? '#475569',
+                      ...(t.status === 'in_progress' ? { animation: 'pulse 1.5s infinite' } : {}),
+                    }}>
+                      <span style={{ width: '18px', textAlign: 'center' }}>{icons[t.status] ?? '\u23f3'}</span>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {t.file_path ?? t.title}
+                      </span>
+                      {t.depends_on.length > 0 && (
+                        <span style={{ color: '#334155', fontSize: '0.58rem' }}>dep: {t.depends_on.length}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* ---- Phase 45: Journal Timeline ---- */}
+            {journalEvents.length > 0 && (
+              <div data-testid="journal-timeline" style={cardStyle}>
+                <div
+                  onClick={() => setJournalExpanded(!journalExpanded)}
+                  style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}
+                >
+                  <h3 style={{ margin: 0, fontSize: '0.8rem', color: '#F8FAFC', flex: 1 }}>
+                    Journal ({journalEvents.length})
+                  </h3>
+                  <span style={{ color: '#475569', fontSize: '0.6rem', transition: 'transform 0.2s', transform: journalExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+                </div>
+                {journalExpanded && journalEvents.map((e, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '3px 0', fontSize: '0.65rem' }}>
+                    <span style={{ color: '#3B82F6' }}>●</span>
+                    <span style={{ color: '#475569', flexShrink: 0 }}>{e.timestamp}</span>
+                    <span style={{ color: '#94A3B8' }}>{e.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
 
           </div>

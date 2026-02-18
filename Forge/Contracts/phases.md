@@ -3654,3 +3654,27 @@ When an invariant is violated:
 - Invariants persist across checkpoints and are restored on resume
 - Frontend shows invariant status strip and violation alerts
 - All existing tests pass + ~16 new tests for registry operations, gate integration, violation response, and persistence
+---
+
+## Phase 45 Build Observability and Cognitive Dashboard
+
+Objective: Surface the Phase 40-44 cognitive architecture to the frontend.
+
+### 45.1 Recon Summary Card
+### 45.2 Task DAG Panel
+### 45.3 Invariant Status Strip
+### 45.4 Context Compaction Indicator
+### 45.5 Journal Timeline
+### 45.6 Tests
+---
+
+## Phase 45 Build Observability and Cognitive Dashboard
+
+Objective: Surface the Phase 40-44 cognitive architecture to the frontend.
+
+### 45.1 Recon Summary Card
+### 45.2 Task DAG Panel
+### 45.3 Invariant Status Strip
+### 45.4 Context Compaction Indicator
+### 45.5 Journal Timeline
+### 45.6 Tests
