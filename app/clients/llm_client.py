@@ -113,13 +113,20 @@ ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
 
 
-def _anthropic_headers(api_key: str) -> dict:
-    """Return standard Anthropic API headers."""
-    return {
+def _anthropic_headers(api_key: str, *, caching: bool = False) -> dict:
+    """Return standard Anthropic API headers.
+
+    When *caching* is ``True``, include the ``anthropic-beta`` header
+    that enables server-side prompt caching (system + tools + prefix).
+    """
+    headers = {
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_API_VERSION,
         "Content-Type": "application/json",
     }
+    if caching:
+        headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+    return headers
 
 
 async def chat_anthropic(
@@ -130,6 +137,7 @@ async def chat_anthropic(
     max_tokens: int = 2048,
     tools: list[dict] | None = None,
     thinking_budget: int = 0,
+    enable_caching: bool = False,
 ) -> dict:
     """Send a chat request to the Anthropic Messages API.
 
@@ -142,17 +150,48 @@ async def chat_anthropic(
     returns ``thinking`` content blocks in addition to ``text`` blocks;
     the thinking text is included under the ``"thinking"`` key in the
     simplified response.
+
+    When *enable_caching* is ``True``, the system prompt and tool
+    definitions are sent in Anthropic's block format with
+    ``cache_control`` markers.  This enables server-side prompt caching
+    which reduces input token costs by up to 90 % on cache hits.  The
+    API response ``usage`` dict will include ``cache_read_input_tokens``
+    and ``cache_creation_input_tokens`` when caching is active.
     """
 
     async def _call():
+        # ── System prompt: plain string or cacheable block ──────
+        if enable_caching:
+            system_value: str | list[dict] = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        else:
+            system_value = system_prompt
+
         body: dict = {
             "model": model,
             "max_tokens": max_tokens,
-            "system": system_prompt,
+            "system": system_value,
             "messages": messages,
         }
+
+        # ── Tools: mark last tool for caching when enabled ──────
         if tools:
-            body["tools"] = tools
+            if enable_caching:
+                cached_tools = [t.copy() for t in tools]
+                if cached_tools:
+                    cached_tools[-1] = {
+                        **cached_tools[-1],
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                body["tools"] = cached_tools
+            else:
+                body["tools"] = tools
+
         if thinking_budget > 0:
             body["thinking"] = {
                 "type": "enabled",
@@ -164,7 +203,7 @@ async def chat_anthropic(
         client = _get_client()
         response = await client.post(
             ANTHROPIC_MESSAGES_URL,
-            headers=_anthropic_headers(api_key),
+            headers=_anthropic_headers(api_key, caching=enable_caching),
             json=body,
         )
         if response.status_code >= 400:
@@ -294,6 +333,7 @@ async def chat(
     provider: str = "anthropic",
     tools: list[dict] | None = None,
     thinking_budget: int = 0,
+    enable_caching: bool = False,
 ) -> dict:
     """Send a chat request to the configured LLM provider.
 
@@ -319,6 +359,11 @@ async def chat(
     thinking_budget : int
         When > 0, enable Anthropic extended thinking with this token budget.
         Ignored for OpenAI provider.
+    enable_caching : bool
+        When ``True`` (Anthropic only), enable server-side prompt caching
+        for the system prompt and tool definitions. Reduces input token
+        costs by up to 90 % on cache hits across multi-round tool loops.
+        Ignored for OpenAI provider.
 
     Returns
     -------
@@ -331,4 +376,5 @@ async def chat(
     return await chat_anthropic(
         api_key, model, system_prompt, messages, max_tokens,
         tools=tools, thinking_budget=thinking_budget,
+        enable_caching=enable_caching,
     )

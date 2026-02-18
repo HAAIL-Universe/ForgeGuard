@@ -910,6 +910,7 @@ async def _generate_remediation_plan(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2048,
             provider="anthropic",
+            enable_caching=True,
         )
         text = raw.get("text", "")
         usage = raw.get("usage", {})
@@ -1904,6 +1905,7 @@ async def _single_fix_attempt(
             max_tokens=4096,
             provider="anthropic",
             thinking_budget=thinking_budget,
+            enable_caching=True,
         )
         # Track Sonnet diagnosis tokens
         _plan_usage = (plan_result.get("usage", {})
@@ -1986,6 +1988,7 @@ async def _single_fix_attempt(
             messages=[{"role": "user", "content": fix_user_msg}],
             max_tokens=16384,  # fixes are small — no need for 32K
             provider="anthropic",
+            enable_caching=True,
         )
         # Track Opus fix tokens
         _build_usage = (build_result.get("usage", {})
@@ -3090,6 +3093,7 @@ async def _narrate(
             messages=[{"role": "user", "content": event_summary}],
             max_tokens=80,
             provider="anthropic",
+            enable_caching=True,
         )
         usage = result.get("usage", {}) if isinstance(result, dict) else {}
         tokens.add("haiku", usage.get("input_tokens", 0), usage.get("output_tokens", 0))
@@ -5107,6 +5111,114 @@ _TOTAL_CONTENT_BUDGET = 200_000 # max bytes across all files
 # applies through the validation/rollback pipeline.
 _MAX_TOOL_RESULT_CHARS = 60_000  # truncate large tool outputs
 _MAX_TOOL_ROUNDS = 15            # safety cap on tool loop iterations
+
+# ── Context compaction settings ────────────────────────────────────────────
+# Ported from forge_ide/agent.py —  prevents unbounded token growth in the
+# agentic tool loop.  When accumulated messages exceed the soft limit we
+# compact to the target, keeping the first message (full task payload) and
+# the last N recent messages while summarising the middle.
+_TOOL_LOOP_TOKEN_LIMIT = 160_000   # soft limit — trigger compaction
+_TOOL_LOOP_COMPACT_TARGET = 110_000 # target after compaction
+_COMPACT_KEEP_RECENT = 6           # recent messages to preserve
+
+
+def _estimate_msg_tokens(messages: list[dict]) -> int:
+    """Fast token estimate for a message list (~4 chars/token)."""
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += len(content) // 4
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    for val in block.values():
+                        if isinstance(val, str):
+                            total += len(val) // 4
+                        elif isinstance(val, dict):
+                            total += len(json.dumps(val, default=str)) // 4
+                elif isinstance(block, str):
+                    total += len(block) // 4
+    return max(total, 1)
+
+
+def _compact_tool_messages(
+    messages: list[dict],
+    target_tokens: int = _TOOL_LOOP_COMPACT_TARGET,
+) -> list[dict]:
+    """Compact a tool-loop conversation to fit within *target_tokens*.
+
+    Strategy (mirrors forge_ide/agent.py):
+    1. Always keep the first message (full task payload).
+    2. Always keep the last ``_COMPACT_KEEP_RECENT`` messages.
+    3. Summarise everything in between.
+    """
+    keep_recent = _COMPACT_KEEP_RECENT
+    if len(messages) <= keep_recent + 2:
+        return messages  # too few to compact
+
+    first = messages[0]
+    recent = messages[-keep_recent:]
+    middle = messages[1:-keep_recent]
+
+    # Build a compressed summary
+    parts: list[str] = [
+        "[CONTEXT COMPACTION — summarising earlier tool rounds]",
+    ]
+    tool_calls: list[str] = []
+    for msg in middle:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                    name = blk.get("name", "?")
+                    inp = json.dumps(blk.get("input", {}), default=str)[:80]
+                    tool_calls.append(f"{name}({inp})")
+
+    if tool_calls:
+        parts.append(f"Tool calls summarised: {len(tool_calls)}")
+        shown = tool_calls[:5]
+        if len(tool_calls) > 10:
+            shown.append(f"... ({len(tool_calls) - 10} more) ...")
+            shown.extend(tool_calls[-5:])
+        elif len(tool_calls) > 5:
+            shown.extend(tool_calls[5:])
+        for tc in shown:
+            parts.append(f"  - {tc}")
+
+    parts.append("[END COMPACTION — recent context follows]")
+
+    compacted: list[dict] = [first]
+    compacted.append({"role": "user", "content": "\n".join(parts)})
+
+    # Maintain valid alternation
+    if recent and recent[0].get("role") == "user":
+        compacted.append({
+            "role": "assistant",
+            "content": [{"type": "text",
+                         "text": "Understood. Continuing."}],
+        })
+
+    compacted.extend(recent)
+
+    # If still over budget, be more aggressive
+    if _estimate_msg_tokens(compacted) >= target_tokens:
+        compacted = [first]
+        compacted.append({
+            "role": "user",
+            "content": "[Earlier tool rounds compacted. Continuing.]",
+        })
+        tail = messages[-4:]
+        if tail[0].get("role") != "assistant":
+            compacted.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Understood."}],
+            })
+        compacted.extend(tail)
+
+    return compacted
+
+
 _UPGRADE_BUILDER_TOOLS: list[dict] = [
     {
         "name": "read_file",
@@ -5353,6 +5465,7 @@ async def _plan_task_with_llm(
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=8192,
             provider="anthropic",
+            enable_caching=True,
         )
         usage = (result.get("usage", {}) if isinstance(result, dict)
                  else {"input_tokens": 0, "output_tokens": 0})
@@ -5529,6 +5642,11 @@ async def _build_task_with_llm(
 
     # Use tools only when we have a working directory to explore
     _tools = _UPGRADE_BUILDER_TOOLS if working_dir else None
+    # Enable prompt caching for multi-round tool loops — the system
+    # prompt + tool definitions + first user message prefix are
+    # identical across rounds, so Anthropic caches and charges ~90 %
+    # less for the cached portion on rounds 2+.
+    _use_caching = True
 
     for _attempt in range(1, 3):  # up to 2 attempts (retry on truncation)
         _messages: list[dict] = [
@@ -5541,6 +5659,25 @@ async def _build_task_with_llm(
         try:
             # ── Agentic tool loop ─────────────────────────────
             for _round in range(_MAX_TOOL_ROUNDS + 1):
+                # Compact messages if the tool loop has grown
+                # too large (prevents unbounded token growth).
+                if _round > 0:
+                    _est = _estimate_msg_tokens(_messages)
+                    if _est > _TOOL_LOOP_TOKEN_LIMIT:
+                        _before = len(_messages)
+                        _messages = _compact_tool_messages(
+                            _messages)
+                        _after_est = _estimate_msg_tokens(
+                            _messages)
+                        await _log(
+                            user_id, run_id,
+                            f"  📦 [Opus] Context compacted: "
+                            f"{_before}→{len(_messages)} msgs, "
+                            f"~{_est // 1000}K→"
+                            f"~{_after_est // 1000}K tokens",
+                            "thinking",
+                        )
+
                 result = await chat(
                     api_key=api_key,
                     model=model,
@@ -5550,6 +5687,7 @@ async def _build_task_with_llm(
                     provider="anthropic",
                     thinking_budget=_thinking,
                     tools=_tools,
+                    enable_caching=_use_caching,
                 )
 
                 # When tools are provided, chat() returns raw API
