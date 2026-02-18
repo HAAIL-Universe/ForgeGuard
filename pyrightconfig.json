@@ -1,9 +1,0 @@
-{
-  "executionEnvironment": [
-    { "root": "." }
-  ],
-  "reportMissingImports": false,
-  "reportMissingModuleSource": false,
-  "pythonVersion": "3.12",
-  "enableExperimentalFeatures": true
-}

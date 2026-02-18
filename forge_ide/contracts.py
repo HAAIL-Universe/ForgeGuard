@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -80,10 +80,10 @@ class Edit(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    anchor: str = Field("", description="Context lines above the edit to locate it")
-    old_text: str = Field(..., description="Exact text to replace")
-    new_text: str = Field(..., description="Replacement text")
-    explanation: str = Field("", description="Why this change is needed")
+    anchor: Annotated[str, Field(description="Context lines above the edit to locate it")] = ""
+    old_text: Annotated[str, Field(description="Exact text to replace")]
+    new_text: Annotated[str, Field(description="Replacement text")]
+    explanation: Annotated[str, Field(description="Why this change is needed")] = ""
 
 
 class EditInstruction(BaseModel):
@@ -93,10 +93,9 @@ class EditInstruction(BaseModel):
 
     file_path: str
     edits: list[Edit]
-    full_rewrite: bool = Field(
-        False,
+    full_rewrite: Annotated[bool, Field(
         description="If True, edits[0].new_text is the complete file content",
-    )
+    )] = False
 
 
 class EditResult(BaseModel):

@@ -580,7 +580,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           background: status === 'ready' ? '#14532D' : status === 'running' ? '#14532D' : status === 'completed' ? '#1E3A5F' : status === 'error' ? '#7F1D1D' : status === 'paused' ? '#78350F' : status === 'stopping' || status === 'stopped' ? '#7C2D12' : status === 'preparing' ? '#1E3A5F' : '#1E293B',
           color: status === 'ready' ? '#22C55E' : status === 'running' ? '#22C55E' : status === 'completed' ? '#3B82F6' : status === 'error' ? '#EF4444' : status === 'paused' ? '#F59E0B' : status === 'stopping' || status === 'stopped' ? '#F97316' : status === 'preparing' ? '#38BDF8' : '#64748B',
         }}>
-          {status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Ready' : status === 'connecting' ? 'Connecting…' : status}
+          {status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Ready' : status}
         </span>
 
         {/* Progress bar */}
@@ -716,7 +716,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           {/* Tasks tab */}
           {leftTab === 'tasks' && (
             <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
-              {tasks.length === 0 && status === 'connecting' && (
+              {tasks.length === 0 && status === 'preparing' && (
                 <div style={{ color: '#475569', fontSize: '0.75rem', padding: '8px' }}>
                   Initializing…
                 </div>
@@ -876,8 +876,32 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
 
           {/* Tab bar */}
           <div style={{
-            display: 'flex', borderBottom: '1px solid #1E293B', flexShrink: 0,
+            display: 'flex', alignItems: 'center', borderBottom: '1px solid #1E293B', flexShrink: 0,
           }}>
+            {/* Copy log button */}
+            <button
+              title="Copy activity log to clipboard"
+              onClick={() => {
+                const text = logs.map(l => {
+                  const ts = l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : '';
+                  return `${ts}  ${l.message}`;
+                }).join('\n');
+                navigator.clipboard.writeText(text).then(() => {
+                  const btn = document.getElementById('forge-copy-log-btn');
+                  if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '⧉'; }, 1200); }
+                });
+              }}
+              id="forge-copy-log-btn"
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: '#64748B', fontSize: '0.85rem', padding: '6px 10px',
+                lineHeight: 1, flexShrink: 0, transition: 'color 0.2s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#F1F5F9')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#64748B')}
+            >
+              ⧉
+            </button>
             {(['activity', 'changes'] as const).map((tab) => (
               <button
                 key={tab}

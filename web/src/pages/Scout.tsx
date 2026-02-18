@@ -1088,7 +1088,7 @@ function Scout() {
                 </h3>
                 <div style={{ background: '#1E293B', borderRadius: '8px', padding: '14px', border: '1px solid #334155' }}>
                   {deepScanResult.metrics.smells.map((smell: any, i: number) => (
-                    <div key={i} style={{ display: 'flex', gap: '8px', padding: '6px 0', fontSize: '0.75rem', borderBottom: i < deepScanResult.metrics.smells.length - 1 ? '1px solid #334155' : 'none' }}>
+                    <div key={i} style={{ display: 'flex', gap: '8px', padding: '6px 0', fontSize: '0.75rem', borderBottom: i < (deepScanResult.metrics?.smells?.length ?? 0) - 1 ? '1px solid #334155' : 'none' }}>
                       <span style={{
                         padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600, flexShrink: 0,
                         background: smell.severity === 'HIGH' ? '#7F1D1D' : smell.severity === 'MEDIUM' ? '#78350F' : '#1E3A5F',
