@@ -24,7 +24,7 @@ Every commit requires four-step verification:
 
 ## §3 Diff Log
 
-The builder MUST overwrite `evidence/updatedifflog.md` before every commit.
+The builder MUST overwrite `evidence/diff_log.md` before every commit.
 
 ## §4 Audit Ledger
 

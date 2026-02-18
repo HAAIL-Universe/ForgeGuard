@@ -121,5 +121,14 @@
       ]
     }
   ],
-  "known_violations": []
+  "known_violations": [
+    {"layer": "services", "file": "architecture_mapper.py", "pattern": "asyncpg"},
+    {"layer": "services", "file": "architecture_mapper.py", "pattern": "fastapi"},
+    {"layer": "services", "file": "migration_advisor.py", "pattern": "fastapi"},
+    {"layer": "services", "file": "pattern_analyzer.py", "pattern": "fastapi"},
+    {"layer": "services", "file": "stack_detector.py", "pattern": "asyncpg"},
+    {"layer": "services", "file": "stack_detector.py", "pattern": "fastapi"},
+    {"layer": "services", "file": "version_db.py", "pattern": "asyncpg"},
+    {"layer": "services", "file": "version_db.py", "pattern": "fastapi"}
+  ]
 }

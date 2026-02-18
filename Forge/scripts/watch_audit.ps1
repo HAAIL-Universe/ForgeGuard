@@ -5,12 +5,12 @@
 # Usage:
 #   pwsh -File .\Forge\scripts\watch_audit.ps1
 #   pwsh -File .\Forge\scripts\watch_audit.ps1 -WatchPath "Forge/evidence"
-#   pwsh -File .\Forge\scripts\watch_audit.ps1 -Trigger "updatedifflog.md"
+#   pwsh -File .\Forge\scripts\watch_audit.ps1 -Trigger "diff_log.md"
 #   pwsh -File .\Forge\scripts\watch_audit.ps1 -DryRun
 #
 # What it does:
 #   1. Watches the evidence/ directory for file changes.
-#   2. When updatedifflog.md (or a custom trigger file) is written, it:
+#   2. When diff_log.md (or a custom trigger file) is written, it:
 #      a. Parses the diff log to extract the files-changed list and phase.
 #      b. Runs run_audit.ps1 with those parameters.
 #      c. Logs the result to the console with a timestamp.
@@ -24,7 +24,7 @@
 [CmdletBinding()]
 param(
   [string]$WatchPath = "",
-  [string]$Trigger = "updatedifflog.md",
+  [string]$Trigger = "diff_log.md",
   [int]$DebounceMs = 2000,
   [switch]$DryRun
 )
@@ -41,7 +41,7 @@ function Bad([string]$m)   { Write-Host "[watch] $(Get-Date -Format 'HH:mm:ss') 
 function Dim([string]$m)   { Write-Host "[watch] $(Get-Date -Format 'HH:mm:ss') $m" -ForegroundColor DarkGray }
 
 function ParseDiffLogForFiles([string]$diffLogPath) {
-  # Extract the files-changed list from updatedifflog.md
+  # Extract the files-changed list from diff_log.md
   # Supports multiple section header formats:
   #   ## Files Changed      (original format)
   #   ## Files Created       (table format)

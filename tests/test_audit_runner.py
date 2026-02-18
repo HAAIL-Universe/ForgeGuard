@@ -105,7 +105,7 @@ def _write_evidence(project: Path, test_pass: bool = True, diff_log_ok: bool = T
     (evidence / "test_runs_latest.md").write_text(f"Status: {status}\n")
 
     if diff_log_ok:
-        (evidence / "updatedifflog.md").write_text(
+        (evidence / "diff_log.md").write_text(
             "# Diff Log\n\n## Verification\n"
             "- Static: PASS\n"
             "- Runtime: PASS\n"
@@ -113,7 +113,7 @@ def _write_evidence(project: Path, test_pass: bool = True, diff_log_ok: bool = T
             "- Contract: PASS\n"
         )
     else:
-        (evidence / "updatedifflog.md").write_text("")
+        (evidence / "diff_log.md").write_text("")
 
 
 def _stage_file(project: Path, rel_path: str, content: str):
@@ -188,7 +188,7 @@ class TestA3EvidenceCompleteness:
     def test_fail_missing_test_runs(self, tmp_project: Path):
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / "updatedifflog.md").write_text("content\n")
+        (evidence / "diff_log.md").write_text("content\n")
         gov_root = str(tmp_project / "Forge")
         result = check_a3_evidence_completeness(gov_root)
         assert result["result"] == "FAIL"
@@ -205,7 +205,7 @@ class TestA3EvidenceCompleteness:
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / "test_runs_latest.md").write_text("Status: PASS\n")
-        (evidence / "updatedifflog.md").write_text("")
+        (evidence / "diff_log.md").write_text("")
         gov_root = str(tmp_project / "Forge")
         result = check_a3_evidence_completeness(gov_root)
         assert result["result"] == "FAIL"
@@ -285,7 +285,7 @@ class TestA5DiffLogGate:
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
         marker = "TO" + "DO:"
-        (evidence / "updatedifflog.md").write_text(
+        (evidence / "diff_log.md").write_text(
             f"# Diff Log\n- {marker} fill in summary\n"
         )
         gov_root = str(tmp_project / "Forge")
@@ -304,7 +304,7 @@ class TestA5DiffLogGate:
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
         marker = "TO" + "DO:"
-        (evidence / "updatedifflog.md").write_text(
+        (evidence / "diff_log.md").write_text(
             f"# Diff Log\n## Summary\n- All good\n\n"
             f"## Minimal Diff Hunks\n"
             f"    +- A5 Diff Log Gate: FAIL -- contains {marker} placeholders.\n"
@@ -356,7 +356,7 @@ class TestA7VerificationOrder:
     def test_fail_wrong_order(self, tmp_project: Path):
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / "updatedifflog.md").write_text(
+        (evidence / "diff_log.md").write_text(
             "# Diff Log\n\n## Verification\n"
             "- Contract: PASS\n"
             "- Behavior: PASS\n"
@@ -371,7 +371,7 @@ class TestA7VerificationOrder:
     def test_fail_missing_keyword(self, tmp_project: Path):
         evidence = tmp_project / "Forge" / "evidence"
         evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / "updatedifflog.md").write_text(
+        (evidence / "diff_log.md").write_text(
             "# Diff Log\n\n## Verification\n- Static: PASS\n- Runtime: PASS\n"
         )
         gov_root = str(tmp_project / "Forge")

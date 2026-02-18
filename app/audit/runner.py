@@ -136,7 +136,7 @@ def check_a1_scope_compliance(
     _GOVERNANCE_ALLOWLIST = {
         "Forge/Contracts/phases.md",
         "Forge/evidence/audit_ledger.md",
-        "Forge/evidence/updatedifflog.md",
+        "Forge/evidence/diff_log.md",
         "Forge/evidence/test_runs_latest.md",
         "Forge/evidence/test_runs.md",
     }
@@ -207,7 +207,7 @@ def check_a3_evidence_completeness(gov_root: str) -> GovernanceCheckResult:
     """A3: Verify evidence files exist and show PASS."""
     evidence_dir = os.path.join(gov_root, "evidence")
     test_runs_latest = os.path.join(evidence_dir, "test_runs_latest.md")
-    diff_log = os.path.join(evidence_dir, "updatedifflog.md")
+    diff_log = os.path.join(evidence_dir, "diff_log.md")
     failures: list[str] = []
 
     if not os.path.isfile(test_runs_latest):
@@ -221,9 +221,9 @@ def check_a3_evidence_completeness(gov_root: str) -> GovernanceCheckResult:
             )
 
     if not os.path.isfile(diff_log):
-        failures.append("updatedifflog.md missing")
+        failures.append("diff_log.md missing")
     elif os.path.getsize(diff_log) == 0:
-        failures.append("updatedifflog.md is empty")
+        failures.append("diff_log.md is empty")
 
     if failures:
         return {
@@ -237,7 +237,7 @@ def check_a3_evidence_completeness(gov_root: str) -> GovernanceCheckResult:
         "code": "A3",
         "name": "Evidence completeness",
         "result": "PASS",
-        "detail": "test_runs_latest.md=PASS, updatedifflog.md present.",
+        "detail": "test_runs_latest.md=PASS, diff_log.md present.",
     }
 
 
@@ -315,21 +315,21 @@ def check_a4_boundary_compliance(
 
 
 def check_a5_diff_log_gate(gov_root: str) -> GovernanceCheckResult:
-    """A5: Verify updatedifflog.md exists and has no placeholder markers.
+    """A5: Verify diff_log.md exists and has no placeholder markers.
 
     Missing file -> FAIL (blocking).
     Placeholder markers -> WARN (non-blocking) to avoid cyclic failures
     when the overwrite_diff_log script writes IN_PROCESS entries that the
     watch-audit picks up before the builder can finalise the diff log.
     """
-    diff_log = os.path.join(gov_root, "evidence", "updatedifflog.md")
+    diff_log = os.path.join(gov_root, "evidence", "diff_log.md")
 
     if not os.path.isfile(diff_log):
         return {
             "code": "A5",
             "name": "Diff Log Gate",
             "result": "FAIL",
-            "detail": "updatedifflog.md missing.",
+            "detail": "diff_log.md missing.",
         }
 
     with open(diff_log, encoding="utf-8") as f:
@@ -347,14 +347,14 @@ def check_a5_diff_log_gate(gov_root: str) -> GovernanceCheckResult:
             "code": "A5",
             "name": "Diff Log Gate",
             "result": "WARN",
-            "detail": f"updatedifflog.md contains {todo_marker} placeholders.",
+            "detail": f"diff_log.md contains {todo_marker} placeholders.",
         }
 
     return {
         "code": "A5",
         "name": "Diff Log Gate",
         "result": "PASS",
-        "detail": f"No {todo_marker} placeholders in updatedifflog.md.",
+        "detail": f"No {todo_marker} placeholders in diff_log.md.",
     }
 
 
@@ -411,14 +411,14 @@ def check_a6_authorization_gate(
 
 def check_a7_verification_order(gov_root: str) -> GovernanceCheckResult:
     """A7: Verify Static, Runtime, Behavior, Contract appear in order."""
-    diff_log = os.path.join(gov_root, "evidence", "updatedifflog.md")
+    diff_log = os.path.join(gov_root, "evidence", "diff_log.md")
 
     if not os.path.isfile(diff_log):
         return {
             "code": "A7",
             "name": "Verification hierarchy order",
             "result": "FAIL",
-            "detail": "updatedifflog.md missing; cannot verify order.",
+            "detail": "diff_log.md missing; cannot verify order.",
         }
 
     with open(diff_log, encoding="utf-8") as f:
@@ -432,7 +432,7 @@ def check_a7_verification_order(gov_root: str) -> GovernanceCheckResult:
             "code": "A7",
             "name": "Verification hierarchy order",
             "result": "FAIL",
-            "detail": "No ## Verification section found in updatedifflog.md.",
+            "detail": "No ## Verification section found in diff_log.md.",
         }
     # The section runs until the next ## heading or end of file.
     rest = full_text[ver_start + len("## Verification"):]

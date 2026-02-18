@@ -143,7 +143,7 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
                 if passed:
                     await _log(user_id, run_id,
                                "✅ Tests passed!", "system", "command")
-                    return await _commit_and_push(
+                    return await _run_pre_push_audit(
                         user_id, run_id, state, all_changes, task_results)
                 else:
                     # Tests failed — ask whether to force push
@@ -188,12 +188,27 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
                 await _log(user_id, run_id,
                            "⚠ Force pushing despite test failures…",
                            "warn", "command")
-                return await _commit_and_push(
+                return await _run_pre_push_audit(
                     user_id, run_id, state, all_changes, task_results)
             else:
                 await _log(user_id, run_id,
                            "🛑 Push cancelled. Fix the issues and try "
                            "/push again.", "system", "command")
+                return {"ok": True, "message": "Push cancelled."}
+
+        elif prompt_id == "push_audit_confirm":
+            all_changes = state.pop("_push_changes", [])
+            task_results = state.pop("_push_task_results", [])
+            if is_yes:
+                await _log(user_id, run_id,
+                           "⚠ Pushing despite audit failures…",
+                           "warn", "command")
+                return await _commit_and_push(
+                    user_id, run_id, state, all_changes, task_results)
+            else:
+                await _log(user_id, run_id,
+                           "🛑 Push cancelled. Fix the audit failures "
+                           "and try /push again.", "system", "command")
                 return {"ok": True, "message": "Push cancelled."}
 
         return {"ok": False, "message": "Unknown prompt."}
@@ -398,6 +413,183 @@ async def _log(
     if state:
         state["logs"].append(entry)
     await _emit(user_id, "upgrade_log", {"run_id": run_id, **entry})
+
+
+# ---------------------------------------------------------------------------
+# Inline per-file deterministic audit
+# ---------------------------------------------------------------------------
+
+# Re-use patterns from the audit engine (zero LLM cost)
+from app.audit.engine import _SECRET_PATTERNS as _SECRETS_RE
+
+
+def _audit_file_change(
+    change: dict,
+    *,
+    planned_files: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Run deterministic checks on a single proposed file change.
+
+    Returns ``(verdict, findings)`` where *verdict* is ``"PASS"`` or
+    ``"FAIL"`` and *findings* is a (possibly empty) list of human-readable
+    issue descriptions.
+
+    Checks performed (all pure-Python, zero LLM cost):
+      1. **Syntax** — ``compile()`` for ``.py``, ``json.loads()`` for ``.json``
+      2. **Secrets scan** — regex patterns from ``app.audit.engine``
+      3. **Import-star** — ``from X import *`` in Python files
+      4. **Scope compliance** — file path was in Sonnet's planned file list
+    """
+    content = change.get("after_snippet") or ""
+    filepath = change.get("file", "")
+    action = change.get("action", "modify")
+    findings: list[str] = []
+
+    # Deletions are always safe from a content perspective
+    if action == "delete" or not content:
+        return "PASS", []
+
+    # 1. Syntax check
+    if filepath.endswith(".py"):
+        try:
+            compile(content, filepath, "exec")
+        except SyntaxError as exc:
+            loc = f"{filepath}:{exc.lineno}" if exc.lineno else filepath
+            findings.append(f"Syntax error — {loc}: {exc.msg}")
+    elif filepath.endswith(".json"):
+        try:
+            json.loads(content)
+        except (json.JSONDecodeError, ValueError) as exc:
+            findings.append(f"Invalid JSON — {filepath}: {exc}")
+
+    # 2. Secrets scan
+    for pattern, description in _SECRETS_RE:
+        if re.search(pattern, content):
+            findings.append(f"Secret detected — {filepath}: {description}")
+
+    # 3. Import-star check (Python only)
+    if filepath.endswith(".py"):
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("from ") and "import *" in stripped:
+                findings.append(
+                    f"Wildcard import — {filepath}: {stripped}")
+
+    # 4. Scope compliance (when Sonnet's plan is available)
+    if planned_files is not None and filepath and filepath not in planned_files:
+        findings.append(
+            f"Scope deviation — {filepath}: not in Sonnet's planned file list")
+
+    verdict = "FAIL" if findings else "PASS"
+    return verdict, findings
+
+
+# ---------------------------------------------------------------------------
+# Evidence file writers (diff log + audit trail)
+# ---------------------------------------------------------------------------
+
+
+def _write_diff_log(
+    working_dir: str,
+    all_changes: list[dict],
+    repo_name: str,
+) -> str:
+    """Write ``Forge/evidence/diff_log.md`` to the working directory.
+
+    Generates a deterministic markdown summary of every proposed change
+    so Scout checks A3/A5 pass.  Returns the absolute path written.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    lines = [
+        "# Diff Log",
+        "",
+        f"> Auto-generated by ForgeGuard Upgrade IDE — {now}",
+        f"> Repository: `{repo_name}`",
+        "",
+        f"## Changes ({len(all_changes)} file(s))",
+        "",
+    ]
+
+    for i, c in enumerate(all_changes, 1):
+        action = c.get("action", "modify")
+        filepath = c.get("file", "unknown")
+        desc = c.get("description", "")
+        lines.append(f"### {i}. `{filepath}` — {action}")
+        if desc:
+            lines.append(f"")
+            lines.append(f"{desc}")
+        before = c.get("before_snippet", "")
+        after = c.get("after_snippet", "")
+        if before:
+            ext = Path(filepath).suffix.lstrip(".") or "text"
+            lines.append("")
+            lines.append(f"**Before:**")
+            lines.append(f"```{ext}")
+            # Truncate very large snippets to keep log readable
+            lines.append(before[:2000] + ("…" if len(before) > 2000 else ""))
+            lines.append("```")
+        if after:
+            ext = Path(filepath).suffix.lstrip(".") or "text"
+            lines.append("")
+            lines.append(f"**After:**")
+            lines.append(f"```{ext}")
+            lines.append(after[:2000] + ("…" if len(after) > 2000 else ""))
+            lines.append("```")
+        lines.append("")
+
+    content = "\n".join(lines)
+    evidence_dir = Path(working_dir) / "Forge" / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    out_path = evidence_dir / "diff_log.md"
+    out_path.write_text(content, encoding="utf-8")
+    return str(out_path)
+
+
+def _write_audit_trail(
+    working_dir: str,
+    audit_results: list[dict],
+    repo_name: str,
+) -> str:
+    """Write ``Forge/evidence/audit_ledger.md`` to the working directory.
+
+    Aggregates per-file audit verdicts into a markdown table for the
+    Scout W2 check.  Returns the absolute path written.
+
+    Each entry in *audit_results* is:
+    ``{"file": str, "action": str, "verdict": str, "findings": list[str]}``
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    total = len(audit_results)
+    passed = sum(1 for r in audit_results if r["verdict"] == "PASS")
+    failed = total - passed
+
+    lines = [
+        "# Audit Ledger",
+        "",
+        f"> Auto-generated by ForgeGuard Upgrade IDE — {now}",
+        f"> Repository: `{repo_name}`",
+        "",
+        f"**Summary:** {passed}/{total} files passed, {failed} failed",
+        "",
+        "| # | File | Action | Verdict | Findings |",
+        "|---|------|--------|---------|----------|",
+    ]
+
+    for i, r in enumerate(audit_results, 1):
+        icon = "✅" if r["verdict"] == "PASS" else "❌"
+        findings_str = "; ".join(r.get("findings", [])) or "—"
+        lines.append(
+            f"| {i} | `{r['file']}` | {r['action']} | {icon} {r['verdict']} "
+            f"| {findings_str} |"
+        )
+
+    lines.append("")
+    content = "\n".join(lines)
+    evidence_dir = Path(working_dir) / "Forge" / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    out_path = evidence_dir / "audit_ledger.md"
+    out_path.write_text(content, encoding="utf-8")
+    return str(out_path)
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +888,103 @@ async def _push_changes(
     ok = await _apply_all_changes(user_id, run_id, state, all_changes)
     if not ok:
         return {"ok": False, "message": "No changes could be applied."}
+    return await _run_pre_push_audit(
+        user_id, run_id, state, all_changes, task_results)
+
+
+async def _run_pre_push_audit(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    all_changes: list[dict],
+    task_results: list[dict],
+) -> dict:
+    """Write evidence files, check audit results, gate the push.
+
+    Flow: diff log -> audit trail -> if any FAIL -> Y/N prompt -> push or cancel.
+    If all PASS -> commit and push immediately.
+    """
+    working_dir = state.get("working_dir", "")
+    repo_name = state.get("repo_name", "unknown")
+    audit_results = state.get("audit_results", [])
+
+    # 1. Write diff log
+    await _log(user_id, run_id, "", "system", "command")
+    await _log(user_id, run_id,
+               "📄 Writing diff log…", "system", "command")
+    try:
+        diff_log_path = _write_diff_log(working_dir, all_changes, repo_name)
+        await _log(user_id, run_id,
+                   f"  ✅ diff_log.md written ({len(all_changes)} file(s))",
+                   "info", "command")
+    except Exception as exc:
+        await _log(user_id, run_id,
+                   f"  ⚠ Failed to write diff log: {exc}",
+                   "warn", "command")
+
+    # 2. Write audit trail
+    if audit_results:
+        await _log(user_id, run_id,
+                   "📋 Writing audit trail…", "system", "command")
+        try:
+            _write_audit_trail(working_dir, audit_results, repo_name)
+            passed = sum(1 for r in audit_results if r["verdict"] == "PASS")
+            failed = sum(1 for r in audit_results if r["verdict"] != "PASS")
+            await _log(user_id, run_id,
+                       f"  ✅ Audit trail written — {passed} passed, {failed} failed",
+                       "info", "command")
+        except Exception as exc:
+            await _log(user_id, run_id,
+                       f"  ⚠ Failed to write audit trail: {exc}",
+                       "warn", "command")
+
+    # 3. Check for audit failures
+    failures = [r for r in audit_results if r["verdict"] != "PASS"]
+    if failures:
+        # Show failure summary and offer Y/N prompt
+        await _log(user_id, run_id, "", "system", "command")
+        await _log(user_id, run_id,
+                   "╔══════════════════════════════════════════════════╗",
+                   "system", "command")
+        await _log(user_id, run_id,
+                   f"║  ❌ Audit: {len(failures)} file(s) failed — push anyway? ║",
+                   "system", "command")
+        await _log(user_id, run_id,
+                   "║                                                  ║",
+                   "system", "command")
+        for f in failures[:5]:
+            name = f["file"][:40]
+            reason = "; ".join(f.get("findings", []))[:50]
+            await _log(user_id, run_id,
+                       f"║  • {name}: {reason}",
+                       "warn", "command")
+        if len(failures) > 5:
+            await _log(user_id, run_id,
+                       f"║  … and {len(failures) - 5} more",
+                       "warn", "command")
+        await _log(user_id, run_id,
+                   "║                                                  ║",
+                   "system", "command")
+        await _log(user_id, run_id,
+                   "║  [Y] Push anyway — ignore audit failures         ║",
+                   "system", "command")
+        await _log(user_id, run_id,
+                   "║  [N] Cancel push — fix issues first              ║",
+                   "system", "command")
+        await _log(user_id, run_id,
+                   "╚══════════════════════════════════════════════════╝",
+                   "system", "command")
+
+        state["_push_changes"] = all_changes
+        state["_push_task_results"] = task_results
+        state["pending_prompt"] = "push_audit_confirm"
+        await _emit(user_id, "upgrade_prompt", {
+            "run_id": run_id, "prompt_id": "push_audit_confirm"})
+        return {"ok": True, "message": "Audit failed. Y/N?"}
+
+    # 4. All passed — commit and push
+    await _log(user_id, run_id,
+               "✅ All files passed inline audit", "system", "command")
     return await _commit_and_push(
         user_id, run_id, state, all_changes, task_results)
 
@@ -1298,6 +1587,13 @@ async def _run_upgrade(
                     await asyncio.sleep(0.08)
 
                 changes = code_result.get("changes", [])
+                # Build planned file list from Sonnet's plan for scope check
+                _planned = None
+                if plan_result:
+                    _plan_entries = plan_result.get("plan", [])
+                    if _plan_entries:
+                        _planned = [p.get("file", "") for p in _plan_entries]
+
                 if changes:
                     await _log(user_id, run_id,
                                 f"📝 [Opus] {len(changes)} file change(s) proposed:",
@@ -1319,6 +1615,43 @@ async def _run_upgrade(
                             **change,
                         })
                         await asyncio.sleep(0.05)
+
+                        # ── Inline audit (deterministic, zero LLM cost) ──
+                        await _emit(user_id, "file_audit_start", {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "file": change.get("file", ""),
+                        })
+                        verdict, findings = _audit_file_change(
+                            change, planned_files=_planned)
+                        audit_entry = {
+                            "file": change.get("file", ""),
+                            "action": change.get("action", "modify"),
+                            "verdict": verdict,
+                            "findings": findings,
+                            "task_id": task_id,
+                        }
+                        state.setdefault("audit_results", []).append(
+                            audit_entry)
+                        if verdict == "PASS":
+                            await _log(user_id, run_id,
+                                        f"    ✅ Audit PASS: {change.get('file', '?')}",
+                                        "info")
+                            await _emit(user_id, "file_audit_pass", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": change.get("file", ""),
+                            })
+                        else:
+                            for f in findings:
+                                await _log(user_id, run_id,
+                                            f"    ❌ {f}", "warn")
+                            await _emit(user_id, "file_audit_fail", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": change.get("file", ""),
+                                "findings": findings,
+                            })
 
                 for warn in code_result.get("warnings", []):
                     await _log(user_id, run_id, f"⚠️ [Opus] {warn}", "warn")
@@ -1786,7 +2119,7 @@ async def _run_retry(
             c_out = code_usage.get("output_tokens", 0)
             tokens.add("opus", c_in, c_out)
 
-            # ── Log Opus output ──
+            # ── Log Opus output + inline audit ──
             if code_result:
                 for thought in code_result.get("thinking", []):
                     await _log(user_id, run_id,
@@ -1794,6 +2127,13 @@ async def _run_retry(
                     await asyncio.sleep(0.08)
 
                 changes = code_result.get("changes", [])
+                # Build planned file list from Sonnet's plan for scope check
+                _retry_planned = None
+                if plan_result:
+                    _rp_entries = plan_result.get("plan", [])
+                    if _rp_entries:
+                        _retry_planned = [p.get("file", "") for p in _rp_entries]
+
                 if changes:
                     await _log(user_id, run_id,
                                 f"📝 [Opus] {len(changes)} file change(s) proposed:",
@@ -1815,6 +2155,43 @@ async def _run_retry(
                             **change,
                         })
                         await asyncio.sleep(0.05)
+
+                        # ── Inline audit (retry flow) ──
+                        await _emit(user_id, "file_audit_start", {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "file": change.get("file", ""),
+                        })
+                        verdict, findings = _audit_file_change(
+                            change, planned_files=_retry_planned)
+                        audit_entry = {
+                            "file": change.get("file", ""),
+                            "action": change.get("action", "modify"),
+                            "verdict": verdict,
+                            "findings": findings,
+                            "task_id": task_id,
+                        }
+                        state.setdefault("audit_results", []).append(
+                            audit_entry)
+                        if verdict == "PASS":
+                            await _log(user_id, run_id,
+                                        f"    ✅ Audit PASS: {change.get('file', '?')}",
+                                        "info")
+                            await _emit(user_id, "file_audit_pass", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": change.get("file", ""),
+                            })
+                        else:
+                            for f in findings:
+                                await _log(user_id, run_id,
+                                            f"    ❌ {f}", "warn")
+                            await _emit(user_id, "file_audit_fail", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": change.get("file", ""),
+                                "findings": findings,
+                            })
 
                 for warn in code_result.get("warnings", []):
                     await _log(user_id, run_id, f"⚠️ [Opus] {warn}", "warn")

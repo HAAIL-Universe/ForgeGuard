@@ -220,7 +220,7 @@ Auto-authorize: enabled.
    - `Forge/Contracts/physics.yaml`
    - `Forge/Contracts/boundaries.json`
    - `Forge/Contracts/ui.md`
-   - `Forge/evidence/updatedifflog.md` (if it exists)
+   - `Forge/evidence/diff_log.md` (if it exists)
    - `Forge/evidence/audit_ledger.md` (if it exists — summarise last entry or note "No prior audit ledger found")
 3. Execute **Phase 0 (Genesis)** per `Forge/Contracts/phases.md`. All scaffolded project files (app/, tests/, requirements.txt, forge.json, .env.example, etc.) go at the **project root** — never inside `Forge/`.
 4. After Phase 0, run the full verification hierarchy (static → runtime → behaviour → contract) per §9.

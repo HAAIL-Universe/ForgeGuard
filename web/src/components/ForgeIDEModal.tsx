@@ -72,6 +72,8 @@ interface FileDiff {
   description: string;
   before_snippet?: string;
   after_snippet?: string;
+  audit_status?: 'pending' | 'auditing' | 'passed' | 'failed';
+  findings?: string[];
 }
 
 interface ForgeIDEModalProps {
@@ -338,7 +340,32 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
               description: p.description,
               before_snippet: p.before_snippet,
               after_snippet: p.after_snippet,
+              audit_status: 'pending',
             }]);
+            break;
+
+          case 'file_audit_start':
+            setFileDiffs((prev) => prev.map((d) =>
+              d.file === p.file && d.task_id === p.task_id
+                ? { ...d, audit_status: 'auditing' as const }
+                : d
+            ));
+            break;
+
+          case 'file_audit_pass':
+            setFileDiffs((prev) => prev.map((d) =>
+              d.file === p.file && d.task_id === p.task_id
+                ? { ...d, audit_status: 'passed' as const }
+                : d
+            ));
+            break;
+
+          case 'file_audit_fail':
+            setFileDiffs((prev) => prev.map((d) =>
+              d.file === p.file && d.task_id === p.task_id
+                ? { ...d, audit_status: 'failed' as const, findings: p.findings || [] }
+                : d
+            ));
             break;
 
           case 'upgrade_complete':
@@ -1201,6 +1228,32 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                           {diff.action}
                         </span>
                         <span style={{ flex: 1 }} />
+                        {/* Audit badge */}
+                        {diff.audit_status === 'auditing' && (
+                          <span style={{
+                            fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                            borderRadius: '4px', background: '#F9731622', color: '#F97316',
+                            animation: 'pulse 1.5s ease-in-out infinite',
+                          }}>
+                            ● AUDITING
+                          </span>
+                        )}
+                        {diff.audit_status === 'passed' && (
+                          <span style={{
+                            fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                            borderRadius: '4px', background: '#22C55E22', color: '#22C55E',
+                          }}>
+                            ✓✓ PASS
+                          </span>
+                        )}
+                        {diff.audit_status === 'failed' && (
+                          <span style={{
+                            fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                            borderRadius: '4px', background: '#EF444422', color: '#EF4444',
+                          }}>
+                            ✗ FAIL
+                          </span>
+                        )}
                         <span style={{ fontSize: '0.7rem', color: '#64748B' }}>
                           {diff.task_id}
                         </span>
@@ -1214,6 +1267,22 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                           <div style={{ fontSize: '0.75rem', color: '#94A3B8', padding: '8px 0 6px' }}>
                             {diff.description}
                           </div>
+                          {diff.audit_status === 'failed' && diff.findings && diff.findings.length > 0 && (
+                            <div style={{
+                              marginBottom: '8px', padding: '6px 10px',
+                              background: '#1A0000', border: '1px solid #7F1D1D',
+                              borderRadius: '4px', fontSize: '0.7rem',
+                            }}>
+                              <div style={{ color: '#EF4444', fontWeight: 600, marginBottom: '4px', fontSize: '0.65rem', textTransform: 'uppercase' }}>
+                                Audit Findings
+                              </div>
+                              {diff.findings.map((finding, fi) => (
+                                <div key={fi} style={{ color: '#FCA5A5', padding: '1px 0' }}>
+                                  • {finding}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           {diff.before_snippet && (
                             <div style={{ marginBottom: '6px' }}>
                               <div style={{ fontSize: '0.6rem', color: '#EF4444', textTransform: 'uppercase', marginBottom: '2px' }}>

@@ -83,7 +83,7 @@ def _build_check_list(
         })
 
     # A5 — Diff log gate
-    diff_log_found = any("updatedifflog" in p.lower() for p in changed_paths)
+    diff_log_found = any("diff_log" in p.lower() for p in changed_paths)
     checks.append({
         "code": "A5",
         "name": "Diff log gate",

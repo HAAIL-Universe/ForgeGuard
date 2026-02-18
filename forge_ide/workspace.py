@@ -20,7 +20,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -456,7 +456,7 @@ class WorkspaceSnapshot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    file_tree: str = Field("", description="Indented directory listing")
+    file_tree: Annotated[str, Field(description="Indented directory listing")] = ""
     symbol_table: dict[str, str] = Field(
         default_factory=dict,
         description="dotted.path -> kind (class/function/const)",
@@ -467,8 +467,8 @@ class WorkspaceSnapshot(BaseModel):
     )
     test_inventory: TestInventory = Field(default_factory=TestInventory)
     schema_inventory: SchemaInventory = Field(default_factory=SchemaInventory)
-    total_files: int = Field(0, ge=0)
-    total_lines: int = Field(0, ge=0)
+    total_files: Annotated[int, Field(ge=0)] = 0
+    total_lines: Annotated[int, Field(ge=0)] = 0
     languages: dict[str, int] = Field(
         default_factory=dict,
         description="language -> line count",

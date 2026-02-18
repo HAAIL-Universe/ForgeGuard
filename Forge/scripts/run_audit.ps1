@@ -68,7 +68,7 @@ try {
   # Governance paths (inside Forge/)
   $evidenceDir       = Join-Path $govRoot "evidence"
   $testRunsLatest    = Join-Path $evidenceDir "test_runs_latest.md"
-  $diffLog           = Join-Path $evidenceDir "updatedifflog.md"
+  $diffLog           = Join-Path $evidenceDir "diff_log.md"
   $auditLedger       = Join-Path $evidenceDir "audit_ledger.md"
   $physicsYaml       = Join-Path (Join-Path $govRoot "Contracts") "physics.yaml"
   $boundariesJson    = Join-Path (Join-Path $govRoot "Contracts") "boundaries.json"
@@ -88,7 +88,7 @@ try {
   $governanceAllowlist = @(
     'Forge/Contracts/phases.md',
     'Forge/evidence/audit_ledger.md',
-    'Forge/evidence/updatedifflog.md',
+    'Forge/evidence/diff_log.md',
     'Forge/evidence/test_runs_latest.md',
     'Forge/evidence/test_runs.md'
   )
@@ -160,16 +160,16 @@ try {
     }
 
     if (-not (Test-Path $diffLog)) {
-      $a3Failures += "updatedifflog.md missing"
+      $a3Failures += "diff_log.md missing"
     } elseif ((Get-Item $diffLog).Length -eq 0) {
-      $a3Failures += "updatedifflog.md is empty"
+      $a3Failures += "diff_log.md is empty"
     }
 
     if ($a3Failures.Count -gt 0) {
       $results["A3"] = "FAIL -- $($a3Failures -join '; ')"
       $anyFail = $true
     } else {
-      $results["A3"] = "PASS -- test_runs_latest.md=PASS, updatedifflog.md present."
+      $results["A3"] = "PASS -- test_runs_latest.md=PASS, diff_log.md present."
     }
   } catch {
     $results["A3"] = "FAIL -- Error checking evidence: $_"
@@ -246,7 +246,7 @@ try {
 
   try {
     if (-not (Test-Path $diffLog)) {
-      $warnings["A5"] = "FAIL -- updatedifflog.md missing."
+      $warnings["A5"] = "FAIL -- diff_log.md missing."
     } else {
       $dlContent = Get-Content $diffLog -Raw
       # Only scan the header portion (above diff hunks) so that git diff
@@ -254,9 +254,9 @@ try {
       $hunksIdx = $dlContent.IndexOf('## Minimal Diff Hunks')
       $dlHeader = if ($hunksIdx -ge 0) { $dlContent.Substring(0, $hunksIdx) } else { $dlContent }
       if ($dlHeader -match '(?i)TODO:') {
-        $warnings["A5"] = "WARN -- updatedifflog.md contains TODO: placeholders."
+        $warnings["A5"] = "WARN -- diff_log.md contains TODO: placeholders."
       } else {
-        $warnings["A5"] = "PASS -- No TODO: placeholders in updatedifflog.md."
+        $warnings["A5"] = "PASS -- No TODO: placeholders in diff_log.md."
       }
     }
   } catch {
@@ -298,7 +298,7 @@ try {
 
   try {
     if (-not (Test-Path $diffLog)) {
-      $results["A7"] = "FAIL -- updatedifflog.md missing; cannot verify order."
+      $results["A7"] = "FAIL -- diff_log.md missing; cannot verify order."
       $anyFail = $true
     } else {
       $dlRaw = Get-Content $diffLog -Raw
@@ -306,7 +306,7 @@ try {
       # in file names, table names, or diff hunks don't cause false positives.
       $verIdx = $dlRaw.IndexOf('## Verification')
       if ($verIdx -lt 0) {
-        $results["A7"] = "FAIL -- No ## Verification section found in updatedifflog.md."
+        $results["A7"] = "FAIL -- No ## Verification section found in diff_log.md."
         $anyFail = $true
       } else {
       $verRest = $dlRaw.Substring($verIdx + '## Verification'.Length)

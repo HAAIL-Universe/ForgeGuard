@@ -126,7 +126,7 @@ Before making changes, the builder must read (in this order):
 6) `Forge/Contracts/boundaries.json`
 7) `Forge/Contracts/ui.md` (when frontend is enabled in `stack.md`)
 8) `Forge/Contracts/directive.md` (when it exists)
-9) `Forge/evidence/updatedifflog.md` (canonical)
+9) `Forge/evidence/diff_log.md` (canonical)
 10) `Forge/evidence/audit_ledger.md` (when it exists)
    - Summarize: last signed-off phase, last outcome (`AUTHORIZED`/`FAIL`/`SIGNED-OFF`), and any outstanding FAIL items.
    - If the last entry's outcome is `FAIL` or `SIGNED-OFF (awaiting AUTHORIZED)`, the builder MUST NOT begin new work until that state is resolved (either the user issues `AUTHORIZED`, or the builder re-enters the loopback protocol per §10.3).
@@ -307,7 +307,7 @@ The builder must:
 
 - Physics-first: no new routes/endpoints without updating `Contracts/physics.yaml` first.
 - Minimal diffs per cycle; no refactors unless the contract forces it.
-- The builder MUST overwrite `evidence/updatedifflog.md` with verification (static → runtime → behavior → contract) **before every commit** — whether that commit is a mid-phase checkpoint or an end-of-phase sign-off. Every commit in the git history must have a corresponding diff log snapshot at the time it was made.
+- The builder MUST overwrite `evidence/diff_log.md` with verification (static → runtime → behavior → contract) **before every commit** — whether that commit is a mid-phase checkpoint or an end-of-phase sign-off. Every commit in the git history must have a corresponding diff log snapshot at the time it was made.
 
 ### 9.4 Dependency gate
 
@@ -419,7 +419,7 @@ When AEM is enabled, the builder MUST ensure **exactly one instance** of the aud
 
 The builder MUST call step 5 every phase. It does not need to manually check whether the watcher is running -- the lock file handles that.
 
-This watcher monitors `Forge/evidence/updatedifflog.md`. It parses the diff log for claimed files (from `## Files Changed/Created/Modified` tables) and the phase identifier (from `Phase N` in the header), then automatically invokes `run_audit.ps1` with those parameters.
+This watcher monitors `Forge/evidence/diff_log.md`. It parses the diff log for claimed files (from `## Files Changed/Created/Modified` tables) and the phase identifier (from `Phase N` in the header), then automatically invokes `run_audit.ps1` with those parameters.
 
 The watcher is **passive during builder work** -- it only triggers when the diff log `Status` field changes to `COMPLETE`. While `Status: IN_PROCESS`, the watcher explicitly skips auditing to avoid interrupting mid-cycle work.
 
@@ -433,7 +433,7 @@ The builder does **NOT** switch personas, self-audit, or read `auditor_contract.
 
 When `watch_audit.ps1` is running (per §10.1.1), the builder triggers the audit by writing the diff log:
 
-1. **Write `Forge/evidence/updatedifflog.md`** with `Status: COMPLETE` and all required sections (Files Changed/Created/Modified tables, Verification Hierarchy, etc.). The watcher detects the file change and automatically:
+1. **Write `Forge/evidence/diff_log.md`** with `Status: COMPLETE` and all required sections (Files Changed/Created/Modified tables, Verification Hierarchy, etc.). The watcher detects the file change and automatically:
    - Parses the claimed files from the diff log tables.
    - Parses the phase identifier from the header.
    - Invokes `run_audit.ps1 -ClaimedFiles "<parsed files>" -Phase "<parsed phase>"`.
@@ -512,7 +512,7 @@ ACTION REQUIRED: HALT. Awaiting user token "AUTHORIZED" before commit/push.
 After emitting this block, the builder MUST check the directive for the `Auto-authorize` flag:
 
 **If `Auto-authorize: enabled` is set AND the audit exited with code 0 (all PASS):**
-1. Overwrite `evidence/updatedifflog.md` (per §9.3).
+1. Overwrite `evidence/diff_log.md` (per §9.3).
 2. Append the Phase Sign-off to the Audit Ledger with `outcome: AUTO-AUTHORIZED`.
 3. Run `git commit` (include the phase identifier in the commit message), then `git push`.
 4. Proceed directly to the next phase without halting.
@@ -614,11 +614,11 @@ pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "file1.py,file2.ts,..." -
 |---|-------|---------------|----------------|
 | A1 | **Scope compliance** | `git diff --name-only` (staged + unstaged) matches `-ClaimedFiles` exactly | Any file in diff not in claimed list, or vice versa |
 | A2 | **Minimal-diff discipline** | `git diff --summary` scanned for `rename` entries | Any `rename` found |
-| A3 | **Evidence completeness** | `evidence/test_runs_latest.md` exists and line 1 starts with `Status: PASS`; `evidence/updatedifflog.md` exists and is non-empty | Missing files, or test status is not PASS |
+| A3 | **Evidence completeness** | `evidence/test_runs_latest.md` exists and line 1 starts with `Status: PASS`; `evidence/diff_log.md` exists and is non-empty | Missing files, or test status is not PASS |
 | A4 | **Boundary compliance** | Read `Contracts/boundaries.json`, scan each layer's files for forbidden patterns | Any forbidden pattern found |
-| A5 | **Diff Log Gate** | `evidence/updatedifflog.md` exists, contains no `TODO:` placeholders | File missing or contains `TODO:` |
+| A5 | **Diff Log Gate** | `evidence/diff_log.md` exists, contains no `TODO:` placeholders | File missing or contains `TODO:` |
 | A6 | **Authorization Gate** | `git log` — no commits since the last known AUTHORIZED hash (from `evidence/audit_ledger.md`) | Unauthorized commits detected |
-| A7 | **Verification hierarchy order** | `evidence/updatedifflog.md` contains `Static`, `Runtime`, `Behavior`, `Contract` in order | Keywords missing or out of order |
+| A7 | **Verification hierarchy order** | `evidence/diff_log.md` contains `Static`, `Runtime`, `Behavior`, `Contract` in order | Keywords missing or out of order |
 | A8 | **Test gate** | `evidence/test_runs_latest.md` line 1 is `Status: PASS` | Line 1 is not `Status: PASS` or file missing |
 | A9 | **Dependency gate** | Every import in changed files has a corresponding entry in the dependency manifest | Import without declared dependency |
 
@@ -640,7 +640,7 @@ pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "file1.py,file2.ts,..." -
 
 ## 11) Diff log gate (mandatory)
 
-Canonical diff log path: `evidence/updatedifflog.md`
+Canonical diff log path: `evidence/diff_log.md`
 
 The builder must:
 
@@ -658,10 +658,10 @@ If the repo has a PowerShell helper for diff logs, it must be used:
 Helper workflow: the script writes skeleton + git/diff metadata but leaves TODO placeholders. The builder must:
 1) At START of a cycle: run the helper, then replace TODO placeholders with Status=IN_PROCESS, planned/current files, summary bullets, and notes/next steps (no TODOs left).
 2) At END of a cycle: re-run the helper to refresh metadata, then replace all TODO placeholders with final Status=COMPLETE, real summary, verification (static → runtime → behavior → contract), and notes/next steps (explicit "None" if empty).
-No cycle is COMPLETE if any "TODO:" placeholders remain in `evidence/updatedifflog.md`.
+No cycle is COMPLETE if any "TODO:" placeholders remain in `evidence/diff_log.md`.
 
 Mandatory per-cycle diff log sequence:
-1) Read `evidence/updatedifflog.md` and summarize the previous cycle (1–5 bullets) before any overwrite.
+1) Read `evidence/diff_log.md` and summarize the previous cycle (1–5 bullets) before any overwrite.
 2) Plan scope/files/tests.
 3) Only after planning, run `scripts/overwrite_diff_log.ps1` to regenerate the scaffold.
 4) Immediately replace placeholders with Status=IN_PROCESS, planned summary, planned files, notes, and next steps (no TODOs left).
@@ -682,7 +682,7 @@ If diff log is not updated, work is incomplete.
 - Assume every cycle is audited for scope, evidence anchors, contract compliance, diff-log integrity, and token discipline. The cycle fails if the scope is broadened without permission, the verification hierarchy is incomplete, or the canonical log contains TODO placeholders.
 - Before asking for `OVERWRITE` (the dirty-tree diff log gate), print `git status -sb` and `git diff --staged --name-only`. That token only authorizes the canonical log overwrite and never a commit.
 - Before asking for `AUTHORIZED` (the commit/push gate), again print those status lines. Treat `OVERWRITE` and `AUTHORIZED` as distinct tokens authorizing different actions.
-- Only `evidence/updatedifflog.md` is authoritative for approvals.
+- Only `evidence/diff_log.md` is authoritative for approvals.
 - Stick to the allowed file set, do not invent files, and keep evidence ready before requesting tokens.
 
 --- End of Builder Contract ---

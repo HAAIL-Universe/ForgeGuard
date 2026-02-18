@@ -212,7 +212,7 @@ Canonical phase plan. Each phase is self-contained, shippable, and auditable. Th
   - A2 Minimal-diff discipline (detect renames)
   - A3 Evidence completeness (test_runs_latest.md exists, Status: PASS)
   - A4 Boundary compliance (boundaries.json pattern matching)
-  - A5 Diff log gate (updatedifflog.md exists, no TODO placeholders)
+  - A5 Diff log gate (diff_log.md exists, no TODO placeholders)
   - A6 Authorization gate (no unauthorized commits)
   - A7 Verification hierarchy order (Static, Runtime, Behavior, Contract in order)
   - A8 Test gate (test_runs_latest.md Status: PASS)

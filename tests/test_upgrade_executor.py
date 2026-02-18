@@ -10,14 +10,18 @@ import pytest
 from app.services.upgrade_executor import (
     _active_upgrades,
     _apply_file_change,
+    _audit_file_change,
     _build_task_with_llm,
     _gather_file_contents,
     _log,
     _plan_task_with_llm,
+    _run_pre_push_audit,
     _run_retry,
     _strip_codeblock,
     _TokenAccumulator,
     _WorkerSlot,
+    _write_audit_trail,
+    _write_diff_log,
     _fmt_tokens,
     execute_upgrade,
     get_available_commands,
@@ -1333,5 +1337,301 @@ async def test_run_retry_still_failed_keeps_retry_data():
         assert state["task_results"][0]["status"] == "skipped"
         assert state["task_results"][0]["_retry_task"] == task
         assert state["status"] == "completed"
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+# -----------------------------------------------------------------------
+# Inline per-file deterministic audit
+# -----------------------------------------------------------------------
+
+
+class TestAuditFileChange:
+    """Tests for _audit_file_change deterministic checks."""
+
+    def test_pass_clean_python(self):
+        change = {
+            "file": "app/main.py",
+            "action": "modify",
+            "after_snippet": "import os\n\ndef hello():\n    return 'world'\n",
+        }
+        verdict, findings = _audit_file_change(change)
+        assert verdict == "PASS"
+        assert findings == []
+
+    def test_fail_syntax_error(self):
+        change = {
+            "file": "app/broken.py",
+            "action": "create",
+            "after_snippet": "def foo(\n    pass\n",
+        }
+        verdict, findings = _audit_file_change(change)
+        assert verdict == "FAIL"
+        assert any("Syntax error" in f for f in findings)
+
+    def test_fail_invalid_json(self):
+        change = {
+            "file": "config.json",
+            "action": "create",
+            "after_snippet": '{"key": }',
+        }
+        verdict, findings = _audit_file_change(change)
+        assert verdict == "FAIL"
+        assert any("Invalid JSON" in f for f in findings)
+
+    def test_pass_valid_json(self):
+        change = {
+            "file": "config.json",
+            "action": "create",
+            "after_snippet": '{"key": "value"}',
+        }
+        verdict, findings = _audit_file_change(change)
+        assert verdict == "PASS"
+
+    def test_fail_import_star(self):
+        change = {
+            "file": "app/utils.py",
+            "action": "modify",
+            "after_snippet": "from os import *\n\ndef fn():\n    pass\n",
+        }
+        verdict, findings = _audit_file_change(change)
+        assert verdict == "FAIL"
+        assert any("Wildcard import" in f for f in findings)
+
+    def test_pass_delete_action(self):
+        change = {"file": "old.py", "action": "delete", "after_snippet": ""}
+        verdict, findings = _audit_file_change(change)
+        assert verdict == "PASS"
+        assert findings == []
+
+    def test_pass_in_scope(self):
+        change = {
+            "file": "app/main.py",
+            "action": "modify",
+            "after_snippet": "x = 1\n",
+        }
+        verdict, findings = _audit_file_change(
+            change, planned_files=["app/main.py", "tests/test_main.py"])
+        assert verdict == "PASS"
+
+    def test_fail_out_of_scope(self):
+        change = {
+            "file": "app/unplanned.py",
+            "action": "create",
+            "after_snippet": "x = 1\n",
+        }
+        verdict, findings = _audit_file_change(
+            change, planned_files=["app/main.py"])
+        assert verdict == "FAIL"
+        assert any("Scope deviation" in f for f in findings)
+
+    def test_no_scope_check_when_none(self):
+        """When planned_files is None, scope check is skipped."""
+        change = {
+            "file": "anywhere.py",
+            "action": "create",
+            "after_snippet": "x = 1\n",
+        }
+        verdict, findings = _audit_file_change(change, planned_files=None)
+        assert verdict == "PASS"
+
+
+# -----------------------------------------------------------------------
+# Evidence file writers
+# -----------------------------------------------------------------------
+
+
+class TestWriteDiffLog:
+    """Tests for _write_diff_log evidence writer."""
+
+    def test_writes_valid_markdown(self, tmp_path):
+        changes = [
+            {"file": "app/main.py", "action": "modify",
+             "description": "Updated handler",
+             "before_snippet": "old", "after_snippet": "new"},
+            {"file": "app/new.py", "action": "create",
+             "description": "New file", "after_snippet": "content"},
+        ]
+        path = _write_diff_log(str(tmp_path), changes, "test/repo")
+        content = Path(path).read_text(encoding="utf-8")
+        assert "# Diff Log" in content
+        assert "test/repo" in content
+        assert "2 file(s)" in content
+        assert "app/main.py" in content
+        assert "app/new.py" in content
+
+    def test_creates_evidence_directory(self, tmp_path):
+        path = _write_diff_log(str(tmp_path), [], "test/repo")
+        assert Path(path).exists()
+        assert (tmp_path / "Forge" / "evidence" / "diff_log.md").exists()
+
+
+class TestWriteAuditTrail:
+    """Tests for _write_audit_trail evidence writer."""
+
+    def test_writes_valid_markdown(self, tmp_path):
+        results = [
+            {"file": "a.py", "action": "modify", "verdict": "PASS",
+             "findings": []},
+            {"file": "b.py", "action": "create", "verdict": "FAIL",
+             "findings": ["Syntax error"]},
+        ]
+        path = _write_audit_trail(str(tmp_path), results, "test/repo")
+        content = Path(path).read_text(encoding="utf-8")
+        assert "# Audit Ledger" in content
+        assert "1/2 files passed" in content
+        assert "1 failed" in content
+        assert "a.py" in content
+        assert "b.py" in content
+        assert "Syntax error" in content
+
+    def test_all_pass(self, tmp_path):
+        results = [
+            {"file": "a.py", "action": "modify", "verdict": "PASS",
+             "findings": []},
+        ]
+        path = _write_audit_trail(str(tmp_path), results, "test/repo")
+        content = Path(path).read_text(encoding="utf-8")
+        assert "1/1 files passed" in content
+        assert "0 failed" in content
+
+
+# -----------------------------------------------------------------------
+# Pre-push audit gate
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_push_audit_all_pass(tmp_path):
+    """When all audits pass, push proceeds to commit_and_push."""
+    rid = "audit-pass-test"
+    state = {
+        "working_dir": str(tmp_path),
+        "repo_name": "test/repo",
+        "access_token": "ghp_test",
+        "branch": "main",
+        "logs": [],
+        "audit_results": [
+            {"file": "a.py", "action": "modify", "verdict": "PASS",
+             "findings": []},
+        ],
+    }
+    _active_upgrades[rid] = state
+    changes = [{"file": "a.py", "action": "modify",
+                "after_snippet": "x = 1"}]
+    try:
+        with (
+            patch("app.services.upgrade_executor._log",
+                  new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit",
+                  new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._commit_and_push",
+                  new_callable=AsyncMock,
+                  return_value={"ok": True, "message": "Pushed"}),
+        ):
+            r = await _run_pre_push_audit("u1", rid, state, changes, [])
+            assert r["ok"] is True
+            assert "Pushed" in r["message"]
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_pre_push_audit_fail_prompts(tmp_path):
+    """When audit has failures, shows Y/N prompt instead of pushing."""
+    rid = "audit-fail-test"
+    state = {
+        "working_dir": str(tmp_path),
+        "repo_name": "test/repo",
+        "access_token": "ghp_test",
+        "branch": "main",
+        "logs": [],
+        "audit_results": [
+            {"file": "bad.py", "action": "create", "verdict": "FAIL",
+             "findings": ["Syntax error"]},
+        ],
+    }
+    _active_upgrades[rid] = state
+    changes = [{"file": "bad.py", "action": "create",
+                "after_snippet": "def("}]
+    try:
+        with (
+            patch("app.services.upgrade_executor._log",
+                  new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit",
+                  new_callable=AsyncMock),
+        ):
+            r = await _run_pre_push_audit("u1", rid, state, changes, [])
+            assert r["ok"] is True
+            assert "Audit failed" in r["message"]
+            assert state["pending_prompt"] == "push_audit_confirm"
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_push_audit_confirm_yes_pushes(tmp_path):
+    """Answering Y to audit failure prompt pushes anyway."""
+    import asyncio
+
+    rid = "audit-confirm-y-test"
+    state = {
+        "working_dir": str(tmp_path),
+        "repo_name": "test/repo",
+        "access_token": "ghp_test",
+        "branch": "main",
+        "logs": [],
+        "pending_prompt": "push_audit_confirm",
+        "_push_changes": [{"file": "a.py", "action": "create",
+                           "after_snippet": "x = 1"}],
+        "_push_task_results": [],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    _active_upgrades[rid] = state
+    try:
+        with (
+            patch("app.services.upgrade_executor._log",
+                  new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit",
+                  new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._commit_and_push",
+                  new_callable=AsyncMock,
+                  return_value={"ok": True, "message": "Pushed"}),
+        ):
+            r = await send_command("u1", rid, "y")
+            assert r["ok"] is True
+            assert "Pushed" in r["message"]
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_push_audit_confirm_no_cancels():
+    """Answering N to audit failure prompt cancels the push."""
+    import asyncio
+
+    rid = "audit-confirm-n-test"
+    state = {
+        "working_dir": "/tmp/fake",
+        "repo_name": "test/repo",
+        "logs": [],
+        "pending_prompt": "push_audit_confirm",
+        "_push_changes": [],
+        "_push_task_results": [],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    _active_upgrades[rid] = state
+    try:
+        with (
+            patch("app.services.upgrade_executor._log",
+                  new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit",
+                  new_callable=AsyncMock),
+        ):
+            r = await send_command("u1", rid, "n")
+            assert r["ok"] is True
+            assert "cancelled" in r["message"].lower()
     finally:
         _active_upgrades.pop(rid, None)

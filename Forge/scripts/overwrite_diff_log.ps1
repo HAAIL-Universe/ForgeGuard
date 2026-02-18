@@ -60,7 +60,7 @@ function RepoRoot {
 }
 
 function ResolveLogPath([string]$govRoot) {
-  $pEvidence = Join-Path $govRoot "evidence\updatedifflog.md"
+  $pEvidence = Join-Path $govRoot "evidence\diff_log.md"
   if (Test-Path $pEvidence) { return $pEvidence }
   # Default: create in evidence folder
   return $pEvidence
@@ -106,7 +106,7 @@ try {
 
   if ($Finalize) {
     if (-not (Test-Path $logPath)) {
-      Err "Finalize failed: evidence/updatedifflog.md not found at $logPath"
+      Err "Finalize failed: evidence/diff_log.md not found at $logPath"
       exit 1
     }
     # Only scan the header portion (above diff hunks) so that git diff
