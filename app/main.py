@@ -22,6 +22,7 @@ from app.config import settings
 from app.errors import ForgeError
 from app.middleware import RequestIDMiddleware
 from app.repos.db import close_pool, get_pool
+from app.services.upgrade_executor import shutdown_all as _shutdown_upgrades
 from app.ws_manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,14 @@ async def lifespan(application: FastAPI):
         await get_pool()  # fail-fast if DB unreachable
     await ws_manager.start_heartbeat()
     yield
+    # Shutdown sequence — order matters:
+    # 1. Stop heartbeat (no more WS pings)
+    # 2. Cancel all background upgrade/retry/narrate tasks
+    #    (must finish before httpx clients are closed)
+    # 3. Close HTTP clients
+    # 4. Close DB pool
     await ws_manager.stop_heartbeat()
+    await _shutdown_upgrades()
     await github_client.close_client()
     await llm_client.close_client()
     await close_pool()

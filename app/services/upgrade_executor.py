@@ -99,6 +99,42 @@ class _RemediationItem:
 # ---------------------------------------------------------------------------
 
 _active_upgrades: dict[str, dict] = {}  # run_id -> state dict
+_background_tasks: set[asyncio.Task] = set()  # tracked for graceful shutdown
+
+
+def _track_task(task: asyncio.Task) -> asyncio.Task:
+    """Register an asyncio.Task so it can be cancelled on shutdown."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+async def shutdown_all() -> None:
+    """Cancel every tracked background task and wait for them to finish.
+
+    Called from the FastAPI lifespan shutdown hook so the server can
+    exit cleanly without force-killing in-flight LLM calls or leaving
+    orphaned temp directories.
+    """
+    # Signal all active runs to stop
+    for state in _active_upgrades.values():
+        flag: asyncio.Event | None = state.get("_stop_flag")
+        if flag is not None:
+            flag.set()
+        # Unblock any paused runs so they can observe the stop flag
+        pause: asyncio.Event | None = state.get("_pause_event")
+        if pause is not None:
+            pause.set()
+
+    # Cancel all tracked tasks
+    for task in list(_background_tasks):
+        task.cancel()
+
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
+
+    _active_upgrades.clear()
+    logger.info("All upgrade background tasks shut down cleanly")
 
 
 def get_upgrade_status(run_id: str) -> dict | None:
@@ -381,12 +417,12 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
 
         # Launch retry in background
         state["status"] = "running"
-        asyncio.create_task(
+        _track_task(asyncio.create_task(
             _run_retry(user_id, run_id, state, failed_entries,
                        sonnet_w, opus_w, repo_name, stack_profile,
                        narrator_key=narrator_key,
                        narrator_model=narrator_model)
-        )
+        ))
         return {"ok": True,
                 "message": f"Retrying {len(failed_entries)} task(s)."}
 
@@ -2309,11 +2345,11 @@ async def execute_upgrade(
         "_narrator_model": narrator_model,
     }
 
-    asyncio.create_task(
+    _track_task(asyncio.create_task(
         _run_upgrade(uid, rid, run, results, plan, tasks,
                      sonnet_worker, opus_worker,
                      narrator_key=narrator_key, narrator_model=narrator_model)
-    )
+    ))
 
     return {
         "run_id": rid,
@@ -2414,14 +2450,14 @@ async def _run_upgrade(
                 f"({t.get('priority', 'med')} priority)"
                 for t in tasks[:6]
             )
-            asyncio.create_task(_narrate(
+            _track_task(asyncio.create_task(_narrate(
                 user_id, run_id,
                 f"Starting upgrade for repository '{repo_name}'. "
                 f"Health grade: {grade}. {brief} "
                 f"{len(tasks)} tasks planned: {task_overview}.",
                 narrator_key=narrator_key, narrator_model=narrator_model,
                 tokens=tokens,
-            ))
+            )))
 
         # ── Helper: emit results for a completed task ────────────
 
@@ -2747,7 +2783,7 @@ async def _run_upgrade(
                         _fl = ", ".join(
                             p.get("file", "?") for p in _pf[:5])
                         _an = plan_result.get("analysis", "")
-                        asyncio.create_task(_narrate(
+                        _track_task(asyncio.create_task(_narrate(
                             user_id, run_id,
                             f"Sonnet planned task {i + 1}: "
                             f"'{task_name}'. {_an} "
@@ -2756,7 +2792,7 @@ async def _run_upgrade(
                             narrator_key=narrator_key,
                             narrator_model=narrator_model,
                             tokens=tokens,
-                        ))
+                        )))
 
                 # Sentinel — tells Opus no more plans are coming
                 await plan_pool.put(None)
@@ -3086,7 +3122,7 @@ async def _run_upgrade(
                             ]
                         remaining = (
                             len(tasks) - state["completed_tasks"])
-                        asyncio.create_task(_narrate(
+                        _track_task(asyncio.create_task(_narrate(
                             user_id, run_id,
                             f"Opus finished task "
                             f"{task_index + 1}/{len(tasks)}: "
@@ -3101,7 +3137,7 @@ async def _run_upgrade(
                             narrator_key=narrator_key,
                             narrator_model=narrator_model,
                             tokens=tokens,
-                        ))
+                        )))
 
                     # Between tasks: apply any ready remediations
                     await _drain_remediation_pool()
@@ -3571,7 +3607,7 @@ async def _run_retry(
             # Narrate (non-blocking)
             if narrator_enabled:
                 n_ch = new_entry["changes_count"]
-                asyncio.create_task(_narrate(
+                _track_task(asyncio.create_task(_narrate(
                     user_id, run_id,
                     f"Retry {completed}/{total}: task '{task_name}' "
                     f"{'produced ' + str(n_ch) + ' change(s)' if new_entry['status'] == 'proposed' else 'still failed'}. "
@@ -3579,7 +3615,7 @@ async def _run_retry(
                     narrator_key=narrator_key,
                     narrator_model=narrator_model,
                     tokens=tokens,
-                ))
+                )))
             await asyncio.sleep(0.15)
 
         # ── Retry wrap-up ──
