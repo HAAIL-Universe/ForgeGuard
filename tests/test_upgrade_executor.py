@@ -1091,8 +1091,9 @@ async def test_build_task_with_llm_injects_workspace_files(tmp_path):
 
     with patch("app.services.upgrade_executor.chat", new_callable=AsyncMock) as mock_chat:
         mock_chat.return_value = {
-            "text": code_json,
+            "content": [{"type": "text", "text": code_json}],
             "usage": {"input_tokens": 900, "output_tokens": 300},
+            "stop_reason": "end_turn",
         }
         result, usage = await _build_task_with_llm(
             "u1", "r1", "test/repo", {}, FAKE_TASK, fake_plan,

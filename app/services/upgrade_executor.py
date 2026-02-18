@@ -49,6 +49,7 @@ from uuid import UUID
 from app.clients import git_client
 from app.clients.llm_client import chat
 from app.config import settings
+from app.services.tool_executor import execute_tool_async
 from app.repos.scout_repo import get_scout_run, update_scout_run
 from app.repos.user_repo import get_user_by_id
 from app.ws_manager import manager as ws_manager
@@ -2649,6 +2650,27 @@ reference the after_snippet directly.
 If the planner flagged risks, address every one — either directly in \
 your code or by explaining in "warnings" why a risk is inapplicable.
 
+═══ TOOLS ═══
+You have access to read-only tools for exploring the repository:
+• read_file(path) — read any file from the cloned repo (up to 50 KB).
+• list_directory(path) — list files/folders in a directory.
+• search_code(pattern, glob?) — grep for a pattern across files.
+
+USE TOOLS WHEN YOU NEED TO:
+• Read a file you need to mirror, extend, or import from.
+• Check existing patterns, conventions, or config before writing code.
+• Verify that an import target or class you're referencing exists.
+• Understand the project structure for new file placement.
+
+DO NOT:
+• Use tools speculatively — only when you genuinely need information \
+not already in workspace_files or prior_changes.
+• Make more than a few tool calls — gather what you need efficiently.
+• Use tools to write files — you MUST return all changes in the JSON \
+response schema (your writes go through a validation pipeline).
+
+After using tools, produce your final JSON response as usual.
+
 ═══ STRICT SCOPE RULES ═══
 You MUST only touch files listed in the planner's "plan" array. \
 Changes to unlisted files are automatically rejected by the system. \
@@ -4934,6 +4956,79 @@ def _fmt_tokens(n: int) -> str:
 _FILE_SIZE_LIMIT = 50_000       # max bytes per file
 _TOTAL_CONTENT_BUDGET = 200_000 # max bytes across all files
 
+# Read-only tool subset for the upgrade builder's agentic loop.
+# The builder can explore the repo (read files, list dirs, search code)
+# but MUST NOT write directly — it returns JSON changes that the caller
+# applies through the validation/rollback pipeline.
+_MAX_TOOL_RESULT_CHARS = 60_000  # truncate large tool outputs
+_MAX_TOOL_ROUNDS = 15            # safety cap on tool loop iterations
+_UPGRADE_BUILDER_TOOLS: list[dict] = [
+    {
+        "name": "read_file",
+        "description": (
+            "Read a file from the cloned repository. Returns file content "
+            "(truncated at 50 KB). Use this to check existing code you need "
+            "to reference, mirror, or import from."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path to the file.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "list_directory",
+        "description": (
+            "List files and folders in a directory. Returns names with '/' "
+            "suffix for directories. Use this to understand the project "
+            "structure before writing code."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Relative path to the directory. "
+                        "Use '.' for the project root."
+                    ),
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "search_code",
+        "description": (
+            "Search for a pattern across files in the repository. "
+            "Returns matching file paths and line snippets (max 50 results). "
+            "Use this to find existing implementations, imports, or patterns."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Search string or regex pattern.",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": (
+                        "Optional file glob filter (e.g. '*.py'). "
+                        "Defaults to all files."
+                    ),
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+]
+
 
 def _gather_tree_listing(
     working_dir: str,
@@ -5156,9 +5251,11 @@ async def _build_task_with_llm(
 ) -> tuple[dict | None, dict]:
     """Opus writes concrete code changes from Sonnet's plan.
 
-    When *working_dir* is provided the real file contents referenced by
-    Sonnet's plan are read from the cloned repo and injected into the
-    payload so Opus can produce exact before/after snippets.
+    When *working_dir* is provided:
+    - Real file contents referenced by the plan are injected into the payload.
+    - Read-only tools (read_file, list_directory, search_code) are enabled
+      so Opus can explore the repo during building — up to
+      ``_MAX_TOOL_ROUNDS`` tool round-trips before the final JSON response.
 
     Returns ``(code_result | None, usage_dict)``.
     """
@@ -5221,64 +5318,200 @@ async def _build_task_with_llm(
     _thinking = settings.LLM_THINKING_BUDGET
     _total_usage: dict = {"input_tokens": 0, "output_tokens": 0}
 
-    for _attempt in range(1, 3):  # up to 2 attempts (retry on truncation)
-        try:
-            result = await chat(
-                api_key=api_key,
-                model=model,
-                system_prompt=_BUILDER_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_msg}],
-                max_tokens=_max_tokens,
-                provider="anthropic",
-                thinking_budget=_thinking,
+    # ── Helper: extract and display thinking from raw content blocks ──
+    async def _surface_thinking(blocks: list[dict]) -> str | None:
+        """Pull thinking blocks from the API response, display to UI."""
+        thinking_parts: list[str] = []
+        for blk in blocks:
+            if blk.get("type") == "thinking":
+                t = blk.get("thinking", "")
+                if t:
+                    thinking_parts.append(t)
+        if not thinking_parts:
+            return None
+        raw = "\n\n".join(thinking_parts)
+        chunks = [c.strip() for c in raw.split("\n\n") if c.strip()]
+        display_max = 5
+        for chunk in chunks[:display_max]:
+            disp = (chunk[:300] + "…" if len(chunk) > 300 else chunk)
+            await _log(user_id, run_id, f"💭 [Opus] {disp}", "thinking")
+            await asyncio.sleep(0.05)
+        if len(chunks) > display_max:
+            await _log(
+                user_id, run_id,
+                f"💭 [Opus] … ({len(chunks) - display_max} "
+                f"more reasoning steps)",
+                "thinking",
             )
-            usage = (result.get("usage", {}) if isinstance(result, dict)
-                     else {"input_tokens": 0, "output_tokens": 0})
-            # Accumulate across retries so the caller sees total spend
-            _total_usage["input_tokens"] += usage.get("input_tokens", 0)
-            _total_usage["output_tokens"] += usage.get("output_tokens", 0)
+        return raw
 
-            # Surface extended thinking to the UI (real chain-of-thought)
-            if isinstance(result, dict) and result.get("thinking"):
-                _raw_thinking = result["thinking"]
-                # Chunk long thinking into readable segments.
-                # Cap display at 5 chunks to avoid flooding the panel.
-                _chunks = [
-                    c.strip() for c in _raw_thinking.split("\n\n")
-                    if c.strip()
-                ]
-                _display_max = 5
-                for _chunk in _chunks[:_display_max]:
-                    _disp = (_chunk[:300] + "…"
-                             if len(_chunk) > 300 else _chunk)
-                    await _log(user_id, run_id,
-                               f"💭 [Opus] {_disp}", "thinking")
-                    await asyncio.sleep(0.05)
-                if len(_chunks) > _display_max:
-                    await _log(
-                        user_id, run_id,
-                        f"💭 [Opus] … ({len(_chunks) - _display_max} "
-                        f"more reasoning steps)",
-                        "thinking",
+    # ── Helper: execute tool calls from content blocks ────────────
+    async def _run_tool_calls(
+        blocks: list[dict],
+    ) -> list[dict]:
+        """Execute tool_use blocks, return Anthropic-format tool_result list."""
+        results: list[dict] = []
+        for blk in blocks:
+            if blk.get("type") != "tool_use":
+                continue
+            t_name = blk["name"]
+            t_input = blk["input"]
+            t_id = blk["id"]
+            await _log(
+                user_id, run_id,
+                f"  🔧 [Opus] tool: {t_name}("
+                f"{json.dumps(t_input)[:120]})",
+                "thinking",
+            )
+            try:
+                t_result = await execute_tool_async(
+                    t_name, t_input, working_dir)
+            except Exception as exc:
+                t_result = f"Error: {type(exc).__name__}: {exc}"
+            # Truncate large results
+            if len(t_result) > _MAX_TOOL_RESULT_CHARS:
+                t_result = (
+                    t_result[:_MAX_TOOL_RESULT_CHARS]
+                    + f"\n[… truncated at "
+                    f"{_MAX_TOOL_RESULT_CHARS} chars]"
+                )
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": t_id,
+                "content": t_result,
+            })
+        return results
+
+    # Use tools only when we have a working directory to explore
+    _tools = _UPGRADE_BUILDER_TOOLS if working_dir else None
+
+    for _attempt in range(1, 3):  # up to 2 attempts (retry on truncation)
+        _messages: list[dict] = [
+            {"role": "user", "content": user_msg},
+        ]
+        _all_thinking: list[str] = []
+        _final_text: str = ""
+        _stop: str = ""
+
+        try:
+            # ── Agentic tool loop ─────────────────────────────
+            for _round in range(_MAX_TOOL_ROUNDS + 1):
+                result = await chat(
+                    api_key=api_key,
+                    model=model,
+                    system_prompt=_BUILDER_SYSTEM_PROMPT,
+                    messages=_messages,
+                    max_tokens=_max_tokens,
+                    provider="anthropic",
+                    thinking_budget=_thinking,
+                    tools=_tools,
+                )
+
+                # When tools are provided, chat() returns raw API
+                # response. When tools=None, returns simplified dict.
+                if _tools:
+                    # Raw API response
+                    _usage = result.get("usage", {})
+                    _total_usage["input_tokens"] += _usage.get(
+                        "input_tokens", 0)
+                    _total_usage["output_tokens"] += _usage.get(
+                        "output_tokens", 0)
+                    _stop = result.get(
+                        "stop_reason", "end_turn")
+                    _blocks = result.get("content", [])
+
+                    # Append assistant message to conversation
+                    _messages.append({
+                        "role": "assistant",
+                        "content": _blocks,
+                    })
+
+                    # Surface thinking to UI
+                    _th = await _surface_thinking(_blocks)
+                    if _th:
+                        _all_thinking.append(_th)
+
+                    # Check for tool use
+                    if _stop == "tool_use":
+                        _tool_results = await _run_tool_calls(
+                            _blocks)
+                        _messages.append({
+                            "role": "user",
+                            "content": _tool_results,
+                        })
+                        continue  # next tool round
+
+                    # Extract text from content blocks
+                    _text_parts = [
+                        b["text"] for b in _blocks
+                        if b.get("type") == "text"
+                    ]
+                    _final_text = "\n".join(_text_parts)
+                    break  # exit tool loop
+
+                else:
+                    # Simplified response (no tools)
+                    _usage = (
+                        result.get("usage", {})
+                        if isinstance(result, dict)
+                        else {"input_tokens": 0,
+                              "output_tokens": 0}
                     )
+                    _total_usage["input_tokens"] += _usage.get(
+                        "input_tokens", 0)
+                    _total_usage["output_tokens"] += _usage.get(
+                        "output_tokens", 0)
 
-            text: str = (result["text"] if isinstance(result, dict)
-                         else str(result))
-            stop = (result.get("stop_reason", "end_turn")
-                    if isinstance(result, dict) else "end_turn")
+                    # Surface thinking
+                    if (isinstance(result, dict)
+                            and result.get("thinking")):
+                        _th = result["thinking"]
+                        _all_thinking.append(_th)
+                        chunks = [
+                            c.strip()
+                            for c in _th.split("\n\n")
+                            if c.strip()
+                        ]
+                        d_max = 5
+                        for ch in chunks[:d_max]:
+                            d = (ch[:300] + "…"
+                                 if len(ch) > 300 else ch)
+                            await _log(
+                                user_id, run_id,
+                                f"💭 [Opus] {d}",
+                                "thinking")
+                            await asyncio.sleep(0.05)
+                        if len(chunks) > d_max:
+                            await _log(
+                                user_id, run_id,
+                                f"💭 [Opus] … "
+                                f"({len(chunks) - d_max} "
+                                f"more reasoning steps)",
+                                "thinking",
+                            )
+
+                    _final_text = (
+                        result["text"]
+                        if isinstance(result, dict)
+                        else str(result)
+                    )
+                    _stop = (
+                        result.get("stop_reason", "end_turn")
+                        if isinstance(result, dict)
+                        else "end_turn"
+                    )
+                    break  # no tool loop without tools
 
             # ── Truncation detection ────────────────────────────
-            # Only treat explicit max_tokens stop as truncation.
-            # The previous heuristic (text not ending with "}") caused
-            # false positives when Opus wrapped JSON in markdown fences.
-            if stop == "max_tokens":
+            if _stop == "max_tokens":
                 if _attempt < 2:
                     _old_max = _max_tokens
-                    _max_tokens = min(_max_tokens * 2, 65_536)
+                    _max_tokens = min(
+                        _max_tokens * 2, 65_536)
                     await _log(
                         user_id, run_id,
                         f"⚠ [Opus] Response truncated for "
-                        f"{task.get('id')} (stop={stop}, "
+                        f"{task.get('id')} (stop={_stop}, "
                         f"tokens={_old_max}) — retrying with "
                         f"{_max_tokens} tokens…",
                         "warn",
@@ -5287,52 +5520,62 @@ async def _build_task_with_llm(
                 else:
                     await _log(
                         user_id, run_id,
-                        f"⚠ [Opus] Response still truncated for "
-                        f"{task.get('id')} after retry — dropping task",
+                        f"⚠ [Opus] Response still truncated "
+                        f"for {task.get('id')} after retry "
+                        f"— dropping task",
                         "error",
                     )
                     return None, _total_usage
 
-            text = _strip_codeblock(text)
+            text = _strip_codeblock(_final_text)
 
             if not text.strip():
-                await _log(user_id, run_id,
-                           f"⚠ [Opus] Empty response for task "
-                           f"{task.get('id')} — model returned "
-                           f"no content", "error")
+                await _log(
+                    user_id, run_id,
+                    f"⚠ [Opus] Empty response for task "
+                    f"{task.get('id')} — model returned "
+                    f"no content", "error")
                 return None, _total_usage
 
             parsed = json.loads(text)
-            # Attach extended thinking to result so callers can see it
-            if isinstance(result, dict) and result.get("thinking"):
-                parsed["_extended_thinking"] = result["thinking"]
+            # Attach extended thinking to result
+            if _all_thinking:
+                parsed["_extended_thinking"] = (
+                    "\n\n".join(_all_thinking))
             return parsed, _total_usage
         except json.JSONDecodeError as exc:
             if _attempt < 2:
-                # Response might be truncated JSON — retry with more tokens
-                _max_tokens = min(_max_tokens * 2, 65_536)
+                _max_tokens = min(
+                    _max_tokens * 2, 65_536)
                 await _log(
                     user_id, run_id,
-                    f"⚠ [Opus] Invalid JSON for {task.get('id')} "
-                    f"— retrying with {_max_tokens} tokens…",
+                    f"⚠ [Opus] Invalid JSON for "
+                    f"{task.get('id')} — retrying with "
+                    f"{_max_tokens} tokens…",
                     "warn",
                 )
                 continue
-            logger.warning("Opus returned non-JSON for %s: %s…",
-                           task.get("id"),
-                           text[:120] if text else "(empty)")
+            logger.warning(
+                "Opus returned non-JSON for %s: %s…",
+                task.get("id"),
+                text[:120] if text else "(empty)")
             short = str(exc)[:120]
-            await _log(user_id, run_id,
-                       f"⚠ [Opus] Invalid JSON for task "
-                       f"{task.get('id')}: {short}",
-                       "error")
+            await _log(
+                user_id, run_id,
+                f"⚠ [Opus] Invalid JSON for task "
+                f"{task.get('id')}: {short}",
+                "error")
             return None, _total_usage
         except Exception as exc:
-            logger.exception("Opus build failed for %s", task.get("id"))
-            short = f"{type(exc).__name__}: {str(exc)[:180]}"
-            await _log(user_id, run_id,
-                       f"Build failed for task {task.get('id')}: "
-                       f"{short}", "error")
+            logger.exception(
+                "Opus build failed for %s", task.get("id"))
+            short = (
+                f"{type(exc).__name__}: "
+                f"{str(exc)[:180]}")
+            await _log(
+                user_id, run_id,
+                f"Build failed for task "
+                f"{task.get('id')}: {short}", "error")
             return None, _total_usage
 
     # Should not reach here, but safety net
