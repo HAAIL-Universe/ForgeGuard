@@ -766,8 +766,8 @@ class TestChatAnthropicToolUse:
             messages=[{"role": "user", "content": "hi"}],
         )
 
-        # Without tools, simplified dict
-        assert result == {"text": "hello", "usage": {"input_tokens": 10, "output_tokens": 20}}
+        # Without tools, simplified dict (includes stop_reason since 1a5b70b)
+        assert result == {"text": "hello", "usage": {"input_tokens": 10, "output_tokens": 20}, "stop_reason": "end_turn"}
 
         # No tools in body
         call_kwargs = mock_client.post.call_args

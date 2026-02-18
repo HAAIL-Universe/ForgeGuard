@@ -879,10 +879,12 @@ async def _generate_remediation_plan(
             f"Generate a minimal fix plan."
         )
         raw = await chat(
-            system=_REMEDIATION_SYSTEM_PROMPT,
-            user=prompt,
             api_key=api_key,
             model=model,
+            system_prompt=_REMEDIATION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2048,
+            provider="anthropic",
         )
         text = raw.get("text", "")
         usage = raw.get("usage", {})
@@ -1448,6 +1450,9 @@ async def _single_fix_attempt(
         } if _accum_risks else {}),
     }, indent=2)
 
+    # Pull token tracker from state so auto-fix costs are visible
+    _tokens: _TokenAccumulator | None = state.get("_token_tracker")
+
     try:
         plan_result = await chat(
             api_key=api_key,
@@ -1458,6 +1463,19 @@ async def _single_fix_attempt(
             provider="anthropic",
             thinking_budget=thinking_budget,
         )
+        # Track Sonnet diagnosis tokens
+        _plan_usage = (plan_result.get("usage", {})
+                       if isinstance(plan_result, dict) else {})
+        if _tokens:
+            _tokens.add("sonnet",
+                        _plan_usage.get("input_tokens", 0),
+                        _plan_usage.get("output_tokens", 0))
+            await _emit(user_id, "upgrade_token_tick", {
+                "run_id": run_id, **_tokens.snapshot()})
+            _st = _active_upgrades.get(run_id)
+            if _st:
+                _st["tokens"] = _tokens.snapshot()
+
         plan_text = plan_result.get("text", "") if isinstance(plan_result, dict) else str(plan_result)
         plan_text = _strip_codeblock(plan_text)
 
@@ -1512,6 +1530,19 @@ async def _single_fix_attempt(
             max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
             provider="anthropic",
         )
+        # Track Opus fix tokens
+        _build_usage = (build_result.get("usage", {})
+                        if isinstance(build_result, dict) else {})
+        if _tokens:
+            _tokens.add("opus",
+                        _build_usage.get("input_tokens", 0),
+                        _build_usage.get("output_tokens", 0))
+            await _emit(user_id, "upgrade_token_tick", {
+                "run_id": run_id, **_tokens.snapshot()})
+            _st = _active_upgrades.get(run_id)
+            if _st:
+                _st["tokens"] = _tokens.snapshot()
+
         build_text = build_result.get("text", "") if isinstance(build_result, dict) else str(build_result)
         build_text = _strip_codeblock(build_text)
 
