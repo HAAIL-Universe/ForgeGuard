@@ -184,19 +184,30 @@ const LogPane = memo(function LogPane({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrolledAway = useRef(false);
+  const prevLogCount = useRef(panelLogs.length);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
+    // User is "scrolled away" only if they've scrolled up more than
+    // ~60px from the absolute bottom — tight threshold so auto-scroll
+    // kicks back in as soon as they nudge back down.
     const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
-    scrolledAway.current = remaining >= el.clientHeight * 0.30;
+    scrolledAway.current = remaining > 60;
   }, []);
 
   useEffect(() => {
-    if (!scrolledAway.current && containerRef.current) {
-      const el = containerRef.current;
-      const target = el.scrollHeight - el.clientHeight * 0.25;
-      el.scrollTop = Math.max(0, target);
+    // New logs arrived — auto-scroll to the very bottom unless the user
+    // has deliberately scrolled up to read earlier output.
+    if (panelLogs.length !== prevLogCount.current) {
+      prevLogCount.current = panelLogs.length;
+      if (!scrolledAway.current && containerRef.current) {
+        // Use rAF so the DOM has painted the new rows first
+        requestAnimationFrame(() => {
+          const el = containerRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      }
     }
   }, [panelLogs.length]);
 
