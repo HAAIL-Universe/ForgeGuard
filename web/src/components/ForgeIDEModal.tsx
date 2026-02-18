@@ -141,6 +141,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const userScrolled = useRef(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
+  const lastNarratorWatching = useRef<boolean | null>(null);
 
   /* Auto-scroll management */
   const handleScroll = useCallback(() => {
@@ -446,9 +447,11 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     }
   }, []);
 
-  /* Signal backend when narrator tab is toggled — saves tokens */
+  /* Signal backend when narrator tab is toggled — deduplicated */
   useEffect(() => {
     const watching = leftTab === 'narrator';
+    if (lastNarratorWatching.current === watching) return;
+    lastNarratorWatching.current = watching;
     if (watching) setNarratorLoading(true);
     fetch(`${API_BASE}/scout/runs/${runId}/narrator`, {
       method: 'POST',
