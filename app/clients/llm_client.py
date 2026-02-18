@@ -1,7 +1,10 @@
 """LLM client -- multi-provider chat wrapper (Anthropic + OpenAI)."""
 
 import asyncio
+import json as _json
 import logging
+import time
+from typing import Any, Callable, Awaitable
 
 import httpx
 
@@ -253,6 +256,133 @@ async def chat_anthropic(
 
 
 # ---------------------------------------------------------------------------
+# Anthropic — streaming (live token progress)
+# ---------------------------------------------------------------------------
+
+# Minimum interval between on_progress callbacks (seconds)
+_STREAM_THROTTLE_S = 0.35
+
+# Rough chars-per-token estimate for output counting during stream
+_CHARS_PER_TOKEN = 4.0
+
+
+async def chat_anthropic_streaming(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    messages: list[dict],
+    max_tokens: int = 2048,
+    enable_caching: bool = False,
+    on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+) -> dict:
+    """Stream a chat request to Anthropic, calling *on_progress* as tokens arrive.
+
+    ``on_progress(input_tokens, output_tokens_estimate)`` is called:
+      * Once when ``message_start`` provides the exact input token count.
+      * Periodically during text streaming with an *estimated* output count
+        (derived from character count / ~4 chars per token).
+      * Once at the end with the exact output token count from ``message_delta``.
+
+    Returns the same shape as ``chat_anthropic``:
+    ``{"text": str, "usage": {"input_tokens": int, "output_tokens": int}}``
+    """
+
+    async def _call():
+        if enable_caching:
+            system_value: str | list[dict] = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        else:
+            system_value = system_prompt
+
+        body: dict = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_value,
+            "messages": messages,
+            "stream": True,
+        }
+
+        client = _get_client()
+        headers = _anthropic_headers(api_key, caching=enable_caching)
+
+        text_parts: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        char_count = 0
+        last_progress = 0.0
+
+        async with client.stream(
+            "POST",
+            ANTHROPIC_MESSAGES_URL,
+            headers=headers,
+            json=body,
+        ) as response:
+            if response.status_code >= 400:
+                error_body = await response.aread()
+                try:
+                    err_data = _json.loads(error_body)
+                    err_msg = err_data.get("error", {}).get("message", error_body.decode())
+                except Exception:
+                    err_msg = error_body.decode()
+                if response.status_code in _RETRYABLE_STATUS_CODES:
+                    raise httpx.HTTPStatusError(
+                        f"Anthropic API {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
+                raise ValueError(f"Anthropic API {response.status_code}: {err_msg}")
+
+            async for raw_line in response.aiter_lines():
+                if not raw_line.startswith("data: "):
+                    continue
+                data = _json.loads(raw_line[6:])
+                event_type = data.get("type", "")
+
+                if event_type == "message_start":
+                    usage = data.get("message", {}).get("usage", {})
+                    input_tokens = usage.get("input_tokens", 0)
+                    if on_progress:
+                        await on_progress(input_tokens, 0)
+                        last_progress = time.monotonic()
+
+                elif event_type == "content_block_delta":
+                    delta = data.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        txt = delta.get("text", "")
+                        text_parts.append(txt)
+                        char_count += len(txt)
+
+                        # Throttled progress updates
+                        now = time.monotonic()
+                        if on_progress and (now - last_progress) >= _STREAM_THROTTLE_S:
+                            est_output = int(char_count / _CHARS_PER_TOKEN)
+                            await on_progress(input_tokens, est_output)
+                            last_progress = now
+
+                elif event_type == "message_delta":
+                    usage = data.get("usage", {})
+                    output_tokens = usage.get("output_tokens", 0)
+                    # Final exact count
+                    if on_progress:
+                        await on_progress(input_tokens, output_tokens)
+
+        return {
+            "text": "".join(text_parts),
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        }
+
+    return await _retry_on_transient(_call)
+
+
+# ---------------------------------------------------------------------------
 # OpenAI
 # ---------------------------------------------------------------------------
 
@@ -377,4 +507,27 @@ async def chat(
         api_key, model, system_prompt, messages, max_tokens,
         tools=tools, thinking_budget=thinking_budget,
         enable_caching=enable_caching,
+    )
+
+
+async def chat_streaming(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    messages: list[dict],
+    max_tokens: int = 2048,
+    provider: str = "anthropic",
+    enable_caching: bool = False,
+    on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+) -> dict:
+    """Streaming variant of ``chat`` with live token progress.
+
+    Falls back to non-streaming ``chat`` for OpenAI (no progress callbacks).
+    """
+    if provider == "openai":
+        return await chat_openai(api_key, model, system_prompt, messages, max_tokens)
+    return await chat_anthropic_streaming(
+        api_key, model, system_prompt, messages, max_tokens,
+        enable_caching=enable_caching,
+        on_progress=on_progress,
     )

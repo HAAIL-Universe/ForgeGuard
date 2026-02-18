@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useWebSocket } from '../hooks/useWebSocket';
 import HealthBadge from './HealthBadge';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
@@ -23,6 +24,24 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [repos, setRepos] = useState<SidebarRepo[]>(sidebarRepos ?? []);
+  const [buildBadge, setBuildBadge] = useState(0);
+
+  // Listen for contract_progress WS events — show badge on Build tab
+  useWebSocket(
+    useCallback((data: { type: string; payload: unknown }) => {
+      if (data.type !== 'contract_progress') return;
+      const p = data.payload as { status?: string; index?: number; total?: number };
+      // When the last contract finishes, show the badge
+      if (p.status === 'done' && typeof p.index === 'number' && typeof p.total === 'number' && p.index === p.total - 1) {
+        setBuildBadge((prev) => prev + 1);
+      }
+    }, []),
+  );
+
+  // Clear badge when navigating to /build
+  useEffect(() => {
+    if (location.pathname === '/build') setBuildBadge(0);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (sidebarRepos) {
@@ -197,6 +216,87 @@ function AppShell({ children, sidebarRepos, onReposChange }: AppShellProps) {
                 marginTop: 'auto',
               }}
             >
+              <div
+                onClick={() => navigate('/')}
+                data-testid="nav-home"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 16px',
+                  cursor: 'pointer',
+                  background: location.pathname === '/' ? '#1E293B' : 'transparent',
+                  borderLeft: location.pathname === '/' ? '3px solid #2563EB' : '3px solid transparent',
+                  transition: 'background 0.15s',
+                  fontSize: '0.8rem',
+                  color: location.pathname === '/' ? '#F8FAFC' : '#94A3B8',
+                }}
+              >
+                <span style={{ fontSize: '0.9rem' }}>🏠</span>
+                <span>Home</span>
+              </div>
+              <div style={{ borderTop: '1px solid #1E293B', margin: '6px 0' }} />
+              <div
+                onClick={() => navigate('/repos')}
+                data-testid="nav-repos"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 16px',
+                  cursor: 'pointer',
+                  background: location.pathname === '/repos' ? '#1E293B' : 'transparent',
+                  borderLeft: location.pathname === '/repos' ? '3px solid #2563EB' : '3px solid transparent',
+                  transition: 'background 0.15s',
+                  fontSize: '0.8rem',
+                  color: location.pathname === '/repos' ? '#F8FAFC' : '#94A3B8',
+                }}
+              >
+                <span style={{ fontSize: '0.9rem' }}>📁</span>
+                <span>Repos</span>
+              </div>
+              <div
+                onClick={() => navigate('/build')}
+                data-testid="nav-build"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 16px',
+                  cursor: 'pointer',
+                  background: location.pathname === '/build' ? '#1E293B' : 'transparent',
+                  borderLeft: location.pathname === '/build' ? '3px solid #2563EB' : '3px solid transparent',
+                  transition: 'background 0.15s',
+                  fontSize: '0.8rem',
+                  color: location.pathname === '/build' ? '#F8FAFC' : '#94A3B8',
+                  position: 'relative',
+                }}
+              >
+                <span style={{ fontSize: '0.9rem' }}>🏗️</span>
+                <span>Build</span>
+                {buildBadge > 0 && (
+                  <span
+                    style={{
+                      background: '#22C55E',
+                      color: '#fff',
+                      fontSize: '0.6rem',
+                      fontWeight: 700,
+                      width: '16px',
+                      height: '16px',
+                      borderRadius: '50%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginLeft: 'auto',
+                      flexShrink: 0,
+                      lineHeight: 1,
+                      animation: 'badge-pop 0.3s ease-out',
+                    }}
+                  >
+                    {buildBadge}
+                  </span>
+                )}
+              </div>
               <div
                 onClick={() => navigate('/scout')}
                 data-testid="nav-scout"

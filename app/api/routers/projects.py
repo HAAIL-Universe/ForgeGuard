@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -50,6 +50,9 @@ class CreateProjectRequest(BaseModel):
     local_path: str | None = Field(
         None, max_length=1000, description="Local filesystem path for local projects"
     )
+    build_mode: str = Field(
+        "full", description="Build mode: 'mini' (2 phases) or 'full' (6-12 phases)"
+    )
 
 
 class QuestionnaireMessageRequest(BaseModel):
@@ -76,18 +79,21 @@ async def create_project(
 ) -> dict:
     """Create a new project."""
     repo_id = UUID(body.repo_id) if body.repo_id else None
+    bm = body.build_mode if body.build_mode in ("mini", "full") else "full"
     project = await create_new_project(
         user_id=current_user["id"],
         name=body.name,
         description=body.description,
         repo_id=repo_id,
         local_path=body.local_path,
+        build_mode=bm,
     )
     return {
         "id": str(project["id"]),
         "name": project["name"],
         "description": project["description"],
         "status": project["status"],
+        "build_mode": project.get("build_mode", "full"),
         "created_at": project["created_at"],
     }
 
@@ -108,6 +114,7 @@ async def list_projects(
                 "name": p["name"],
                 "description": p["description"],
                 "status": p["status"],
+                "build_mode": p.get("build_mode", "full"),
                 "created_at": p["created_at"],
                 "updated_at": p["updated_at"],
             }
@@ -189,6 +196,11 @@ async def gen_contracts(
     except ContractCancelled:
         # User cancelled — return 200 with cancelled flag (not an error)
         return {"cancelled": True, "contracts": []}
+    except ValueError as exc:
+        msg = str(exc)
+        if "already in progress" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
     return {"contracts": contracts}
 
 

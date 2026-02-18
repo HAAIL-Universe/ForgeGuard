@@ -128,6 +128,7 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
   const [cancelled, setCancelled] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cumulativeTokens, setCumulativeTokens] = useState<TokenUsage>(initialTokenUsage);
+  const [liveTokens, setLiveTokens] = useState<Record<string, { input: number; output: number }>>({});
   const logEndRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -154,7 +155,17 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         const label = CONTRACT_LABELS[p.contract_type] ?? p.contract_type;
         if (p.status === 'generating') {
           setStatuses((prev) => ({ ...prev, [p.contract_type]: 'generating' }));
+          setLiveTokens((prev) => ({ ...prev, [p.contract_type]: { input: 0, output: 0 } }));
           addLog(`Generating ${label}...`);
+        } else if (p.status === 'streaming') {
+          /* Live token progress from streamed LLM response */
+          setLiveTokens((prev) => ({
+            ...prev,
+            [p.contract_type]: {
+              input: p.input_tokens ?? 0,
+              output: p.output_tokens ?? 0,
+            },
+          }));
         } else if (p.status === 'cancelled') {
           addLog(`✗ Generation cancelled at ${label}`);
           setCancelled(true);
@@ -164,6 +175,13 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
           const inTok = p.input_tokens ?? 0;
           const outTok = p.output_tokens ?? 0;
           addLog(`✓ ${label} complete (${inTok.toLocaleString()} in / ${outTok.toLocaleString()} out)`);
+
+          /* Clear live tokens for this contract */
+          setLiveTokens((prev) => {
+            const next = { ...prev };
+            delete next[p.contract_type];
+            return next;
+          });
 
           /* Accumulate token usage */
           if (inTok || outTok) {
@@ -251,7 +269,14 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
 
   /* Derived values */
   const contextWindow = MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
-  const totalTokens = cumulativeTokens.input_tokens + cumulativeTokens.output_tokens;
+  /* Include live streaming tokens in the running total */
+  const liveTotal = Object.values(liveTokens).reduce(
+    (acc, t) => ({ input: acc.input + t.input, output: acc.output + t.output }),
+    { input: 0, output: 0 },
+  );
+  const runningInput = cumulativeTokens.input_tokens + liveTotal.input;
+  const runningOutput = cumulativeTokens.output_tokens + liveTotal.output;
+  const totalTokens = runningInput + runningOutput;
   const ctxPercent = Math.min(100, (totalTokens / contextWindow) * 100);
   const doneCount = Object.values(statuses).filter((s) => s === 'done').length;
 
@@ -287,8 +312,8 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
           />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: '#64748B' }}>
-          <span>Input: {cumulativeTokens.input_tokens.toLocaleString()}</span>
-          <span>Output: {cumulativeTokens.output_tokens.toLocaleString()}</span>
+          <span>Input: {runningInput.toLocaleString()}</span>
+          <span>Output: {runningOutput.toLocaleString()}</span>
         </div>
       </div>
 
@@ -298,11 +323,19 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
           const st = statuses[ct];
           const icon = st === 'done' ? '✅' : st === 'generating' ? '⏳' : '○';
           const color = st === 'done' ? '#22C55E' : st === 'generating' ? '#F59E0B' : '#475569';
+          const live = liveTokens[ct];
           return (
             <div key={ct} style={stepRowStyle}>
               <span style={{ width: '20px', textAlign: 'center' }}>{icon}</span>
               <span style={{ flex: 1, color }}>{CONTRACT_LABELS[ct]}</span>
-              <span style={{ fontSize: '0.7rem', color: '#64748B', textTransform: 'uppercase' }}>{st}</span>
+              {st === 'generating' && live ? (
+                <span style={{ fontSize: '0.7rem', color: '#94A3B8', fontFamily: 'monospace', display: 'flex', gap: '8px' }}>
+                  <span style={{ color: '#60A5FA' }}>↓{live.input.toLocaleString()}</span>
+                  <span style={{ color: '#34D399' }}>↑{live.output.toLocaleString()}</span>
+                </span>
+              ) : (
+                <span style={{ fontSize: '0.7rem', color: '#64748B', textTransform: 'uppercase' }}>{st}</span>
+              )}
             </div>
           );
         })}

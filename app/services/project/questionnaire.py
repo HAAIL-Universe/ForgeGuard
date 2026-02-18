@@ -28,6 +28,11 @@ QUESTIONNAIRE_SECTIONS = [
     "deployment_target",
 ]
 
+MINI_QUESTIONNAIRE_SECTIONS = [
+    "product_intent",
+    "ui_requirements",
+]
+
 _SYSTEM_PROMPT = """\
 You are a project intake specialist for Forge, an autonomous build system.
 Your job is to guide the user through a structured questionnaire to collect
@@ -65,22 +70,57 @@ CRITICAL RULES:
 - When all 7 sections are done, set section to "complete".
 """
 
+_MINI_ADDENDUM = """
+
+--- MINI BUILD MODE ---
+This project is a Mini Build (quick proof-of-concept scaffold).
+Only ask about these sections: product_intent, ui_requirements.
+The remaining sections (tech_stack, database_schema, api_endpoints,
+architectural_boundaries, deployment_target) will be auto-filled with
+sensible defaults — do NOT ask the user about them at all.
+
+Defaults for skipped sections:
+- tech_stack: Python 3.12+ / FastAPI backend, React + TypeScript frontend
+- database_schema: PostgreSQL with minimal tables derived from product intent
+- api_endpoints: Standard REST patterns derived from the product intent
+- architectural_boundaries: Standard layered separation (routes/services/repos)
+- deployment_target: Docker-ready, single-compose local dev
+
+When both product_intent and ui_requirements are done, set section to "complete".
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _questionnaire_progress(qs: dict) -> dict:
+def _sections_for_mode(build_mode: str) -> list[str]:
+    """Return the section list appropriate for the build mode."""
+    if build_mode == "mini":
+        return MINI_QUESTIONNAIRE_SECTIONS
+    return QUESTIONNAIRE_SECTIONS
+
+
+def _system_prompt_for_mode(build_mode: str) -> str:
+    """Return the system prompt appropriate for the build mode."""
+    if build_mode == "mini":
+        return _SYSTEM_PROMPT + _MINI_ADDENDUM
+    return _SYSTEM_PROMPT
+
+
+def _questionnaire_progress(qs: dict, build_mode: str = "full") -> dict:
     """Build a questionnaire progress dict from state."""
+    sections = _sections_for_mode(build_mode)
     completed = qs.get("completed_sections", [])
-    remaining = [s for s in QUESTIONNAIRE_SECTIONS if s not in completed]
+    remaining = [s for s in sections if s not in completed]
     current = remaining[0] if remaining else None
     return {
         "current_section": current,
         "completed_sections": completed,
         "remaining_sections": remaining,
         "is_complete": len(remaining) == 0,
+        "build_mode": build_mode,
     }
 
 
@@ -155,9 +195,14 @@ async def process_questionnaire_message(
     answers = qs.get("answers", {})
     history = qs.get("conversation_history", [])
 
+    # Resolve section list and system prompt for this project's build_mode
+    build_mode = project.get("build_mode", "full")
+    sections = _sections_for_mode(build_mode)
+    base_prompt = _system_prompt_for_mode(build_mode)
+
     # Determine the current section
     current_section = None
-    for section in QUESTIONNAIRE_SECTIONS:
+    for section in sections:
         if section not in completed:
             current_section = section
             break
@@ -220,7 +265,7 @@ async def process_questionnaire_message(
 
     # Build dynamic system prompt with project context
     dynamic_system = (
-        f"{_SYSTEM_PROMPT}\n\n"
+        f"{base_prompt}\n\n"
         f"--- PROJECT CONTEXT ---\n"
         f"{context_msg}"
     )
@@ -256,7 +301,7 @@ async def process_questionnaire_message(
 
     # Trigger 1: LLM explicitly says section_complete=true
     if llm_says_complete:
-        section_name = llm_section if llm_section in QUESTIONNAIRE_SECTIONS else current_section
+        section_name = llm_section if llm_section in sections else current_section
         if extracted and isinstance(extracted, dict):
             answers[section_name] = extracted
         elif section_name not in answers:
@@ -268,12 +313,12 @@ async def process_questionnaire_message(
     # Trigger 2: LLM jumped ahead — mentions a later section, implying
     #            the current one is done.  Complete all sections up to
     #            (but not including) the one the LLM is now asking about.
-    if llm_section in QUESTIONNAIRE_SECTIONS and llm_section != current_section:
-        llm_idx = QUESTIONNAIRE_SECTIONS.index(llm_section)
-        cur_idx = QUESTIONNAIRE_SECTIONS.index(current_section)
+    if llm_section in sections and llm_section != current_section:
+        llm_idx = sections.index(llm_section)
+        cur_idx = sections.index(current_section)
         if llm_idx > cur_idx:
             for i in range(cur_idx, llm_idx):
-                s = QUESTIONNAIRE_SECTIONS[i]
+                s = sections[i]
                 if s not in completed:
                     completed.append(s)
                     if s not in answers:
@@ -294,7 +339,7 @@ async def process_questionnaire_message(
 
     # Determine the next section for tagging the assistant reply
     next_section = None
-    for s in QUESTIONNAIRE_SECTIONS:
+    for s in sections:
         if s not in completed:
             next_section = s
             break
@@ -318,7 +363,7 @@ async def process_questionnaire_message(
     await update_questionnaire_state(project_id, new_state)
 
     # Check if all sections are now complete
-    remaining = [s for s in QUESTIONNAIRE_SECTIONS if s not in completed]
+    remaining = [s for s in sections if s not in completed]
     is_complete = len(remaining) == 0
 
     if is_complete and project["status"] != "contracts_ready":
@@ -346,7 +391,8 @@ async def get_questionnaire_state(
         raise ValueError("Project not found")
 
     qs = project.get("questionnaire_state") or {}
-    progress = _questionnaire_progress(qs)
+    build_mode = project.get("build_mode", "full")
+    progress = _questionnaire_progress(qs, build_mode)
     progress["conversation_history"] = qs.get("conversation_history", [])
     progress["token_usage"] = qs.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
     return progress

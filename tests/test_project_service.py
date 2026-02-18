@@ -116,7 +116,7 @@ async def test_create_new_project(mock_create):
 
     result = await create_new_project(USER_ID, "My Project")
     assert result["name"] == "My Project"
-    mock_create.assert_called_once_with(USER_ID, "My Project", None, repo_id=None, local_path=None)
+    mock_create.assert_called_once_with(USER_ID, "My Project", None, repo_id=None, local_path=None, build_mode="full")
 
 
 # ---------------------------------------------------------------------------

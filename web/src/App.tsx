@@ -39,6 +39,7 @@ function lazyWithRetry(
 // Lazy-loaded pages — each chunk loaded on demand (with retry)
 const Login = lazyWithRetry(() => import('./pages/Login'));
 const AuthCallback = lazyWithRetry(() => import('./pages/AuthCallback'));
+const Home = lazyWithRetry(() => import('./pages/Home'));
 const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
 const CommitTimeline = lazyWithRetry(() => import('./pages/CommitTimeline'));
 const AuditDetailPage = lazyWithRetry(() => import('./pages/AuditDetail'));
@@ -46,6 +47,7 @@ const ProjectDetail = lazyWithRetry(() => import('./pages/ProjectDetail'));
 const BuildProgress = lazyWithRetry(() => import('./pages/BuildProgress'));
 const BuildIDE = lazyWithRetry(() => import('./pages/BuildIDE'));
 const BuildComplete = lazyWithRetry(() => import('./pages/BuildComplete'));
+const BuildLanding = lazyWithRetry(() => import('./pages/Build'));
 const Settings = lazyWithRetry(() => import('./pages/Settings'));
 const Scout = lazyWithRetry(() => import('./pages/Scout'));
 
@@ -121,7 +123,23 @@ function App() {
               path="/"
               element={
                 <ProtectedRoute>
+                  <Home />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/repos"
+              element={
+                <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/build"
+              element={
+                <ProtectedRoute>
+                  <BuildLanding />
                 </ProtectedRoute>
               }
             />

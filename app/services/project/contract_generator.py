@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from app.clients.llm_client import chat as llm_chat
+from app.clients.llm_client import chat as llm_chat, chat_streaming as llm_chat_streaming
 from app.config import settings
 from app.repos import build_repo
 from app.repos.project_repo import (
@@ -18,7 +18,7 @@ from app.repos.project_repo import (
 )
 from app.ws_manager import manager
 
-from .questionnaire import QUESTIONNAIRE_SECTIONS
+from .questionnaire import QUESTIONNAIRE_SECTIONS, MINI_QUESTIONNAIRE_SECTIONS, _sections_for_mode
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +159,112 @@ README.md covering: project description, features, tech stack, setup/install ins
 environment variables, usage examples, and API reference (if applicable).
 Phases should be ordered by dependency — earlier phases provide foundations for later ones.""",
 
+    "phases_mini": """\
+This is a MINI BUILD — generate EXACTLY 2 phases. No more, no fewer.
+IGNORE any structural reference that has more phases — output only these two.
+
+Phase 0 — Backend Scaffold:
+  Build the ENTIRE backend from scratch in a single phase: project scaffold,
+  configuration, database schema & migrations, models, ALL API endpoints,
+  authentication, middleware, and a boot/setup script.
+  Include everything needed for the server to start and respond to every request
+  defined in the physics contract.
+
+Phase 1 — Frontend & Ship:
+  Build the ENTIRE frontend from scratch and ship: project scaffold, ALL
+  pages/routes, components, API integration with the backend, styling, and
+  a comprehensive README.md covering: project description, features, tech stack,
+  setup/install instructions, environment variables, and usage examples.
+  Include everything needed for the user to see and interact with the full app.
+
+Each phase MUST include:
+- Phase number and name ("Phase 0 — Backend Scaffold", "Phase 1 — Frontend & Ship")
+- Objective (1-2 sentences)
+- Deliverables (detailed bullet list — be exhaustive, every feature goes in one of these 2 phases)
+- Schema coverage (which tables/columns)
+- Exit criteria (concrete, testable conditions)
+
+CRITICAL: Do NOT add phases beyond 0 and 1. Do NOT split into more granular phases.
+Every deliverable must fit into one of these two phases. The output must contain
+exactly Phase 0 and Phase 1, nothing else.""",
+
+    # ── Mini-specific instructions for other contract types ────────────
+    "blueprint_mini": """\
+Generate a concise project blueprint for a mini/proof-of-concept build.
+Keep scope tight — this will be built in exactly 2 phases (backend + frontend).
+Include:
+1) Product intent — what it does and for whom (1 paragraph)
+2) Core invariants — 3-5 MUST-hold rules
+3) MVP scope — features that fit in 2 build phases AND explicit not-in-scope list
+4) Layer boundaries — basic separation (routes → services → repos)
+5) Deployment — Docker-ready local dev
+
+Be specific but concise. No sprawling feature lists — just what's buildable in 2 phases.""",
+
+    "manifesto_mini": """\
+Generate a brief manifesto with 3-5 non-negotiable principles.
+This is a mini build (2 phases) — keep principles focused on what matters
+for a working proof-of-concept. Each principle: title + 2-3 bullets.
+Skip ceremony — no confirm-before-write section needed for a mini build.""",
+
+    "stack_mini": """\
+Generate a technology stack document. Include:
+- Backend (language, framework, version, key libraries)
+- Database (engine, version)
+- Frontend (framework, bundler, key libraries)
+- Deployment (Docker, single-compose)
+- Environment Variables table (name, description, required/optional)
+
+Keep it focused — this is a 2-phase proof-of-concept, not an enterprise deployment.""",
+
+    "schema_mini": """\
+Generate a database schema. Include:
+- Conventions section (naming, common columns)
+- CREATE TABLE SQL for all tables needed by the MVP
+- Keep minimal — only tables required for core features
+
+Use PostgreSQL syntax. Only define tables the app actually needs for its MVP scope.""",
+
+    "ui_mini": """\
+Generate a concise UI/UX blueprint. Include:
+1) App Shell & Layout — structure, navigation
+2) Screens/Views — spec for each page (what it shows, key interactions)
+3) Component list — reusable components needed
+4) Visual Style — color palette, typography basics
+5) Key User Flows — 2-3 primary user journeys
+
+This is a 2-phase mini build. Keep the UI scope focused on core functionality.""",
+
+    "physics_mini": """\
+Generate an API specification in YAML format. Include:
+- info: title, version, description
+- paths: every API endpoint with method, summary, auth, request/response shapes
+- schemas: data model definitions
+
+Use the custom Forge physics YAML format (NOT OpenAPI).
+Keep it focused — only endpoints needed for the MVP features.""",
+
+    "boundaries_mini": """\
+Generate an architectural boundaries spec in JSON format:
+{
+  "description": "Layer boundary rules...",
+  "layers": [ { "name": "...", "glob": "...", "forbidden": [...] } ],
+  "known_violations": []
+}
+Define 3-4 layers with basic separation of concerns. Keep it simple for a mini build.
+Output MUST be valid JSON.""",
+
+    "builder_directive_mini": """\
+Generate a builder directive — operational instructions for the AI builder.
+Include:
+- Step-by-step: read contracts → Phase 0 (backend) → Phase 1 (frontend) → commit
+- Phase list: Phase 0 — Backend Scaffold, Phase 1 — Frontend & Ship
+- Project summary (one sentence)
+- boot_script flag
+
+CRITICAL: There are exactly 2 phases. The builder must execute both to completion.
+Keep it concise — this is a mini build.""",
+
     "ui": """\
 Generate a UI/UX blueprint document. Include:
 1) App Shell & Layout — device priority, shell structure, navigation model
@@ -244,7 +350,9 @@ async def generate_contracts(
 
     qs = project.get("questionnaire_state") or {}
     completed = qs.get("completed_sections", [])
-    remaining = [s for s in QUESTIONNAIRE_SECTIONS if s not in completed]
+    build_mode = project.get("build_mode", "full")
+    sections = _sections_for_mode(build_mode)
+    remaining = [s for s in sections if s not in completed]
 
     if remaining:
         raise ValueError(
@@ -266,17 +374,36 @@ async def generate_contracts(
         llm_model = settings.LLM_QUESTIONNAIRE_MODEL
 
     pid = str(project_id)
+
+    # ── Duplicate-run guard ──────────────────────────────────────────
+    if pid in _active_generations:
+        raise ValueError(
+            "Contract generation is already in progress for this project. "
+            "Wait for it to finish or cancel it first."
+        )
+
     cancel_event = asyncio.Event()
     _active_generations[pid] = cancel_event
 
-    # Snapshot existing contracts before overwriting (version history)
+    # ── Resume: detect already-generated contracts from a partial run ─
     existing = await get_contracts_by_project(project_id)
-    if existing:
+    existing_map: dict[str, dict] = {c["contract_type"]: c for c in existing}
+
+    # If we have a complete set, snapshot and regenerate from scratch
+    all_exist = all(ct in existing_map for ct in CONTRACT_TYPES)
+    if all_exist:
         batch = await snapshot_contracts(project_id)
         if batch:
             logger.info("Archived contracts as snapshot batch %d for project %s", batch, pid)
+        existing_map = {}  # regenerate everything
 
     generated = []
+    # Seed prior_contracts from existing contracts for chaining continuity
+    prior_contracts: dict[str, str] = {
+        ct: existing_map[ct]["content"]
+        for ct in CONTRACT_TYPES
+        if ct in existing_map
+    }
     total = len(CONTRACT_TYPES)
     try:
         for idx, contract_type in enumerate(CONTRACT_TYPES):
@@ -295,6 +422,34 @@ async def generate_contracts(
                 })
                 raise ContractCancelled("Contract generation cancelled")
 
+            # ── Resume: skip contracts that already exist from partial run ─
+            if contract_type in existing_map:
+                row = existing_map[contract_type]
+                generated.append({
+                    "id": str(row["id"]),
+                    "project_id": str(row["project_id"]),
+                    "contract_type": row["contract_type"],
+                    "version": row["version"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                })
+                logger.info("Skipping %s — already exists from partial run", contract_type)
+                # Notify frontend so it shows as done immediately
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": contract_type,
+                        "status": "done",
+                        "index": idx,
+                        "total": total,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "resumed": True,
+                    },
+                })
+                continue
+
             # Notify client that generation of this contract has started
             await manager.send_to_user(str(user_id), {
                 "type": "contract_progress",
@@ -309,9 +464,27 @@ async def generate_contracts(
 
             # Race the LLM call against the cancel event so cancellation
             # takes effect immediately, even mid-generation.
+            async def _on_token_progress(in_tok: int, out_tok: int) -> None:
+                """Send live token streaming updates via WS."""
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": contract_type,
+                        "status": "streaming",
+                        "index": idx,
+                        "total": total,
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                    },
+                })
+
             llm_task = asyncio.ensure_future(
                 _generate_contract_content(
-                    contract_type, project, answers_text, llm_api_key, llm_model, provider
+                    contract_type, project, answers_text, llm_api_key, llm_model, provider,
+                    build_mode=build_mode,
+                    prior_contracts=prior_contracts,
+                    on_token_progress=_on_token_progress,
                 )
             )
             cancel_task = asyncio.ensure_future(cancel_event.wait())
@@ -340,6 +513,9 @@ async def generate_contracts(
             # LLM finished first — clean up the cancel waiter
             cancel_task.cancel()
             content, usage = llm_task.result()
+
+            # Store for chaining into subsequent contracts
+            prior_contracts[contract_type] = content
 
             row = await upsert_contract(project_id, contract_type, content)
             generated.append({
@@ -473,9 +649,11 @@ async def push_contracts_to_git(
             fp = contracts_dir / filename
             fp.write_text(c["content"], encoding="utf-8")
 
-        # Commit and push
-        await git_client.add_all(working_dir)
-        sha = await git_client.commit(working_dir, "forge: push contracts")
+        # Commit and push (include_contracts=True bypasses the build-safety exclusion)
+        await git_client.add_all(working_dir, include_contracts=True)
+        sha = await git_client.commit(
+            working_dir, "forge: push contracts", include_contracts=True,
+        )
         if not sha:
             # Nothing changed — contracts already up to date
             return {
@@ -499,6 +677,21 @@ async def push_contracts_to_git(
         shutil.rmtree(working_dir, ignore_errors=True)
 
 
+# Which previously-generated contracts to feed as context for each type.
+# Key = contract being generated, value = list of prior contract types to include.
+_CHAIN_CONTEXT: dict[str, list[str]] = {
+    "blueprint":          [],
+    "manifesto":          ["blueprint"],
+    "stack":              ["blueprint"],
+    "schema":             ["blueprint", "stack"],
+    "physics":            ["blueprint", "schema"],
+    "boundaries":         ["blueprint", "stack"],
+    "phases":             ["blueprint", "stack", "schema", "physics"],
+    "ui":                 ["blueprint", "physics", "schema"],
+    "builder_directive":  ["blueprint", "phases", "stack"],
+}
+
+
 async def _generate_contract_content(
     contract_type: str,
     project: dict,
@@ -506,21 +699,58 @@ async def _generate_contract_content(
     api_key: str,
     model: str,
     provider: str,
+    build_mode: str = "full",
+    prior_contracts: dict[str, str] | None = None,
+    on_token_progress: "Callable[[int, int], Awaitable[None]] | None" = None,
 ) -> tuple[str, dict]:
     """Generate a single contract using the LLM.
 
+    Args:
+        prior_contracts: Map of contract_type → content for previously
+            generated contracts in this batch.  Used for cross-contract
+            consistency (chaining).
+
     Returns (content, usage) where usage has input_tokens / output_tokens.
     """
-    # Load the Forge example as a structural reference (if available)
-    example = _load_forge_example(contract_type)
+    is_mini = build_mode == "mini"
 
-    instructions = _CONTRACT_INSTRUCTIONS.get(contract_type, f"Generate a {contract_type} contract document.")
+    # Load the Forge example as a structural reference (if available)
+    # For mini builds: skip the example for phases (230KB, 13+ phases
+    # overwhelms the 2-phase instruction) and cap other examples to
+    # keep token budget reasonable.
+    example = None
+    if is_mini and contract_type == "phases":
+        example = None  # never show the full phases example for mini
+    else:
+        example = _load_forge_example(contract_type)
+        if is_mini and example and len(example) > 8000:
+            # Truncate large examples for mini builds to save tokens
+            example = example[:8000] + "\n\n[... truncated for mini build — match the FORMAT above, not the length ...]\n"
+
+    # Pick instructions: prefer mini-specific variant when available
+    if is_mini:
+        instructions = _CONTRACT_INSTRUCTIONS.get(
+            f"{contract_type}_mini",
+            _CONTRACT_INSTRUCTIONS.get(contract_type, f"Generate a {contract_type} contract document."),
+        )
+    else:
+        instructions = _CONTRACT_INSTRUCTIONS.get(contract_type, f"Generate a {contract_type} contract document.")
+
+    mini_note = ""
+    if is_mini:
+        mini_note = (
+            "\n\nIMPORTANT: This is a MINI BUILD (proof-of-concept). "
+            "The entire project will be built in exactly 2 phases "
+            "(Phase 0: backend scaffold, Phase 1: frontend & ship). "
+            "Scope ALL deliverables to fit within those 2 phases. "
+            "Be thorough within that scope but do not expand beyond it.\n"
+        )
 
     system_parts = [
         f"You are a Forge contract generator. You produce detailed, production-quality "
         f"project specification documents for the Forge autonomous build system.\n\n"
         f"You are generating the **{contract_type}** contract for the project "
-        f'"{project["name"]}".\n\n'
+        f'"{project["name"]}".{mini_note}\n\n'
         f"INSTRUCTIONS:\n{instructions}\n\n"
         f"RULES:\n"
         f"- Output ONLY the contract content. No preamble, no 'Here is...', no explanations.\n"
@@ -533,9 +763,6 @@ async def _generate_contract_content(
     ]
 
     if example:
-        # Truncate very long examples to avoid hitting context limits
-        if len(example) > 6000:
-            example = example[:6000] + "\n\n... (truncated for brevity) ..."
         system_parts.append(
             f"\n--- STRUCTURAL REFERENCE (match this level of detail and format) ---\n"
             f"{example}\n"
@@ -544,21 +771,48 @@ async def _generate_contract_content(
 
     system_prompt = "\n".join(system_parts)
 
-    user_msg = (
+    # Build user message with questionnaire data + chained prior contracts
+    user_parts = [
         f"Generate the {contract_type} contract for this project.\n\n"
         f"--- PROJECT INFORMATION (from questionnaire) ---\n"
         f"{answers_text}\n"
         f"--- END PROJECT INFORMATION ---"
-    )
+    ]
+
+    # Inject prior contracts for cross-contract consistency (chaining)
+    if prior_contracts:
+        deps = _CHAIN_CONTEXT.get(contract_type, [])
+        chain_parts = []
+        for dep_type in deps:
+            dep_content = prior_contracts.get(dep_type)
+            if dep_content:
+                # Cap each prior contract to avoid blowing up the context
+                cap = 6000 if is_mini else 12000
+                snippet = dep_content[:cap]
+                if len(dep_content) > cap:
+                    snippet += "\n[... truncated ...]"
+                chain_parts.append(
+                    f"--- PREVIOUSLY GENERATED: {dep_type} ---\n"
+                    f"{snippet}\n"
+                    f"--- END {dep_type} ---"
+                )
+        if chain_parts:
+            user_parts.append(
+                "\n\nUse these previously-generated contracts for consistency:\n"
+                + "\n\n".join(chain_parts)
+            )
+
+    user_msg = "\n".join(user_parts)
 
     try:
-        result = await llm_chat(
+        result = await llm_chat_streaming(
             api_key=api_key,
             model=model,
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": user_msg}],
             provider=provider,
             max_tokens=16384,
+            on_progress=on_token_progress,
         )
         usage = result.get("usage", {"input_tokens": 0, "output_tokens": 0})
         content = result["text"].strip()

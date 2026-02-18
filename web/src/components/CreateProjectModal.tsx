@@ -104,6 +104,7 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
   /* form state */
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [buildMode, setBuildMode] = useState<'mini' | 'full'>('mini');
   const [source, setSource] = useState<SourceType>('github');
   const [ghMode, setGhMode] = useState<GitHubMode>('create');
   const [isPrivate, setIsPrivate] = useState(false);
@@ -239,6 +240,7 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
           description: description.trim() || undefined,
           repo_id: repoId ?? undefined,
           local_path: source === 'local' ? localPath.trim() : undefined,
+          build_mode: buildMode,
         }),
       });
       if (!res.ok) {
@@ -327,6 +329,26 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
             </span>
           )}
         </label>
+
+        {/* ---- Build Mode toggle ---- */}
+        <div style={{ marginBottom: '14px' }}>
+          <span style={{ display: 'block', color: '#94A3B8', fontSize: '0.8rem', marginBottom: '6px' }}>
+            Build Mode
+          </span>
+          <div style={{ display: 'flex' }}>
+            <Pill active={buildMode === 'mini'} onClick={() => setBuildMode('mini')} leftRadius testId="mode-mini">
+              ⚡ Mini
+            </Pill>
+            <Pill active={buildMode === 'full'} onClick={() => setBuildMode('full')} rightRadius testId="mode-full">
+              🔮 Full
+            </Pill>
+          </div>
+          <span style={{ display: 'block', color: '#64748B', fontSize: '0.7rem', marginTop: '4px' }}>
+            {buildMode === 'mini'
+              ? 'Quick PoC — 2 questions, 2 phases (backend + frontend). ~$1-3.'
+              : 'Production build — 7 sections, 6-12 phases. ~$5-20.'}
+          </span>
+        </div>
 
         {/* ---- Source toggle ---- */}
         <div style={{ marginBottom: '14px' }}>

@@ -89,10 +89,12 @@ async def create_new_project(
     description: str | None = None,
     repo_id: UUID | None = None,
     local_path: str | None = None,
+    build_mode: str = "full",
 ) -> dict:
     """Create a new project, optionally linked to a repo or local path."""
     project = await repo_create_project(
-        user_id, name, description, repo_id=repo_id, local_path=local_path
+        user_id, name, description, repo_id=repo_id, local_path=local_path,
+        build_mode=build_mode,
     )
     return project
 
@@ -112,8 +114,9 @@ async def get_project_detail(user_id: UUID, project_id: UUID) -> dict:
 
     contracts = await get_contracts_by_project(project_id)
     qs = project.get("questionnaire_state", {})
+    build_mode = project.get("build_mode", "full")
 
-    project["questionnaire_progress"] = _questionnaire_progress(qs)
+    project["questionnaire_progress"] = _questionnaire_progress(qs, build_mode)
     project["contracts"] = [
         {
             "id": str(c["id"]),

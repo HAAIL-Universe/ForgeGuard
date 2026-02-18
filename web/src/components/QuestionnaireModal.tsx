@@ -25,7 +25,13 @@ const SECTION_LABELS: Record<string, string> = {
   deployment_target: 'Deployment',
 };
 
+const MINI_SECTION_LABELS: Record<string, string> = {
+  product_intent: 'Product Intent',
+  ui_requirements: 'UI & Flow',
+};
+
 const ALL_SECTIONS = Object.keys(SECTION_LABELS);
+const MINI_SECTIONS = Object.keys(MINI_SECTION_LABELS);
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                             */
@@ -47,6 +53,7 @@ interface QuestionnaireState {
 interface Props {
   projectId: string;
   projectName: string;
+  buildMode?: 'mini' | 'full';
   onClose: () => void;
   onContractsGenerated: () => void;
   onDismissDuringGeneration?: () => void;
@@ -333,22 +340,24 @@ function useSpeechRecognition(onResult: (text: string) => void) {
 /*  Progress bar                                                      */
 /* ------------------------------------------------------------------ */
 
-function ProgressBar({ completed, current }: { completed: string[]; current: string | null }) {
+function ProgressBar({ completed, current, skipped }: { completed: string[]; current: string | null; skipped: string[] }) {
   return (
     <div style={{ display: 'flex', gap: '3px', padding: '0 20px 10px' }} data-testid="questionnaire-progress">
       {ALL_SECTIONS.map((s) => {
+        const isSkipped = skipped.includes(s);
         const done = completed.includes(s);
         const active = s === current;
         return (
           <div
             key={s}
-            title={SECTION_LABELS[s]}
+            title={`${SECTION_LABELS[s] ?? s}${isSkipped ? ' (auto)' : ''}`}
             style={{
               flex: 1,
               height: '4px',
               borderRadius: '2px',
-              background: done ? '#22C55E' : active ? '#2563EB' : '#334155',
-              transition: 'background 0.3s',
+              background: isSkipped ? '#334155' : done ? '#22C55E' : active ? '#2563EB' : '#334155',
+              opacity: isSkipped ? 0.25 : 1,
+              transition: 'background 0.3s, opacity 0.3s',
             }}
           />
         );
@@ -527,15 +536,16 @@ function UserBubble({ content }: { content: string }) {
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
-function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenerated, onDismissDuringGeneration, initialGenerating, initialDoneContracts }: Props) {
+function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClose, onContractsGenerated, onDismissDuringGeneration, initialGenerating, initialDoneContracts }: Props) {
   const { token } = useAuth();
+  const activeSections = buildMode === 'mini' ? MINI_SECTIONS : ALL_SECTIONS;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [qState, setQState] = useState<QuestionnaireState>({
     current_section: 'product_intent',
     completed_sections: [],
-    remaining_sections: [...ALL_SECTIONS],
+    remaining_sections: [...activeSections],
     is_complete: false,
   });
   const [error, setError] = useState('');
@@ -770,7 +780,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
                     setQState({
                       current_section: 'product_intent',
                       completed_sections: [],
-                      remaining_sections: [...ALL_SECTIONS],
+                      remaining_sections: [...activeSections],
                       is_complete: false,
                     });
                     setInput('');
@@ -816,7 +826,7 @@ function QuestionnaireModal({ projectId, projectName, onClose, onContractsGenera
 
         {/* Progress bar — hidden during contract generation */}
         {!generatingContracts && (
-          <ProgressBar completed={qState.completed_sections} current={qState.current_section} />
+          <ProgressBar completed={qState.completed_sections} current={qState.current_section} skipped={buildMode === 'mini' ? ALL_SECTIONS.filter(s => !MINI_SECTIONS.includes(s)) : []} />
         )}
 
         {/* Messages — hidden during contract generation */}

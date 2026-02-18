@@ -111,15 +111,34 @@ async def exclude_contracts_from_staging(repo_path: str | Path) -> None:
         logger.debug("git rm --cached Forge/ failed (non-fatal) in %s", repo_path)
 
 
-async def add_all(repo_path: str | Path) -> None:
-    """Stage all changes in the repo, excluding Forge contract files."""
+async def add_all(repo_path: str | Path, *, include_contracts: bool = False) -> None:
+    """Stage all changes in the repo.
+
+    By default, Forge contract files are excluded from staging
+    (belt-and-suspenders guard for builds).  Pass ``include_contracts=True``
+    when the intent is to commit contracts themselves (e.g. push-to-repo).
+    """
     await _run_git(["add", "-A"], cwd=repo_path)
-    # Belt-and-suspenders: ensure contracts are never staged
-    await exclude_contracts_from_staging(repo_path)
+    if include_contracts:
+        # Force-add contracts past .gitignore so they are always staged
+        forge_dir = Path(repo_path) / "Forge"
+        if forge_dir.exists():
+            await _run_git(["add", "-f", "Forge/"], cwd=repo_path)
+    else:
+        await exclude_contracts_from_staging(repo_path)
 
 
-async def commit(repo_path: str | Path, message: str) -> str | None:
-    """Commit staged changes. Returns commit hash or None if nothing to commit."""
+async def commit(
+    repo_path: str | Path,
+    message: str,
+    *,
+    include_contracts: bool = False,
+) -> str | None:
+    """Commit staged changes. Returns commit hash or None if nothing to commit.
+
+    Pass ``include_contracts=True`` when the commit should include Forge
+    contract files (e.g. the push-contracts-to-repo flow).
+    """
     # Check if there are staged changes
     try:
         status = await _run_git(["status", "--porcelain"], cwd=repo_path)
@@ -137,7 +156,12 @@ async def commit(repo_path: str | Path, message: str) -> str | None:
         pass  # May already be configured
 
     await _run_git(["add", "-A"], cwd=repo_path)
-    await exclude_contracts_from_staging(repo_path)
+    if include_contracts:
+        forge_dir = Path(repo_path) / "Forge"
+        if forge_dir.exists():
+            await _run_git(["add", "-f", "Forge/"], cwd=repo_path)
+    else:
+        await exclude_contracts_from_staging(repo_path)
     await _run_git(["commit", "-m", message], cwd=repo_path)
     sha = await _run_git(["rev-parse", "HEAD"], cwd=repo_path)
     return sha

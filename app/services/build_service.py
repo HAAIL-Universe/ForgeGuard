@@ -1800,9 +1800,10 @@ async def _run_build_conversation(
             and access_token
         ):
             try:
-                await git_client.add_all(working_dir)
+                await git_client.add_all(working_dir, include_contracts=True)
                 sha = await git_client.commit(
-                    working_dir, "forge: seed Forge/Contracts/"
+                    working_dir, "forge: seed Forge/Contracts/",
+                    include_contracts=True,
                 )
                 if sha:
                     await git_client.push(
@@ -3096,6 +3097,12 @@ async def _run_build_plan_execute(
         await _fail_build(build_id, user_id, "No phases contract found")
         return
 
+    # Mini build: hard-cap at 2 phases regardless of what the contract says
+    project = await project_repo.get_project_by_id(project_id)
+    if project and project.get("build_mode") == "mini" and len(phases) > 2:
+        logger.info("Mini build — capping phases from %d to 2", len(phases))
+        phases = phases[:2]
+
     # --- Workspace setup (git clone, branch, contracts) ---
     # --- Workspace setup (skip if continuing from a prior build) ---
     if resume_from_phase < 0:
@@ -3170,8 +3177,11 @@ async def _run_build_plan_execute(
         # Commit + push contracts seed
         if target_type in ("github_new", "github_existing") and access_token:
             try:
-                await git_client.add_all(working_dir)
-                sha = await git_client.commit(working_dir, "forge: seed Forge/Contracts/")
+                await git_client.add_all(working_dir, include_contracts=True)
+                sha = await git_client.commit(
+                    working_dir, "forge: seed Forge/Contracts/",
+                    include_contracts=True,
+                )
                 if sha:
                     await git_client.push(working_dir, branch=branch, access_token=access_token)
                     await build_repo.append_build_log(

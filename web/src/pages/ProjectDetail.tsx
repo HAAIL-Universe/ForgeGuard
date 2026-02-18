@@ -47,6 +47,7 @@ interface ProjectDetailData {
   name: string;
   description: string | null;
   status: string;
+  build_mode?: string;
   repo_id: string | null;
   repo_full_name: string | null;
   created_at: string;
@@ -1095,6 +1096,7 @@ function ProjectDetail() {
         <QuestionnaireModal
           projectId={project.id}
           projectName={project.name}
+          buildMode={project.build_mode === 'mini' ? 'mini' : 'full'}
           initialGenerating={bgGenActive}
           initialDoneContracts={bgGenDone}
           onClose={() => setShowQuestionnaire(false)}

@@ -265,7 +265,8 @@ async def test_generate_snapshots_before_regeneration(
     mock_project, mock_existing, mock_snapshot,
     mock_upsert, mock_status, mock_gen, mock_manager,
 ):
-    """When contracts already exist, generate_contracts snapshots them first."""
+    """When ALL contracts already exist (full set), generate_contracts snapshots them first."""
+    from app.services.project.contract_generator import CONTRACT_TYPES
     from app.services.project_service import generate_contracts
 
     mock_project.return_value = {
@@ -275,8 +276,15 @@ async def test_generate_snapshots_before_regeneration(
             "answers": {"product_intent": [{"q": "test", "a": "test"}]},
         },
     }
-    # Existing contracts → should trigger snapshot
-    mock_existing.return_value = [{"contract_type": "blueprint", "content": "old"}]
+    # All 9 contracts exist → should trigger snapshot then regenerate
+    mock_existing.return_value = [
+        {"id": UUID("66666666-6666-6666-6666-666666666666"),
+         "project_id": UUID(PROJECT_ID),
+         "contract_type": ct, "content": "old",
+         "version": 1, "created_at": "2025-01-01T00:00:00Z",
+         "updated_at": "2025-01-01T00:00:00Z"}
+        for ct in CONTRACT_TYPES
+    ]
     mock_snapshot.return_value = 1
 
     # Each contract generation

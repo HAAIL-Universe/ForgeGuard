@@ -400,24 +400,22 @@ When `boot_script: false` or not specified, the builder skips this entirely.
 
 ### 10.1.1 Watch Audit Startup
 
-When AEM is enabled, the builder MUST ensure **exactly one instance** of the audit file watcher is running. The watcher persists across all phases -- the builder does NOT restart it between phases.
+When AEM is enabled, the builder MUST ensure **exactly one instance** of the audit file watcher is running. The watcher is a **pre-build action** -- it is launched **once** before any phase work begins and persists across all phases.
 
 **Single-instance guard:** `watch_audit.ps1` writes a `.forge_watcher.lock` file at the project root on startup (containing its PID and timestamp). If the lock file already exists and the PID is still alive, the script exits cleanly with code 0. If the PID is dead (stale lock), the script removes the lock and starts normally. The lock file is deleted on clean shutdown (Ctrl+C / finally block).
 
-**Exact trigger point:** The watcher MUST be launched **after** the diff log is marked `Status: IN_PROCESS` (step 4 of the diff log sequence in §11) and **before** any implementation work begins (step 6). The per-phase startup sequence is:
+**Exact trigger point:** The watcher MUST be launched **after** the initial contract and audit ledger read (directive steps 1-2) and **before** the first phase begins (directive step 4). The pre-build startup sequence is:
 
 1. Read contracts (§1 read gate).
 2. Read and summarize prior diff log and audit ledger.
-3. Plan scope/files/tests.
-4. Run `overwrite_diff_log.ps1`, replace placeholders, mark `Status: IN_PROCESS`.
-5. **Launch the watcher** (safe to call every phase -- the lock file prevents duplicates):
+3. **Launch the watcher** (once, before any phase work):
    ```powershell
    pwsh -File .\Forge\scripts\watch_audit.ps1
    ```
-   If the watcher is already running, the script exits immediately and the existing instance continues. If it is not running (first phase, stale lock, or terminal was lost), a new instance starts.
-6. Begin implementation work.
+   If the watcher fails to start, STOP with `ENVIRONMENT_LIMITATION`.
+4. Begin Phase 0.
 
-The builder MUST call step 5 every phase. It does not need to manually check whether the watcher is running -- the lock file handles that.
+The builder MUST NOT re-launch the watcher per phase. It is not a per-phase action. The lock file exists as a safety net for session recovery (e.g., terminal crash), not as an invitation to call it repeatedly.
 
 This watcher monitors `Forge/evidence/diff_log.md`. It parses the diff log for claimed files (from `## Files Changed/Created/Modified` tables) and the phase identifier (from `Phase N` in the header), then automatically invokes `run_audit.ps1` with those parameters.
 
