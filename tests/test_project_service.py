@@ -262,7 +262,7 @@ async def test_generate_contracts_incomplete(mock_project):
 @pytest.mark.asyncio
 @patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 async def test_cancel_contract_generation_no_active(mock_project):
-    """Cancel returns status dict when no generation is active."""
+    """Cancel raises when no generation is active."""
     mock_project.return_value = {
         "id": PROJECT_ID,
         "user_id": USER_ID,
@@ -270,8 +270,8 @@ async def test_cancel_contract_generation_no_active(mock_project):
         "description": None,
         "status": "contracts_ready",
     }
-    result = await cancel_contract_generation(USER_ID, PROJECT_ID)
-    assert result["status"] == "no_active_generation"
+    with pytest.raises(ValueError, match="No active"):
+        await cancel_contract_generation(USER_ID, PROJECT_ID)
 
 
 @pytest.mark.asyncio
