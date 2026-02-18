@@ -1,0 +1,65 @@
+# ForgeGuard — local development stack
+#
+# Usage:
+#   docker compose up -d          # start everything
+#   docker compose up -d db       # just the database
+#   docker compose logs -f backend
+#
+# The backend reads DATABASE_URL from the .env file (or the environment
+# override below).  For first-time setup, run migrations:
+#   docker compose exec backend alembic upgrade head
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: forgeguard
+      POSTGRES_PASSWORD: forgeguard
+      POSTGRES_DB: forgeguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgeguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Backend (FastAPI + Uvicorn) ─────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Override DATABASE_URL to point at the compose-managed Postgres.
+      DATABASE_URL: postgresql://forgeguard:forgeguard@db:5432/forgeguard
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount source for hot-reload during development.
+      - .:/app
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Frontend (Vite dev server) ──────────────────────────────────────────
+  frontend:
+    image: node:22-alpine
+    working_dir: /web
+    ports:
+      - "5174:5174"
+    volumes:
+      - ./web:/web
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

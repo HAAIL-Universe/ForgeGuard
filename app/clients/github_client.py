@@ -1,11 +1,20 @@
 """GitHub API client -- OAuth token exchange, user info, repos, and webhooks."""
 
 import httpx
+from cachetools import TTLCache
 
 GITHUB_OAUTH_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
 GITHUB_API_BASE = "https://api.github.com"
+
+# ── Response caches (reduces GitHub API rate-limit pressure) ────────────────
+# Key format: (access_token, full_name) or (access_token,)
+# TTL = 300 s (5 min) — short enough to stay reasonably fresh.
+
+_repo_list_cache: TTLCache[str, list[dict]] = TTLCache(maxsize=200, ttl=300)
+_repo_meta_cache: TTLCache[tuple[str, str], dict] = TTLCache(maxsize=500, ttl=300)
+_repo_lang_cache: TTLCache[tuple[str, str], dict[str, int]] = TTLCache(maxsize=500, ttl=300)
 
 # ── Shared HTTP client (connection pooling) ─────────────────────────────────
 
@@ -85,7 +94,12 @@ async def list_user_repos(access_token: str) -> list[dict]:
 
     Paginates through all results (up to 300 repos).
     Returns a list of repo dicts with id, full_name, default_branch, private.
+    Results are cached for 5 minutes per access token.
     """
+    cached = _repo_list_cache.get(access_token)
+    if cached is not None:
+        return cached
+
     repos: list[dict] = []
     page = 1
     per_page = 100
@@ -116,6 +130,8 @@ async def list_user_repos(access_token: str) -> list[dict]:
         if len(data) < per_page:
             break
         page += 1
+
+    _repo_list_cache[access_token] = repos
     return repos
 
 
@@ -285,28 +301,40 @@ async def get_repo_languages(
     access_token: str,
     full_name: str,
 ) -> dict[str, int]:
-    """Fetch language byte counts for a repo.
+    """Fetch language byte counts for a repo (cached 5 min).
 
     Returns e.g. {"Python": 45000, "TypeScript": 32000}.
     """
+    key = (access_token, full_name)
+    cached = _repo_lang_cache.get(key)
+    if cached is not None:
+        return cached
+
     client = _get_client()
     response = await client.get(
         f"{GITHUB_API_BASE}/repos/{full_name}/languages",
         headers=_auth_headers(access_token),
     )
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    _repo_lang_cache[key] = result
+    return result
 
 
 async def get_repo_metadata(
     access_token: str,
     full_name: str,
 ) -> dict:
-    """Fetch top-level metadata for a repo.
+    """Fetch top-level metadata for a repo (cached 5 min).
 
     Returns dict with stargazers_count, forks_count, size, license, topics,
     created_at, updated_at, default_branch, description, private.
     """
+    key = (access_token, full_name)
+    cached = _repo_meta_cache.get(key)
+    if cached is not None:
+        return cached
+
     client = _get_client()
     response = await client.get(
         f"{GITHUB_API_BASE}/repos/{full_name}",
@@ -314,7 +342,7 @@ async def get_repo_metadata(
     )
     response.raise_for_status()
     data = response.json()
-    return {
+    result = {
         "stargazers_count": data.get("stargazers_count", 0),
         "forks_count": data.get("forks_count", 0),
         "size": data.get("size", 0),
@@ -326,6 +354,8 @@ async def get_repo_metadata(
         "description": data.get("description"),
         "private": data.get("private", False),
     }
+    _repo_meta_cache[key] = result
+    return result
 
 
 async def list_commits(
