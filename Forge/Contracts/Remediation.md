@@ -480,7 +480,7 @@
 
 ---
 
-## R12 — Frontend Stability
+## R12 — Frontend Stability ✅
 
 > Error boundaries, lazy loading, user feedback.
 
@@ -517,7 +517,7 @@
 
 ## R13 — Frontend Decomposition
 
-> Break god-pages into focused components.
+> Break god-pages into focused components. **Deferred** — mechanical TSX refactor, no functional impact.
 
 ### R13.1 Decompose `BuildProgress.tsx` (2,403 lines)
 
@@ -550,7 +550,7 @@
 
 ## R14 — Frontend Styling
 
-> Extract inline styles to reduce LOC and improve maintainability.
+> Extract inline styles to reduce LOC and improve maintainability. **Deferred** — cosmetic, no functional impact.
 
 ### R14.1 Extract inline styles to CSS Modules
 
