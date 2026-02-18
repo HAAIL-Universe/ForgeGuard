@@ -1,576 +1,541 @@
 ﻿# Diff Log (overwrite each cycle)
 
 ## Cycle Metadata
-- Timestamp: 2026-02-18T10:12:02+00:00
+- Timestamp: 2026-02-18T10:33:37+00:00
 - Branch: master
-- HEAD: 1aa99e88e786a6f72ed583333b58fce4883f7fe3
-- BASE_HEAD: fb0b2db78fe0a180a7ff6990529ca7ff7998809d
+- HEAD: cb38e2b2a64c91e392c977fe2b8f4716c56a78f9
+- BASE_HEAD: 1aa99e88e786a6f72ed583333b58fce4883f7fe3
 - Diff basis: unstaged (working tree)
 
 ## Cycle Status
-- Status: COMPLETE
+- Status: IN_PROCESS
 
 ## Summary
-- Renamed `updatedifflog` → `diff_log` globally across 14 files (contracts, scripts, templates, code, tests)
-- Added inline per-file deterministic audit to Forge IDE upgrade executor (`_audit_file_change` with scope compliance check)
-- Wired `_write_diff_log` and `_write_audit_trail` evidence writers into `/push` flow via `_run_pre_push_audit`
-- Added audit gate with Y/N prompt (`push_audit_confirm`) — blocks push on failure, user can fix or skip
-- Added frontend audit badges (orange pulsing AUDITING / green PASS / red FAIL) on Changes tab via WebSocket events
-- Added audit findings display in expanded file view (red panel with bullet-pointed findings)
-- Added 17 new tests covering audit pipeline (87 total in executor test file, 1216 total suite)
+- TODO: 1-5 bullets (what changed, why, scope).
 
 ## Files Changed (unstaged (working tree))
-- Forge/Contracts/builder_contract.md
-- Forge/Contracts/phases.md
-- Forge/Contracts/system_prompt.md
-- Forge/evidence/updatedifflog.md
-- Forge/scripts/overwrite_diff_log.ps1
-- Forge/scripts/run_audit.ps1
-- Forge/scripts/watch_audit.ps1
-- app/audit/runner.py
-- app/services/scout/_utils.py
 - app/services/upgrade_executor.py
-- app/templates/contracts/builder_contract.md
-- app/templates/contracts/phases.md
-- forge_ide/workspace.py
-- tests/test_audit_runner.py
 - tests/test_upgrade_executor.py
-- web/src/components/ForgeIDEModal.tsx
 
 ## git status -sb
-    ## master...origin/master [ahead 2]
-     M Forge/Contracts/builder_contract.md
-     M Forge/Contracts/phases.md
-     M Forge/Contracts/system_prompt.md
-     D Forge/evidence/updatedifflog.md
-     M Forge/scripts/overwrite_diff_log.ps1
-     M Forge/scripts/run_audit.ps1
-     M Forge/scripts/watch_audit.ps1
-     M app/audit/runner.py
-     M app/services/scout/_utils.py
+    ## master...origin/master
      M app/services/upgrade_executor.py
-     M app/templates/contracts/builder_contract.md
-     M app/templates/contracts/phases.md
-     M forge_ide/workspace.py
-     M tests/test_audit_runner.py
      M tests/test_upgrade_executor.py
-     M web/src/components/ForgeIDEModal.tsx
-    ?? Forge/evidence/diff_log.md
+    ?? app/services/architecture_baseline.py
+    ?? app/services/consistency_scorer.py
+    ?? app/services/reliability_scorer.py
+    ?? tests/test_architecture_baseline.py
+    ?? tests/test_consistency_scorer.py
+    ?? tests/test_reliability_scorer.py
 
 ## Verification
-- Static: `python -m compileall app/ forge_ide/ tests/ -q` — 0 errors
-- Runtime: `pytest tests/ -q` — 1216 passed, 0 failed, 8 warnings
-- Behavior: New audit tests (17) cover all code paths: clean pass, syntax error, invalid JSON, import star, scope deviation, delete action, evidence writers, pre-push gate (pass/fail), Y/N confirm (yes/no)
-- Contract: Rename consistency verified — 0 stale `updatedifflog` refs in code (audit_ledger.md historical refs preserved per §10.6)
+- TODO: verification evidence (static -> runtime -> behavior -> contract).
 
 ## Notes (optional)
-- `audit_ledger.md` historical references to `updatedifflog` preserved per §10.6 (append-only ledger)
-- PowerShell pipe `exit code 1` is a known stderr redirection artifact — real RC confirmed via subprocess wrapper
-- Frontend `pulse` keyframe reused from existing codebase for audit badge animation
+- TODO: blockers, risks, constraints.
 
 ## Next Steps
-- Run `run_audit.ps1` for final governance check
-- Phase sign-off and commit to master
+- TODO: next actions (small, specific).
 
 ## Minimal Diff Hunks
-    diff --git a/Forge/Contracts/builder_contract.md b/Forge/Contracts/builder_contract.md
-    index 732cca0..571913a 100644
-    --- a/Forge/Contracts/builder_contract.md
-    +++ b/Forge/Contracts/builder_contract.md
-    @@ -1,688 +1,688 @@
-    -# Builder Contract (Forge v1.0)
-    -
-    -This contract governs any automated builder (Copilot/Codex/Claude/GPT/etc.) touching a Forge-managed repository.
-    -
-    -It exists to prevent:
-    -- godfiles
-    -- drift
-    -- duplicated features
-    -- unverifiable changes
-    -- regressions from "helpful refactors"
-    -
-    ----
-    -
-    -## 0) Folder structure convention
-    -
-    -The Forge governance toolkit (`Forge/`) is a subfolder of the project root. It contains project specifications, audit evidence, and build scripts ÔÇö **not** project source code.
-    -
-    -```
-    -ProjectRoot/              ÔåÉ git root, builder's working directory
-    -Ôö£ÔöÇÔöÇ Forge/                ÔåÉ governance toolkit (deletable after build)
-    -Ôöé   Ôö£ÔöÇÔöÇ Contracts/        ÔåÉ project specifications
-    -Ôöé   Ôö£ÔöÇÔöÇ evidence/         ÔåÉ diff logs, audit ledger, test run logs
-    -Ôöé   ÔööÔöÇÔöÇ scripts/          ÔåÉ run_tests.ps1, run_audit.ps1, etc.
-    -Ôö£ÔöÇÔöÇ app/                  ÔåÉ project source code (built here)
-    -Ôö£ÔöÇÔöÇ tests/                ÔåÉ project tests (built here)
-    -Ôö£ÔöÇÔöÇ requirements.txt      ÔåÉ dependency manifest (built here)
-    -Ôö£ÔöÇÔöÇ forge.json            ÔåÉ project metadata (built here)
-    -ÔööÔöÇÔöÇ .env                  ÔåÉ environment config (user-managed)
-    -```
-    -
-    -**Rules:**
-    -- The builder's working directory is **always** the project root (parent of `Forge/`).
-    -- All path references in this contract to `Contracts/`, `evidence/`, and `scripts/` are shorthand for `Forge/Contracts/`, `Forge/evidence/`, and `Forge/scripts/`.
-    -- All project source code, tests, configuration files, and dependency manifests MUST be created at the **project root** ÔÇö never inside `Forge/`.
-    -- `forge.json` lives at the project root.
-    -- The `Forge/` folder may be deleted after the project build is complete. No project code may import from or depend on files inside `Forge/`.
-    -
-    -### 0.1) File block output format (mandatory for autonomous builds)
-    -
-    -When the builder is operating as a ForgeGuard autonomous build agent (not a human-interactive session), all file creation MUST use the following canonical format so the orchestrator can parse and write files to disk:
-    -
-    -```
-    -=== FILE: path/to/file.py ===
-    -```python
-    -<file contents>
-    -```
-    -=== END FILE ===
-    -```
-    -
-    -**Rules:**
-    -- The path after `FILE:` is relative to the project root (e.g., `app/main.py`, `tests/test_health.py`).
-    -- One file per block. Multiple files = multiple blocks.
-    -- The code fence inside the block (` ```lang `) is optional but recommended for readability.
-    -- If updating an existing file, emit the full file content (the orchestrator overwrites).
-    -- Do NOT emit partial files or diffs -- always emit the complete file.
-    -- The `=== END FILE ===` delimiter MUST appear on its own line after the file content.
-    -- If the builder omits `=== END FILE ===`, the orchestrator logs a warning and skips the block (graceful fallback).
-    -- Files larger than 1 MB will trigger a warning but are still written.
-    -
-    -**Examples of correct file blocks:**
-    -
-    -```
-    -=== FILE: app/main.py ===
-    -```python
-    -from fastapi import FastAPI
-    -
-    -app = FastAPI(title="MyApp")
-    -
-    -@app.get("/health")
-    -async def health():
-    -    return {"status": "ok"}
-    -```
-    -=== END FILE ===
-    -
-    -=== FILE: requirements.txt ===
-    -fastapi>=0.100
-    -uvicorn[standard]>=0.20
-    -=== END FILE ===
-    -
-    -=== FILE: tests/test_health.py ===
-    -```python
-    -from fastapi.testclient import TestClient
-    -from app.main import app
-    -
-    -client = TestClient(app)
-    -
-    -def test_health():
-    -    resp = client.get("/health")
-    -    assert resp.status_code == 200
-    -    assert resp.json()["status"] == "ok"
-    -```
-    -=== END FILE ===
-    -```
-    -
-    -**Common mistakes (avoid these):**
-    -- Missing `=== END FILE ===` ÔåÆ block is skipped
-    -- Empty path `=== FILE:  ===` ÔåÆ block is skipped
-    -- Using diffs or partial updates instead of full file content ÔåÆ file will be incomplete
-    -
-    -### 0.2) Build plan format (mandatory)
-    -
-    -At the start of the first response, the builder MUST emit a structured plan:
-    -
-    -```
-    -=== PLAN ===
-    -1. First task description
-    -2. Second task description
-    -3. Third task description
-    -=== END PLAN ===
-    -```
-    -
-    -As tasks are completed, emit: `=== TASK DONE: N ===` where N is the task number.
-    -The orchestrator broadcasts plan updates to the UI in real time.
-    -
-    ----
-    -
-    -## 1) Contract read gate (mandatory)
-    -
-    -Before making changes, the builder must read (in this order):
-    -
-    -1) `Forge/Contracts/blueprint.md`
-    -2) `Forge/Contracts/manifesto.md`
-    -3) `Forge/Contracts/stack.md`
-    -4) `Forge/Contracts/schema.md`
-    -5) `Forge/Contracts/physics.yaml`
-    -6) `Forge/Contracts/boundaries.json`
-    -7) `Forge/Contracts/ui.md` (when frontend is enabled in `stack.md`)
-    -8) `Forge/Contracts/directive.md` (when it exists)
-    -9) `Forge/evidence/updatedifflog.md` (canonical)
-    -10) `Forge/evidence/audit_ledger.md` (when it exists)
-    -   - Summarize: last signed-off phase, last outcome (`AUTHORIZED`/`FAIL`/`SIGNED-OFF`), and any outstanding FAIL items.
-    -   - If the last entry's outcome is `FAIL` or `SIGNED-OFF (awaiting AUTHORIZED)`, the builder MUST NOT begin new work until that state is resolved (either the user issues `AUTHORIZED`, or the builder re-enters the loopback protocol per ┬º10.3).
-    -   - If the file does not exist, note `"No audit ledger found"` and proceed normally.
-    -
-    -If any file in items 1ÔÇô7 is missing or not found (where applicable), STOP with: `EVIDENCE_MISSING`.
-    -
-    -**Phase 0 exemption:** During Phase 0 (Genesis), items 1ÔÇô7 are already present in `Forge/Contracts/` (placed there by the director). The builder reads them from there. The read gate becomes fully active at Phase 0 completion.
-    -
-    ----
-    -
-    -## 2) Evidence bundle (mandatory)
-    -
-    -Every change request must include:
-    -
-    -- repo tree (or confirm file paths exist)
-    -- files to be edited (exact paths)
-    -- current behavior + expected behavior
-    -- logs/errors (if runtime issue)
-    -- minimal diff plan
-    -- verification steps + results
-    -
-    -If evidence is insufficient, STOP with: `EVIDENCE_MISSING`.
-    -
-    ----
-    -
-    -## 3) Minimal-diff rule (default)
-    -
-    -- Change as little as possible.
-    -- No renames.
-    -- No "cleanup".
-    -- No refactors unless explicitly requested.
-    -
-    -If the builder's proposed change touches unrelated files, STOP with: `CONTRACT_CONFLICT`.
-    -
-    -### 3.1 PowerShell encoding rule (mandatory)
-    -
-    -All generated `.ps1` files MUST:
-    -
-    -1. **Use ASCII-only characters.** No em-dashes (`ÔÇö`), box-drawing lines (`ÔöÇ`), smart quotes (`""`), or any character above U+007F. Use plain alternatives: `--` for dashes, `-` for horizontal rules, `"` for quotes.
-    -2. **Be saved as UTF-8 with BOM** (byte order mark: `EF BB BF`). PowerShell 5.1 on Windows uses the system codepage (typically Windows-1252) for files without BOM, which corrupts multi-byte UTF-8 sequences and causes parse errors.
-    -
-    -If the builder generates a `.ps1` file containing non-ASCII characters, this is a bug ÔÇö even if the file works in PowerShell 7.
-    -
-    ----
-    -
-    -## 4) File boundary enforcement (anti-godfile)
-    -
-    -Layer boundaries are defined in `Forge/Contracts/boundaries.json`. The audit script (`Forge/scripts/run_audit.ps1`) enforces these mechanically via check A4.
-    -
-    -The boundaries file maps layers to directory globs and forbidden patterns. If any file in a layer's glob contains a forbidden pattern, the build fails.
-    -
-    -**Default layering principle** (concrete rules in `boundaries.json`):
-    -
-    -- **Routers/Controllers** are HTTP-only: parse request ÔåÆ call service ÔåÆ return response.
-    -- **Services** own orchestration + business logic.
-    -- **Repos/DAL** own DB reads/writes.
-    -- **LLM wrapper** owns model/API calls.
-    -
-    -No layer may do another layer's job. Violations are bugs, even if the feature works.
-    -
-    -If any boundary is violated, STOP with: `CONTRACT_CONFLICT`.
-    -
-    ----
-    -
-    -## 5) Physics compliance
-    -
-    -### 5.1 Physics-first gate (new/unallocated features)
-    -
-    -If a requested change introduces a feature that does not have a dedicated place in `Forge/Contracts/physics.yaml` (new endpoint, new request/response field, new component capability), the builder MUST stop and ask for a contracts update first.
-    -
-    -- STOP with: `EVIDENCE_MISSING`
-    -- Report what is missing (which endpoint/schema/component needs to be added to physics)
-    -- Propose a minimal contract diff (physics + any blueprint/manifesto touchpoints) before writing code
-    -
-    -This prevents duplicated features and "AI amnesia" across sessions.
-    -
-    -- `Forge/Contracts/physics.yaml` is canonical.
-    -- Routes must match `Forge/Contracts/physics.yaml` paths, methods, and response shapes.
-    -- Models/schemas must align with `Forge/Contracts/physics.yaml` definitions.
-    -
-    -If code and physics diverge, STOP with: `CONTRACT_CONFLICT`.
-    -
-    ----
-    -
-    -## 6) Confirm-before-write rule (default)
-    -
-    -For any application feature that mutates user data, the implementation must include a proposal/confirmation step unless the project's manifesto explicitly opts out for specific operations.
-    -
-    -The specific confirmation UX (chat proposals, form confirmations, modal dialogs, etc.) is defined in the project's manifesto and blueprint. The builder contract enforces that the pattern exists ÔÇö the manifesto defines what it looks like.
-    -
-    -If implementation mutates user data without confirmation (and the manifesto does not explicitly exempt that operation), STOP with: `CONTRACT_CONFLICT`.
-    -
-    ----
-    -
-    -## 7) Source integrity rule
-    -
-    -If the application retrieves, generates, or presents content from external or internal data sources:
-    -
-    -- Responses MUST include source attribution when the data comes from user-provided or stored content.
-    -- If retrieval fails or returns no results, the system must not fabricate content.
-    -- The system must clearly distinguish between generated/inferred content and retrieved/stored content.
-    -
-    -Specific citation formats and attribution rules are defined per-project in the manifesto.
-    -
-    -If the implementation presents sourced content without attribution, STOP with: `CONTRACT_CONFLICT`.
-    -
-    -### 7.1 Prefer proven components over custom builds
-    -
-    -When a reliable, maintained component exists (auth, storage, ingestion, UI widgets, SDK helpers), prefer using it over building from scratch.
-    -
-    -- New dependencies must be explicitly approved in the directive (include rationale + alternatives considered).
-    -- Do not introduce heavyweight frameworks or sweeping architecture changes without explicit instruction.
-    -
-    -### 7.2 Background work (allowed, never silent writes)
-    -
-    -- Background agents/jobs may parse stored messages and pre-fill state.
-    -- Background work may produce proposals or read-only derived state; it must not apply writes without explicit confirmation.
-    -
-    ----
-    -
-    -## 8) Typed STOP reasons (use exactly one)
-    -
-    -- `EVIDENCE_MISSING` ÔÇö missing repo tree, missing file, missing logs, missing contract update, missing acceptance criteria
-    -- `AMBIGUOUS_INTENT` ÔÇö unclear expected behavior
-    -- `CONTRACT_CONFLICT` ÔÇö violates manifesto/blueprint/physics/boundary rules
-    -- `RISK_EXCEEDS_SCOPE` ÔÇö high risk, large refactor implied
-    -- `NON_DETERMINISTIC_BEHAVIOR` ÔÇö cannot reproduce or verify
-    -- `ENVIRONMENT_LIMITATION` ÔÇö blocked by runtime/tooling constraints
-    -
-    ----
-    -
-    -## 9) Verification hierarchy (must be reported in order)
-    -
-    -1) Static correctness
-    -   - type check / lint (if configured)
-    -   - import sanity
-    -2) Runtime sanity
-    -   - app boots
-    -   - core endpoints respond
-    -3) Behavioral intent
-    -   - target scenario is fixed
-    -4) Contract compliance
-    -   - physics matches
-    -   - file boundaries preserved
-    -
-    -### 9.1 Test Gate (mandatory)
-    -
-    -- Create/maintain a `tests/` folder at the project root (or as declared in `forge.json`).
-    -- At the end of each phase (or any "feature complete" checkpoint):
-    -  1) Add or update unit tests covering the new behavior.
-    -  2) Run tests as part of verification: **static ÔåÆ runtime ÔåÆ behavior (tests) ÔåÆ contract**.
-    -- Tests must be deterministic:
-    -  - Do not depend on live network calls for auth/external services.
-    -  - Use dependency overrides / fakes / mocks for external dependencies.
-    -- A phase must not be marked COMPLETE until relevant tests pass.
-    -
-    -### 9.2 Test Runner Script Gate (mandatory)
-    -
-    -- Maintain the test runner at: `Forge/scripts/run_tests.ps1`.
-    -- The test runner reads `forge.json` for stack-specific configuration.
-    -- The test runner must be updated whenever new tests are added or test layout changes.
-    -- The test runner must run the full deterministic suite used for "bulk" verification.
-    -- Each invocation of `Forge/scripts/run_tests.ps1` must append a timestamped entry to `Forge/evidence/test_runs.md` capturing start/end time (UTC), runtime path, branch/HEAD (or "git unavailable"), git status/diff stat, and exit codes/summaries for each test phase. The log MUST append (never overwrite) even when a step fails.
-    -- At the end of every implementation cycle marked COMPLETE, the builder MUST run `.\Forge\scripts\run_tests.ps1` and include results in verification.
-    -- `Forge/scripts/run_tests.ps1` must also overwrite `Forge/evidence/test_runs_latest.md` on every run; the first line must be `Status: PASS|FAIL` and, if failing, include a brief failing-tests section.
-    -
-    -Minimum required behavior for `Forge/scripts/run_tests.ps1`:
-    -- Run static sanity (compile/lint/import check as appropriate for the stack)
-    -- Run the test suite
-    -- Return a non-zero exit code if any step fails
-    -
-    -The builder must:
-    -- Add/update `Forge/scripts/run_tests.ps1` in the same cycle as adding tests (or STOP with `CONTRACT_CONFLICT` if tests were added without updating the runner).
-    -- Include the exact commands + outputs in the diff log verification section.
-    -
-    -### 9.3 Drift guardrails (evidence discipline)
-    -
-    -- Physics-first: no new routes/endpoints without updating `Contracts/physics.yaml` first.
-    -- Minimal diffs per cycle; no refactors unless the contract forces it.
-    -- The builder MUST overwrite `evidence/updatedifflog.md` with verification (static ÔåÆ runtime ÔåÆ behavior ÔåÆ contract) **before every commit** ÔÇö whether that commit is a mid-phase checkpoint or an end-of-phase sign-off. Every commit in the git history must have a corresponding diff log snapshot at the time it was made.
-    -
-    -### 9.4 Dependency gate
-    -
-    -Any new third-party import or dependency added during a build cycle MUST be reflected in the project's dependency manifest (`requirements.txt`, `package.json`, `go.mod`, etc.) in the same cycle. The audit script checks this via A9.
-    -
-    -If a new import is added without a corresponding dependency declaration, the builder MUST fix it before the cycle can be marked COMPLETE.
-    -
-    -### 9.5 Cross-phase wiring gate
-    -
-    -When `phases.md` specifies that a component (repo, service, client) is created in one phase and its caller (engine, CLI, endpoint) is built in a later phase, the **caller's phase** MUST include:
-    -
-    -1. An explicit **wiring implementation item** in section C (Scope): e.g., "Wire `TradingEngine.run_once()` to call `TradeRepo.insert_trade()` after placing an order."
-    -2. An **end-to-end acceptance test** in section E that starts from the caller and asserts on the downstream effect: e.g., "After `engine.run_once()` places an order, a trade row exists in SQLite."
-    -
-    -The builder MUST verify wiring completeness at phase end:
-    -- For every repo/service created in prior phases, check whether this phase's code calls it where the spec requires data flow.
-    -- If a repo exists but no caller invokes it, and the spec requires data persistence at that point, the builder MUST wire it before marking the phase COMPLETE.
-    -
-    -If `phases.md` does not include a wiring item for a cross-phase dependency and the builder detects the gap, STOP with: `AMBIGUOUS_INTENT` and report: "Phase {N} creates {component} but no subsequent phase wires it to a caller. Clarify whether wiring is intended."
-    -
-    -### 9.6 Schema traceability gate
-    -
-    -Every table defined in `Contracts/schema.md` MUST be claimed by at least one phase's implementation items (as a repo or data access layer). If a table exists in the schema but no phase creates a repo for it, the builder MUST:
-    -
-    -1. During Phase 0, note which tables have no assigned phase.
-    -2. STOP with `AMBIGUOUS_INTENT` and report: "Table `{table_name}` is defined in schema.md but no phase creates a repository for it."
-    -
-    -This prevents orphaned tables that exist in migrations but are never used by application code.
-    -
-    -### 9.7 User instructions gate (mandatory)
-    -
-    -- A `USER_INSTRUCTIONS.md` file MUST exist at the project root by the end of the final phase.
-    -- During Phase 0, the builder creates a stub with section headers only.
-    -- During the **final phase**, the builder MUST populate `USER_INSTRUCTIONS.md` with complete content covering:
-    -  1. **Prerequisites** ÔÇö language version, required accounts/services
-    -  2. **Install** ÔÇö venv/package manager setup, dependency install commands
-    -  3. **Credential/API setup** ÔÇö where to obtain API keys, tokens, or account IDs (step-by-step for each external service)
-    -  4. **Configure `.env`** ÔÇö which variables are required vs optional, what each one does, example values
-    -  5. **Run** ÔÇö exact commands for every supported mode (dev, production, test, etc.)
-    -  6. **Stop** ÔÇö how to shut the app down gracefully
-    -  7. **Key settings explained** ÔÇö what tunable parameters do in plain language
-    -  8. **Troubleshooting** ÔÇö table of common errors and their fixes
-    -- The instructions must be written for a **non-developer end user** ÔÇö no jargon without explanation.
-    -- The final phase's acceptance criteria MUST include: "`USER_INSTRUCTIONS.md` is complete and covers all sections."
-    -
-    -### 9.8 Boot script gate (opt-in)
-    -
-    -When the directive includes `boot_script: true`, the builder MUST create a `boot.ps1` PowerShell script at the project root during the **final phase**. This is a one-click setup-and-run script for end users.
-    -
-    -**boot.ps1 must perform these steps in order:**
-    -
-    -1. **Check prerequisites** ÔÇö Verify Python/Node/Go (per stack) is installed and meets minimum version. If missing, print a clear error and exit.
-    -2. **Create virtual environment** (if applicable) ÔÇö `python -m venv .venv` or equivalent. Skip if already exists.
-    -3. **Activate environment** ÔÇö `.venv\Scripts\Activate.ps1` or equivalent.
-    -4. **Install dependencies** ÔÇö `pip install -r requirements.txt` / `npm install` / `go mod download`.
-    -5. **Prompt for required credentials** ÔÇö For each required `.env` variable that has no default: prompt the user interactively (`Read-Host`), explain what it is and where to get it. Pre-fill optional variables with defaults from `.env.example`.
-    -6. **Write `.env`** ÔÇö Generate the `.env` file from the user's answers + defaults. Do NOT overwrite an existing `.env` ÔÇö ask the user if they want to keep or replace it.
-    -7. **Run migrations** ÔÇö Execute DB setup if applicable (`python -c "from app.repos.db import init_db; init_db('...')"` or equivalent).
-    -8. **Start the app** ÔÇö Launch the application in the default mode (e.g., `python -m app.main` or `npm start`).
-    -
-    -**Error resilience:** Each step must check for errors before proceeding. If a step fails, print a clear message explaining what went wrong and how to fix it, then exit with a non-zero code.
-    -
-    -**Builder iteration loop:** After creating `boot.ps1`, the builder MUST:
-    -
-    -1. Run `pwsh -File boot.ps1` in a terminal (using non-interactive defaults or test values for credential prompts where possible).
-    -2. If it fails: read the error output, fix the script, and re-run.
-    -3. Repeat until the app starts successfully (health endpoint responds, or main process is running).
-    -4. **Loop limit:** If 5 consecutive attempts fail, STOP with `ENVIRONMENT_LIMITATION` and report the blocking error.
-    -
-    -The boot script is NOT included in audit scope (A1ÔÇôA9) ÔÇö it is a convenience tool, not governed code. However, it MUST work by the time the builder halts.
-    -
-    -When `boot_script: false` or not specified, the builder skips this entirely.
-    -
-    ----
-    -
-    -## 10) Autonomous Execution Mode (AEM)
-    -
-    -### 10.1 AEM Toggle
-    -
-    -- AEM is **OFF by default**. Normal builder behavior (step-by-step with user confirmation) applies unless explicitly enabled.
-    -- A directive MUST explicitly state `AEM: enabled` (or equivalent unambiguous activation) to enable Autonomous Execution Mode.
-    -- A directive MAY additionally state `Auto-authorize: enabled`. This allows the builder to skip the manual HALT at Phase Sign-off when the audit passes ÔÇö see ┬º10.4.
-    -- When AEM is enabled, the builder MAY sequence build steps autonomously (contract read ÔåÆ evidence bundle ÔåÆ implementation ÔåÆ verification) without waiting for user confirmation between steps.
-    -- **Audit Ledger read gate:** At session start (or when AEM is first activated in a session), the builder MUST read `evidence/audit_ledger.md` (if it exists) and summarize the last signed-off phase and any outstanding FAIL items. This gives the builder and auditor role continuity across sessions. If the file does not exist, the builder MUST note `"No prior audit ledger found; this is the first AEM cycle."` and proceed.
-    -- AEM does **NOT** expand scope. The builder MUST NOT:
-    -  - Add features beyond those specified in the directive.
-    -  - Touch files not listed in the evidence bundle or required by the change.
-    -  - Skip any mandatory gate (contract read gate ┬º1, evidence bundle ┬º2, minimal-diff rule ┬º3, physics compliance ┬º5, confirm-before-write ┬º6, test gate ┬º9.1, diff log gate ┬º9.3).
-    -- If the builder detects that autonomous progress requires scope expansion, it MUST STOP with `RISK_EXCEEDS_SCOPE` and report what additional scope is needed.
-    -
-    -### 10.1.1 Watch Audit Startup
-    -
-    -When AEM is enabled, the builder MUST ensure **exactly one instance** of the audit file watcher is running. The watcher persists across all phases -- the builder does NOT restart it between phases.
-    -
-    -**Single-instance guard:** `watch_audit.ps1` writes a `.forge_watcher.lock` file at the project root on startup (containing its PID and timestamp). If the lock file already exists and the PID is still alive, the script exits cleanly with code 0. If the PID is dead (stale lock), the script removes the lock and starts normally. The lock file is deleted on clean shutdown (Ctrl+C / finally block).
-    -
-    -**Exact trigger point:** The watcher MUST be launched **after** the diff log is marked `Status: IN_PROCESS` (step 4 of the diff log sequence in ┬º11) and **before** any implementation work begins (step 6). The per-phase startup sequence is:
-    -
-    -1. Read contracts (┬º1 read gate).
-    -2. Read and summarize prior diff log and audit ledger.
-    -3. Plan scope/files/tests.
-    -4. Run `overwrite_diff_log.ps1`, replace placeholders, mark `Status: IN_PROCESS`.
-    -5. **Launch the watcher** (safe to call every phase -- the lock file prevents duplicates):
-    -   ```powershell
-    -   pwsh -File .\Forge\scripts\watch_audit.ps1
-    -   ```
-    -   If the watcher is already running, the script exits immediately and the existing instance continues. If it is not running (first phase, stale lock, or terminal was lost), a new instance starts.
-    -6. Begin implementation work.
-    -
-    -The builder MUST call step 5 every phase. It does not need to manually check whether the watcher is running -- the lock file handles that.
-    -
-    -This watcher monitors `Forge/evidence/updatedifflog.md`. It parses the diff log for claimed files (from `## Files Changed/Created/Modified` tables) and the phase identifier (from `Phase N` in the header), then automatically invokes `run_audit.ps1` with those parameters.
-    -
-    -The watcher is **passive during builder work** -- it only triggers when the diff log `Status` field changes to `COMPLETE`. While `Status: IN_PROCESS`, the watcher explicitly skips auditing to avoid interrupting mid-cycle work.
-    -
-    -### 10.2 Verification Gate ÔåÆ Audit Script Trigger
-    -
-    -After the builder completes the verification hierarchy (┬º9: static ÔåÆ runtime ÔåÆ behavior ÔåÆ contract), and **only when AEM is enabled**, the builder MUST NOT proceed to sign-off. Instead, it MUST trigger the deterministic audit script.
-    -
-    -The builder does **NOT** switch personas, self-audit, or read `auditor_contract.md` as a role. Auditing is performed by `scripts/run_audit.ps1` -- a deterministic script that checks facts, not opinions.
-    -
-    -#### Audit trigger sequence (watcher-driven)
-    -
-    -When `watch_audit.ps1` is running (per ┬º10.1.1), the builder triggers the audit by writing the diff log:
-    -
-    -1. **Write `Forge/evidence/updatedifflog.md`** with `Status: COMPLETE` and all required sections (Files Changed/Created/Modified tables, Verification Hierarchy, etc.). The watcher detects the file change and automatically:
-    -   - Parses the claimed files from the diff log tables.
-    -   - Parses the phase identifier from the header.
-    -   - Invokes `run_audit.ps1 -ClaimedFiles "<parsed files>" -Phase "<parsed phase>"`.
-    -   - The builder does NOT manually call `run_audit.ps1`.
-    -
-    -2. **Wait for the audit to complete.** The watcher displays audit results in its terminal. Do NOT proceed until the audit result appears.
-    -
-    -3. **Read the audit result** from the watcher terminal output or `evidence/audit_ledger.md`. The audit produces:
-    -   - A structured checklist (A1--A9, each PASS or FAIL with justification).
-    -   - An automatic append to `evidence/audit_ledger.md`.
-    -
-    -4. **React to the result:**
-    -   - **All PASS:** Proceed to Phase Sign-off (┬º10.4).
-    -   - **Any FAIL:** Enter the Loopback Protocol (┬º10.3).
-    -
-    -#### Fallback: manual audit invocation
-    -
-    -If `watch_audit.ps1` is NOT running (e.g., terminal was closed, environment limitation), the builder MUST invoke the audit script directly:
-    -
-    -```powershell
-    -pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "<comma-separated list>" -Phase "<phase identifier>"
-    -```
-    -
-    -The `-ClaimedFiles` parameter MUST list every file the builder modified in this cycle (exact relative paths, no invented paths).
-    -
-    -5. **If `scripts/run_audit.ps1` does not exist or fails to execute:** STOP with `ENVIRONMENT_LIMITATION`. Report: `"run_audit.ps1 not found or not executable; cannot complete AEM audit gate."` Do NOT fall back to self-audit. Do NOT proceed.
-    -
-    -### 10.3 Loopback Protocol (Audit FAIL ÔåÆ Fix ÔåÆ Re-audit)
-    -
-    -If **any** audit checklist item is marked FAIL:
-    -
-    -1. The builder MUST emit a STOP reason corresponding to the failure:
-    -   - Scope/minimal-diff/contract violations ÔåÆ `CONTRACT_CONFLICT`
-    -   - Missing evidence/logs/tests ÔåÆ `EVIDENCE_MISSING`
-    -   - Non-deterministic test results ÔåÆ `NON_DETERMINISTIC_BEHAVIOR`
-    -   - Environment blockers ÔåÆ `ENVIRONMENT_LIMITATION`
-    -
-    -2. The builder MUST then formulate a constrained Fix Plan:
-    -   - The Fix Plan MUST address **only** the FAIL items from the audit script output.
-    -   - The Fix Plan MUST NOT introduce new features or expand scope.
-    -   - The Fix Plan MUST be stated explicitly before execution (list each FAIL item and the intended fix).
-    -   - The Fix Plan is recorded in the audit ledger by the next `run_audit.ps1` invocation.
-    -
-    -3. After executing the Fix Plan, the builder MUST:
-    -   - Re-run the full verification hierarchy (┬º9: static ÔåÆ runtime ÔåÆ behavior ÔåÆ contract).
-    -   - Re-run `scripts/run_audit.ps1` (┬º10.2) with the updated `-ClaimedFiles` list.
-    -
-    -4. This loop repeats until:
-    -   - **All audit items PASS** ÔåÆ proceed to Phase Sign-off (┬º10.4), OR
-    -   - **A STOP reason blocks further progress** (e.g., the fix itself requires scope expansion, or the environment cannot satisfy a check) ÔåÆ the builder MUST HALT with the blocking STOP reason and report the unresolvable items.
-    -
-    -5. **Loop limit:** If the loopback executes **3 consecutive cycles** without achieving full PASS, the builder MUST STOP with `RISK_EXCEEDS_SCOPE` and report: `"AEM audit loop exceeded 3 iterations without full PASS. Manual review required."` The builder MUST NOT continue autonomously.
-    -
-    -### 10.4 Phase Sign-off Gate
-    -
-    -When the audit produces **all PASS** (A1ÔÇôA9), the builder MUST emit a Phase Sign-off block in this exact format:
-    -
-    -```
-    -=== PHASE SIGN-OFF: PASS ===
-    ... (6791 lines truncated, 7291 total)
+    diff --git a/app/services/upgrade_executor.py b/app/services/upgrade_executor.py
+    index bfc98d9..208cf65 100644
+    --- a/app/services/upgrade_executor.py
+    +++ b/app/services/upgrade_executor.py
+    @@ -61,6 +61,37 @@ class _WorkerSlot:
+         display: str        # Human label for logs ÔÇö e.g. "Opus 4.6"
+     
+     
+    +@dataclass
+    +class _PlanPoolItem:
+    +    """A completed plan sitting in the pool, waiting for the builder."""
+    +    task_index: int
+    +    task: dict
+    +    plan_result: dict | None
+    +    plan_usage: dict
+    +
+    +
+    +@dataclass
+    +class _RemediationItem:
+    +    """An audit-failure fix sitting in the remediation pool.
+    +
+    +    Sonnet generates *fix_plan* (a dict in the same schema as
+    +    ``_plan_task_with_llm`` output) while the builder is busy.
+    +    Opus picks it up between tasks and applies the fix.
+    +    """
+    +    file: str
+    +    findings: list[str]
+    +    original_change: dict
+    +    task_id: str
+    +    fix_plan: dict | None = None
+    +    priority: int = 10            # lower = higher priority
+    +    _seq: int = 0                 # monotonic tiebreaker for PriorityQueue
+    +
+    +    def __lt__(self, other: "_RemediationItem") -> bool:
+    +        if self.priority != other.priority:
+    +            return self.priority < other.priority
+    +        return self._seq < other._seq
+    +
+    +
+     # ---------------------------------------------------------------------------
+     # In-memory execution state
+     # ---------------------------------------------------------------------------
+    @@ -592,6 +623,152 @@ def _write_audit_trail(
+         return str(out_path)
+     
+     
+    +# ---------------------------------------------------------------------------
+    +# Remediation plan generator (deterministic + optional LLM fallback)
+    +# ---------------------------------------------------------------------------
+    +
+    +_REMEDIATION_SYSTEM_PROMPT = """\
+    +You are ForgeGuard's Remediation Planner.  Given a file that failed \
+    +deterministic audit checks, produce a minimal fix plan.
+    +
+    +Respond with valid JSON:
+    +{
+    +  "analysis": "what went wrong and how to fix it",
+    +  "plan": [
+    +    {
+    +      "file": "path/to/file",
+    +      "action": "modify",
+    +      "description": "exact change needed",
+    +      "key_considerations": "constraints"
+    +    }
+    +  ],
+    +  "risks": [],
+    +  "verification_strategy": ["re-run audit"],
+    +  "implementation_notes": "specific code snippet if possible"
+    +}
+    +"""
+    +
+    +
+    +def _build_deterministic_fix(
+    +    file_path: str, findings: list[str], original_change: dict,
+    +) -> dict | None:
+    +    """Try to produce a fix plan without calling the LLM.
+    +
+    +    Returns a plan dict (same schema as ``_plan_task_with_llm`` output)
+    +    for well-understood failure modes, or ``None`` when human/LLM
+    +    judgement is needed.
+    +    """
+    +    content = original_change.get("after_snippet", "")
+    +    plan_entries: list[dict] = []
+    +
+    +    for finding in findings:
+    +        if "Wildcard import" in finding:
+    +            # Extract the wildcard line and suggest explicit imports
+    +            plan_entries.append({
+    +                "file": file_path,
+    +                "action": "modify",
+    +                "description": f"Replace wildcard import: {finding}",
+    +                "key_considerations": (
+    +                    "Replace 'from X import *' with explicit named imports"
+    +                ),
+    +            })
+    +        elif "Scope deviation" in finding:
+    +            # Out-of-scope file ÔÇö suggest removal
+    +            plan_entries.append({
+    +                "file": file_path,
+    +                "action": "delete",
+    +                "description": f"Remove out-of-scope file: {finding}",
+    +                "key_considerations": (
+    +                    "File not in Sonnet's plan ÔÇö remove to maintain scope"
+    +                ),
+    +            })
+    +        elif "Syntax error" in finding:
+    +            plan_entries.append({
+    +                "file": file_path,
+    +                "action": "modify",
+    +                "description": f"Fix syntax: {finding}",
+    +                "key_considerations": (
+    +                    "Re-generate with corrected syntax"
+    +                ),
+    +            })
+    +        elif "Invalid JSON" in finding:
+    +            plan_entries.append({
+    +                "file": file_path,
+    +                "action": "modify",
+    +                "description": f"Fix JSON: {finding}",
+    +                "key_considerations": "Ensure valid JSON structure",
+    +            })
+    +
+    +    if not plan_entries:
+    +        return None  # unknown failure type ÔÇö needs LLM
+    +
+    +    return {
+    +        "analysis": f"Deterministic fix for {len(plan_entries)} finding(s) "
+    +                     f"in {file_path}",
+    +        "plan": plan_entries,
+    +        "risks": [],
+    +        "verification_strategy": ["Re-run inline audit"],
+    +        "implementation_notes": (
+    +            f"Original content length: {len(content)} chars. "
+    +            f"Apply minimal targeted fix."
+    +        ),
+    +    }
+    +
+    +
+    +async def _generate_remediation_plan(
+    +    user_id: str,
+    +    run_id: str,
+    +    file_path: str,
+    +    findings: list[str],
+    +    original_change: dict,
+    +    *,
+    +    api_key: str,
+    +    model: str,
+    +    tokens: Any,
+    +) -> dict | None:
+    +    """Generate a fix plan for an audit failure.
+    +
+    +    First tries a deterministic fix; falls back to Sonnet LLM only for
+    +    cases that need human-level judgement (e.g. secret removal).
+    +    """
+    +    # Fast path ÔÇö deterministic fix
+    +    det_fix = _build_deterministic_fix(file_path, findings, original_change)
+    +    if det_fix is not None:
+    +        return det_fix
+    +
+    +    # Slow path ÔÇö Sonnet LLM
+    +    try:
+    +        prompt = (
+    +            f"File: {file_path}\n"
+    +            f"Findings:\n" +
+    +            "\n".join(f"  - {f}" for f in findings) +
+    +            f"\n\nOriginal content (first 2000 chars):\n"
+    +            f"{(original_change.get('after_snippet', ''))[:2000]}\n\n"
+    +            f"Generate a minimal fix plan."
+    +        )
+    +        raw = await chat(
+    +            system=_REMEDIATION_SYSTEM_PROMPT,
+    +            user=prompt,
+    +            api_key=api_key,
+    +            model=model,
+    +        )
+    +        text = raw.get("text", "")
+    +        usage = raw.get("usage", {})
+    +        p_in = usage.get("input_tokens", 0)
+    +        p_out = usage.get("output_tokens", 0)
+    +        tokens.add("sonnet", p_in, p_out)
+    +
+    +        # Parse JSON
+    +        text = _strip_codeblock(text)
+    +        return json.loads(text)
+    +    except Exception:
+    +        logger.warning(
+    +            "Remediation LLM call failed for %s ÔÇö will skip auto-fix",
+    +            file_path,
+    +        )
+    +        return None
+    +
+    +
+     # ---------------------------------------------------------------------------
+     # File change application
+     # ---------------------------------------------------------------------------
+    @@ -1630,6 +1807,7 @@ async def _run_upgrade(
+                                 "verdict": verdict,
+                                 "findings": findings,
+                                 "task_id": task_id,
+    +                            "original_change": change,
+                             }
+                             state.setdefault("audit_results", []).append(
+                                 audit_entry)
+    @@ -1717,219 +1895,411 @@ async def _run_upgrade(
+                     "token_cumulative": snap,
+                 })
+     
+    -        # ÔöÇÔöÇ Pipelined dual-worker execution ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    -        # Sonnet plans task N+1 while Opus codes task N.
+    +        # ÔöÇÔöÇ Pool-based dual-worker execution ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +        # Sonnet plans ALL tasks as fast as possible ÔåÆ plan pool.
+    +        # Opus pulls plans from the pool when ready ÔåÆ codes them.
+    +        # After planning, Sonnet generates remediation plans for
+    +        # audit failures ÔåÆ remediation pool.  Opus drains these
+    +        # between tasks.
+             #
+             # Time 0: [Sonnet] Plan Task 0
+    -        # Time 1: [Sonnet] Plan Task 1 ÔÇû [Opus] Code Task 0
+    -        # Time 2: [Sonnet] Plan Task 2 ÔÇû [Opus] Code Task 1
+    +        # Time 1: [Sonnet] Plan Task 1  (poolÔåÉ)  ÔÇû  [Opus] Code Task 0  (ÔåÉpool)
+    +        # Time 2: [Sonnet] Plan Task 2  (poolÔåÉ)  ÔÇû  [Opus] still on 0
+    +        # Time 3: [Sonnet] Plan Task 3  (poolÔåÉ)  ÔÇû  [Opus] Code Task 1  (ÔåÉpool)
+             # ÔÇª
+    -        # Time N:                         [Opus] Code Task N-1
+    +        # Time K: [Sonnet] Remediate F0           ÔÇû  [Opus] Code Task N
+     
+    -        # Phase 0: Sonnet plans the first task
+    -        if not tasks:
+    -            # Nothing to do ÔÇö fall through to wrap-up
+    -            pass
+    -        else:
+    -            first_task = tasks[0]
+    -            first_id = first_task.get("id", "TASK-0")
+    -            first_name = (f"{first_task.get('from_state', '?')} ÔåÆ "
+    -                          f"{first_task.get('to_state', '?')}")
+    +        if tasks:
+    +            plan_pool: asyncio.Queue[_PlanPoolItem | None] = asyncio.Queue()
+    +            remediation_pool: asyncio.PriorityQueue = asyncio.PriorityQueue()
+    +            sonnet_done = asyncio.Event()
+    +            _rem_seq = 0
+     
+    -            await _emit(user_id, "upgrade_task_start", {
+    -                "run_id": run_id,
+    -                "task_id": first_id,
+    -                "task_index": 0,
+    -                "task_name": first_name,
+    -                "priority": first_task.get("priority", "medium"),
+    -                "category": first_task.get("category", ""),
+    -                "steps": first_task.get("steps", []),
+    -                "worker": "sonnet",
+    -            })
+    -            await _log(user_id, run_id, "", "system")
+    -            await _log(user_id, run_id,
+    -                        f"ÔöüÔöüÔöü Task 1/{len(tasks)}: {first_name} ÔöüÔöüÔöü",
+    -                        "system")
+    -            await _log(user_id, run_id,
+    -                        f"­ƒºá [Sonnet] Planning task 1ÔÇª", "thinking")
+    +            state["_plan_pool"] = plan_pool
+    +            state["_remediation_pool"] = remediation_pool
+     
+    -            current_plan, plan_usage = await _plan_task_with_llm(
+    -                user_id, run_id, repo_name, stack_profile, first_task,
+    -                api_key=sonnet_worker.api_key, model=sonnet_worker.model,
+    -            )
+    -            p_in = plan_usage.get("input_tokens", 0)
+    -            p_out = plan_usage.get("output_tokens", 0)
+    -            tokens.add("sonnet", p_in, p_out)
+    -            await _emit(user_id, "upgrade_token_tick", {
+    -                "run_id": run_id, **tokens.snapshot()})
+    +            # ÔöÇÔöÇ Sonnet planner coroutine ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +            async def _sonnet_planner() -> None:
+    +                nonlocal _rem_seq
+     
+    -            # Narrate after first plan completes
+    -            if narrator_enabled and current_plan:
+    -                plan_files = current_plan.get("plan", [])
+    -                file_list = ", ".join(p.get("file", "?") for p in plan_files[:5])
+    -                analysis = current_plan.get("analysis", "")
+    -                asyncio.create_task(_narrate(
+    -                    user_id, run_id,
+    -                    f"Sonnet just finished planning task 1: '{first_name}'. "
+    -                    f"{analysis} "
+    -                    f"Files identified: {file_list}. "
+    -                    f"Now handing off to Opus to write the code.",
+    -                    narrator_key=narrator_key, narrator_model=narrator_model,
+    -                    tokens=tokens,
+    -                ))
+    -
+    -            # Pipeline loop
+    -            for task_index in range(len(tasks)):
+    -                # Check /stop
+    -                if state["_stop_flag"].is_set():
+    -                    await _log(user_id, run_id,
+    -                                "­ƒøæ Stopped by user.", "system")
+    -                    break
+    -                # Honour /pause
+    -                if not state["_pause_event"].is_set():
+    -                    await _log(user_id, run_id,
+    -                                "ÔÅ©´©Å  Paused ÔÇö waiting for /resumeÔÇª",
+    -                                "system")
+    -                    await state["_pause_event"].wait()
+    +                for i, task in enumerate(tasks):
+                         if state["_stop_flag"].is_set():
+                             break
+    -
+    -                task = tasks[task_index]
+    -                task_id = task.get("id", f"TASK-{task_index}")
+    -                task_name = (f"{task.get('from_state', '?')} ÔåÆ "
+    -                             f"{task.get('to_state', '?')}")
+    -
+    -                # Announce Opus coding this task
+    -                await _log(user_id, run_id,
+    -                            f"ÔÜí [Opus] Writing code for task "
+    -                            f"{task_index + 1}ÔÇª", "thinking")
+    -
+    -                # Show what Opus will work on (immediate feedback)
+    -                if current_plan:
+    -                    _plan_files = current_plan.get("plan", [])
+    -                    if _plan_files:
+    -                        _fnames = [p.get("file", "?") for p in _plan_files[:6]]
+    -                        _extra = (f" +{len(_plan_files) - 6} more"
+    -                                  if len(_plan_files) > 6 else "")
+    -                        await _log(
+    -                            user_id, run_id,
+    -                            f"  ­ƒôû [Opus] Reading {len(_plan_files)} file(s): "
+    -                            f"{', '.join(_fnames)}{_extra}",
+    -                            "thinking",
+    -                        )
+    -
+    -                # Build parallel coroutines
+    -                has_next = task_index + 1 < len(tasks)
+    -
+    -                async def _opus_code(
+    -                    _task: dict = task,
+    -                    _plan: dict | None = current_plan,
+    -                ) -> tuple[dict | None, dict]:
+    -                    return await _build_task_with_llm(
+    -                        user_id, run_id, repo_name, stack_profile,
+    -                        _task, _plan,
+    -                        api_key=opus_worker.api_key,
+    -                        model=opus_worker.model,
+    -                        working_dir=state.get("working_dir", ""),
+    +                    if not state["_pause_event"].is_set():
+    +                        await state["_pause_event"].wait()
+    +                        if state["_stop_flag"].is_set():
+    +                            break
+    +
+    +                    task_id = task.get("id", f"TASK-{i}")
+    +                    task_name = (
+    +                        f"{task.get('from_state', '?')} ÔåÆ "
+    +                        f"{task.get('to_state', '?')}"
+                         )
+     
+    -                async def _sonnet_plan_next(
+    -                    _next_task: dict,
+    -                    _next_idx: int,
+    -                ) -> tuple[dict | None, dict]:
+    -                    next_id = _next_task.get("id", f"TASK-{_next_idx}")
+    -                    next_name = (
+    -                        f"{_next_task.get('from_state', '?')} ÔåÆ "
+    -                        f"{_next_task.get('to_state', '?')}"
+    -                    )
+                         await _emit(user_id, "upgrade_task_start", {
+                             "run_id": run_id,
+    -                        "task_id": next_id,
+    -                        "task_index": _next_idx,
+    -                        "task_name": next_name,
+    -                        "priority": _next_task.get("priority", "medium"),
+    -                        "category": _next_task.get("category", ""),
+    -                        "steps": _next_task.get("steps", []),
+    +                        "task_id": task_id,
+    +                        "task_index": i,
+    +                        "task_name": task_name,
+    +                        "priority": task.get("priority", "medium"),
+    +                        "category": task.get("category", ""),
+    +                        "steps": task.get("steps", []),
+                             "worker": "sonnet",
+                         })
+                         await _log(user_id, run_id, "", "system")
+                         await _log(user_id, run_id,
+    -                                f"ÔöüÔöüÔöü Task {_next_idx + 1}/{len(tasks)}: "
+    -                                f"{next_name} ÔöüÔöüÔöü", "system")
+    +                                f"ÔöüÔöüÔöü Task {i + 1}/{len(tasks)}: "
+    +                                f"{task_name} ÔöüÔöüÔöü", "system")
+                         await _log(user_id, run_id,
+                                     f"­ƒºá [Sonnet] Planning task "
+    -                                f"{_next_idx + 1}ÔÇª", "thinking")
+    -                    return await _plan_task_with_llm(
+    +                                f"{i + 1}ÔÇª", "thinking")
+    +
+    +                    plan_result, plan_usage = await _plan_task_with_llm(
+                             user_id, run_id, repo_name, stack_profile,
+    -                        _next_task,
+    +                        task,
+                             api_key=sonnet_worker.api_key,
+                             model=sonnet_worker.model,
+                         )
+    +                    p_in = plan_usage.get("input_tokens", 0)
+    +                    p_out = plan_usage.get("output_tokens", 0)
+    +                    tokens.add("sonnet", p_in, p_out)
+    +                    await _emit(user_id, "upgrade_token_tick", {
+    +                        "run_id": run_id, **tokens.snapshot()})
+    +
+    +                    # Log plan details
+    +                    if plan_result:
+    +                        analysis = plan_result.get("analysis", "")
+    +                        if analysis:
+    +                            await _log(user_id, run_id,
+    +                                        f"­ƒºá [Sonnet] {analysis}",
+    +                                        "thinking")
+    +                        plan_files = plan_result.get("plan", [])
+    +                        if plan_files:
+    +                            await _log(
+    +                                user_id, run_id,
+    +                                f"­ƒôï [Sonnet] Identified "
+    +                                f"{len(plan_files)} file(s):",
+    +                                "info",
+    +                            )
+    +                            for pf in plan_files:
+    +                                await _log(
+    +                                    user_id, run_id,
+    +                                    f"  ­ƒôä {pf.get('file', '?')} ÔÇö "
+    +                                    f"{pf.get('description', '')}",
+    +                                    "info",
+    +                                )
+    +                        for risk in plan_result.get("risks", []):
+    +                            await _log(user_id, run_id,
+    +                                        f"  ÔÜá [Sonnet] {risk}", "warn")
+     
+    -                # Run Opus + (optionally) Sonnet in parallel
+    -                if has_next:
+    -                    next_task = tasks[task_index + 1]
+    -                    next_idx = task_index + 1
+    -                    (code_result, code_usage), (next_plan, next_plan_usage) = (
+    -                        await asyncio.gather(
+    -                            _opus_code(),
+    -                            _sonnet_plan_next(next_task, next_idx),
+    +                    # Push to pool ÔÇö Opus will pick it up when ready
+    +                    pool_item = _PlanPoolItem(
+    +                        i, task, plan_result, plan_usage)
+    +                    await plan_pool.put(pool_item)
+    +                    pool_depth = plan_pool.qsize()
+    +                    await _log(user_id, run_id,
+    +                                f"­ƒôÑ [Sonnet] Plan for task {i + 1} "
+    +                                f"queued (pool depth: {pool_depth})",
+    +                                "info")
+    +                    await _emit(user_id, "plan_pool_update", {
+    +                        "run_id": run_id,
+    +                        "action": "push",
+    +                        "task_index": i,
+    +                        "pool_depth": pool_depth,
+    +                    })
+    +
+    +                    # Fire narration (non-blocking)
+    +                    if narrator_enabled and plan_result:
+    +                        _pf = plan_result.get("plan", [])
+    +                        _fl = ", ".join(
+    +                            p.get("file", "?") for p in _pf[:5])
+    +                        _an = plan_result.get("analysis", "")
+    +                        asyncio.create_task(_narrate(
+    +                            user_id, run_id,
+    +                            f"Sonnet planned task {i + 1}: "
+    +                            f"'{task_name}'. {_an} "
+    +                            f"Files: {_fl}. "
+    +                            f"Plan queued (pool: {pool_depth}).",
+    +                            narrator_key=narrator_key,
+    +                            narrator_model=narrator_model,
+    +                            tokens=tokens,
+    +                        ))
+    +
+    +                # Sentinel ÔÇö tells Opus no more plans are coming
+    +                await plan_pool.put(None)
+    +
+    +                # ÔöÇÔöÇ Remediation mode ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    +                await _log(user_id, run_id,
+    +                            "­ƒºá [Sonnet] All tasks planned ÔÇö switching "
+    +                            "to audit remediation mode", "system")
+    +
+    +                idle_cycles = 0
+    +                while not state["_stop_flag"].is_set():
+    +                    failures = [
+    +                        r for r in state.get("audit_results", [])
+    +                        if r.get("verdict") == "FAIL"
+    +                        and not r.get("_remediation_queued")
+    +                    ]
+    +                    if not failures:
+    +                        idle_cycles += 1
+    +                        if idle_cycles > 5:
+    +                            break
+    +                        await asyncio.sleep(2.0)
+    +                        continue
+    +                    idle_cycles = 0
+    +
+    +                    for failure in failures:
+    +                        if state["_stop_flag"].is_set():
+    +                            break
+    +                        failure["_remediation_queued"] = True
+    +                        fp = failure.get("file", "?")
+    +                        fi = failure.get("findings", [])
+    +                        tid = failure.get("task_id", "")
+    ... (499 lines truncated, 999 total)
