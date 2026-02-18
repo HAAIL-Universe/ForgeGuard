@@ -987,19 +987,148 @@ async def _apply_all_changes(
     return applied > 0
 
 
+# ---------------------------------------------------------------------------
+# Infrastructure / service detection for test-environment awareness
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate a test needs an external service to run.
+_INFRA_KEYWORDS: list[tuple[str, str]] = [
+    ("DATABASE_URL", "database"),
+    ("POSTGRES", "database"),
+    ("POSTGRESQL", "database"),
+    ("asyncpg", "database"),
+    ("psycopg", "database"),
+    ("sqlalchemy", "database"),
+    ("MYSQL", "database"),
+    ("MONGO", "database"),
+    ("REDIS_URL", "redis"),
+    ("aioredis", "redis"),
+    ("RABBITMQ", "rabbitmq"),
+    ("AMQP_URL", "rabbitmq"),
+    ("KAFKA", "kafka"),
+    ("ELASTICSEARCH", "elasticsearch"),
+    ("S3_BUCKET", "s3"),
+    ("AWS_ACCESS_KEY", "aws"),
+    ("STRIPE_SECRET", "stripe"),
+    ("SENDGRID", "email"),
+    ("SMTP_", "email"),
+]
+
+_INFRA_KW_RE = re.compile(
+    "|".join(kw for kw, _ in _INFRA_KEYWORDS), re.IGNORECASE,
+)
+
+
+def _detect_infra_services(working_dir: str) -> dict[str, Any]:
+    """Scan the workspace for infrastructure dependencies.
+
+    Returns a dict with:
+    - ``services``: list of detected services (e.g. ["database", "redis"])
+    - ``has_docker_compose``: whether a docker-compose file exists
+    - ``env_vars``: list of infra-related env vars found in the project
+    - ``summary``: human-readable summary for prompt injection
+    """
+    wd = Path(working_dir)
+    services: set[str] = set()
+    env_vars: set[str] = set()
+
+    # Check for docker-compose
+    has_compose = any(
+        (wd / name).exists()
+        for name in ("docker-compose.yml", "docker-compose.yaml",
+                     "compose.yml", "compose.yaml")
+    )
+
+    # Scan key files for infra references
+    scan_globs = [
+        "*.py", "*.env", "*.env.*", ".env*",
+        "docker-compose*.yml", "docker-compose*.yaml",
+        "compose*.yml", "compose*.yaml",
+        "requirements*.txt", "pyproject.toml", "setup.cfg",
+        "package.json", "Dockerfile", "Dockerfile.*",
+        "**/conftest.py",
+    ]
+    scanned: set[str] = set()
+    for pattern in scan_globs:
+        for p in wd.glob(pattern):
+            if p.is_file() and str(p) not in scanned:
+                scanned.add(str(p))
+                try:
+                    text = p.read_text(encoding="utf-8", errors="ignore")[:50_000]
+                except Exception:
+                    continue
+                for kw, svc in _INFRA_KEYWORDS:
+                    if kw.lower() in text.lower():
+                        services.add(svc)
+                        env_vars.add(kw)
+
+    # Also scan test directories for fixture-level service deps
+    for test_dir in ("tests", "test"):
+        td = wd / test_dir
+        if td.is_dir():
+            for p in td.rglob("conftest.py"):
+                try:
+                    text = p.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for kw, svc in _INFRA_KEYWORDS:
+                    if kw.lower() in text.lower():
+                        services.add(svc)
+                        env_vars.add(kw)
+
+    sorted_svcs = sorted(services)
+    if sorted_svcs:
+        svc_list = ", ".join(sorted_svcs)
+        summary = (
+            f"This project depends on external services: {svc_list}. "
+            f"The Forge IDE test sandbox is a bare environment — NO "
+            f"database, cache, message queue, or third-party services "
+            f"are available. Tests that require these services WILL fail. "
+            f"When writing or modifying tests, ensure they use mocks, "
+            f"stubs, or in-memory fakes for all service dependencies. "
+            f"Tests that connect to real services should be marked with "
+            f"a skip marker (e.g. @pytest.mark.skipif or "
+            f"@pytest.mark.integration) so they don't run in CI/sandbox."
+        )
+    else:
+        summary = ""
+
+    return {
+        "services": sorted_svcs,
+        "has_docker_compose": has_compose,
+        "env_vars": sorted(env_vars),
+        "summary": summary,
+    }
+
+
 def _detect_test_command(working_dir: str) -> tuple[str, list[str]]:
     """Detect the appropriate test command for the repo.
 
     Returns ``(label, [cmd, args…])``.
     Checks for common config files to pick the right runner.
+    When external services are detected, adds markers to exclude
+    integration/DB-dependent tests from the sandbox run.
     """
     wd = Path(working_dir)
+
+    # Detect infra to decide whether we need exclusion markers
+    infra = _detect_infra_services(working_dir)
+    has_services = bool(infra.get("services"))
 
     # Python — prefer pytest, fall back to unittest
     if (wd / "pytest.ini").exists() or (wd / "pyproject.toml").exists() \
             or (wd / "setup.cfg").exists() or (wd / "tests").is_dir() \
             or (wd / "test").is_dir():
-        return "pytest", ["python", "-m", "pytest", "--tb=short", "-q"]
+        cmd = ["python", "-m", "pytest", "--tb=short", "-q"]
+        if has_services:
+            # Exclude tests marked as integration / db / slow so they
+            # don't fail in the bare sandbox (no DB, no Redis, etc.)
+            cmd.extend([
+                "-m", "not (integration or db or database or slow)",
+                "--override-ini=markers=integration db database slow",
+            ])
+            return "pytest (sandbox — skipping service-dependent tests)", cmd
+        return "pytest", cmd
 
     # Node / JS — package.json with test script
     pkg_json = wd / "package.json"
@@ -1022,7 +1151,14 @@ def _detect_test_command(working_dir: str) -> tuple[str, list[str]]:
 
     # Fallback — try pytest anyway (many Python repos lack config)
     if any(wd.glob("*.py")) or any(wd.glob("**/*test*.py")):
-        return "pytest (auto-detected)", ["python", "-m", "pytest", "--tb=short", "-q"]
+        cmd = ["python", "-m", "pytest", "--tb=short", "-q"]
+        if has_services:
+            cmd.extend([
+                "-m", "not (integration or db or database or slow)",
+                "--override-ini=markers=integration db database slow",
+            ])
+            return "pytest (auto-detected, sandbox)", cmd
+        return "pytest (auto-detected)", cmd
 
     return "", []
 
@@ -1048,6 +1184,21 @@ async def _run_tests(
     await _log(user_id, run_id,
                f"🧪 Running tests: {label}…", "thinking", "command")
 
+    # Build a safe environment for the test sandbox.
+    # Override service URLs with dummy values so tests that skip
+    # gracefully on missing services work, while tests that try to
+    # actually connect fail fast rather than hanging.
+    test_env = {
+        **os.environ,
+        "CI": "1",
+        "FORGE_SANDBOX": "1",
+        "TESTING": "1",
+        # Dummy service URLs — prevent real connections
+        "DATABASE_URL": "sqlite:///:memory:",
+        "REDIS_URL": "redis://localhost:6379/15",
+        "MONGO_URL": "mongodb://localhost:27017/test",
+    }
+
     def _blocking_run() -> subprocess.CompletedProcess[str]:
         """Run test command in a thread — avoids event-loop subprocess
         issues on Windows (NotImplementedError with ProactorEventLoop)."""
@@ -1057,7 +1208,7 @@ async def _run_tests(
             capture_output=True,
             text=True,
             timeout=120,
-            env={**os.environ, "CI": "1"},
+            env=test_env,
         )
 
     try:
@@ -1115,9 +1266,19 @@ You will receive:
 3. The current contents of the failing files.
 4. Previous fix attempts that did NOT resolve the problem (if any).
 
+CRITICAL — SANDBOX ENVIRONMENT:
+Tests run in a bare sandbox with NO external services. If tests fail \
+because they require a database, Redis, message queue, or any other \
+external service that is not available, the correct fix is to MOCK \
+the dependency or add @pytest.mark.integration to skip the test — \
+NOT to try to fix a connection error. Env var FORGE_SANDBOX=1 is set.
+
 Rules:
 - Focus ONLY on fixing the test failures. Do not refactor unrelated code.
 - Identify the root cause of each failure before proposing changes.
+- If a test fails due to a missing service (connection refused, \
+  database error, timeout on service connect), the fix is to mock it \
+  or mark it @pytest.mark.integration, NOT to fix the connection.
 - If a previous attempt failed, analyse WHY it failed and try a \
   different approach — do NOT repeat the same fix.
 - Produce a JSON plan matching this schema:
@@ -1140,6 +1301,13 @@ _FIX_THINKING_PLANNER_PROMPT = """\
 You are ForgeGuard's Fix Planner (deep analysis mode). Previous \
 standard-mode fix attempts have ALL FAILED. You MUST use extended \
 thinking to deeply reason about what went wrong.
+
+CRITICAL — SANDBOX ENVIRONMENT:
+Tests run in a bare sandbox with NO external services (no database, \
+no Redis, no Docker, no containers). If tests fail because they \
+require a service that is not available, the correct fix is to MOCK \
+the dependency or add @pytest.mark.integration to skip the test. \
+Do NOT waste attempts trying to fix connection/infrastructure errors.
 
 You will receive the full history of failed attempts including the \
 exact error output from each try. Study EVERY past attempt carefully \
@@ -2001,6 +2169,29 @@ numbers when describing current_state.
 "test_health.py::test_db_connected will need updating because it \
 mocks get_pool()" is useful.
 
+═══ TEST ENVIRONMENT CONSTRAINT ═══
+After code generation, tests are run in a **bare sandbox** — a shallow \
+clone of the repository with NO external services available:
+• NO database (PostgreSQL, MySQL, MongoDB, etc.)
+• NO cache (Redis, Memcached)
+• NO message queue (RabbitMQ, Kafka)
+• NO Docker, no docker-compose, no containers
+• NO network access to external APIs
+• env var FORGE_SANDBOX=1 is set
+
+When your plan includes NEW test files, design them to work in this \
+sandbox:
+- Use mocks, stubs, or in-memory fakes for all service dependencies.
+- If the project uses pytest, use monkeypatch or unittest.mock.
+- Mark any tests that REQUIRE a real service with \
+@pytest.mark.integration so they are automatically skipped.
+- NEVER plan tests that import a fixture expecting a live database \
+connection — they will fail and trigger expensive auto-fix cycles.
+
+If a "test_environment" key is present in the input, it describes \
+specific services detected in the project. Use it to guide your \
+test-file planning.
+
 IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown code fences."""
 
 _BUILDER_SYSTEM_PROMPT = """\
@@ -2077,6 +2268,29 @@ requires a breaking change.
 • Maintain existing import ordering and module organisation.
 • If adding new dependencies (pip packages, npm modules, etc.), \
 list them in "warnings" so the operator knows.
+
+═══ TEST ENVIRONMENT CONSTRAINT ═══
+After you produce code, tests run in a **bare sandbox** — a shallow \
+clone with NO external services:
+• NO database, NO Redis, NO Docker, NO containers, NO network APIs.
+• env vars: CI=1, FORGE_SANDBOX=1, TESTING=1.
+• DATABASE_URL is set to sqlite:///:memory: as a safe fallback.
+
+When creating test files:
+- Mock ALL external service calls (DB, HTTP, cache, queues).
+- Use unittest.mock.patch / monkeypatch / dependency injection.
+- Mark tests that genuinely need live services with \
+@pytest.mark.integration — they'll be skipped automatically.
+- NEVER write tests that attempt real DB connections or fixture \
+setup requiring running infrastructure — they WILL fail.
+- Do NOT create test files that test database CRUD operations \
+using a real database connection or fixtures like "db_session", \
+"test_db", or "engine" unless those fixtures are defined in the \
+project's conftest with in-memory/mock backends.
+
+If a "test_environment" key is present in the input payload, it \
+lists detected infrastructure dependencies.
+
 • Follow the conventions already established in the codebase — if the \
 project uses absolute imports, do the same; if it uses dataclasses \
 over Pydantic, follow suit.
@@ -4057,6 +4271,18 @@ async def _plan_task_with_llm(
         if tree:
             payload["file_tree"] = tree
 
+        # Tell the planner about infrastructure dependencies so it
+        # can plan tests that work in the bare sandbox.
+        infra = _detect_infra_services(working_dir)
+        if infra.get("services"):
+            payload["test_environment"] = {
+                "sandbox": True,
+                "available_services": [],
+                "project_services": infra["services"],
+                "has_docker_compose": infra["has_docker_compose"],
+                "note": infra["summary"],
+            }
+
     user_msg = json.dumps(payload, indent=2)
 
     try:
@@ -4155,6 +4381,19 @@ async def _build_task_with_llm(
             "  🔧 [Opus] Generating code from plan…",
             "thinking",
         )
+
+    # Tell the builder about infra limitations so it writes
+    # sandbox-safe tests.
+    if working_dir:
+        infra = _detect_infra_services(working_dir)
+        if infra.get("services"):
+            payload["test_environment"] = {
+                "sandbox": True,
+                "available_services": [],
+                "project_services": infra["services"],
+                "has_docker_compose": infra["has_docker_compose"],
+                "note": infra["summary"],
+            }
 
     user_msg = json.dumps(payload, indent=2)
 
