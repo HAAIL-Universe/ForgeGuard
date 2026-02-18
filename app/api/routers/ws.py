@@ -1,10 +1,14 @@
 """WebSocket router -- real-time audit result updates."""
 
+import logging
+
 import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.auth import decode_token
 from app.ws_manager import MAX_MESSAGE_SIZE, manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
 
@@ -34,6 +38,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     await websocket.accept()
     await manager.connect(user_id, websocket)
+    count = manager.connection_count(user_id)
+    logger.info("WS open  user=%s conns=%d", user_id[:8], count)
 
     try:
         while True:
@@ -43,4 +49,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.close(code=1009, reason="Message too large")
                 return
     except WebSocketDisconnect:
+        logger.info("WS close user=%s (client disconnect)", user_id[:8])
+    except Exception:
+        logger.exception("WS error user=%s", user_id[:8])
+    finally:
         await manager.disconnect(user_id, websocket)
+        count = manager.connection_count(user_id)
+        logger.info("WS cleaned up user=%s remaining=%d", user_id[:8], count)

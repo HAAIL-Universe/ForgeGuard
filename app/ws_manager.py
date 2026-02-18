@@ -65,6 +65,10 @@ class ConnectionManager:
 
             conns.append(websocket)
 
+    def connection_count(self, user_id: str) -> int:
+        """Return the number of active connections for a user (lock-free)."""
+        return len(self._connections.get(user_id, []))
+
     async def disconnect(self, user_id: str, websocket) -> None:  # noqa: ANN001
         """Remove a WebSocket connection for a user."""
         async with self._lock:

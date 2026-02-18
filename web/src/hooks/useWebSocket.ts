@@ -61,8 +61,12 @@ export function useWebSocket(onMessage: MessageHandler) {
   }, [token]);
 
   useEffect(() => {
-    connect();
+    // Debounce by 50 ms so React 18 StrictMode's rapid
+    // mount → unmount → remount cycle cancels the first
+    // connect attempt, producing only ONE WebSocket.
+    const debounce = setTimeout(() => connect(), 50);
     return () => {
+      clearTimeout(debounce);
       const ws = wsRef.current;
       wsRef.current = null;
       if (timerRef.current) clearTimeout(timerRef.current);
