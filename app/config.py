@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     ANTHROPIC_OUTPUT_TPM: int = 16_000
     LLM_BUILDER_MAX_TOKENS: int = 16_384
 
+    # Token budget for workspace snapshot in planner context (0 = unlimited)
+    RECON_TOKEN_BUDGET: int = 30_000
     # Build mode: "plan_execute" (new) or "conversation" (legacy)
     BUILD_MODE: str = "plan_execute"
     # Server-level hard cost cap (USD) applied when the user has no

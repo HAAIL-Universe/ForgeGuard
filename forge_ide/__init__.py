@@ -145,6 +145,7 @@ from forge_ide.context_pack import (
     RepoSummary,
     TargetFile,
     assemble_pack,
+    build_context_pack_for_file,
     build_repo_summary,
     build_structure_tree,
     estimate_tokens,
@@ -252,7 +253,17 @@ from forge_ide.sanitiser import (
     strip_tmpdir,
 )
 from forge_ide.searcher import Match, search
-from forge_ide.workspace import FileEntry, Workspace, WorkspaceSummary
+from forge_ide.workspace import (
+    FileEntry,
+    SchemaInventory,
+    TestInventory,
+    Workspace,
+    WorkspaceSnapshot,
+    WorkspaceSummary,
+    capture_snapshot,
+    snapshot_to_workspace_info,
+    update_snapshot,
+)
 
 __all__ = [
     # Agent loop
@@ -297,6 +308,12 @@ __all__ = [
     "Workspace",
     "FileEntry",
     "WorkspaceSummary",
+    "WorkspaceSnapshot",
+    "TestInventory",
+    "SchemaInventory",
+    "capture_snapshot",
+    "update_snapshot",
+    "snapshot_to_workspace_info",
     # Git operations
     "git_ops",
     # Reader
@@ -362,6 +379,7 @@ __all__ = [
     "DependencySnippet",
     "RepoSummary",
     "assemble_pack",
+    "build_context_pack_for_file",
     "build_repo_summary",
     "build_structure_tree",
     "estimate_tokens",

@@ -5,11 +5,17 @@ contains everything an LLM builder needs: repository summary, target
 file contents, dependency snippets, related code, diagnostics, test
 output, and git diff summaries.
 
+Also provides ``build_context_pack_for_file()`` which uses a
+``WorkspaceSnapshot`` to select only the contracts and dependency
+context relevant to a specific file being generated.
+
 All functions are pure — they operate on in-memory data, never touch
 the filesystem or spawn subprocesses.
 """
 
 from __future__ import annotations
+
+from pathlib import PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -377,8 +383,157 @@ __all__ = [
     "RepoSummary",
     "TargetFile",
     "assemble_pack",
+    "build_context_pack_for_file",
     "build_repo_summary",
     "build_structure_tree",
     "estimate_tokens",
     "pack_to_text",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Contract relevance map for context packs
+# ---------------------------------------------------------------------------
+
+# Maps file category -> relevant contract types.
+# Used by build_context_pack_for_file to select only the contracts
+# that matter for each generated file.
+_FILE_CONTRACT_MAP: dict[str, list[str]] = {
+    "python_backend": ["blueprint", "schema", "stack", "boundaries"],
+    "python_test": ["blueprint", "schema", "stack"],
+    "frontend": ["ui", "blueprint", "stack"],
+    "frontend_test": ["ui", "blueprint"],
+    "migration": ["schema"],
+    "config": ["stack", "boundaries"],
+    "markdown": ["blueprint"],
+}
+
+
+def _classify_file(path: str) -> str:
+    """Classify a file path into a category for contract selection."""
+    p = path.lower().replace("\\", "/")
+    ext = PurePosixPath(p).suffix
+
+    is_test = (
+        "test_" in p
+        or "_test." in p
+        or ".test." in p
+        or ".spec." in p
+        or "/__tests__/" in p
+        or "/tests/" in p
+    )
+
+    if ext == ".py":
+        if is_test:
+            return "python_test"
+        return "python_backend"
+    elif ext in (".ts", ".tsx", ".js", ".jsx"):
+        if is_test:
+            return "frontend_test"
+        return "frontend"
+    elif ext == ".sql":
+        return "migration"
+    elif ext in (".md", ".markdown"):
+        return "markdown"
+    elif ext in (".toml", ".yaml", ".yml", ".json", ".cfg", ".ini", ".env"):
+        return "config"
+    else:
+        return "python_backend"  # default
+
+
+def build_context_pack_for_file(
+    *,
+    file_path: str,
+    file_purpose: str,
+    contracts: list[dict],
+    context_file_contents: dict[str, str],
+    snapshot_symbol_table: dict[str, str] | None = None,
+    snapshot_dep_graph: dict[str, tuple[str, ...]] | None = None,
+    budget_tokens: int = 30_000,
+) -> ContextPack:
+    """Build a token-budgeted context pack for a single file generation call.
+
+    Selects only the contracts relevant to the file type, includes
+    dependency file contents, and injects relevant symbols from the
+    workspace snapshot.
+
+    Parameters
+    ----------
+    file_path : str
+        The relative path of the file to be generated.
+    file_purpose : str
+        Brief description of what this file does.
+    contracts : list[dict]
+        All project contracts (``[{"contract_type": str, "content": str}]``).
+    context_file_contents : dict[str, str]
+        ``{path: content}`` for files this one depends on
+        (from the manifest ``context_files`` or ``depends_on``).
+    snapshot_symbol_table : dict[str, str] | None
+        ``{dotted_path: kind}`` symbol table from the workspace snapshot.
+    snapshot_dep_graph : dict[str, tuple[str, ...]] | None
+        ``{file: (modules, ...)}`` dependency graph from snapshot.
+    budget_tokens : int
+        Maximum total tokens for the pack (default 30K).
+
+    Returns
+    -------
+    ContextPack
+        A token-budgeted pack ready for ``pack_to_text()``.
+    """
+    category = _classify_file(file_path)
+    relevant_types = _FILE_CONTRACT_MAP.get(category, ["blueprint", "stack"])
+
+    # Build repo summary section with symbol highlights
+    summary_parts: list[str] = [f"File: {file_path}", f"Purpose: {file_purpose}"]
+
+    if snapshot_symbol_table:
+        # Find symbols from modules this file is likely to import
+        related_symbols: list[str] = []
+        if snapshot_dep_graph:
+            # Get modules imported by files this file depends on
+            for dep_path in context_file_contents:
+                dep_imports = snapshot_dep_graph.get(dep_path, ())
+                for mod in dep_imports:
+                    for sym, kind in snapshot_symbol_table.items():
+                        if sym.startswith(mod.replace("/", ".").removesuffix(".py") + "."):
+                            related_symbols.append(f"  {sym} ({kind})")
+                            if len(related_symbols) >= 30:
+                                break
+                    if len(related_symbols) >= 30:
+                        break
+
+        if related_symbols:
+            summary_parts.append("\nAvailable symbols:")
+            summary_parts.extend(related_symbols[:30])
+
+    repo_summary = RepoSummary(
+        file_count=0,
+        languages={},
+        structure_tree="\n".join(summary_parts),
+    )
+
+    # Select relevant contracts as target files
+    target_files: list[TargetFile] = []
+    for c in contracts:
+        ct = c.get("contract_type", "")
+        if ct in relevant_types:
+            target_files.append(TargetFile(
+                path=f"contracts/{ct}",
+                content=c.get("content", ""),
+            ))
+
+    # Build dependency snippets from context_file_contents
+    dep_snippets: list[DependencySnippet] = []
+    for dep_path, dep_content in context_file_contents.items():
+        dep_snippets.append(DependencySnippet(
+            path=dep_path,
+            content=dep_content,
+            why="depends_on" if dep_path != file_path else "self",
+        ))
+
+    return assemble_pack(
+        target_files=target_files,
+        dependency_snippets=dep_snippets,
+        repo_summary=repo_summary,
+        budget_tokens=budget_tokens,
+    )

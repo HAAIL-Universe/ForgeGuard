@@ -3212,6 +3212,36 @@ async def _run_build_plan_execute(
     all_files_written: dict[str, str] = {}  # path -> content
     files_written_list: list[dict] = []
 
+    # --- Reconnaissance: capture initial workspace snapshot ---
+    _ws_snapshot = None
+    try:
+        from forge_ide.workspace import Workspace as _IdeWorkspace, capture_snapshot, snapshot_to_workspace_info, update_snapshot as _update_snapshot
+        _ide_ws = _IdeWorkspace(working_dir)
+        _ws_snapshot = capture_snapshot(_ide_ws)
+        _recon_log = (
+            f"Recon complete — {_ws_snapshot.total_files} files, "
+            f"{_ws_snapshot.total_lines:,} lines, "
+            f"{len(_ws_snapshot.symbol_table)} symbols, "
+            f"{_ws_snapshot.test_inventory.test_count} tests, "
+            f"{len(_ws_snapshot.schema_inventory.tables)} tables"
+        )
+        await build_repo.append_build_log(
+            build_id, _recon_log, source="system", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "recon_complete", {
+            "total_files": _ws_snapshot.total_files,
+            "total_lines": _ws_snapshot.total_lines,
+            "test_count": _ws_snapshot.test_inventory.test_count,
+            "tables": list(_ws_snapshot.schema_inventory.tables),
+            "symbols_count": len(_ws_snapshot.symbol_table),
+        })
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _recon_log, "source": "system", "level": "info",
+        })
+    except Exception as exc:
+        logger.warning("Workspace snapshot failed (non-fatal): %s", exc)
+        _ws_snapshot = None
+
     for phase in phases:
         phase_num = phase["number"]
         phase_name = f"Phase {phase_num}"
@@ -3245,27 +3275,39 @@ async def _run_build_plan_execute(
             "source": "system", "level": "info",
         })
 
-        # Build workspace info
+        # Build workspace info — prefer snapshot, fallback to raw walk
         workspace_info = ""
-        try:
-            existing_files_list = []
-            _SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "Forge"}
-            for dirpath, dirnames, filenames in os.walk(working_dir):
-                dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
-                for fname in sorted(filenames):
-                    rel = Path(dirpath).relative_to(working_dir) / fname
-                    existing_files_list.append(str(rel))
-            existing_files_list.sort()
-            _PE_FILE_LIST_CAP = 200
-            workspace_info = (
-                "\n".join(f"- {f}" for f in existing_files_list[:_PE_FILE_LIST_CAP])
-                + (f"\n- ... ({len(existing_files_list) - _PE_FILE_LIST_CAP} more, truncated)"
-                   if len(existing_files_list) > _PE_FILE_LIST_CAP else "")
-            )
-            if not existing_files_list:
+        if _ws_snapshot is not None:
+            try:
+                # Update snapshot incrementally if files were written
+                if all_files_written and _ide_ws is not None:
+                    _ws_snapshot = _update_snapshot(
+                        _ws_snapshot, list(all_files_written.keys()), _ide_ws,
+                    )
+                workspace_info = snapshot_to_workspace_info(_ws_snapshot)
+            except Exception as exc:
+                logger.warning("Snapshot workspace_info failed: %s", exc)
+                workspace_info = ""
+        if not workspace_info:
+            try:
+                existing_files_list = []
+                _SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "Forge"}
+                for dirpath, dirnames, filenames in os.walk(working_dir):
+                    dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+                    for fname in sorted(filenames):
+                        rel = Path(dirpath).relative_to(working_dir) / fname
+                        existing_files_list.append(str(rel))
+                existing_files_list.sort()
+                _PE_FILE_LIST_CAP = 200
+                workspace_info = (
+                    "\n".join(f"- {f}" for f in existing_files_list[:_PE_FILE_LIST_CAP])
+                    + (f"\n- ... ({len(existing_files_list) - _PE_FILE_LIST_CAP} more, truncated)"
+                       if len(existing_files_list) > _PE_FILE_LIST_CAP else "")
+                )
+                if not existing_files_list:
+                    workspace_info = "(empty workspace)"
+            except Exception:
                 workspace_info = "(empty workspace)"
-        except Exception:
-            workspace_info = "(empty workspace)"
 
         # Phase deliverables text
         phase_deliverables = (
