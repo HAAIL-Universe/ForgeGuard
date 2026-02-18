@@ -36,7 +36,7 @@ async def test_chat_success(mock_get_client):
     """Successful chat returns text content."""
     mock_client = _make_mock_client({
         "content": [{"type": "text", "text": "Hello from Haiku!"}],
-        "model": "claude-3-5-haiku-20241022",
+        "model": "claude-haiku-4-5",
         "role": "assistant",
         "usage": {"input_tokens": 10, "output_tokens": 20},
     })
@@ -44,7 +44,7 @@ async def test_chat_success(mock_get_client):
 
     result = await chat(
         api_key="test-key",
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5",
         system_prompt="You are helpful.",
         messages=[{"role": "user", "content": "Hi"}],
     )
@@ -55,7 +55,7 @@ async def test_chat_success(mock_get_client):
     mock_client.post.assert_called_once()
     call_kwargs = mock_client.post.call_args
     body = call_kwargs.kwargs["json"] if "json" in call_kwargs.kwargs else call_kwargs[1]["json"]
-    assert body["model"] == "claude-3-5-haiku-20241022"
+    assert body["model"] == "claude-haiku-4-5"
     assert body["system"] == "You are helpful."
 
 
@@ -69,7 +69,7 @@ async def test_chat_empty_content(mock_get_client):
     with pytest.raises(ValueError, match="Empty response"):
         await chat(
             api_key="test-key",
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             system_prompt="System",
             messages=[{"role": "user", "content": "Hi"}],
         )
@@ -87,7 +87,7 @@ async def test_chat_no_text_block(mock_get_client):
     with pytest.raises(ValueError, match="No text block"):
         await chat(
             api_key="test-key",
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             system_prompt="System",
             messages=[{"role": "user", "content": "Hi"}],
         )
@@ -104,7 +104,7 @@ async def test_chat_sends_correct_headers(mock_get_client):
 
     await chat(
         api_key="sk-ant-test123",
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5",
         system_prompt="System",
         messages=[{"role": "user", "content": "Hi"}],
     )
@@ -126,7 +126,7 @@ async def test_chat_max_tokens_parameter(mock_get_client):
 
     await chat(
         api_key="test-key",
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5",
         system_prompt="System",
         messages=[{"role": "user", "content": "Hi"}],
         max_tokens=4096,
@@ -266,7 +266,7 @@ async def test_chat_defaults_to_anthropic(mock_get_client):
 
     result = await chat(
         api_key="sk-ant-test",
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5",
         system_prompt="System",
         messages=[{"role": "user", "content": "Hi"}],
     )

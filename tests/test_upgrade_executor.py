@@ -326,7 +326,7 @@ async def test_execute_upgrade_no_key_raises():
         mock_settings.ANTHROPIC_API_KEY = ""
         mock_settings.LLM_BUILDER_MODEL = "claude-opus-4-6"
         mock_settings.LLM_PLANNER_MODEL = "claude-sonnet-4-5"
-        mock_settings.LLM_NARRATOR_MODEL = "claude-3-5-haiku-20241022"
+        mock_settings.LLM_NARRATOR_MODEL = "claude-haiku-4-5"
 
         with pytest.raises(ValueError, match="No Anthropic API key"):
             await execute_upgrade(USER_ID, RUN_ID, api_key="", api_key_2="")
