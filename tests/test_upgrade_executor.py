@@ -1,5 +1,7 @@
 """Tests for upgrade_executor service."""
 
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -9,6 +11,7 @@ from app.services.upgrade_executor import (
     _active_upgrades,
     _apply_file_change,
     _build_task_with_llm,
+    _gather_file_contents,
     _log,
     _plan_task_with_llm,
     _strip_codeblock,
@@ -889,3 +892,99 @@ async def test_build_task_no_key_returns_none():
         api_key="", model="m",
     )
     assert result is None
+
+
+# -----------------------------------------------------------------------
+# _gather_file_contents
+# -----------------------------------------------------------------------
+
+
+def test_gather_file_contents_reads_plan_files(tmp_path):
+    """Should read files referenced in Sonnet's plan from the workspace."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text("console.log('hello');", encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"name":"test"}', encoding="utf-8")
+
+    plan = {
+        "analysis": "upgrade deps",
+        "plan": [
+            {"file": "src/app.ts", "action": "modify", "description": "update"},
+            {"file": "package.json", "action": "modify", "description": "bump"},
+        ],
+    }
+    result = _gather_file_contents(str(tmp_path), plan)
+    assert "src/app.ts" in result
+    assert result["src/app.ts"] == "console.log('hello');"
+    assert "package.json" in result
+    assert result["package.json"] == '{"name":"test"}'
+
+
+def test_gather_file_contents_skips_missing_files(tmp_path):
+    """Files referenced in plan but not on disk should be skipped."""
+    plan = {
+        "plan": [
+            {"file": "nonexistent.py", "action": "modify", "description": "x"},
+        ],
+    }
+    result = _gather_file_contents(str(tmp_path), plan)
+    assert result == {}
+
+
+def test_gather_file_contents_skips_create_new_files(tmp_path):
+    """'create' actions for files that don't exist yet should be skipped."""
+    plan = {
+        "plan": [
+            {"file": "brand_new.py", "action": "create", "description": "new file"},
+        ],
+    }
+    result = _gather_file_contents(str(tmp_path), plan)
+    assert result == {}
+
+
+def test_gather_file_contents_none_plan():
+    """None plan should return empty dict."""
+    assert _gather_file_contents("/some/path", None) == {}
+    assert _gather_file_contents("", {"plan": []}) == {}
+
+
+def test_gather_file_contents_budget_limit(tmp_path):
+    """Should respect the total content budget."""
+    # Create a file that's larger than budget
+    big = "x" * 300_000
+    (tmp_path / "big.txt").write_text(big, encoding="utf-8")
+
+    plan = {"plan": [{"file": "big.txt", "action": "modify", "description": "x"}]}
+    result = _gather_file_contents(str(tmp_path), plan)
+    # Should be truncated (contains the marker)
+    assert "big.txt" in result
+    assert "[FILE TOO LARGE" in result["big.txt"]
+
+
+@pytest.mark.asyncio
+async def test_build_task_with_llm_injects_workspace_files(tmp_path):
+    """Opus builder should receive workspace_files when working_dir is given."""
+    (tmp_path / "index.js").write_text("const x = 1;", encoding="utf-8")
+
+    code_json = '{"thinking":["step1"],"changes":[],"warnings":[],"verification_steps":[],"status":"proposed"}'
+    fake_plan = {
+        "analysis": "upgrade",
+        "plan": [{"file": "index.js", "action": "modify", "description": "x"}],
+    }
+
+    with patch("app.services.upgrade_executor.chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = {
+            "text": code_json,
+            "usage": {"input_tokens": 900, "output_tokens": 300},
+        }
+        result, usage = await _build_task_with_llm(
+            "u1", "r1", "test/repo", {}, FAKE_TASK, fake_plan,
+            api_key="sk-test", model="claude-opus-4-6",
+            working_dir=str(tmp_path),
+        )
+        assert result is not None
+
+        # Verify workspace_files was sent to the LLM
+        call_args = mock_chat.call_args
+        msg_content = call_args[1]["messages"][0]["content"]
+        assert "workspace_files" in msg_content
+        assert "const x = 1;" in msg_content

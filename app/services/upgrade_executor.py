@@ -500,6 +500,21 @@ the Planner and produce concrete, production-quality code changes.
 The Planner has already identified which files need to change and why. \
 Your job is to write the exact code.
 
+IMPORTANT — you are given the ACTUAL file contents from the cloned \
+repository under the "workspace_files" key.  Use these real contents \
+to craft precise before_snippet / after_snippet values.
+
+Rules for before_snippet (modify action):
+- MUST be an exact, contiguous substring copied from the provided file.
+- Include enough surrounding lines (3-5) so the match is unique.
+- Do NOT paraphrase or abbreviate the original code.
+
+Rules for after_snippet:
+- Must be the replacement text that will substitute before_snippet.
+- Preserve indentation and style from the original file.
+
+For "create" actions, omit before_snippet and put the full file in after_snippet.
+
 Respond with valid JSON matching this schema:
 {
   "thinking": ["step-by-step reasoning about implementing each change"],
@@ -508,8 +523,8 @@ Respond with valid JSON matching this schema:
       "file": "path/to/file",
       "action": "modify" | "create" | "delete",
       "description": "what this change does",
-      "before_snippet": "relevant code before (for modify)",
-      "after_snippet": "code after the change"
+      "before_snippet": "exact text from the file (for modify)",
+      "after_snippet": "replacement text"
     }
   ],
   "warnings": ["any risks or things to watch out for"],
@@ -1151,6 +1166,7 @@ async def _run_upgrade(
                         _task, _plan,
                         api_key=opus_worker.api_key,
                         model=opus_worker.model,
+                        working_dir=state.get("working_dir", ""),
                     )
 
                 async def _sonnet_plan_next(
@@ -1333,6 +1349,70 @@ def _fmt_tokens(n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Workspace file reader — feeds real file contents to the Builder
+# ---------------------------------------------------------------------------
+
+_FILE_SIZE_LIMIT = 50_000       # max bytes per file
+_TOTAL_CONTENT_BUDGET = 200_000 # max bytes across all files
+
+
+def _gather_file_contents(
+    working_dir: str,
+    plan: dict | None,
+) -> dict[str, str]:
+    """Read files from the cloned workspace that Sonnet's plan references.
+
+    Returns ``{relative_path: file_content}``.  Only files that exist and
+    are under the per-file / total budget are included.
+    """
+    if not plan or not working_dir:
+        return {}
+
+    plan_items = plan.get("plan", [])
+    if not plan_items:
+        return {}
+
+    wd = Path(working_dir)
+    if not wd.is_dir():
+        return {}
+
+    contents: dict[str, str] = {}
+    budget_remaining = _TOTAL_CONTENT_BUDGET
+
+    for item in plan_items:
+        rel = item.get("file", "")
+        if not rel:
+            continue
+        # Only read files that exist (skip 'create' where file is new)
+        fp = wd / rel
+        if not fp.is_file():
+            continue
+        try:
+            size = fp.stat().st_size
+            if size > _FILE_SIZE_LIMIT or size > budget_remaining:
+                # Include a truncation marker so Opus knows the file exists
+                contents[rel] = (
+                    f"[FILE TOO LARGE — {size:,} bytes — "
+                    f"showing first {min(_FILE_SIZE_LIMIT, budget_remaining)} bytes]\n"
+                    + fp.read_text(encoding="utf-8", errors="replace")[
+                        : min(_FILE_SIZE_LIMIT, budget_remaining)
+                    ]
+                )
+                budget_remaining -= min(_FILE_SIZE_LIMIT, budget_remaining)
+            else:
+                text = fp.read_text(encoding="utf-8", errors="replace")
+                contents[rel] = text
+                budget_remaining -= len(text.encode("utf-8"))
+        except Exception:
+            logger.debug("Could not read %s for builder context", rel)
+
+        if budget_remaining <= 0:
+            break
+
+    return contents
+
+
+# ---------------------------------------------------------------------------
 # LLM functions — Planner (Sonnet) + Builder (Opus)
 # ---------------------------------------------------------------------------
 
@@ -1402,8 +1482,13 @@ async def _build_task_with_llm(
     *,
     api_key: str,
     model: str,
+    working_dir: str = "",
 ) -> tuple[dict | None, dict]:
     """Opus writes concrete code changes from Sonnet's plan.
+
+    When *working_dir* is provided the real file contents referenced by
+    Sonnet's plan are read from the cloned repo and injected into the
+    payload so Opus can produce exact before/after snippets.
 
     Returns ``(code_result | None, usage_dict)``.
     """
@@ -1428,6 +1513,11 @@ async def _build_task_with_llm(
     }
     if plan:
         payload["planner_analysis"] = plan
+
+    # ── Inject real file contents from the cloned workspace ─────
+    file_contents = _gather_file_contents(working_dir, plan)
+    if file_contents:
+        payload["workspace_files"] = file_contents
 
     user_msg = json.dumps(payload, indent=2)
 
