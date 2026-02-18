@@ -62,29 +62,35 @@ class ConnectRepoRequest(BaseModel):
 
 @router.get("")
 async def list_repos(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List connected repos for the authenticated user."""
     items = await list_connected_repos(current_user["id"])
-    return {"items": items}
+    return {"items": items[offset : offset + limit], "total": len(items)}
 
 
 @router.get("/available")
 async def list_available(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List GitHub repos available to connect (not yet connected)."""
     items = await list_available_repos(current_user["id"])
-    return {"items": items}
+    return {"items": items[offset : offset + limit], "total": len(items)}
 
 
 @router.get("/all")
 async def list_all(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List all GitHub repos with connection status."""
     items = await list_all_user_repos(current_user["id"])
-    return {"items": items}
+    return {"items": items[offset : offset + limit], "total": len(items)}
 
 
 @router.post("/create")

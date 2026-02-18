@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -94,10 +94,13 @@ async def create_project(
 
 @router.get("")
 async def list_projects(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """List user's projects."""
     projects = await list_user_projects(current_user["id"])
+    page = projects[offset : offset + limit]
     return {
         "items": [
             {
@@ -108,8 +111,9 @@ async def list_projects(
                 "created_at": p["created_at"],
                 "updated_at": p["updated_at"],
             }
-            for p in projects
-        ]
+            for p in page
+        ],
+        "total": len(projects),
     }
 
 
