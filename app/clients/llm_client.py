@@ -67,13 +67,14 @@ async def _retry_on_transient(
     for attempt in range(max_retries + 1):
         try:
             return await coro_factory()
-        except httpx.TimeoutException as exc:
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            # Covers ReadError, ConnectError, CloseError, etc.
             last_exc = exc
             if attempt < max_retries:
                 wait = min(backoff_base ** (attempt + 1), 90.0)
                 logger.warning(
-                    "LLM request timeout (attempt %d/%d), retrying in %.1fs",
-                    attempt + 1, max_retries + 1, wait,
+                    "LLM request %s (attempt %d/%d), retrying in %.1fs",
+                    type(exc).__name__, attempt + 1, max_retries + 1, wait,
                 )
                 await asyncio.sleep(wait)
             else:

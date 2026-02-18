@@ -387,6 +387,38 @@ class TestRetryOnTransient:
         mock_sleep.assert_any_await(2.0)
         mock_sleep.assert_any_await(4.0)
 
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_retries_on_read_error(self, mock_sleep):
+        """httpx.ReadError (TCP reset) should be retried, not blow through."""
+        factory = AsyncMock(
+            side_effect=[httpx.ReadError("Connection reset"), "recovered"]
+        )
+        result = await _retry_on_transient(factory, max_retries=3)
+        assert result == "recovered"
+        assert factory.await_count == 2
+        mock_sleep.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_retries_on_connect_error(self, mock_sleep):
+        """httpx.ConnectError should also be retried."""
+        factory = AsyncMock(
+            side_effect=[httpx.ConnectError("Connection refused"), "recovered"]
+        )
+        result = await _retry_on_transient(factory, max_retries=3)
+        assert result == "recovered"
+        assert factory.await_count == 2
+
+    @pytest.mark.asyncio
+    @patch("app.clients.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_exhausts_retries_on_transport_error(self, mock_sleep):
+        """Transport errors should raise after max retries."""
+        factory = AsyncMock(side_effect=httpx.ReadError("still broken"))
+        with pytest.raises(httpx.ReadError):
+            await _retry_on_transient(factory, max_retries=2)
+        assert factory.await_count == 3  # initial + 2 retries
+
 
 # ---------------------------------------------------------------------------
 # Timeout configuration tests
