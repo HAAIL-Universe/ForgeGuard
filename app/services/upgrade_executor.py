@@ -1720,6 +1720,11 @@ async def _commit_and_push(
                    f"✅ Pushed to github.com/{repo_name}{commit_part}",
                    "system", "command")
 
+        # Clear push-failure flag so cleanup timer can proceed normally
+        state.pop("_push_failed", None)
+        state.pop("_push_changes", None)
+        state.pop("_push_task_results", None)
+
         await _emit(user_id, "upgrade_pushed", {
             "run_id": run_id,
             "repo_name": repo_name,
@@ -1733,6 +1738,14 @@ async def _commit_and_push(
         logger.exception("Git push failed for run %s", run_id)
         await _log(user_id, run_id,
                    f"❌ Push failed: {exc}", "error", "command")
+        # Re-stash changes so user can /push again without
+        # regenerating everything.
+        state["_push_changes"] = all_changes
+        state["_push_task_results"] = task_results
+        state["_push_failed"] = True
+        await _log(user_id, run_id,
+                   "💾 Changes preserved — type /push to retry.",
+                   "system", "command")
         return {"ok": False, "message": f"Push failed: {exc}"}
 
 
@@ -3392,6 +3405,19 @@ async def _run_upgrade(
         # If /retry relaunched the session, don't nuke the state.
         if state.get("_cleanup_cancelled"):
             return
+        # If there are unpushed changes (push failed or user hasn't
+        # pushed yet), keep the working directory alive for another
+        # cycle so the user doesn't lose generated code.
+        if state.get("_push_failed") or state.get("_push_changes"):
+            logger.info(
+                "Run %s has unpushed changes — extending keep-alive",
+                run_id)
+            try:
+                await asyncio.sleep(3600)  # extra hour
+            except asyncio.CancelledError:
+                pass
+            if state.get("_cleanup_cancelled"):
+                return
         wd = state.get("working_dir")
         if wd:
             parent = str(Path(wd).parent)
