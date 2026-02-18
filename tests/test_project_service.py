@@ -100,7 +100,7 @@ def test_progress_complete():
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.repo_create_project", new_callable=AsyncMock)
+@patch("app.services.project.repo_create_project", new_callable=AsyncMock)
 async def test_create_new_project(mock_create):
     mock_create.return_value = {
         "id": PROJECT_ID,
@@ -125,10 +125,10 @@ async def test_create_new_project(mock_create):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.update_questionnaire_state", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.llm_chat", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.update_questionnaire_state", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.llm_chat", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 async def test_process_questionnaire_first_message(
     mock_project, mock_llm, mock_status, mock_qs
 ):
@@ -160,7 +160,7 @@ async def test_process_questionnaire_first_message(
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 async def test_process_questionnaire_not_found(mock_project):
     mock_project.return_value = None
 
@@ -169,7 +169,7 @@ async def test_process_questionnaire_not_found(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 async def test_process_questionnaire_wrong_user(mock_project):
     other_user = UUID("99999999-9999-9999-9999-999999999999")
     mock_project.return_value = {
@@ -186,7 +186,7 @@ async def test_process_questionnaire_wrong_user(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 async def test_process_questionnaire_already_complete(mock_project):
     mock_project.return_value = {
         "id": PROJECT_ID,
@@ -209,11 +209,11 @@ async def test_process_questionnaire_already_complete(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
-@patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.manager.send_to_user", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 async def test_generate_contracts_success(mock_project, mock_upsert, mock_status, mock_ws, mock_gen):
     mock_project.return_value = {
         "id": PROJECT_ID,
@@ -243,7 +243,7 @@ async def test_generate_contracts_success(mock_project, mock_upsert, mock_status
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 async def test_generate_contracts_incomplete(mock_project):
     mock_project.return_value = {
         "id": PROJECT_ID,
@@ -259,7 +259,7 @@ async def test_generate_contracts_incomplete(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 async def test_cancel_contract_generation_no_active(mock_project):
     """Cancel raises when no generation is active."""
     mock_project.return_value = {
@@ -274,7 +274,7 @@ async def test_cancel_contract_generation_no_active(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 async def test_cancel_contract_generation_success(mock_project):
     """Cancel sets the cancel event."""
     pid = str(PROJECT_ID)
@@ -295,12 +295,12 @@ async def test_cancel_contract_generation_success(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
-@patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock, return_value=[])
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.manager.send_to_user", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_contracts_by_project", new_callable=AsyncMock, return_value=[])
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 async def test_generate_contracts_cancelled_mid_generation(
     mock_project, mock_existing, mock_upsert, mock_status, mock_ws, mock_gen
 ):
@@ -353,7 +353,7 @@ async def test_generate_contracts_cancelled_mid_generation(
 
 
 @pytest.mark.asyncio
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 async def test_get_questionnaire_state(mock_project):
     mock_project.return_value = {
         "id": PROJECT_ID,

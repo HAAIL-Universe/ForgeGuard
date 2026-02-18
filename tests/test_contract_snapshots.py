@@ -64,8 +64,8 @@ def _auth_header(uid=USER_ID):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_snapshot_batches", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_snapshot_batches", new_callable=AsyncMock)
 def test_list_history_empty(mock_batches, mock_project, mock_get_user):
     """Empty history when no regenerations have occurred."""
     mock_get_user.return_value = MOCK_USER
@@ -81,8 +81,8 @@ def test_list_history_empty(mock_batches, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_snapshot_batches", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_snapshot_batches", new_callable=AsyncMock)
 def test_list_history_with_batches(mock_batches, mock_project, mock_get_user):
     """Returns correct batch summaries."""
     mock_get_user.return_value = MOCK_USER
@@ -105,7 +105,7 @@ def test_list_history_with_batches(mock_batches, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
 def test_list_history_project_not_found(mock_project, mock_get_user):
     """Returns 404 when project does not exist."""
     mock_get_user.return_value = MOCK_USER
@@ -119,7 +119,7 @@ def test_list_history_project_not_found(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
 def test_list_history_wrong_user(mock_project, mock_get_user):
     """Returns 404 when user does not own the project."""
     mock_get_user.return_value = {**MOCK_USER, "id": UUID(OTHER_USER_ID)}
@@ -136,8 +136,8 @@ def test_list_history_wrong_user(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_snapshot_contracts", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_snapshot_contracts", new_callable=AsyncMock)
 def test_get_batch_contracts(mock_snap, mock_project, mock_get_user):
     """Returns contract content for a specific batch."""
     mock_get_user.return_value = MOCK_USER
@@ -175,8 +175,8 @@ def test_get_batch_contracts(mock_snap, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_snapshot_contracts", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_snapshot_contracts", new_callable=AsyncMock)
 def test_get_batch_not_found(mock_snap, mock_project, mock_get_user):
     """Returns 404 when batch does not exist."""
     mock_get_user.return_value = MOCK_USER
@@ -191,7 +191,7 @@ def test_get_batch_not_found(mock_snap, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
 def test_get_batch_wrong_user(mock_project, mock_get_user):
     """Returns 404 when user does not own project."""
     mock_get_user.return_value = {**MOCK_USER, "id": UUID(OTHER_USER_ID)}
@@ -208,8 +208,8 @@ def test_get_batch_wrong_user(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_snapshot_batches", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_snapshot_batches", new_callable=AsyncMock)
 def test_list_versions_delegates_to_repo(mock_batches, mock_project, mock_get_user):
     """list_contract_versions calls get_snapshot_batches with correct project_id."""
     mock_get_user.return_value = MOCK_USER
@@ -225,8 +225,8 @@ def test_list_versions_delegates_to_repo(mock_batches, mock_project, mock_get_us
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_snapshot_contracts", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_snapshot_contracts", new_callable=AsyncMock)
 def test_get_version_delegates_to_repo(mock_snap, mock_project, mock_get_user):
     """get_contract_version calls get_snapshot_contracts with correct args."""
     mock_get_user.return_value = MOCK_USER
@@ -253,13 +253,13 @@ def test_get_version_delegates_to_repo(mock_snap, mock_project, mock_get_user):
 # ---------- Snapshot creation during generation ----------
 
 
-@patch("app.services.project_service.manager")
-@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
-@patch("app.services.project_service.snapshot_contracts", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.manager")
+@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.snapshot_contracts", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_contracts_by_project", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 @pytest.mark.asyncio
 async def test_generate_snapshots_before_regeneration(
     mock_project, mock_existing, mock_snapshot,
@@ -296,13 +296,13 @@ async def test_generate_snapshots_before_regeneration(
     mock_snapshot.assert_called_once_with(UUID(PROJECT_ID))
 
 
-@patch("app.services.project_service.manager")
-@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
-@patch("app.services.project_service.snapshot_contracts", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.manager")
+@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.snapshot_contracts", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_contracts_by_project", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 @pytest.mark.asyncio
 async def test_generate_no_snapshot_for_first_generation(
     mock_project, mock_existing, mock_snapshot,
@@ -346,3 +346,5 @@ def test_history_requires_auth():
 
     resp = client.get(f"/projects/{PROJECT_ID}/contracts/history/1")
     assert resp.status_code == 401
+
+

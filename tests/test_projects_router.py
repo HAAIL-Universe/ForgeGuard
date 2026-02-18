@@ -47,7 +47,7 @@ def _auth_header():
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.repo_create_project", new_callable=AsyncMock)
+@patch("app.services.project.repo_create_project", new_callable=AsyncMock)
 def test_create_project(mock_create, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_create.return_value = {
@@ -75,7 +75,7 @@ def test_create_project(mock_create, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.repo_create_project", new_callable=AsyncMock)
+@patch("app.services.project.repo_create_project", new_callable=AsyncMock)
 def test_create_project_with_repo_id(mock_create, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_create.return_value = {
@@ -105,7 +105,7 @@ def test_create_project_with_repo_id(mock_create, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.repo_create_project", new_callable=AsyncMock)
+@patch("app.services.project.repo_create_project", new_callable=AsyncMock)
 def test_create_project_with_local_path(mock_create, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_create.return_value = {
@@ -146,7 +146,7 @@ def test_create_project_unauthenticated():
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_projects_by_user", new_callable=AsyncMock)
+@patch("app.services.project.get_projects_by_user", new_callable=AsyncMock)
 def test_list_projects(mock_list, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_list.return_value = [
@@ -172,9 +172,9 @@ def test_list_projects(mock_list, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock)
-@patch("app.services.project_service.build_repo.get_latest_build_for_project", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_contracts_by_project", new_callable=AsyncMock)
+@patch("app.services.project.build_repo.get_latest_build_for_project", new_callable=AsyncMock)
 def test_get_project_detail(mock_latest_build, mock_contracts, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -199,7 +199,7 @@ def test_get_project_detail(mock_latest_build, mock_contracts, mock_project, moc
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
 def test_get_project_not_found(mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = None
@@ -212,8 +212,8 @@ def test_get_project_not_found(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.repo_delete_project", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.repo_delete_project", new_callable=AsyncMock)
 @patch("app.repos.build_repo.has_active_builds", new_callable=AsyncMock)
 def test_delete_project(mock_active, mock_delete, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
@@ -236,10 +236,10 @@ def test_delete_project(mock_active, mock_delete, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.update_questionnaire_state", new_callable=AsyncMock)
-@patch("app.services.project_service.llm_chat", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.update_questionnaire_state", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.llm_chat", new_callable=AsyncMock)
 def test_questionnaire_message(
     mock_llm, mock_update_qs, mock_update_status, mock_project, mock_get_user
 ):
@@ -270,7 +270,7 @@ def test_questionnaire_message(
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 def test_questionnaire_project_not_found(mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = None
@@ -287,7 +287,7 @@ def test_questionnaire_project_not_found(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 def test_questionnaire_state(mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -316,7 +316,7 @@ def test_questionnaire_state(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 def test_generate_contracts_incomplete(mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -336,12 +336,12 @@ def test_generate_contracts_incomplete(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.upsert_contract", new_callable=AsyncMock)
-@patch("app.services.project_service.update_project_status", new_callable=AsyncMock)
-@patch("app.services.project_service.manager.send_to_user", new_callable=AsyncMock)
-@patch("app.services.project_service._generate_contract_content", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock, return_value=[])
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.manager.send_to_user", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_contracts_by_project", new_callable=AsyncMock, return_value=[])
 def test_generate_contracts_success(
     mock_existing, mock_gen, mock_ws, mock_status, mock_upsert, mock_project, mock_get_user
 ):
@@ -385,7 +385,7 @@ def test_generate_contracts_success(
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator.get_project_by_id", new_callable=AsyncMock)
 def test_cancel_contracts_no_active(mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -407,8 +407,8 @@ def test_cancel_contracts_no_active(mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contracts_by_project", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_contracts_by_project", new_callable=AsyncMock)
 def test_list_contracts(mock_contracts, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -441,8 +441,8 @@ def test_list_contracts(mock_contracts, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contract_by_type", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_contract_by_type", new_callable=AsyncMock)
 def test_get_contract(mock_contract, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -470,8 +470,8 @@ def test_get_contract(mock_contract, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_contract_by_type", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_contract_by_type", new_callable=AsyncMock)
 def test_get_contract_not_found(mock_contract, mock_project, mock_get_user):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -493,9 +493,9 @@ def test_get_contract_not_found(mock_contract, mock_project, mock_get_user):
 
 
 @patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
-@patch("app.services.project_service.get_project_by_id", new_callable=AsyncMock)
+@patch("app.services.project.get_project_by_id", new_callable=AsyncMock)
 @patch(
-    "app.services.project_service.repo_update_contract_content",
+    "app.services.project.repo_update_contract_content",
     new_callable=AsyncMock,
 )
 def test_update_contract(mock_update, mock_project, mock_get_user):

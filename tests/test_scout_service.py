@@ -76,9 +76,9 @@ def test_build_check_list_evidence_passes():
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.asyncio.create_task")
-@patch("app.services.scout_service.create_scout_run", new_callable=AsyncMock)
-@patch("app.services.scout_service.get_repo_by_id", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.asyncio.create_task")
+@patch("app.services.scout.quick_scan.create_scout_run", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_repo_by_id", new_callable=AsyncMock)
 async def test_start_scout_run_success(mock_repo, mock_create, mock_task):
     """Starting a scout run creates a record and starts background task."""
     mock_repo.return_value = {
@@ -100,7 +100,7 @@ async def test_start_scout_run_success(mock_repo, mock_create, mock_task):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_repo_by_id", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_repo_by_id", new_callable=AsyncMock)
 async def test_start_scout_run_not_found(mock_repo):
     """Starting a scout run for unknown repo raises ValueError."""
     mock_repo.return_value = None
@@ -110,7 +110,7 @@ async def test_start_scout_run_not_found(mock_repo):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_repo_by_id", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_repo_by_id", new_callable=AsyncMock)
 async def test_start_scout_run_wrong_user(mock_repo):
     """Starting a scout run for another user's repo raises ValueError."""
     mock_repo.return_value = {
@@ -127,7 +127,7 @@ async def test_start_scout_run_wrong_user(mock_repo):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_scout_runs_by_user", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_scout_runs_by_user", new_callable=AsyncMock)
 async def test_get_history_all_repos(mock_runs):
     """History without repo_id queries all repos."""
     from datetime import datetime, timezone
@@ -151,7 +151,7 @@ async def test_get_history_all_repos(mock_runs):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_scout_runs_by_repo", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_scout_runs_by_repo", new_callable=AsyncMock)
 async def test_get_history_single_repo(mock_runs):
     """History with repo_id queries only that repo."""
     mock_runs.return_value = []
@@ -165,7 +165,7 @@ async def test_get_history_single_repo(mock_runs):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_scout_run", new_callable=AsyncMock)
 async def test_get_detail_success(mock_run):
     """Detail returns full results when run exists."""
     from datetime import datetime, timezone
@@ -196,7 +196,7 @@ async def test_get_detail_success(mock_run):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_scout_run", new_callable=AsyncMock)
 async def test_get_detail_not_found(mock_run):
     """Detail raises ValueError when run doesn't exist."""
     mock_run.return_value = None
@@ -206,7 +206,7 @@ async def test_get_detail_not_found(mock_run):
 
 
 @pytest.mark.asyncio
-@patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock)
+@patch("app.services.scout.quick_scan.get_scout_run", new_callable=AsyncMock)
 async def test_get_detail_wrong_user(mock_run):
     """Detail raises ValueError when user doesn't own the run."""
     from datetime import datetime, timezone

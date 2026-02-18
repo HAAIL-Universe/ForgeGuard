@@ -127,7 +127,7 @@ def test_select_key_files_migration_files():
 @pytest.mark.asyncio
 async def test_start_deep_scan_not_found():
     """Should raise ValueError when repo not found."""
-    with patch("app.services.scout_service.get_repo_by_id", new_callable=AsyncMock, return_value=None):
+    with patch("app.services.scout.deep_scan.get_repo_by_id", new_callable=AsyncMock, return_value=None):
         with pytest.raises(ValueError, match="Repo not found"):
             await start_deep_scan(USER_ID, REPO_ID)
 
@@ -137,7 +137,7 @@ async def test_start_deep_scan_wrong_user():
     """Should raise ValueError when repo belongs to another user."""
     other_user = UUID("99999999-9999-9999-9999-999999999999")
     repo = {"id": REPO_ID, "user_id": other_user, "full_name": "org/repo"}
-    with patch("app.services.scout_service.get_repo_by_id", new_callable=AsyncMock, return_value=repo):
+    with patch("app.services.scout.deep_scan.get_repo_by_id", new_callable=AsyncMock, return_value=repo):
         with pytest.raises(ValueError, match="Repo not found"):
             await start_deep_scan(USER_ID, REPO_ID)
 
@@ -149,8 +149,8 @@ async def test_start_deep_scan_returns_running():
     run = {"id": RUN_ID, "status": "running", "scan_type": "deep"}
 
     with (
-        patch("app.services.scout_service.get_repo_by_id", new_callable=AsyncMock, return_value=repo),
-        patch("app.services.scout_service.create_scout_run", new_callable=AsyncMock, return_value=run),
+        patch("app.services.scout.deep_scan.get_repo_by_id", new_callable=AsyncMock, return_value=repo),
+        patch("app.services.scout.deep_scan.create_scout_run", new_callable=AsyncMock, return_value=run),
         patch("asyncio.create_task"),
     ):
         result = await start_deep_scan(USER_ID, REPO_ID, hypothesis="Check for secrets")
@@ -187,7 +187,7 @@ async def test_get_scout_dossier_returns_data():
         "results": json.dumps(results),
     }
 
-    with patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock, return_value=run):
+    with patch("app.services.scout.dossier_builder.get_scout_run", new_callable=AsyncMock, return_value=run):
         dossier = await get_scout_dossier(USER_ID, RUN_ID)
         assert dossier is not None
         assert dossier["metadata"]["name"] == "test-repo"
@@ -198,7 +198,7 @@ async def test_get_scout_dossier_returns_data():
 @pytest.mark.asyncio
 async def test_get_scout_dossier_not_found():
     """Should raise ValueError when run not found."""
-    with patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock, return_value=None):
+    with patch("app.services.scout.dossier_builder.get_scout_run", new_callable=AsyncMock, return_value=None):
         with pytest.raises(ValueError, match="Scout run not found"):
             await get_scout_dossier(USER_ID, RUN_ID)
 
@@ -214,7 +214,7 @@ async def test_get_scout_dossier_wrong_user():
         "status": "completed",
         "results": "{}",
     }
-    with patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock, return_value=run):
+    with patch("app.services.scout.dossier_builder.get_scout_run", new_callable=AsyncMock, return_value=run):
         with pytest.raises(ValueError, match="Scout run not found"):
             await get_scout_dossier(USER_ID, RUN_ID)
 
@@ -229,6 +229,6 @@ async def test_get_scout_dossier_quick_scan_rejected():
         "status": "completed",
         "results": "{}",
     }
-    with patch("app.services.scout_service.get_scout_run", new_callable=AsyncMock, return_value=run):
+    with patch("app.services.scout.dossier_builder.get_scout_run", new_callable=AsyncMock, return_value=run):
         with pytest.raises(ValueError, match="deep scan"):
             await get_scout_dossier(USER_ID, RUN_ID)
