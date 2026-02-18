@@ -247,6 +247,13 @@ from forge_ide.response_parser import (
     parse_response,
     strip_fences,
 )
+from forge_ide.invariants import (
+    BUILTIN_DEFAULTS,
+    BUILTIN_INVARIANTS,
+    Constraint,
+    GateResult,
+    InvariantRegistry,
+)
 from forge_ide.journal import (
     InvariantResult,
     JournalCheckpoint,
@@ -449,6 +456,12 @@ __all__ = [
     "JournalCheckpoint",
     "InvariantResult",
     "compute_snapshot_hash",
+    # Invariant gates
+    "InvariantRegistry",
+    "Constraint",
+    "GateResult",
+    "BUILTIN_INVARIANTS",
+    "BUILTIN_DEFAULTS",
     # Adapters
     "register_builtin_tools",
 ]

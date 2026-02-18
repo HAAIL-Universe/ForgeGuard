@@ -3259,6 +3259,15 @@ async def _run_build_plan_execute(
         )
         _journal.set_invariant("initial_test_count", _ws_snapshot.test_inventory.test_count)
 
+    # --- Invariant Registry (Phase 44) ---
+    from forge_ide.invariants import InvariantRegistry as _InvariantRegistry
+    _inv_registry = _InvariantRegistry()
+    _inv_initial: dict[str, int] = {}
+    if _ws_snapshot is not None:
+        _inv_initial["backend_test_count"] = _ws_snapshot.test_inventory.test_count
+        _inv_initial["total_files"] = _ws_snapshot.total_files
+    _inv_registry.register_builtins(_inv_initial)
+
     # Try restoring journal from a prior checkpoint (for resume)
     if resume_from_phase >= 0:
         try:
@@ -3270,6 +3279,11 @@ async def _run_build_plan_execute(
                 _ckpt = _JournalCheckpoint.from_json(_ckpt_logs[0]["message"])
                 _journal = _SessionJournal.restore_from_checkpoint(_ckpt)
                 logger.info("Restored session journal from checkpoint (phase %s)", _ckpt.phase)
+                # Restore invariant registry from checkpoint
+                _inv_data = _journal.invariants.pop("_inv_registry", None)
+                if _inv_data and isinstance(_inv_data, dict):
+                    _inv_registry = _InvariantRegistry.from_dict(_inv_data)
+                    logger.info("Restored invariant registry from checkpoint (%d invariants)", len(_inv_registry))
         except Exception as _je:
             logger.warning("Failed to restore journal from checkpoint: %s", _je)
 
@@ -4168,6 +4182,60 @@ async def _run_build_plan_execute(
                 await _broadcast_build_event(user_id, build_id, "build_log", {
                     "message": _v_msg, "source": "system", "level": "info",
                 })
+
+                # Journal: record test/verification run
+                _journal.record(
+                    "test_run",
+                    f"Tests: {verification.get('tests_passed', 0)} passed, "
+                    f"{verification.get('tests_failed', 0)} failed",
+                    metadata={
+                        "passed": verification.get("tests_passed", 0),
+                        "failed": verification.get("tests_failed", 0),
+                        "syntax_errors": verification.get("syntax_errors", 0),
+                        "fixes_applied": verification.get("fixes_applied", 0),
+                    },
+                )
+
+                # --- Invariant gate (Phase 44) ---
+                _gate_values = {
+                    "backend_test_count": verification.get("tests_passed", 0),
+                    "backend_test_failures": verification.get("tests_failed", 0),
+                    "syntax_errors": verification.get("syntax_errors", 0),
+                }
+                _gate_results = _inv_registry.check_all(_gate_values)
+                for _gr in _gate_results:
+                    await _broadcast_build_event(user_id, build_id, "invariant_check", {
+                        "name": _gr.name,
+                        "passed": _gr.passed,
+                        "expected": _gr.expected,
+                        "actual": _gr.actual,
+                        "constraint": _gr.constraint.value,
+                    })
+                    if not _gr.passed:
+                        _journal.record(
+                            "invariant_violated",
+                            _gr.message,
+                            metadata={
+                                "name": _gr.name,
+                                "expected": _gr.expected,
+                                "actual": _gr.actual,
+                                "constraint": _gr.constraint.value,
+                            },
+                        )
+                        await build_repo.append_build_log(
+                            build_id, _gr.message,
+                            source="invariant", level="error",
+                        )
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": _gr.message,
+                            "source": "invariant", "level": "error",
+                        })
+
+                # Update baselines for passing invariants
+                _gate_violations = [r for r in _gate_results if not r.passed]
+                if not _gate_violations:
+                    for _gr in _gate_results:
+                        _inv_registry.update(_gr.name, _gr.actual)
             except Exception as exc:
                 logger.warning("Verification failed: %s", exc)
                 verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
@@ -4368,6 +4436,8 @@ async def _run_build_plan_execute(
             try:
                 _dag_state = _phase_dag.to_dict() if _phase_dag else {}
                 _snap_hash = _compute_snapshot_hash(list(all_files_written.keys())) if all_files_written else ""
+                # Include invariant registry state in journal invariants
+                _journal.invariants["_inv_registry"] = _inv_registry.to_dict()
                 _ckpt = _journal.get_checkpoint(dag_state=_dag_state, snapshot_hash=_snap_hash)
                 await build_repo.append_build_log(
                     build_id,
