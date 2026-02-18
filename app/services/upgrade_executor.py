@@ -179,33 +179,61 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
                     return await _run_pre_push_audit(
                         user_id, run_id, state, all_changes, task_results)
                 else:
-                    # Tests failed — ask whether to force push
+                    # Tests failed — run tiered auto-fix loop before
+                    # falling back to the Y/N force-push prompt.
                     state["_push_changes"] = all_changes
                     state["_push_task_results"] = task_results
+                    state["_last_test_output"] = output
+
                     await _log(user_id, run_id, "", "system", "command")
                     await _log(user_id, run_id,
                                "╔══════════════════════════════════════════════════╗",
                                "system", "command")
                     await _log(user_id, run_id,
-                               "║  ❌ Tests failed — push anyway?                  ║",
-                               "system", "command")
-                    await _log(user_id, run_id,
-                               "║                                                  ║",
-                               "system", "command")
-                    await _log(user_id, run_id,
-                               "║  [Y] Push despite failures                       ║",
-                               "system", "command")
-                    await _log(user_id, run_id,
-                               "║  [N] Cancel push — fix issues first              ║",
+                               "║  ❌ Tests failed — starting auto-fix…            ║",
                                "system", "command")
                     await _log(user_id, run_id,
                                "╚══════════════════════════════════════════════════╝",
                                "system", "command")
-                    state["pending_prompt"] = "push_force_confirm"
-                    await _emit(user_id, "upgrade_prompt", {
-                        "run_id": run_id,
-                        "prompt_id": "push_force_confirm"})
-                    return {"ok": True, "message": "Tests failed. Y/N?"}
+
+                    fix_passed, fix_output = await _auto_fix_loop(
+                        user_id, run_id, state, all_changes, output)
+
+                    if fix_passed:
+                        await _log(user_id, run_id, "", "system", "command")
+                        await _log(user_id, run_id,
+                                   "✅ Auto-fix succeeded — tests pass!",
+                                   "system", "command")
+                        return await _run_pre_push_audit(
+                            user_id, run_id, state, all_changes,
+                            task_results)
+                    else:
+                        # All tiers exhausted — ask force push Y/N
+                        await _log(user_id, run_id, "", "system", "command")
+                        await _log(user_id, run_id,
+                                   "╔══════════════════════════════════════════════════╗",
+                                   "system", "command")
+                        await _log(user_id, run_id,
+                                   "║  ❌ Auto-fix exhausted — push anyway?            ║",
+                                   "system", "command")
+                        await _log(user_id, run_id,
+                                   "║                                                  ║",
+                                   "system", "command")
+                        await _log(user_id, run_id,
+                                   "║  [Y] Push despite failures                       ║",
+                                   "system", "command")
+                        await _log(user_id, run_id,
+                                   "║  [N] Cancel push                                 ║",
+                                   "system", "command")
+                        await _log(user_id, run_id,
+                                   "╚══════════════════════════════════════════════════╝",
+                                   "system", "command")
+                        state["pending_prompt"] = "push_force_confirm"
+                        await _emit(user_id, "upgrade_prompt", {
+                            "run_id": run_id,
+                            "prompt_id": "push_force_confirm"})
+                        return {"ok": True,
+                                "message": "Auto-fix exhausted. Y/N?"}
             else:
                 # User chose N — skip tests, push directly
                 await _log(user_id, run_id,
@@ -970,6 +998,511 @@ async def _run_tests(
         await _log(user_id, run_id,
                    f"⚠ Test runner error: {err_msg}", "error", "command")
         return False, err_msg
+
+
+# ---------------------------------------------------------------------------
+# Auto-fix loop — tiered escalation when push-time tests fail
+# ---------------------------------------------------------------------------
+
+_FIX_PLANNER_PROMPT = """\
+You are ForgeGuard's Fix Planner. Test failures were detected after \
+applying migration changes. Your job is to diagnose the failures and \
+produce a precise fix plan that the Code Builder will implement.
+
+You will receive:
+1. The pytest output showing which tests failed and why.
+2. The file changes that were applied (what was changed).
+3. The current contents of the failing files.
+4. Previous fix attempts that did NOT resolve the problem (if any).
+
+Rules:
+- Focus ONLY on fixing the test failures. Do not refactor unrelated code.
+- Identify the root cause of each failure before proposing changes.
+- If a previous attempt failed, analyse WHY it failed and try a \
+  different approach — do NOT repeat the same fix.
+- Produce a JSON plan matching this schema:
+
+{
+  "diagnosis": "root-cause explanation of why tests fail",
+  "plan": [
+    {
+      "file": "path/to/file",
+      "action": "modify" | "create" | "delete",
+      "description": "what needs to change and why",
+      "target_symbols": ["function or class names to change"]
+    }
+  ]
+}
+
+Respond with ONLY the JSON object. No markdown fences, no prose."""
+
+_FIX_THINKING_PLANNER_PROMPT = """\
+You are ForgeGuard's Fix Planner (deep analysis mode). Previous \
+standard-mode fix attempts have ALL FAILED. You MUST use extended \
+thinking to deeply reason about what went wrong.
+
+You will receive the full history of failed attempts including the \
+exact error output from each try. Study EVERY past attempt carefully \
+before proposing a new fix — you must NOT repeat any approach that \
+has already failed.
+
+Diagnostic steps (use your thinking capacity):
+1. Read every past attempt and understand exactly what was tried.
+2. Compare the error output before and after each attempt.
+3. Identify the TRUE root cause (it may be different from what \
+   previous attempts assumed).
+4. Consider indirect causes: missing imports, wrong module paths, \
+   side-effects in __init__.py, fixture issues, conftest problems.
+5. Design a fix that addresses the root cause directly.
+
+Respond with JSON matching this schema:
+
+{
+  "diagnosis": "deep root-cause analysis (be specific)",
+  "failed_approach_analysis": "why each previous attempt failed",
+  "plan": [
+    {
+      "file": "path/to/file",
+      "action": "modify" | "create" | "delete",
+      "description": "what needs to change and why",
+      "target_symbols": ["function or class names to change"]
+    }
+  ]
+}
+
+Respond with ONLY the JSON object. No markdown fences, no prose."""
+
+
+def _parse_test_failures(output: str) -> list[dict]:
+    """Extract structured failure info from pytest output.
+
+    Returns a list of ``{"file", "line", "test", "error_type", "message"}``
+    dicts — one per detected failure.
+    """
+    failures: list[dict] = []
+    # Match FAILED lines: FAILED tests/test_foo.py::test_bar - ErrorType: msg
+    failed_re = re.compile(
+        r"FAILED\s+(?P<file>[^\s:]+)::(?P<test>\S+)"
+        r"(?:\s*-\s*(?P<error_type>\w+):\s*(?P<message>.+))?",
+    )
+    # Match  file:line: in ErrorType  (traceback headers)
+    tb_re = re.compile(
+        r"(?P<file>[^\s:]+):(?P<line>\d+):\s+(?:in\s+\S+\s+)?(?P<error_type>\w+Error)",
+    )
+    # Match  file:line: in <symbol>  (traceback without inline error)
+    tb_loc_re = re.compile(
+        r"(?P<file>[^\s:]+\.py):(?P<line>\d+):\s+in\s+",
+    )
+    # Match  E   ErrorType: message  (pytest error lines)
+    e_line_re = re.compile(
+        r"^E\s+(?P<error_type>\w+(?:Error|Exception)):\s*(?P<message>.+)",
+    )
+
+    # Track last seen traceback file for associating E-lines
+    pending_tb_file: str | None = None
+    pending_tb_line: int | None = None
+
+    for line in output.splitlines():
+        stripped = line.strip()
+
+        m = failed_re.search(stripped)
+        if m:
+            failures.append({
+                "file": m.group("file"),
+                "line": None,
+                "test": m.group("test"),
+                "error_type": m.group("error_type") or "Unknown",
+                "message": (m.group("message") or "").strip(),
+            })
+            pending_tb_file = None
+            continue
+
+        m = tb_re.search(stripped)
+        if m and not any(f["file"] == m.group("file") for f in failures):
+            failures.append({
+                "file": m.group("file"),
+                "line": int(m.group("line")),
+                "test": None,
+                "error_type": m.group("error_type"),
+                "message": stripped,
+            })
+            pending_tb_file = None
+            continue
+
+        m = tb_loc_re.search(stripped)
+        if m:
+            pending_tb_file = m.group("file")
+            pending_tb_line = int(m.group("line"))
+            continue
+
+        m = e_line_re.match(stripped)
+        if m and pending_tb_file:
+            if not any(f["file"] == pending_tb_file for f in failures):
+                failures.append({
+                    "file": pending_tb_file,
+                    "line": pending_tb_line,
+                    "test": None,
+                    "error_type": m.group("error_type"),
+                    "message": m.group("message").strip(),
+                })
+            pending_tb_file = None
+            continue
+
+    return failures
+
+
+def _read_failing_files(
+    working_dir: str,
+    failures: list[dict],
+    all_changes: list[dict],
+) -> dict[str, str]:
+    """Read the current contents of files mentioned in failures + changes.
+
+    Returns ``{relative_path: content}`` capped at 200 KB total.
+    """
+    wd = Path(working_dir)
+    files_to_read: set[str] = set()
+
+    for f in failures:
+        fp = f.get("file", "")
+        if fp:
+            files_to_read.add(fp)
+    for c in all_changes:
+        fp = c.get("file", "")
+        if fp:
+            files_to_read.add(fp)
+
+    contents: dict[str, str] = {}
+    budget = 200_000  # ~200 KB
+    for rel in sorted(files_to_read):
+        p = wd / rel
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if len(text) > budget:
+                text = text[:budget] + "\n[TRUNCATED]"
+            contents[rel] = text
+            budget -= len(text)
+            if budget <= 0:
+                break
+        except Exception:
+            pass
+
+    return contents
+
+
+async def _auto_fix_loop(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    all_changes: list[dict],
+    test_output: str,
+) -> tuple[bool, str]:
+    """Tiered auto-fix loop invoked when push-time tests fail.
+
+    **Tier 1** — up to ``LLM_FIX_MAX_TIER1`` attempts:
+      Sonnet (standard) diagnoses → Opus writes code fix → re-test.
+
+    **Tier 2** — up to ``LLM_FIX_MAX_TIER2`` attempts:
+      Sonnet with *extended thinking* diagnoses → Opus writes fix → re-test.
+
+    Returns ``(passed, final_test_output)``.  If all attempts are
+    exhausted the caller should present a final Y/N prompt.
+    """
+    api_key = state.get("api_key", "")
+    planner_model = state.get("planner_model", settings.LLM_PLANNER_MODEL)
+    builder_model = state.get("builder_model", settings.LLM_BUILDER_MODEL)
+    working_dir = state.get("working_dir", "")
+    max_t1 = settings.LLM_FIX_MAX_TIER1
+    max_t2 = settings.LLM_FIX_MAX_TIER2
+    thinking_budget = settings.LLM_THINKING_BUDGET
+
+    attempt_history: list[dict] = []  # keeps every attempt for context
+    current_output = test_output
+
+    # ── Tier 1: Standard Sonnet → Opus ──────────────────────────────
+    for attempt in range(1, max_t1 + 1):
+        tier_label = f"Tier 1 ({attempt}/{max_t1})"
+        await _log(user_id, run_id, "", "system", "command")
+        await _log(user_id, run_id,
+                   f"🔧 Auto-fix {tier_label} — Sonnet diagnosing failures…",
+                   "system", "command")
+        await _emit(user_id, "fix_attempt_start", {
+            "run_id": run_id, "tier": 1, "attempt": attempt,
+            "max_attempts": max_t1,
+        })
+
+        passed, current_output = await _single_fix_attempt(
+            user_id, run_id, state, all_changes, current_output,
+            attempt_history,
+            api_key=api_key,
+            planner_model=planner_model,
+            builder_model=builder_model,
+            working_dir=working_dir,
+            thinking_budget=0,
+            tier_label=tier_label,
+        )
+
+        await _emit(user_id, "fix_attempt_result", {
+            "run_id": run_id, "tier": 1, "attempt": attempt,
+            "passed": passed,
+        })
+
+        if passed:
+            return True, current_output
+
+    # ── Tier 2: Sonnet with extended thinking → Opus ────────────────
+    await _log(user_id, run_id, "", "system", "command")
+    await _log(user_id, run_id,
+               "╔══════════════════════════════════════════════════╗",
+               "system", "command")
+    await _log(user_id, run_id,
+               "║  🧠 Escalating to Tier 2 — deep thinking mode   ║",
+               "system", "command")
+    await _log(user_id, run_id,
+               "╚══════════════════════════════════════════════════╝",
+               "system", "command")
+
+    for attempt in range(1, max_t2 + 1):
+        tier_label = f"Tier 2 ({attempt}/{max_t2})"
+        await _log(user_id, run_id, "", "system", "command")
+        await _log(user_id, run_id,
+                   f"🧠 Auto-fix {tier_label} — Sonnet deep-analysing failures…",
+                   "system", "command")
+        await _emit(user_id, "fix_attempt_start", {
+            "run_id": run_id, "tier": 2, "attempt": attempt,
+            "max_attempts": max_t2,
+        })
+
+        passed, current_output = await _single_fix_attempt(
+            user_id, run_id, state, all_changes, current_output,
+            attempt_history,
+            api_key=api_key,
+            planner_model=planner_model,
+            builder_model=builder_model,
+            working_dir=working_dir,
+            thinking_budget=thinking_budget,
+            tier_label=tier_label,
+        )
+
+        await _emit(user_id, "fix_attempt_result", {
+            "run_id": run_id, "tier": 2, "attempt": attempt,
+            "passed": passed,
+        })
+
+        if passed:
+            return True, current_output
+
+    # All tiers exhausted
+    await _log(user_id, run_id, "", "system", "command")
+    await _log(user_id, run_id,
+               f"❌ Auto-fix exhausted ({max_t1 + max_t2} attempts failed).",
+               "error", "command")
+    return False, current_output
+
+
+async def _single_fix_attempt(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    all_changes: list[dict],
+    test_output: str,
+    attempt_history: list[dict],
+    *,
+    api_key: str,
+    planner_model: str,
+    builder_model: str,
+    working_dir: str,
+    thinking_budget: int,
+    tier_label: str,
+) -> tuple[bool, str]:
+    """Execute one diagnose → fix → test cycle.
+
+    Appends the attempt to *attempt_history* (mutates in place) so
+    subsequent attempts have full context.
+
+    Returns ``(passed, test_output)``.
+    """
+    failures = _parse_test_failures(test_output)
+    file_contents = _read_failing_files(working_dir, failures, all_changes)
+
+    # ── Step 1: Sonnet diagnoses and plans the fix ──────────────────
+    system_prompt = (
+        _FIX_THINKING_PLANNER_PROMPT if thinking_budget > 0
+        else _FIX_PLANNER_PROMPT
+    )
+
+    user_payload = json.dumps({
+        "test_output": test_output[-8000:],  # last 8 KB of output
+        "parsed_failures": failures,
+        "applied_changes": [
+            {"file": c.get("file"), "action": c.get("action"),
+             "description": c.get("description", "")}
+            for c in all_changes
+        ],
+        "current_file_contents": file_contents,
+        "previous_attempts": attempt_history,
+    }, indent=2)
+
+    try:
+        plan_result = await chat(
+            api_key=api_key,
+            model=planner_model,
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_payload}],
+            max_tokens=4096,
+            provider="anthropic",
+            thinking_budget=thinking_budget,
+        )
+        plan_text = plan_result.get("text", "") if isinstance(plan_result, dict) else str(plan_result)
+        plan_text = _strip_codeblock(plan_text)
+
+        if not plan_text.strip():
+            await _log(user_id, run_id,
+                       f"  ⚠ [{tier_label}] Sonnet returned empty diagnosis",
+                       "error", "command")
+            attempt_history.append({
+                "tier_label": tier_label, "diagnosis": None,
+                "fix_result": None, "test_output": test_output,
+                "error": "empty diagnosis",
+            })
+            return False, test_output
+
+        plan = json.loads(plan_text)
+    except (json.JSONDecodeError, Exception) as exc:
+        short = f"{type(exc).__name__}: {str(exc)[:200]}"
+        await _log(user_id, run_id,
+                   f"  ⚠ [{tier_label}] Diagnosis failed: {short}",
+                   "error", "command")
+        attempt_history.append({
+            "tier_label": tier_label, "diagnosis": None,
+            "fix_result": None, "test_output": test_output,
+            "error": short,
+        })
+        return False, test_output
+
+    diagnosis = plan.get("diagnosis", "")
+    if diagnosis:
+        # Truncate very long diagnoses for display
+        disp = diagnosis[:300] + "…" if len(diagnosis) > 300 else diagnosis
+        await _log(user_id, run_id,
+                   f"  🔍 [{tier_label}] Diagnosis: {disp}",
+                   "info", "command")
+
+    # ── Step 2: Opus writes the code fix ────────────────────────────
+    await _log(user_id, run_id,
+               f"  🔧 [{tier_label}] Opus writing fix…", "thinking", "command")
+
+    fix_payload: dict = {
+        "fix_plan": plan,
+        "workspace_files": file_contents,
+    }
+    fix_user_msg = json.dumps(fix_payload, indent=2)
+
+    try:
+        build_result = await chat(
+            api_key=api_key,
+            model=builder_model,
+            system_prompt=_BUILDER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": fix_user_msg}],
+            max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
+            provider="anthropic",
+        )
+        build_text = build_result.get("text", "") if isinstance(build_result, dict) else str(build_result)
+        build_text = _strip_codeblock(build_text)
+
+        if not build_text.strip():
+            await _log(user_id, run_id,
+                       f"  ⚠ [{tier_label}] Opus returned empty fix",
+                       "error", "command")
+            attempt_history.append({
+                "tier_label": tier_label, "diagnosis": diagnosis,
+                "fix_result": None, "test_output": test_output,
+                "error": "empty builder response",
+            })
+            return False, test_output
+
+        fix_result = json.loads(build_text)
+    except (json.JSONDecodeError, Exception) as exc:
+        short = f"{type(exc).__name__}: {str(exc)[:200]}"
+        await _log(user_id, run_id,
+                   f"  ⚠ [{tier_label}] Fix build failed: {short}",
+                   "error", "command")
+        attempt_history.append({
+            "tier_label": tier_label, "diagnosis": diagnosis,
+            "fix_result": None, "test_output": test_output,
+            "error": short,
+        })
+        return False, test_output
+
+    # ── Step 3: Apply the fix changes ───────────────────────────────
+    fix_changes = fix_result.get("changes", [])
+    if not fix_changes:
+        await _log(user_id, run_id,
+                   f"  ⚠ [{tier_label}] Opus produced no changes",
+                   "warn", "command")
+        attempt_history.append({
+            "tier_label": tier_label, "diagnosis": diagnosis,
+            "fix_result": fix_result, "test_output": test_output,
+            "error": "no changes produced",
+        })
+        return False, test_output
+
+    applied = 0
+    for c in fix_changes:
+        try:
+            _apply_file_change(working_dir, c)
+            applied += 1
+            await _log(user_id, run_id,
+                       f"  ✅ [{tier_label}] {c.get('action', 'modify')}: "
+                       f"{c.get('file', '?')}", "info", "command")
+        except Exception as exc:
+            await _log(user_id, run_id,
+                       f"  ⚠ [{tier_label}] {c.get('file', '?')}: {exc}",
+                       "warn", "command")
+
+    if applied == 0:
+        await _log(user_id, run_id,
+                   f"  ⚠ [{tier_label}] No changes applied successfully",
+                   "warn", "command")
+        attempt_history.append({
+            "tier_label": tier_label, "diagnosis": diagnosis,
+            "fix_result": fix_result, "test_output": test_output,
+            "error": "no changes applied",
+        })
+        return False, test_output
+
+    await _log(user_id, run_id,
+               f"  📝 [{tier_label}] Applied {applied}/{len(fix_changes)} "
+               f"fix change(s)", "system", "command")
+
+    # ── Step 4: Re-run tests ───────────────────────────────────────
+    await _log(user_id, run_id,
+               f"  🧪 [{tier_label}] Re-running tests…", "thinking", "command")
+    passed, new_output = await _run_tests(user_id, run_id, state)
+
+    attempt_history.append({
+        "tier_label": tier_label,
+        "diagnosis": diagnosis,
+        "fix_changes": [
+            {"file": c.get("file"), "action": c.get("action")}
+            for c in fix_changes
+        ],
+        "test_passed": passed,
+        "test_output": new_output[-4000:],  # keep last 4 KB for context
+    })
+
+    if passed:
+        await _log(user_id, run_id,
+                   f"  ✅ [{tier_label}] Tests pass after fix!",
+                   "system", "command")
+    else:
+        await _log(user_id, run_id,
+                   f"  ❌ [{tier_label}] Tests still failing",
+                   "error", "command")
+
+    return passed, new_output
 
 
 async def _commit_and_push(

@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     # How often (in seconds) the backend broadcasts a cost_ticker WS event.
     BUILD_COST_TICKER_INTERVAL: int = 5
 
+    # Auto-fix loop settings — tiered escalation when push tests fail
+    LLM_FIX_MAX_TIER1: int = 3       # Sonnet plan → Opus code attempts
+    LLM_FIX_MAX_TIER2: int = 3       # Sonnet-with-thinking → Opus code attempts
+    LLM_THINKING_BUDGET: int = 10000  # token budget for extended thinking
+
 
 settings = Settings()
 

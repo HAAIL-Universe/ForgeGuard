@@ -311,6 +311,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
+  const [fixProgress, setFixProgress] = useState<{ tier: number; attempt: number; max: number } | null>(null);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
@@ -562,8 +563,17 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
 
           case 'upgrade_prompt':
             setPendingPrompt(true);
+            setFixProgress(null);  // clear fix indicator when prompt appears
             // Auto-focus the command input
             setTimeout(() => cmdInputRef.current?.focus(), 100);
+            break;
+
+          case 'fix_attempt_start':
+            setFixProgress({ tier: p.tier, attempt: p.attempt, max: p.max_attempts });
+            break;
+
+          case 'fix_attempt_result':
+            if (p.passed) setFixProgress(null);
             break;
         }
       },
@@ -773,6 +783,19 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         }}>
           {status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Ready' : status}
         </span>
+
+        {/* Auto-fix progress indicator */}
+        {fixProgress && (
+          <span style={{
+            padding: '2px 10px', borderRadius: '10px', fontSize: '0.65rem',
+            fontWeight: 600, letterSpacing: '0.5px',
+            background: fixProgress.tier === 1 ? '#1E3A5F' : '#3B1F6E',
+            color: fixProgress.tier === 1 ? '#60A5FA' : '#A78BFA',
+            animation: 'pulse 1.5s ease-in-out infinite',
+          }}>
+            {fixProgress.tier === 1 ? '🔧' : '🧠'} FIX {fixProgress.attempt}/{fixProgress.max}
+          </span>
+        )}
 
         {/* Progress bar */}
         {totalTasks > 0 && (

@@ -129,6 +129,7 @@ async def chat_anthropic(
     messages: list[dict],
     max_tokens: int = 2048,
     tools: list[dict] | None = None,
+    thinking_budget: int = 0,
 ) -> dict:
     """Send a chat request to the Anthropic Messages API.
 
@@ -136,6 +137,11 @@ async def chat_anthropic(
     caller can inspect ``stop_reason`` and ``content`` blocks for tool_use.
     When *tools* is ``None`` (the default) the response is simplified to
     ``{"text": ..., "usage": ...}`` for backward compatibility.
+
+    When *thinking_budget* > 0, extended thinking is enabled.  The API
+    returns ``thinking`` content blocks in addition to ``text`` blocks;
+    the thinking text is included under the ``"thinking"`` key in the
+    simplified response.
     """
 
     async def _call():
@@ -147,6 +153,13 @@ async def chat_anthropic(
         }
         if tools:
             body["tools"] = tools
+        if thinking_budget > 0:
+            body["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": thinking_budget,
+            }
+            # max_tokens must accommodate thinking + output
+            body["max_tokens"] = max(max_tokens, thinking_budget + 4096)
 
         client = _get_client()
         response = await client.post(
@@ -173,17 +186,28 @@ async def chat_anthropic(
         if tools:
             return data
 
+        # Extract text and optional thinking from content blocks
+        text_parts: list[str] = []
+        thinking_parts: list[str] = []
         for block in content_blocks:
             if block.get("type") == "text":
-                return {
-                    "text": block["text"],
-                    "usage": {
-                        "input_tokens": usage.get("input_tokens", 0),
-                        "output_tokens": usage.get("output_tokens", 0),
-                    },
-                }
+                text_parts.append(block["text"])
+            elif block.get("type") == "thinking":
+                thinking_parts.append(block.get("thinking", ""))
 
-        raise ValueError("No text block in Anthropic API response")
+        if not text_parts:
+            raise ValueError("No text block in Anthropic API response")
+
+        result: dict = {
+            "text": "\n".join(text_parts),
+            "usage": {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+            },
+        }
+        if thinking_parts:
+            result["thinking"] = "\n".join(thinking_parts)
+        return result
 
     return await _retry_on_transient(_call)
 
@@ -268,6 +292,7 @@ async def chat(
     max_tokens: int = 2048,
     provider: str = "anthropic",
     tools: list[dict] | None = None,
+    thinking_budget: int = 0,
 ) -> dict:
     """Send a chat request to the configured LLM provider.
 
@@ -290,6 +315,9 @@ async def chat(
         provider the full API response is returned instead of the simplified
         ``{"text": ..., "usage": ...}`` dict so that the caller can inspect
         ``stop_reason`` and tool_use blocks.
+    thinking_budget : int
+        When > 0, enable Anthropic extended thinking with this token budget.
+        Ignored for OpenAI provider.
 
     Returns
     -------
@@ -299,4 +327,7 @@ async def chat(
     """
     if provider == "openai":
         return await chat_openai(api_key, model, system_prompt, messages, max_tokens)
-    return await chat_anthropic(api_key, model, system_prompt, messages, max_tokens, tools=tools)
+    return await chat_anthropic(
+        api_key, model, system_prompt, messages, max_tokens,
+        tools=tools, thinking_budget=thinking_budget,
+    )
