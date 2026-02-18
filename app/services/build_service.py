@@ -3242,6 +3242,37 @@ async def _run_build_plan_execute(
         logger.warning("Workspace snapshot failed (non-fatal): %s", exc)
         _ws_snapshot = None
 
+    # --- Session Journal (Phase 43) ---
+    from forge_ide.journal import SessionJournal as _SessionJournal, compute_snapshot_hash as _compute_snapshot_hash
+    _journal = _SessionJournal(str(build_id))
+    if _ws_snapshot is not None:
+        _journal.record(
+            "recon",
+            f"Reconnaissance: {_ws_snapshot.total_files} files, "
+            f"{_ws_snapshot.total_lines:,} lines, "
+            f"{_ws_snapshot.test_inventory.test_count} tests",
+            metadata={
+                "total_files": _ws_snapshot.total_files,
+                "total_lines": _ws_snapshot.total_lines,
+                "test_count": _ws_snapshot.test_inventory.test_count,
+            },
+        )
+        _journal.set_invariant("initial_test_count", _ws_snapshot.test_inventory.test_count)
+
+    # Try restoring journal from a prior checkpoint (for resume)
+    if resume_from_phase >= 0:
+        try:
+            _ckpt_logs, _ckpt_count = await build_repo.get_build_logs(
+                build_id, search="journal_checkpoint", limit=1,
+            )
+            if _ckpt_logs:
+                from forge_ide.journal import JournalCheckpoint as _JournalCheckpoint
+                _ckpt = _JournalCheckpoint.from_json(_ckpt_logs[0]["message"])
+                _journal = _SessionJournal.restore_from_checkpoint(_ckpt)
+                logger.info("Restored session journal from checkpoint (phase %s)", _ckpt.phase)
+        except Exception as _je:
+            logger.warning("Failed to restore journal from checkpoint: %s", _je)
+
     for phase in phases:
         phase_num = phase["number"]
         phase_name = f"Phase {phase_num}"
@@ -3269,6 +3300,14 @@ async def _run_build_plan_execute(
         await build_repo.append_build_log(
             build_id, f"Starting {phase_name}: {phase['name']}",
             source="system", level="info",
+        )
+
+        # Journal: record phase start
+        _journal.set_phase(phase_name)
+        _journal.record(
+            "phase_start",
+            f"Beginning {phase_name}: {phase['name']}",
+            metadata={"phase": phase_name, "phase_name": phase.get("name", ""), "task_count": len(phase.get("deliverables", []))},
         )
         await _broadcast_build_event(user_id, build_id, "build_log", {
             "message": f"Starting {phase_name}: {phase['name']}",
@@ -3758,6 +3797,19 @@ async def _run_build_plan_execute(
                         _phase_dag.get_progress().model_dump(),
                     )
 
+                # Journal: record task + file
+                _journal.record(
+                    "task_completed",
+                    f"Generated {file_path}",
+                    task_id=_dag_tid or str(i),
+                    metadata={"file_path": file_path, "size_bytes": len(content.encode('utf-8'))},
+                )
+                _journal.record(
+                    "file_written",
+                    f"Wrote {file_path} ({len(content.encode('utf-8'))} bytes)",
+                    metadata={"file_path": file_path, "size_bytes": len(content.encode('utf-8'))},
+                )
+
                 # Kick off per-file audit+fix in background (uses key 2)
                 _audit_idx = len(pending_file_audits) + 1
                 pending_file_audits.append(asyncio.create_task(
@@ -3802,6 +3854,14 @@ async def _run_build_plan_execute(
                     await _broadcast_build_event(user_id, build_id, "dag_progress",
                         _phase_dag.get_progress().model_dump(),
                     )
+
+                # Journal: record error
+                _journal.record(
+                    "error",
+                    f"Generation failed for {file_path}: {exc}",
+                    task_id=_dag_tid or str(i),
+                    metadata={"file_path": file_path, "error": str(exc)},
+                )
 
         # 3. Collect per-file audit results (streamed in parallel during generation)
         _log_msg = f"All {len(phase_files_written)} files generated for {phase_name} — collecting audit results..."
@@ -4295,6 +4355,28 @@ async def _run_build_plan_execute(
             _mc = Path(working_dir) / ".forge" / f"manifest_phase_{phase_num}.json"
             if _mc.exists():
                 _mc.unlink(missing_ok=True)
+
+            # Journal: record phase complete + save checkpoint
+            _journal.record(
+                "phase_complete",
+                f"Phase {phase_name} completed — all checks passed",
+                metadata={
+                    "tasks_completed": len(phase_files_written),
+                    "files_written": list(phase_files_written.keys()),
+                },
+            )
+            try:
+                _dag_state = _phase_dag.to_dict() if _phase_dag else {}
+                _snap_hash = _compute_snapshot_hash(list(all_files_written.keys())) if all_files_written else ""
+                _ckpt = _journal.get_checkpoint(dag_state=_dag_state, snapshot_hash=_snap_hash)
+                await build_repo.append_build_log(
+                    build_id,
+                    _ckpt.to_json(),
+                    source="journal_checkpoint", level="info",
+                )
+                _journal.record("checkpoint_saved", f"Checkpoint saved for {phase_name}")
+            except Exception as _ckpt_exc:
+                logger.warning("Failed to save journal checkpoint: %s", _ckpt_exc)
         elif audit_verdict == "PASS":
             # Audit passed but verification/governance has remaining issues
             _issues: list[str] = []
@@ -4330,7 +4412,26 @@ async def _run_build_plan_execute(
             if _mc.exists():
                 _mc.unlink(missing_ok=True)
 
-        # Push to GitHub
+            # Journal: record partial phase complete + checkpoint
+            _journal.record(
+                "phase_complete",
+                f"Phase {phase_name} completed (partial — verification/governance issues)",
+                metadata={
+                    "tasks_completed": len(phase_files_written),
+                    "status": "partial",
+                },
+            )
+            try:
+                _dag_state = _phase_dag.to_dict() if _phase_dag else {}
+                _snap_hash = _compute_snapshot_hash(list(all_files_written.keys())) if all_files_written else ""
+                _ckpt = _journal.get_checkpoint(dag_state=_dag_state, snapshot_hash=_snap_hash)
+                await build_repo.append_build_log(
+                    build_id,
+                    _ckpt.to_json(),
+                    source="journal_checkpoint", level="info",
+                )
+            except Exception as _ckpt_exc:
+                logger.warning("Failed to save journal checkpoint (partial): %s", _ckpt_exc)
         if (
             working_dir
             and target_type in ("github_new", "github_existing")

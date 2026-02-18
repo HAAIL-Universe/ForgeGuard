@@ -247,6 +247,13 @@ from forge_ide.response_parser import (
     parse_response,
     strip_fences,
 )
+from forge_ide.journal import (
+    InvariantResult,
+    JournalCheckpoint,
+    JournalEntry,
+    SessionJournal,
+    compute_snapshot_hash,
+)
 from forge_ide.runner import RunResult
 from forge_ide.runner import run as ide_run
 from forge_ide.runner import validate_command
@@ -436,6 +443,12 @@ __all__ = [
     "strip_tmpdir",
     "normalise_paths",
     "sanitise_output",
+    # Session journal
+    "SessionJournal",
+    "JournalEntry",
+    "JournalCheckpoint",
+    "InvariantResult",
+    "compute_snapshot_hash",
     # Adapters
     "register_builtin_tools",
 ]

@@ -79,11 +79,15 @@ def _compact_conversation(
     messages: list[dict],
     files_written: list[dict] | None = None,
     current_phase: str = "",
+    journal_summary: str = "",
 ) -> list[dict]:
     """Compact a conversation by summarizing older turns.
 
     Keeps the first message (directive) and last 2 assistant/user pairs
     intact.  Middle turns are replaced with a progress summary.
+
+    If *journal_summary* is provided (from a SessionJournal), it replaces
+    the lossy turn-by-turn summary with a dense, structured state document.
     """
     if len(messages) <= 5:
         return list(messages)
@@ -91,34 +95,47 @@ def _compact_conversation(
     directive = messages[0]
     tail = messages[-4:]
 
-    summary_parts = [
-        "[Context compacted — progress summary]\n",
-        f"Current phase: {current_phase}\n",
-    ]
-
-    if files_written:
-        summary_parts.append(f"\nFiles written so far ({len(files_written)}):\n")
-        for f in files_written:
-            summary_parts.append(f"  - {f['path']} ({f['size_bytes']} bytes)\n")
-        summary_parts.append(
-            "\nThese files are ALREADY written to disk. "
-            "Do NOT re-write them. Continue with the NEXT unwritten file.\n"
-        )
+    if journal_summary:
+        # Use journal-based summary — dense and accurate
+        summary_parts = [
+            "[Context compacted — journal-based summary]\n",
+            journal_summary,
+            "\n",
+        ]
+        if files_written:
+            summary_parts.append(
+                "\nThese files are ALREADY written to disk. "
+                "Do NOT re-write them. Continue with the NEXT unwritten file.\n"
+            )
     else:
-        summary_parts.append("\nNo files written yet.\n")
+        summary_parts = [
+            "[Context compacted — progress summary]\n",
+            f"Current phase: {current_phase}\n",
+        ]
 
-    for msg in messages[1:-4]:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    summary_parts.append(
-                        f"[tool_use]: {block.get('name', '?')}\n"
-                    )
-        elif isinstance(content, str) and len(content) > 200:
-            content = content[:200] + "..."
-            summary_parts.append(f"[{role}]: {content}\n")
+        if files_written:
+            summary_parts.append(f"\nFiles written so far ({len(files_written)}):\n")
+            for f in files_written:
+                summary_parts.append(f"  - {f['path']} ({f['size_bytes']} bytes)\n")
+            summary_parts.append(
+                "\nThese files are ALREADY written to disk. "
+                "Do NOT re-write them. Continue with the NEXT unwritten file.\n"
+            )
+        else:
+            summary_parts.append("\nNo files written yet.\n")
+
+        for msg in messages[1:-4]:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        summary_parts.append(
+                            f"[tool_use]: {block.get('name', '?')}\n"
+                        )
+            elif isinstance(content, str) and len(content) > 200:
+                content = content[:200] + "..."
+                summary_parts.append(f"[{role}]: {content}\n")
 
     summary_msg = {
         "role": "user",
