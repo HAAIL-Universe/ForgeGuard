@@ -1180,6 +1180,20 @@ async def _run_upgrade(
                             f"⚡ [Opus] Writing code for task "
                             f"{task_index + 1}…", "thinking")
 
+                # Show what Opus will work on (immediate feedback)
+                if current_plan:
+                    _plan_files = current_plan.get("plan", [])
+                    if _plan_files:
+                        _fnames = [p.get("file", "?") for p in _plan_files[:6]]
+                        _extra = (f" +{len(_plan_files) - 6} more"
+                                  if len(_plan_files) > 6 else "")
+                        await _log(
+                            user_id, run_id,
+                            f"  📖 [Opus] Reading {len(_plan_files)} file(s): "
+                            f"{', '.join(_fnames)}{_extra}",
+                            "thinking",
+                        )
+
                 # Build parallel coroutines
                 has_next = task_index + 1 < len(tasks)
 
@@ -1558,6 +1572,19 @@ async def _build_task_with_llm(
     file_contents = _gather_file_contents(working_dir, plan)
     if file_contents:
         payload["workspace_files"] = file_contents
+        total_bytes = sum(len(v.encode()) for v in file_contents.values())
+        await _log(
+            user_id, run_id,
+            f"  🔧 [Opus] {len(file_contents)} workspace file(s) loaded "
+            f"({total_bytes // 1024}KB) — generating code…",
+            "thinking",
+        )
+    else:
+        await _log(
+            user_id, run_id,
+            "  🔧 [Opus] Generating code from plan…",
+            "thinking",
+        )
 
     user_msg = json.dumps(payload, indent=2)
 

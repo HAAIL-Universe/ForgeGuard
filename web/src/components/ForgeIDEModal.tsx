@@ -123,6 +123,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
+  const [tick, setTick] = useState(0);           // triggers re-render for elapsed timer
   const cmdInputRef = useRef<HTMLInputElement>(null);
 
   const SLASH_COMMANDS: Record<string, string> = {
@@ -156,6 +157,13 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
       logEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logs.length]);
+
+  /* Tick elapsed timer every second while running */
+  useEffect(() => {
+    if (status !== 'running') return;
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [status]);
 
   /* Prepare workspace & show preview (soft-landing — no auto-start) */
   useEffect(() => {
@@ -838,12 +846,30 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                 <div style={{ color: '#475569', padding: '20px 0' }}>
                   {status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 </div>
-              ) : (
-                logs.map((log, i) => {
+              ) : (() => {
+                // Find the last thinking log ending with … (active spinner candidate)
+                let lastActiveIdx = -1;
+                if (status === 'running') {
+                  for (let j = logs.length - 1; j >= 0; j--) {
+                    if (logs[j].level === 'thinking' && logs[j].message.endsWith('…')) {
+                      lastActiveIdx = j;
+                      break;
+                    }
+                  }
+                }
+                return logs.map((log, i) => {
                   const color = LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info;
                   const icon = LEVEL_ICONS[log.level] ?? '';
                   const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
                   const isThinking = log.level === 'thinking';
+                  const isActive = i === lastActiveIdx;
+                  // Elapsed time for active thinking line
+                  let elapsedLabel = '';
+                  if (isActive && log.timestamp) {
+                    void tick; // reference tick to trigger re-render
+                    const secs = Math.max(0, Math.floor((Date.now() - new Date(log.timestamp).getTime()) / 1000));
+                    if (secs >= 3) elapsedLabel = `${secs}s`;
+                  }
                   return (
                     <div
                       key={i}
@@ -851,8 +877,9 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                         color,
                         display: 'flex', gap: '8px',
                         padding: isThinking ? '1px 0 1px 12px' : '1px 0',
-                        borderLeft: isThinking ? '2px solid #7C3AED33' : 'none',
+                        borderLeft: isThinking ? `2px solid ${isActive ? '#7C3AED88' : '#7C3AED33'}` : 'none',
                         opacity: log.level === 'debug' ? 0.5 : 1,
+                        background: isActive ? '#7C3AED0A' : 'transparent',
                       }}
                     >
                       <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
@@ -864,12 +891,22 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                         </span>
                       )}
                       <span style={{ wordBreak: 'break-word' }}>
-                        {log.message}
+                        {isActive ? (
+                          <>
+                            {log.message.replace(/…$/, '')}
+                            <span className="forge-ide-dots" />
+                            {elapsedLabel && (
+                              <span style={{ color: '#475569', fontSize: '0.65rem', marginLeft: '8px', fontVariantNumeric: 'tabular-nums' }}>
+                                {elapsedLabel}
+                              </span>
+                            )}
+                          </>
+                        ) : log.message}
                       </span>
                     </div>
                   );
-                })
-              )}
+                });
+              })()}
               <div ref={logEndRef} />
             </div>
           )}
