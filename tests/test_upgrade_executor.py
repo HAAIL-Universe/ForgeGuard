@@ -8,7 +8,9 @@ import pytest
 from app.services.upgrade_executor import (
     _active_upgrades,
     _apply_file_change,
+    _build_task_with_llm,
     _log,
+    _plan_task_with_llm,
     _strip_codeblock,
     _TokenAccumulator,
     _fmt_tokens,
@@ -201,7 +203,7 @@ async def test_execute_upgrade_starts_background_task():
         assert result["repo_name"] == "test/repo"
         assert result["run_id"] == str(RUN_ID)
         assert result["narrator_enabled"] is False
-        assert result["workers"] == ["sonnet"]
+        assert result["workers"] == ["sonnet", "opus"]
 
         # Background task should have been spawned
         mock_asyncio.create_task.assert_called_once()
@@ -282,7 +284,7 @@ async def test_execute_upgrade_narrator_enabled():
         )
 
         assert result["narrator_enabled"] is True
-        assert result["workers"] == ["sonnet"]
+        assert result["workers"] == ["sonnet", "opus"]
         assert result["status"] == "running"
 
         state = get_upgrade_status(str(RUN_ID))
@@ -305,7 +307,7 @@ async def test_execute_upgrade_single_key_no_narrator():
         result = await execute_upgrade(USER_ID, RUN_ID, api_key="sk-primary")
 
         assert result["narrator_enabled"] is False
-        assert result["workers"] == ["sonnet"]
+        assert result["workers"] == ["sonnet", "opus"]
 
     _active_upgrades.pop(str(RUN_ID), None)
 
@@ -724,13 +726,25 @@ def test_apply_file_change_delete(tmp_path):
     assert not (tmp_path / "old.txt").exists()
 
 
-def test_apply_file_change_modify_missing_file(tmp_path):
+def test_apply_file_change_modify_missing_falls_back_to_create(tmp_path):
+    """When modify targets a missing file but after_snippet is present, create it."""
+    _apply_file_change(str(tmp_path), {
+        "file": "nope.py",
+        "action": "modify",
+        "before_snippet": "x",
+        "after_snippet": "y",
+    })
+    assert (tmp_path / "nope.py").read_text() == "y"
+
+
+def test_apply_file_change_modify_missing_no_after_raises(tmp_path):
+    """When modify targets a missing file and no after_snippet, raise."""
     with pytest.raises(FileNotFoundError):
         _apply_file_change(str(tmp_path), {
             "file": "nope.py",
             "action": "modify",
             "before_snippet": "x",
-            "after_snippet": "y",
+            "after_snippet": "",
         })
 
 
@@ -796,3 +810,82 @@ async def test_prepare_upgrade_workspace():
         assert _active_upgrades[rid]["status"] == "ready"
         assert _active_upgrades[rid]["working_dir"] is not None
         _active_upgrades.pop(rid, None)
+
+
+# -----------------------------------------------------------------------
+# _plan_task_with_llm / _build_task_with_llm
+# -----------------------------------------------------------------------
+
+FAKE_TASK = {
+    "id": "MIG-1",
+    "from_state": "React 17",
+    "to_state": "React 18",
+    "category": "framework",
+    "rationale": "EOL",
+    "steps": ["Update package.json"],
+    "effort": "medium",
+    "risk": "low",
+}
+
+
+@pytest.mark.asyncio
+async def test_plan_task_with_llm_returns_plan():
+    """Sonnet planner should return a parsed plan dict."""
+    plan_json = '{"analysis":"upgrade React","plan":[{"file":"package.json","action":"modify","description":"bump version","key_considerations":"none"}],"risks":[],"verification_strategy":["npm test"],"implementation_notes":"straightforward"}'
+    with patch("app.services.upgrade_executor.chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = {
+            "text": plan_json,
+            "usage": {"input_tokens": 500, "output_tokens": 200},
+        }
+        plan, usage = await _plan_task_with_llm(
+            "u1", "r1", "test/repo", {"primary_language": "TypeScript"},
+            FAKE_TASK, api_key="sk-test", model="claude-sonnet-4-5",
+        )
+        assert plan is not None
+        assert plan["analysis"] == "upgrade React"
+        assert len(plan["plan"]) == 1
+        assert usage["input_tokens"] == 500
+
+
+@pytest.mark.asyncio
+async def test_plan_task_no_key_returns_none():
+    plan, usage = await _plan_task_with_llm(
+        "u1", "r1", "test/repo", {}, FAKE_TASK, api_key="", model="m",
+    )
+    assert plan is None
+    assert usage["input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_build_task_with_llm_uses_plan_context():
+    """Opus builder should receive Sonnet's plan in its input."""
+    code_json = '{"thinking":["step1"],"changes":[{"file":"pkg.json","action":"modify","description":"bump","before_snippet":"17","after_snippet":"18"}],"warnings":[],"verification_steps":["test"],"status":"proposed"}'
+    fake_plan = {"analysis": "upgrade React", "plan": []}
+
+    with patch("app.services.upgrade_executor.chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = {
+            "text": code_json,
+            "usage": {"input_tokens": 800, "output_tokens": 400},
+        }
+        result, usage = await _build_task_with_llm(
+            "u1", "r1", "test/repo", {}, FAKE_TASK, fake_plan,
+            api_key="sk-test", model="claude-opus-4-6",
+        )
+        assert result is not None
+        assert result["status"] == "proposed"
+        assert len(result["changes"]) == 1
+        assert usage["input_tokens"] == 800
+
+        # Verify the plan context was included in the call
+        call_args = mock_chat.call_args
+        msg_content = call_args[1]["messages"][0]["content"]
+        assert "planner_analysis" in msg_content
+
+
+@pytest.mark.asyncio
+async def test_build_task_no_key_returns_none():
+    result, usage = await _build_task_with_llm(
+        "u1", "r1", "test/repo", {}, FAKE_TASK, None,
+        api_key="", model="m",
+    )
+    assert result is None

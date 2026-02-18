@@ -262,7 +262,7 @@ async def get_upgrade_preview(
                 "effort": t.get("effort", "medium"),
                 "forge_automatable": t.get("forge_automatable", False),
                 "category": t.get("category", ""),
-                "worker": "sonnet",
+                "worker": "sonnet",  # initial assignment — Sonnet plans first
             }
             for i, t in enumerate(tasks)
         ],

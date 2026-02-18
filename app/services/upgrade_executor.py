@@ -4,10 +4,11 @@ Accepts a renovation plan (from upgrade_service) and executes migration
 tasks using a role-based architecture:
 
 - **Sonnet (Key 1)** — ``anthropic_api_key`` + ``LLM_PLANNER_MODEL``
-  Analyses migration tasks (planning/proposing changes).  Tokens
-  tracked under the ``sonnet`` bucket.
-- **Opus (Key 1)** — ``LLM_BUILDER_MODEL`` (reserved for ``build_service``)
-  Not used directly here; heavy code generation lives in the build flow.
+  Plans and analyses migration tasks.  Tokens tracked under the
+  ``sonnet`` bucket.
+- **Opus (Key 1)** — ``anthropic_api_key`` + ``LLM_BUILDER_MODEL``
+  Writes concrete code changes from Sonnet's plans.  Tokens tracked
+  under the ``opus`` bucket.  Runs in parallel with Sonnet (pipeline).
 - **Haiku (Key 2)** — ``anthropic_api_key_2`` + ``LLM_NARRATOR_MODEL``
   Non-blocking plain-English narrator (fires after key events).
 If only one key is available, narration is disabled but execution works.
@@ -261,7 +262,16 @@ def _apply_file_change(working_dir: str, change: dict) -> None:
             file_path.unlink()
     elif action == "modify":
         if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {rel_path}")
+            # Fall back to create if the file doesn't exist yet.
+            # The LLM may label a new-ish file as "modify" if it assumed
+            # the file already existed.
+            after = change.get("after_snippet", "")
+            if after:
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(after, encoding="utf-8")
+            else:
+                raise FileNotFoundError(f"File not found: {rel_path}")
+            return
         content = file_path.read_text(encoding="utf-8")
         before = change.get("before_snippet", "")
         after = change.get("after_snippet", "")
@@ -455,17 +465,44 @@ class _TokenAccumulator:
 # LLM prompts
 # ---------------------------------------------------------------------------
 
-_TASK_SYSTEM_PROMPT = """\
-You are ForgeGuard's Upgrade IDE assistant. You are executing a specific \
-migration task on a repository. You will receive the task details including \
-current state, target state, and step-by-step instructions.
+_PLANNER_SYSTEM_PROMPT = """\
+You are ForgeGuard's Upgrade Planner (Sonnet). You analyse migration tasks \
+and produce detailed implementation plans for the Code Builder.
 
-For each step, explain what you're doing, then describe the changes needed. \
-Think through implications carefully.
+Given a migration task with its current state, target state, and steps, \
+produce a thorough analysis of what needs to change and why.
 
 Respond with valid JSON matching this schema:
 {
-  "thinking": ["step-by-step reasoning about this migration..."],
+  "analysis": "concise summary of what this migration involves",
+  "plan": [
+    {
+      "file": "path/to/file",
+      "action": "modify" | "create" | "delete",
+      "description": "what needs to change and why",
+      "key_considerations": "gotchas or important notes"
+    }
+  ],
+  "risks": ["potential risks or complications"],
+  "verification_strategy": ["how to verify the migration worked"],
+  "implementation_notes": "detailed notes for the code builder"
+}
+
+Be thorough. Identify ALL files that need changing.
+Focus on the WHY and WHAT, not exact code.
+
+IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown code fences."""
+
+_BUILDER_SYSTEM_PROMPT = """\
+You are ForgeGuard's Code Builder (Opus). You take a migration plan from \
+the Planner and produce concrete, production-quality code changes.
+
+The Planner has already identified which files need to change and why. \
+Your job is to write the exact code.
+
+Respond with valid JSON matching this schema:
+{
+  "thinking": ["step-by-step reasoning about implementing each change"],
   "changes": [
     {
       "file": "path/to/file",
@@ -480,7 +517,7 @@ Respond with valid JSON matching this schema:
   "status": "proposed"
 }
 
-Be thorough but concise. Focus on concrete, actionable changes.
+Write production-quality code. Be thorough and precise with before/after snippets.
 
 IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown code fences."""
 
@@ -748,13 +785,18 @@ async def execute_upgrade(
             "No Anthropic API key available. Add your key in Settings."
         )
 
-    # Build Sonnet worker — upgrade analysis/planning goes through Sonnet
-    # (Opus is reserved for heavy code generation in build_service)
+    # Build workers — Sonnet plans, Opus codes (both use Key 1)
     sonnet_worker = _WorkerSlot(
         label="sonnet",
         api_key=key1,
         model=settings.LLM_PLANNER_MODEL,
         display="Sonnet",
+    )
+    opus_worker = _WorkerSlot(
+        label="opus",
+        api_key=key1,
+        model=settings.LLM_BUILDER_MODEL,
+        display="Opus",
     )
 
     # Narrator config — Key 2 powers Haiku narration (if available)
@@ -794,7 +836,8 @@ async def execute_upgrade(
     }
 
     asyncio.create_task(
-        _run_upgrade(uid, rid, run, results, plan, tasks, sonnet_worker,
+        _run_upgrade(uid, rid, run, results, plan, tasks,
+                     sonnet_worker, opus_worker,
                      narrator_key=narrator_key, narrator_model=narrator_model)
     )
 
@@ -804,7 +847,7 @@ async def execute_upgrade(
         "total_tasks": len(tasks),
         "repo_name": run.get("repo_name", ""),
         "narrator_enabled": narrator_enabled,
-        "workers": ["sonnet"],
+        "workers": ["sonnet", "opus"],
     }
 
 
@@ -820,11 +863,16 @@ async def _run_upgrade(
     results: dict,
     plan: dict,
     tasks: list[dict],
-    worker: _WorkerSlot,
+    sonnet_worker: _WorkerSlot,
+    opus_worker: _WorkerSlot,
     narrator_key: str = "",
     narrator_model: str = "",
 ) -> None:
-    """Background coroutine: Sonnet analyses tasks, Haiku narrates."""
+    """Background coroutine — pipelined dual-worker execution.
+
+    Sonnet plans task N+1 **in parallel** with Opus coding task N.
+    Haiku narrates (non-blocking) after each task completes.
+    """
     state = _active_upgrades[run_id]
     repo_name = run.get("repo_name", "unknown")
     stack_profile = results.get("stack_profile", {})
@@ -841,7 +889,7 @@ async def _run_upgrade(
                 "effort": t.get("effort", "medium"),
                 "forge_automatable": t.get("forge_automatable", False),
                 "category": t.get("category", ""),
-                "worker": "sonnet",
+                "worker": "sonnet",  # initial assignment — Sonnet plans first
             }
             for i, t in enumerate(tasks)
         ]
@@ -851,21 +899,34 @@ async def _run_upgrade(
             "repo_name": repo_name,
             "total_tasks": len(tasks),
             "narrator_enabled": narrator_enabled,
-            "workers": [{"label": worker.label, "model": worker.model, "display": worker.display}],
+            "workers": [
+                {"label": sonnet_worker.label, "model": sonnet_worker.model,
+                 "display": sonnet_worker.display},
+                {"label": opus_worker.label, "model": opus_worker.model,
+                 "display": opus_worker.display},
+            ],
             "tasks": task_descriptors,
         })
 
-        await _log(user_id, run_id, f"🚀 Forge IDE — Starting upgrade for {repo_name}", "system")
-        await _log(user_id, run_id, f"🤖 Sonnet analysing migration tasks", "system")
+        await _log(user_id, run_id,
+                    f"🚀 Forge IDE — Starting upgrade for {repo_name}", "system")
+        await _log(user_id, run_id,
+                    "🧠 Sonnet planning · Opus coding — running in parallel",
+                    "system")
         if narrator_enabled:
-            await _log(user_id, run_id, "🎙️ Haiku narrator active — plain-English commentary enabled", "system")
-        await _log(user_id, run_id, f"📋 {len(tasks)} migration task(s) queued", "system")
+            await _log(user_id, run_id,
+                        "🎙️ Haiku narrator active — plain-English commentary enabled",
+                        "system")
+        await _log(user_id, run_id,
+                    f"📋 {len(tasks)} migration task(s) queued", "system")
 
         executive = plan.get("executive_brief") or {}
         if executive.get("headline"):
-            await _log(user_id, run_id, f"📊 Assessment: {executive['headline']}", "info")
+            await _log(user_id, run_id,
+                        f"📊 Assessment: {executive['headline']}", "info")
         if executive.get("health_grade"):
-            await _log(user_id, run_id, f"🏥 Health grade: {executive['health_grade']}", "info")
+            await _log(user_id, run_id,
+                        f"🏥 Health grade: {executive['health_grade']}", "info")
 
         await asyncio.sleep(0.5)
 
@@ -880,129 +941,114 @@ async def _run_upgrade(
                 tokens=tokens,
             ))
 
-        async def _process_task(
+        # ── Helper: emit results for a completed task ────────────
+
+        async def _emit_task_results(
             task_index: int,
             task: dict,
+            plan_result: dict | None,
+            code_result: dict | None,
+            plan_usage: dict,
+            code_usage: dict,
         ) -> None:
-            """Process one migration task with the given worker."""
+            """Log + emit events for one completed task."""
             task_id = task.get("id", f"TASK-{task_index}")
-            task_name = f"{task.get('from_state', '?')} → {task.get('to_state', '?')}"
-            worker_tag = f"[{worker.display}]"
-
-            await _emit(user_id, "upgrade_task_start", {
-                "run_id": run_id,
-                "task_id": task_id,
-                "task_index": task_index,
-                "task_name": task_name,
-                "priority": task.get("priority", "medium"),
-                "category": task.get("category", ""),
-                "steps": task.get("steps", []),
-                "worker": worker.label,
-            })
-
-            await _log(user_id, run_id, "", "system")
-            await _log(
-                user_id, run_id,
-                f"━━━ {worker_tag} Task {task_index + 1}/{len(tasks)}: {task_name} ━━━",
-                "system",
-            )
-            await _log(user_id, run_id,
-                        f"Priority: {task.get('priority', '?')} | "
-                        f"Effort: {task.get('effort', '?')} | "
-                        f"Risk: {task.get('risk', '?')}", "info")
-            if task.get("rationale"):
-                await _log(user_id, run_id, f"Rationale: {task['rationale']}", "info")
-
-            steps = task.get("steps", [])
-            if steps:
-                await _log(user_id, run_id, "Planned steps:", "info")
-                for si, step in enumerate(steps):
-                    await _log(user_id, run_id, f"  {si + 1}. {step}", "info")
-
-            await asyncio.sleep(0.3)
-
-            await _log(user_id, run_id,
-                        f"🤖 {worker_tag} Analyzing with {worker.display}…", "thinking")
-
-            task_result, usage = await _analyze_task_with_llm(
-                user_id, run_id, repo_name, stack_profile, task,
-                api_key=worker.api_key,
-                model=worker.model,
+            task_name = (
+                f"{task.get('from_state', '?')} → {task.get('to_state', '?')}"
             )
 
-            # Accumulate tokens
-            inp = usage.get("input_tokens", 0)
-            out = usage.get("output_tokens", 0)
-            tokens.add(worker.label, inp, out)
+            # ─ Log Sonnet's analysis ─
+            if plan_result:
+                analysis = plan_result.get("analysis", "")
+                if analysis:
+                    await _log(user_id, run_id,
+                                f"🧠 [Sonnet] {analysis}", "thinking")
+                plan_files = plan_result.get("plan", [])
+                if plan_files:
+                    await _log(user_id, run_id,
+                                f"📋 [Sonnet] Identified {len(plan_files)} file(s) to change:",
+                                "info")
+                    for pf in plan_files:
+                        await _log(user_id, run_id,
+                                    f"  📄 {pf.get('file', '?')} — {pf.get('description', '')}",
+                                    "info")
+                for risk in plan_result.get("risks", []):
+                    await _log(user_id, run_id, f"  ⚠ [Sonnet] {risk}", "warn")
 
-            # Emit token tick
-            snap = tokens.snapshot()
-            await _emit(user_id, "upgrade_token_tick", {
-                "run_id": run_id,
-                **snap,
-            })
-
-            if task_result:
-                thinking = task_result.get("thinking", [])
+            # ─ Log Opus's code output ─
+            if code_result:
+                thinking = code_result.get("thinking", [])
                 for thought in thinking:
-                    await _log(user_id, run_id, f"💭 {worker_tag} {thought}", "thinking")
-                    await asyncio.sleep(0.12)
+                    await _log(user_id, run_id,
+                                f"💭 [Opus] {thought}", "thinking")
+                    await asyncio.sleep(0.08)
 
-                changes = task_result.get("changes", [])
+                changes = code_result.get("changes", [])
                 if changes:
                     await _log(user_id, run_id,
-                                f"📝 {worker_tag} {len(changes)} file change(s) proposed:", "system")
+                                f"📝 [Opus] {len(changes)} file change(s) proposed:",
+                                "system")
                     for change in changes:
-                        action_icon = {"modify": "✏️", "create": "➕", "delete": "🗑️"}.get(
-                            change.get("action", "modify"), "📄"
-                        )
+                        icon = {"modify": "✏️", "create": "➕",
+                                "delete": "🗑️"}.get(
+                            change.get("action", "modify"), "📄")
                         await _log(
                             user_id, run_id,
-                            f"  {action_icon} {change.get('file', '?')} — {change.get('description', '')}",
+                            f"  {icon} {change.get('file', '?')} — "
+                            f"{change.get('description', '')}",
                             "info",
                         )
                         await _emit(user_id, "upgrade_file_diff", {
                             "run_id": run_id,
                             "task_id": task_id,
-                            "worker": worker.label,
+                            "worker": "opus",
                             **change,
                         })
-                        await asyncio.sleep(0.08)
+                        await asyncio.sleep(0.05)
 
-                for warn in task_result.get("warnings", []):
-                    await _log(user_id, run_id, f"⚠️ {worker_tag} {warn}", "warn")
+                for warn in code_result.get("warnings", []):
+                    await _log(user_id, run_id, f"⚠️ [Opus] {warn}", "warn")
 
-                verifications = task_result.get("verification_steps", [])
+                verifications = code_result.get("verification_steps", [])
                 if verifications:
-                    await _log(user_id, run_id, f"✅ {worker_tag} Verification steps:", "info")
+                    await _log(user_id, run_id, "✅ [Opus] Verification:", "info")
                     for v in verifications:
                         await _log(user_id, run_id, f"  → {v}", "info")
 
+                n_changes = len(changes)
                 result_entry = {
                     "task_id": task_id,
                     "task_name": task_name,
                     "status": "proposed",
-                    "changes_count": len(changes),
-                    "worker": worker.label,
-                    "tokens": {"input": inp, "output": out},
-                    "llm_result": task_result,
+                    "changes_count": n_changes,
+                    "worker": "opus",
+                    "tokens": {
+                        "sonnet": plan_usage,
+                        "opus": code_usage,
+                    },
+                    "llm_result": code_result,
                 }
                 await _log(user_id, run_id,
-                            f"✅ {worker_tag} Task {task_id} complete — {len(changes)} changes proposed",
-                            "system")
+                            f"✅ Task {task_id} complete — "
+                            f"{n_changes} changes proposed", "system")
             else:
                 result_entry = {
                     "task_id": task_id,
                     "task_name": task_name,
                     "status": "skipped",
                     "changes_count": 0,
-                    "worker": worker.label,
-                    "tokens": {"input": inp, "output": out},
+                    "worker": "opus",
+                    "tokens": {
+                        "sonnet": plan_usage,
+                        "opus": code_usage,
+                    },
                 }
                 await _log(user_id, run_id,
-                            f"⏭️ {worker_tag} Task {task_id} skipped (no LLM result)", "warn")
+                            f"⏭️ Task {task_id} skipped (no result)",
+                            "warn")
 
-            # State update (sequential — no lock needed)
+            # State update
+            snap = tokens.snapshot()
             state["task_results"].append(result_entry)
             state["completed_tasks"] += 1
             state["tokens"] = snap
@@ -1013,61 +1059,214 @@ async def _run_upgrade(
                 "task_index": task_index,
                 "status": result_entry["status"],
                 "changes_count": result_entry["changes_count"],
-                "worker": worker.label,
-                "token_delta": {"input": inp, "output": out},
+                "worker": "opus",
+                "token_delta": {
+                    "sonnet": plan_usage,
+                    "opus": code_usage,
+                },
                 "token_cumulative": snap,
             })
 
-        # ── Sequential task execution (Opus) ─────────────────────
-        for task_index, task in enumerate(tasks):
-            # Check /stop
-            if state["_stop_flag"].is_set():
-                await _log(user_id, run_id,
-                           f"🛑 [{worker.display}] Stopped by user.", "system")
-                break
-            # Honour /pause — block until resumed
-            if not state["_pause_event"].is_set():
-                await _log(user_id, run_id,
-                           f"⏸️  [{worker.display}] Paused — waiting for /resume…",
-                           "system")
-                await state["_pause_event"].wait()
-                # After resume, re-check stop
+        # ── Pipelined dual-worker execution ──────────────────────
+        # Sonnet plans task N+1 while Opus codes task N.
+        #
+        # Time 0: [Sonnet] Plan Task 0
+        # Time 1: [Sonnet] Plan Task 1 ‖ [Opus] Code Task 0
+        # Time 2: [Sonnet] Plan Task 2 ‖ [Opus] Code Task 1
+        # …
+        # Time N:                         [Opus] Code Task N-1
+
+        # Phase 0: Sonnet plans the first task
+        if not tasks:
+            # Nothing to do — fall through to wrap-up
+            pass
+        else:
+            first_task = tasks[0]
+            first_id = first_task.get("id", "TASK-0")
+            first_name = (f"{first_task.get('from_state', '?')} → "
+                          f"{first_task.get('to_state', '?')}")
+
+            await _emit(user_id, "upgrade_task_start", {
+                "run_id": run_id,
+                "task_id": first_id,
+                "task_index": 0,
+                "task_name": first_name,
+                "priority": first_task.get("priority", "medium"),
+                "category": first_task.get("category", ""),
+                "steps": first_task.get("steps", []),
+                "worker": "sonnet",
+            })
+            await _log(user_id, run_id, "", "system")
+            await _log(user_id, run_id,
+                        f"━━━ Task 1/{len(tasks)}: {first_name} ━━━",
+                        "system")
+            await _log(user_id, run_id,
+                        f"🧠 [Sonnet] Planning task 1…", "thinking")
+
+            current_plan, plan_usage = await _plan_task_with_llm(
+                user_id, run_id, repo_name, stack_profile, first_task,
+                api_key=sonnet_worker.api_key, model=sonnet_worker.model,
+            )
+            p_in = plan_usage.get("input_tokens", 0)
+            p_out = plan_usage.get("output_tokens", 0)
+            tokens.add("sonnet", p_in, p_out)
+            await _emit(user_id, "upgrade_token_tick", {
+                "run_id": run_id, **tokens.snapshot()})
+
+            # Pipeline loop
+            for task_index in range(len(tasks)):
+                # Check /stop
                 if state["_stop_flag"].is_set():
+                    await _log(user_id, run_id,
+                                "🛑 Stopped by user.", "system")
                     break
-            await _process_task(task_index, task)
-            # Fire narration after each task (non-blocking)
-            if narrator_enabled:
-                task_name = f"{task.get('from_state', '?')} → {task.get('to_state', '?')}"
-                asyncio.create_task(_narrate(
-                    user_id, run_id,
-                    f"Just finished task {task_index + 1}/{len(tasks)}: '{task_name}'. "
-                    f"{state['completed_tasks']}/{len(tasks)} tasks done so far.",
-                    narrator_key=narrator_key, narrator_model=narrator_model,
-                    tokens=tokens,
-                ))
-            await asyncio.sleep(0.2)
+                # Honour /pause
+                if not state["_pause_event"].is_set():
+                    await _log(user_id, run_id,
+                                "⏸️  Paused — waiting for /resume…",
+                                "system")
+                    await state["_pause_event"].wait()
+                    if state["_stop_flag"].is_set():
+                        break
+
+                task = tasks[task_index]
+                task_id = task.get("id", f"TASK-{task_index}")
+                task_name = (f"{task.get('from_state', '?')} → "
+                             f"{task.get('to_state', '?')}")
+
+                # Announce Opus coding this task
+                await _log(user_id, run_id,
+                            f"⚡ [Opus] Writing code for task "
+                            f"{task_index + 1}…", "thinking")
+
+                # Build parallel coroutines
+                has_next = task_index + 1 < len(tasks)
+
+                async def _opus_code(
+                    _task: dict = task,
+                    _plan: dict | None = current_plan,
+                ) -> tuple[dict | None, dict]:
+                    return await _build_task_with_llm(
+                        user_id, run_id, repo_name, stack_profile,
+                        _task, _plan,
+                        api_key=opus_worker.api_key,
+                        model=opus_worker.model,
+                    )
+
+                async def _sonnet_plan_next(
+                    _next_task: dict,
+                    _next_idx: int,
+                ) -> tuple[dict | None, dict]:
+                    next_id = _next_task.get("id", f"TASK-{_next_idx}")
+                    next_name = (
+                        f"{_next_task.get('from_state', '?')} → "
+                        f"{_next_task.get('to_state', '?')}"
+                    )
+                    await _emit(user_id, "upgrade_task_start", {
+                        "run_id": run_id,
+                        "task_id": next_id,
+                        "task_index": _next_idx,
+                        "task_name": next_name,
+                        "priority": _next_task.get("priority", "medium"),
+                        "category": _next_task.get("category", ""),
+                        "steps": _next_task.get("steps", []),
+                        "worker": "sonnet",
+                    })
+                    await _log(user_id, run_id, "", "system")
+                    await _log(user_id, run_id,
+                                f"━━━ Task {_next_idx + 1}/{len(tasks)}: "
+                                f"{next_name} ━━━", "system")
+                    await _log(user_id, run_id,
+                                f"🧠 [Sonnet] Planning task "
+                                f"{_next_idx + 1}…", "thinking")
+                    return await _plan_task_with_llm(
+                        user_id, run_id, repo_name, stack_profile,
+                        _next_task,
+                        api_key=sonnet_worker.api_key,
+                        model=sonnet_worker.model,
+                    )
+
+                # Run Opus + (optionally) Sonnet in parallel
+                if has_next:
+                    next_task = tasks[task_index + 1]
+                    next_idx = task_index + 1
+                    (code_result, code_usage), (next_plan, next_plan_usage) = (
+                        await asyncio.gather(
+                            _opus_code(),
+                            _sonnet_plan_next(next_task, next_idx),
+                        )
+                    )
+                    # Track Sonnet tokens for next task's planning
+                    np_in = next_plan_usage.get("input_tokens", 0)
+                    np_out = next_plan_usage.get("output_tokens", 0)
+                    tokens.add("sonnet", np_in, np_out)
+                else:
+                    code_result, code_usage = await _opus_code()
+                    next_plan = None
+                    next_plan_usage = {"input_tokens": 0, "output_tokens": 0}
+
+                # Track Opus tokens
+                c_in = code_usage.get("input_tokens", 0)
+                c_out = code_usage.get("output_tokens", 0)
+                tokens.add("opus", c_in, c_out)
+
+                # Emit token tick
+                await _emit(user_id, "upgrade_token_tick", {
+                    "run_id": run_id, **tokens.snapshot()})
+
+                # Emit results for this task
+                await _emit_task_results(
+                    task_index, task, current_plan, code_result,
+                    plan_usage, code_usage,
+                )
+
+                # Advance pipeline — next plan becomes current
+                current_plan = next_plan
+                plan_usage = next_plan_usage
+
+                # Fire narration (non-blocking)
+                if narrator_enabled:
+                    asyncio.create_task(_narrate(
+                        user_id, run_id,
+                        f"Just finished task {task_index + 1}/{len(tasks)}: "
+                        f"'{task_name}'. "
+                        f"{state['completed_tasks']}/{len(tasks)} done.",
+                        narrator_key=narrator_key,
+                        narrator_model=narrator_model,
+                        tokens=tokens,
+                    ))
+                await asyncio.sleep(0.15)
 
         # ── Wrap up ──────────────────────────────────────────────
         was_stopped = state["_stop_flag"].is_set()
-        total_changes = sum(r.get("changes_count", 0) for r in state["task_results"])
-        proposed = sum(1 for r in state["task_results"] if r["status"] == "proposed")
-        skipped = sum(1 for r in state["task_results"] if r["status"] == "skipped")
+        total_changes = sum(
+            r.get("changes_count", 0) for r in state["task_results"])
+        proposed = sum(
+            1 for r in state["task_results"] if r["status"] == "proposed")
+        skipped = sum(
+            1 for r in state["task_results"] if r["status"] == "skipped")
         final_tokens = tokens.snapshot()
 
         await _log(user_id, run_id, "", "system")
-        await _log(user_id, run_id, "━━━ Upgrade Analysis Complete ━━━", "system")
         await _log(user_id, run_id,
-                    f"📊 {proposed} task(s) analysed, {skipped} skipped", "system")
+                    "━━━ Upgrade Analysis Complete ━━━", "system")
         await _log(user_id, run_id,
-                    f"📝 {total_changes} total file changes proposed", "system")
+                    f"📊 {proposed} task(s) analysed, {skipped} skipped",
+                    "system")
         await _log(user_id, run_id,
-                    f"⚡ Tokens used — Opus: {_fmt_tokens(final_tokens['opus']['total'])} | "
+                    f"📝 {total_changes} total file changes proposed",
+                    "system")
+        await _log(user_id, run_id,
+                    f"⚡ Tokens used — "
+                    f"Sonnet: {_fmt_tokens(final_tokens['sonnet']['total'])} | "
+                    f"Opus: {_fmt_tokens(final_tokens['opus']['total'])} | "
                     f"Haiku: {_fmt_tokens(final_tokens['haiku']['total'])} | "
                     f"Total: {_fmt_tokens(final_tokens['total'])}",
                     "system")
         if was_stopped:
             await _log(user_id, run_id,
-                        "🛑 Execution was stopped by user before all tasks completed.", "system")
+                        "🛑 Execution was stopped by user before all "
+                        "tasks completed.", "system")
         await _log(
             user_id, run_id,
             "💡 Review the proposed changes above. In a future release, "
@@ -1102,7 +1301,9 @@ async def _run_upgrade(
     except Exception:
         logger.exception("Upgrade execution %s failed", run_id)
         state["status"] = "error"
-        await _log(user_id, run_id, "❌ Upgrade execution failed with an unexpected error", "error")
+        await _log(user_id, run_id,
+                    "❌ Upgrade execution failed with an unexpected error",
+                    "error")
         await _emit(user_id, "upgrade_complete", {
             "run_id": run_id,
             "status": "error",
@@ -1110,12 +1311,15 @@ async def _run_upgrade(
         })
     finally:
         state["current_task"] = None
-        # Clean up cloned workspace
+        # NOTE: Do NOT clean up working_dir here — the user may still
+        # want to /push.  Cleanup happens when the session expires or
+        # after a successful push.
+        await asyncio.sleep(600)
+        # Clean up workspace on session expiry
         wd = state.get("working_dir")
         if wd:
             parent = str(Path(wd).parent)
             shutil.rmtree(parent, ignore_errors=True)
-        await asyncio.sleep(300)
         _active_upgrades.pop(run_id, None)
 
 
@@ -1129,11 +1333,11 @@ def _fmt_tokens(n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM task analysis
+# LLM functions — Planner (Sonnet) + Builder (Opus)
 # ---------------------------------------------------------------------------
 
 
-async def _analyze_task_with_llm(
+async def _plan_task_with_llm(
     user_id: str,
     run_id: str,
     repo_name: str,
@@ -1143,12 +1347,12 @@ async def _analyze_task_with_llm(
     api_key: str,
     model: str,
 ) -> tuple[dict | None, dict]:
-    """Use LLM to analyze a migration task and propose concrete changes.
+    """Sonnet analyses a migration task and produces an implementation plan.
 
-    Returns ``(parsed_result | None, usage_dict)``.
+    Returns ``(plan_dict | None, usage_dict)``.
     """
     if not api_key:
-        await _log(user_id, run_id, "No API key configured — skipping LLM analysis", "warn")
+        await _log(user_id, run_id, "No API key — skipping planning", "warn")
         return None, {"input_tokens": 0, "output_tokens": 0}
 
     user_msg = json.dumps({
@@ -1170,24 +1374,82 @@ async def _analyze_task_with_llm(
         result = await chat(
             api_key=api_key,
             model=model,
-            system_prompt=_TASK_SYSTEM_PROMPT,
+            system_prompt=_PLANNER_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=4096,
             provider="anthropic",
         )
-
-        # Extract usage
         usage = (result.get("usage", {}) if isinstance(result, dict)
                  else {"input_tokens": 0, "output_tokens": 0})
-
-        text: str = result["text"] if isinstance(result, dict) else str(result)  # type: ignore[index]
+        text: str = result["text"] if isinstance(result, dict) else str(result)
         text = _strip_codeblock(text)
-
         return json.loads(text), usage
     except Exception as exc:
-        logger.exception("LLM task analysis failed for %s", task.get("id"))
+        logger.exception("Sonnet planning failed for %s", task.get("id"))
         short = str(exc)[:200]
-        await _log(user_id, run_id, f"LLM analysis failed for task {task.get('id')}: {short}", "error")
+        await _log(user_id, run_id,
+                   f"Planning failed for task {task.get('id')}: {short}", "error")
+        return None, {"input_tokens": 0, "output_tokens": 0}
+
+
+async def _build_task_with_llm(
+    user_id: str,
+    run_id: str,
+    repo_name: str,
+    stack_profile: dict,
+    task: dict,
+    plan: dict | None,
+    *,
+    api_key: str,
+    model: str,
+) -> tuple[dict | None, dict]:
+    """Opus writes concrete code changes from Sonnet's plan.
+
+    Returns ``(code_result | None, usage_dict)``.
+    """
+    if not api_key:
+        await _log(user_id, run_id, "No API key — skipping build", "warn")
+        return None, {"input_tokens": 0, "output_tokens": 0}
+
+    # Combine task details with Sonnet's plan for richer context
+    payload: dict = {
+        "repository": repo_name,
+        "stack": stack_profile,
+        "migration": {
+            "id": task.get("id"),
+            "from_state": task.get("from_state"),
+            "to_state": task.get("to_state"),
+            "category": task.get("category"),
+            "rationale": task.get("rationale"),
+            "steps": task.get("steps", []),
+            "effort": task.get("effort"),
+            "risk": task.get("risk"),
+        },
+    }
+    if plan:
+        payload["planner_analysis"] = plan
+
+    user_msg = json.dumps(payload, indent=2)
+
+    try:
+        result = await chat(
+            api_key=api_key,
+            model=model,
+            system_prompt=_BUILDER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+            max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
+            provider="anthropic",
+        )
+        usage = (result.get("usage", {}) if isinstance(result, dict)
+                 else {"input_tokens": 0, "output_tokens": 0})
+        text: str = result["text"] if isinstance(result, dict) else str(result)
+        text = _strip_codeblock(text)
+        return json.loads(text), usage
+    except Exception as exc:
+        logger.exception("Opus build failed for %s", task.get("id"))
+        short = str(exc)[:200]
+        await _log(user_id, run_id,
+                   f"Build failed for task {task.get('id')}: {short}", "error")
         return None, {"input_tokens": 0, "output_tokens": 0}
 
 
