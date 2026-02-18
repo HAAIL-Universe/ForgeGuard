@@ -340,7 +340,7 @@
 
 ---
 
-## R9 — WebSocket Reliability
+## R9 — WebSocket Reliability ✅
 
 > Server heartbeat, client backoff, connection governance.
 

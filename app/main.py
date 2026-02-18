@@ -20,6 +20,7 @@ from app.api.routers.ws import router as ws_router
 from app.clients import github_client, llm_client
 from app.config import settings
 from app.errors import ForgeError
+from app.middleware import RequestIDMiddleware
 from app.repos.db import close_pool, get_pool
 from app.ws_manager import manager as ws_manager
 
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Application lifespan: startup and shutdown hooks."""
+    # Configure root log level from settings
+    logging.basicConfig(
+        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+    )
     if "pytest" not in sys.modules:
         await get_pool()  # fail-fast if DB unreachable
     await ws_manager.start_heartbeat()
@@ -83,6 +89,7 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=404, content={"detail": detail})
         return JSONResponse(status_code=400, content={"detail": detail})
 
+    application.add_middleware(RequestIDMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.FRONTEND_URL],
