@@ -1,113 +1,100 @@
 """Application configuration loaded from environment variables.
 
-Validates required settings on import -- fails fast if critical vars are missing.
+Uses ``pydantic-settings`` for automatic env-var loading, type coercion,
+and ``.env`` file support.  Validates required settings on import — fails
+fast if critical vars are missing outside of tests.
 """
 
 VERSION = "0.1.0"
 
-import os
 import sys
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-
-class _MissingVars(Exception):
-    """Raised when required environment variables are absent."""
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _require(name: str) -> str:
-    """Return env var value or record it as missing."""
-    val = os.getenv(name, "")
-    if not val:
-        _missing.append(name)
-    return val
+# ---------------------------------------------------------------------------
+# Required var names — checked after instantiation (not during), so tests
+# that leave them blank still work.
+# ---------------------------------------------------------------------------
+_REQUIRED_VARS: list[str] = [
+    "DATABASE_URL",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "GITHUB_WEBHOOK_SECRET",
+    "JWT_SECRET",
+]
 
 
-_missing: list[str] = []
-
-
-class Settings:
-    """Application settings from environment.
+class Settings(BaseSettings):
+    """Application settings — sourced from environment / ``.env`` file.
 
     Required vars (must be set in production, may be blank in test):
       DATABASE_URL, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET,
       GITHUB_WEBHOOK_SECRET, JWT_SECRET
     """
 
-    DATABASE_URL: str = _require("DATABASE_URL")
-    GITHUB_CLIENT_ID: str = _require("GITHUB_CLIENT_ID")
-    GITHUB_CLIENT_SECRET: str = _require("GITHUB_CLIENT_SECRET")
-    GITHUB_WEBHOOK_SECRET: str = _require("GITHUB_WEBHOOK_SECRET")
-    JWT_SECRET: str = _require("JWT_SECRET")
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5174")
-    APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
-    DEBUG: bool = os.getenv("DEBUG", "true").lower() in ("1", "true", "yes")
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LLM_QUESTIONNAIRE_MODEL: str = os.getenv(
-        "LLM_QUESTIONNAIRE_MODEL", "claude-sonnet-4-5"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "")  # "openai" | "anthropic" | auto
-    LLM_BUILDER_MODEL: str = os.getenv(
-        "LLM_BUILDER_MODEL", "claude-opus-4-6"
-    )
-    LLM_PLANNER_MODEL: str = os.getenv(
-        "LLM_PLANNER_MODEL", "claude-sonnet-4-5"
-    )
-    PAUSE_THRESHOLD: int = int(os.getenv("PAUSE_THRESHOLD", "3"))
-    BUILD_PAUSE_TIMEOUT_MINUTES: int = int(
-        os.getenv("BUILD_PAUSE_TIMEOUT_MINUTES", "30")
-    )
-    PHASE_TIMEOUT_MINUTES: int = int(
-        os.getenv("PHASE_TIMEOUT_MINUTES", "10")
-    )
-    LARGE_FILE_WARN_BYTES: int = int(
-        os.getenv("LARGE_FILE_WARN_BYTES", str(1024 * 1024))
-    )
-    GIT_PUSH_MAX_RETRIES: int = int(
-        os.getenv("GIT_PUSH_MAX_RETRIES", "3")
-    )
+
+    # -- required in production (default empty so tests don't fail) --
+    DATABASE_URL: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+    GITHUB_WEBHOOK_SECRET: str = ""
+    JWT_SECRET: str = ""
+
+    # -- optional with sensible defaults --
+    FRONTEND_URL: str = "http://localhost:5174"
+    APP_URL: str = "http://localhost:8000"
+    DEBUG: bool = True
+    LOG_LEVEL: str = "INFO"
+
+    LLM_QUESTIONNAIRE_MODEL: str = "claude-sonnet-4-5"
+    ANTHROPIC_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o"
+    LLM_PROVIDER: str = ""  # "openai" | "anthropic" | auto
+    LLM_BUILDER_MODEL: str = "claude-opus-4-6"
+    LLM_PLANNER_MODEL: str = "claude-sonnet-4-5"
+
+    PAUSE_THRESHOLD: int = Field(default=3, ge=1)
+    BUILD_PAUSE_TIMEOUT_MINUTES: int = 30
+    PHASE_TIMEOUT_MINUTES: int = 10
+    LARGE_FILE_WARN_BYTES: int = 1_048_576  # 1 MiB
+    GIT_PUSH_MAX_RETRIES: int = 3
+
     # Anthropic per-minute token limits (Build tier for Opus).
     # These cover fresh input + cache-creation tokens only (cache reads
     # are NOT rate-limited).  Set via env vars to match your API tier.
-    ANTHROPIC_INPUT_TPM: int = int(
-        os.getenv("ANTHROPIC_INPUT_TPM", "80000")
-    )
-    ANTHROPIC_OUTPUT_TPM: int = int(
-        os.getenv("ANTHROPIC_OUTPUT_TPM", "16000")
-    )
-    LLM_BUILDER_MAX_TOKENS: int = int(
-        os.getenv("LLM_BUILDER_MAX_TOKENS", "16384")
-    )
+    ANTHROPIC_INPUT_TPM: int = 80_000
+    ANTHROPIC_OUTPUT_TPM: int = 16_000
+    LLM_BUILDER_MAX_TOKENS: int = 16_384
+
     # Build mode: "plan_execute" (new) or "conversation" (legacy)
-    BUILD_MODE: str = os.getenv("BUILD_MODE", "plan_execute")
+    BUILD_MODE: str = "plan_execute"
     # Server-level hard cost cap (USD) applied when the user has no
     # personal spend cap configured.  Set to 0 to disable.
-    BUILD_MAX_COST_USD: float = float(
-        os.getenv("BUILD_MAX_COST_USD", "50.00")
-    )
+    BUILD_MAX_COST_USD: float = 50.00
     # Percentage of the effective spend cap at which a warning is sent
     # to the frontend via WebSocket.
-    BUILD_COST_WARN_PCT: int = int(
-        os.getenv("BUILD_COST_WARN_PCT", "80")
-    )
+    BUILD_COST_WARN_PCT: int = 80
     # How often (in seconds) the backend broadcasts a cost_ticker WS event.
-    BUILD_COST_TICKER_INTERVAL: int = int(
-        os.getenv("BUILD_COST_TICKER_INTERVAL", "5")
-    )
+    BUILD_COST_TICKER_INTERVAL: int = 5
 
-
-# Validate at import time -- but only when NOT running under pytest.
-if _missing and "pytest" not in sys.modules:
-    print(
-        f"[config] FATAL: missing required environment variables: "
-        f"{', '.join(_missing)}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
 
 settings = Settings()
+
+# Validate at import time — but only when NOT running under pytest.
+if "pytest" not in sys.modules:
+    _missing = [v for v in _REQUIRED_VARS if not getattr(settings, v)]
+    if _missing:
+        print(
+            f"[config] FATAL: missing required environment variables: "
+            f"{', '.join(_missing)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
