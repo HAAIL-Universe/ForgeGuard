@@ -151,4 +151,4 @@ class TestBuilderPrompt:
         assert "human operator" in _BUILDER_SYSTEM_PROMPT
 
     def test_prompt_forbids_silent_additions(self):
-        assert "do NOT silently add" in _BUILDER_SYSTEM_PROMPT
+        assert "Do NOT silently add files" in _BUILDER_SYSTEM_PROMPT

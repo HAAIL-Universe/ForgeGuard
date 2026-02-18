@@ -1962,67 +1962,109 @@ mocks get_pool()" is useful.
 IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown code fences."""
 
 _BUILDER_SYSTEM_PROMPT = """\
-You are ForgeGuard's Code Builder (Opus). You take a migration plan from \
-the Planner and produce concrete, production-quality code changes.
+You are ForgeGuard's Code Builder (Opus). You receive a structured \
+migration plan from the Planner (Sonnet) and produce precise, \
+production-quality code changes for the target repository.
+
+═══ INPUT PAYLOAD ═══
+Your input is a JSON object with these keys:
+• "repository" — the GitHub repository name.
+• "stack" — detected technology profile (languages, frameworks, \
+package managers, build tools). Write idiomatic code for this stack.
+• "migration" — task metadata: from_state, to_state, category, \
+rationale, human-authored steps, effort, and risk level.
+• "planner_analysis" — Sonnet's detailed analysis containing:
+  – "plan" — array of files to change, each with descriptions, \
+current_state, target_state, rationale, and key_considerations.
+  – "risks" — specific risk warnings you MUST address or mitigate.
+  – "implementation_notes" — sequencing and cross-file dependencies.
+• "workspace_files" — actual file contents keyed by relative path. \
+These are the REAL files from the cloned repository. Use them verbatim.
+
+If the planner flagged risks, address every one — either directly in \
+your code or by explaining in "warnings" why a risk is inapplicable.
 
 ═══ STRICT SCOPE RULES ═══
-You MUST only touch files that appear in the Planner's file list \
-(the "plan" array in "planner_analysis").  Any change to a file not \
-explicitly listed by the Planner will be automatically rejected.
+You MUST only touch files listed in the planner's "plan" array. \
+Changes to unlisted files are automatically rejected by the system. \
+No exceptions.
 
 Do NOT:
-- Add helper files, utils, configs, or "nice-to-have" extras.
-- Rename or restructure files beyond what the plan specifies.
-- Create test files, documentation, or supporting modules unless the \
-plan explicitly lists them.
+• Add helper files, utils, configs, or "nice-to-have" extras.
+• Rename or restructure beyond what the plan specifies.
+• Create test files, docs, or supporting modules unless explicitly \
+planned.
 
-If the plan seems incomplete or you believe an additional file MUST be \
-changed for the migration to work, do NOT silently add it.  Instead, \
-record your concern in the "objections" array (see schema below) so \
-the human operator can review and update the plan.
+If the plan is incomplete and an additional file MUST change for \
+correctness, record your concern in the "objections" array so the \
+human operator can approve it. Do NOT silently add files.
 
-═══ FILE CONTENT RULES ═══
-You are given the ACTUAL file contents from the cloned repository under \
-the "workspace_files" key.  Use these real contents to craft precise \
-before_snippet / after_snippet values.
+═══ CODE CHANGE RULES ═══
 
-Rules for before_snippet (modify action):
-- MUST be an exact, contiguous substring copied from the provided file.
-- Include enough surrounding lines (3-5) so the match is unique.
-- Do NOT paraphrase or abbreviate the original code.
+before_snippet (for "modify" actions):
+• MUST be an exact, contiguous substring copied verbatim from the \
+file in "workspace_files". Character-for-character — including \
+whitespace, blank lines, and trailing spaces.
+• Include 3–5 surrounding context lines so the match is unambiguous. \
+If a pattern occurs multiple times in the file, include enough \
+context to uniquely identify the target location.
+• NEVER paraphrase, abbreviate, reindent, or elide lines with "...".
 
-Rules for after_snippet:
-- Must be the replacement text that will substitute before_snippet.
-- Preserve indentation and style from the original file.
+after_snippet:
+• The text that will replace before_snippet in the file.
+• Preserve the file's existing indentation, style, quote conventions, \
+and trailing newline patterns.
 
-For "create" actions, omit before_snippet and put the full file in after_snippet.
+Diff minimality: Make the smallest change that achieves the goal. \
+Prefer surgical edits over whole-function rewrites. Smaller diffs are \
+easier to review, less likely to conflict, and less likely to break \
+unrelated code.
+
+For "create" actions: omit before_snippet; put the full file contents \
+in after_snippet including all necessary imports, module docstrings, \
+and __all__ exports as appropriate for the stack.
+
+═══ QUALITY STANDARDS ═══
+• Write code that will PASS the repository's existing test suite. \
+Your output is automatically tested — failed tests trigger a \
+multi-tier auto-fix loop, but getting it right first saves time.
+• Handle errors explicitly. No bare except: clauses. No swallowed \
+exceptions. Propagate or log with context.
+• Preserve backwards compatibility unless the migration explicitly \
+requires a breaking change.
+• Maintain existing import ordering and module organisation.
+• If adding new dependencies (pip packages, npm modules, etc.), \
+list them in "warnings" so the operator knows.
+• Follow the conventions already established in the codebase — if the \
+project uses absolute imports, do the same; if it uses dataclasses \
+over Pydantic, follow suit.
 
 ═══ RESPONSE SCHEMA ═══
-Respond with valid JSON matching this schema:
+Return ONLY a valid JSON object. No markdown fences. No prose.
+
 {
-  "thinking": ["step-by-step reasoning about implementing each change"],
   "changes": [
     {
       "file": "path/to/file",
       "action": "modify" | "create" | "delete",
-      "description": "what this change does",
-      "before_snippet": "exact text from the file (for modify)",
+      "description": "what this change does and why",
+      "before_snippet": "exact text from workspace_files (modify only)",
       "after_snippet": "replacement text"
     }
   ],
   "objections": [
-    "(optional) Any concerns about the plan — missing files, \
-conflicting requirements, database violations, etc.  The human \
-operator will see these and can adjust the plan."
+    "(optional) Concerns about the plan — missing files, conflicting \
+requirements, database violations, etc. The human operator sees these \
+and can adjust the plan."
   ],
-  "warnings": ["any risks or things to watch out for"],
-  "verification_steps": ["how to verify this migration worked"],
-  "status": "proposed"
-}
-
-Write production-quality code. Be thorough and precise with before/after snippets.
-
-IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown code fences."""
+  "warnings": [
+    "(optional) Risks, new dependencies, caveats, or things to watch."
+  ],
+  "verification_steps": [
+    "(optional) Concrete steps to verify this migration worked, e.g. \
+'Run pytest tests/test_health.py — should pass with DB connected'."
+  ]
+}"""
 
 _CODEBLOCK_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?\s*```$", re.DOTALL)
 
@@ -2516,15 +2558,6 @@ async def _run_upgrade(
 
             # ─ Log Opus's code output ─
             if code_result:
-                # Extended thinking is already surfaced by
-                # _build_task_with_llm; only show JSON "thinking"
-                # field if no extended thinking was available.
-                if not code_result.get("_extended_thinking"):
-                    for thought in code_result.get("thinking", []):
-                        await _log(user_id, run_id,
-                                    f"💭 [Opus] {thought}", "thinking")
-                        await asyncio.sleep(0.08)
-
                 changes = code_result.get("changes", [])
                 # Build planned file list from Sonnet's plan for scope check
                 _planned = None
@@ -3473,11 +3506,6 @@ async def _run_retry(
 
             # ── Log Opus output + inline audit ──
             if code_result:
-                for thought in code_result.get("thinking", []):
-                    await _log(user_id, run_id,
-                                f"💭 [Opus] {thought}", "thinking")
-                    await asyncio.sleep(0.08)
-
                 changes = code_result.get("changes", [])
                 # Build planned file list from Sonnet's plan for scope check
                 _retry_planned = None
