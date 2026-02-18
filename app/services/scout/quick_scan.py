@@ -232,6 +232,8 @@ async def get_scout_detail(
     run_id: UUID,
 ) -> dict:
     """Get full detail for a scout run."""
+    from .deep_scan import get_deep_scan_progress
+
     run = await get_scout_run(run_id)
     if run is None or str(run["user_id"]) != str(user_id):
         raise ValueError("Scout run not found")
@@ -247,5 +249,9 @@ async def get_scout_detail(
         result["warnings"] = results_data.get("warnings", [])
         result["files_analysed"] = results_data.get("files_analysed", 0)
         result["hypothesis"] = results_data.get("hypothesis")
+
+    # For running deep scans, include step progress so polling can update UI
+    if result.get("scan_type") == "deep" and result.get("status") == "running":
+        result["deep_steps"] = get_deep_scan_progress(run_id)
 
     return result

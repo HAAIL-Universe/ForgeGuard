@@ -19,6 +19,14 @@ from app.services.upgrade_service import (
     generate_renovation_plan,
     get_renovation_plan,
 )
+from app.services.upgrade_executor import (
+    execute_upgrade,
+    get_available_commands,
+    get_upgrade_status,
+    send_command,
+    set_narrator_watching,
+)
+from app.repos.user_repo import get_user_by_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scout", tags=["scout"])
@@ -37,6 +45,10 @@ class UpgradePlanRequest(BaseModel):
     include_llm: bool = True
 
 
+class UpgradeCommandRequest(BaseModel):
+    command: str = Field(..., min_length=1, max_length=200)
+
+
 @router.post("/{repo_id}/run")
 async def trigger_scout(
     repo_id: UUID,
@@ -44,11 +56,22 @@ async def trigger_scout(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Trigger an on-demand Scout run against a connected repo."""
-    return await start_scout_run(
-        current_user["id"],
-        repo_id,
-        hypothesis=body.hypothesis if body else None,
-    )
+    try:
+        return await start_scout_run(
+            current_user["id"],
+            repo_id,
+            hypothesis=body.hypothesis if body else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
+        ) from exc
+    except Exception:
+        logger.exception("Scout quick-scan trigger failed for repo %s", repo_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start scout scan",
+        )
 
 
 @router.post("/{repo_id}/deep-scan")
@@ -58,12 +81,23 @@ async def trigger_deep_scan(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Trigger a deep-scan Scout run for full project intelligence."""
-    return await start_deep_scan(
-        current_user["id"],
-        repo_id,
-        hypothesis=body.hypothesis if body else None,
-        include_llm=body.include_llm if body else True,
-    )
+    try:
+        return await start_deep_scan(
+            current_user["id"],
+            repo_id,
+            hypothesis=body.hypothesis if body else None,
+            include_llm=body.include_llm if body else True,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
+        ) from exc
+    except Exception:
+        logger.exception("Scout deep-scan trigger failed for repo %s", repo_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start deep scan",
+        )
 
 
 @router.get("/history")
@@ -131,11 +165,22 @@ async def trigger_upgrade_plan(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Generate an Upgrade / Renovation Plan for a completed deep-scan run."""
-    return await generate_renovation_plan(
-        current_user["id"],
-        run_id,
-        include_llm=body.include_llm if body else True,
-    )
+    try:
+        return await generate_renovation_plan(
+            current_user["id"],
+            run_id,
+            include_llm=body.include_llm if body else True,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
+        ) from exc
+    except Exception:
+        logger.exception("Upgrade plan generation failed for run %s", run_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate upgrade plan",
+        )
 
 
 @router.get("/runs/{run_id}/upgrade-plan")
@@ -151,3 +196,99 @@ async def get_upgrade_plan(
             detail="No upgrade plan available for this run. Generate one first.",
         )
     return plan
+
+
+@router.post("/runs/{run_id}/execute-upgrade")
+async def trigger_execute_upgrade(
+    run_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Start executing upgrade tasks from a renovation plan."""
+    try:
+        # Load user record to extract BYOK keys
+        user = await get_user_by_id(current_user["id"])
+        api_key = (user or {}).get("anthropic_api_key") or ""
+        api_key_2 = (user or {}).get("anthropic_api_key_2") or ""
+
+        return await execute_upgrade(
+            current_user["id"],
+            run_id,
+            api_key=api_key,
+            api_key_2=api_key_2,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
+        ) from exc
+    except Exception:
+        logger.exception("Upgrade execution failed for run %s", run_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start upgrade execution",
+        )
+
+
+@router.get("/runs/{run_id}/upgrade-status")
+async def get_upgrade_execution_status(
+    run_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Get current upgrade execution status (polling fallback)."""
+    st = get_upgrade_status(str(run_id))
+    if st is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active upgrade execution for this run",
+        )
+    return {
+        "run_id": st["run_id"],
+        "status": st["status"],
+        "total_tasks": st["total_tasks"],
+        "completed_tasks": st["completed_tasks"],
+        "current_task": st["current_task"],
+        "repo_name": st.get("repo_name", ""),
+        "narrator_enabled": st.get("narrator_enabled", False),
+        "narrator_watching": st.get("narrator_watching", False),
+        "tokens": st.get("tokens", {}),
+        "started_at": st.get("started_at"),
+        "completed_at": st.get("completed_at"),
+        "logs": st.get("logs", [])[-50:],  # last 50 log entries
+    }
+
+
+@router.post("/runs/{run_id}/command")
+async def send_upgrade_command(
+    run_id: UUID,
+    body: UpgradeCommandRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Send a slash command to a running upgrade session."""
+    result = await send_command(
+        str(current_user["id"]), str(run_id), body.command,
+    )
+    return result
+
+
+@router.post("/runs/{run_id}/narrator")
+async def toggle_narrator(
+    run_id: UUID,
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Toggle narrator watching on/off for a running upgrade session."""
+    watching = bool(body.get("watching", False))
+    found = set_narrator_watching(str(run_id), watching)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active upgrade execution for this run",
+        )
+    return {"narrator_watching": watching}
+
+
+@router.get("/upgrade-commands")
+async def list_upgrade_commands(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Return available slash commands for IDE autocomplete."""
+    return {"commands": get_available_commands()}

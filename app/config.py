@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = ""  # "openai" | "anthropic" | auto
     LLM_BUILDER_MODEL: str = "claude-opus-4-6"
     LLM_PLANNER_MODEL: str = "claude-sonnet-4-5"
+    LLM_NARRATOR_MODEL: str = "claude-3-5-haiku-20241022"
 
     PAUSE_THRESHOLD: int = Field(default=3, ge=1)
     BUILD_PAUSE_TIMEOUT_MINUTES: int = 30

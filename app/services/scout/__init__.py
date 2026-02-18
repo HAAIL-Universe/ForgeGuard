@@ -21,6 +21,7 @@ from .deep_scan import (
     _execute_deep_scan,
     _select_key_files,
     _send_deep_progress,
+    get_deep_scan_progress,
     start_deep_scan,
 )
 from .dossier_builder import (
@@ -50,6 +51,7 @@ __all__ = [
     "_execute_deep_scan",
     "_complete_deep_scan_empty",
     "_select_key_files",
+    "get_deep_scan_progress",
     "_DEEP_SCAN_MAX_FILES",
     "_DEEP_SCAN_MAX_BYTES",
     "_KEY_FILENAMES",

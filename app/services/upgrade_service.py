@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from app.clients.llm_client import chat
-from app.config import Settings
+from app.config import settings
 from app.repos.scout_repo import get_scout_run, update_scout_run
 from app.services.migration_advisor import recommend_migrations
 from app.services.pattern_analyzer import analyze_patterns
@@ -249,7 +249,7 @@ async def generate_renovation_plan(
 
     # ── 5. LLM executive brief (optional) ────────────────────────
     executive_brief = None
-    if include_llm and Settings.ANTHROPIC_API_KEY:
+    if include_llm and settings.ANTHROPIC_API_KEY:
         executive_brief = await _generate_executive_brief(
             version_report, pattern_findings, migration_recs, summary_stats,
         )
@@ -339,8 +339,8 @@ async def _generate_executive_brief(
         }, indent=2)
 
         result = await chat(
-            api_key=Settings.ANTHROPIC_API_KEY,
-            model=Settings.LLM_PLANNER_MODEL,
+            api_key=settings.ANTHROPIC_API_KEY,
+            model=settings.LLM_PLANNER_MODEL,
             system_prompt=_RENOVATION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=1024,

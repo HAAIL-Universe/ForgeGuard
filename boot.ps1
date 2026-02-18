@@ -129,24 +129,29 @@ Ok ".env validated -- all required variables present."
 
 # ── 5. Database migration ───────────────────────────────────────────────
 
-$migrationFile = Join-Path $root "db/migrations/001_initial_schema.sql"
+$migrationDir = Join-Path $root "db/migrations"
+$migrationFiles = Get-ChildItem -Path $migrationDir -Filter "*.sql" -ErrorAction SilentlyContinue | Sort-Object Name
 
-if (Test-Path $migrationFile) {
-  Info "Running database migration..."
+if ($migrationFiles.Count -gt 0) {
+  Info "Running database migrations ($($migrationFiles.Count) files)..."
   $dbUrl = ""
   $match = Select-String -Path $envFile -Pattern '^DATABASE_URL\s*=\s*(.+)' -ErrorAction SilentlyContinue
   if ($match) { $dbUrl = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'") }
 
   if ($dbUrl -and $psqlCmd) {
-    & psql $dbUrl -f $migrationFile 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Ok "Migration applied." }
-    else { Warn "Migration may have already been applied (tables exist)." }
+    $failCount = 0
+    foreach ($mf in $migrationFiles) {
+      & psql $dbUrl -f $mf.FullName 2>&1 | Out-Null
+      if ($LASTEXITCODE -ne 0) { $failCount++ }
+    }
+    if ($failCount -eq 0) { Ok "All $($migrationFiles.Count) migrations applied." }
+    else { Warn "$failCount migration(s) may have already been applied." }
   } else {
-    Warn "Cannot run migration automatically."
-    Warn "Run: psql \`$DATABASE_URL -f db/migrations/001_initial_schema.sql"
+    Warn "Cannot run migrations automatically."
+    Warn "Run: psql `$DATABASE_URL -f db/migrations/<file>.sql for each migration"
   }
 } else {
-  Warn "Migration file not found at db/migrations/001_initial_schema.sql"
+  Warn "No migration files found in db/migrations/"
 }
 
 if ($MigrateOnly) {

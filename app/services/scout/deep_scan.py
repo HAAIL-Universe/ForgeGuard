@@ -25,6 +25,10 @@ from ._utils import _build_check_list
 
 logger = logging.getLogger(__name__)
 
+# In-memory progress tracker: run_id (str) -> list of completed step names.
+# Populated by _send_deep_progress, cleared on scan completion/error.
+_deep_scan_progress: dict[str, list[str]] = {}
+
 # Caps to prevent runaway API calls
 _DEEP_SCAN_MAX_FILES = 20
 _DEEP_SCAN_MAX_BYTES = 100_000  # 100 KB total fetched content
@@ -76,14 +80,21 @@ async def start_deep_scan(
     }
 
 
+def get_deep_scan_progress(run_id: str | UUID) -> list[str]:
+    """Return the list of completed steps for a running deep scan."""
+    return list(_deep_scan_progress.get(str(run_id), []))
+
+
 async def _send_deep_progress(
     user_id_str: str, run_id: UUID, step: str, detail: str = "",
 ) -> None:
-    """Stream a progress event for a deep scan."""
+    """Stream a progress event for a deep scan and record it in-memory."""
+    rid = str(run_id)
+    _deep_scan_progress.setdefault(rid, []).append(step)
     await ws_manager.send_to_user(user_id_str, {
         "type": "scout_progress",
         "payload": {
-            "run_id": str(run_id),
+            "run_id": rid,
             "step": step,
             "detail": detail,
         },
@@ -280,6 +291,8 @@ async def _execute_deep_scan(
                 "checks_warned": 0,
             },
         })
+    finally:
+        _deep_scan_progress.pop(str(run_id), None)
 
 
 async def _complete_deep_scan_empty(

@@ -3654,11 +3654,12 @@ When an invariant is violated:
 - Invariants persist across checkpoints and are restored on resume
 - Frontend shows invariant status strip and violation alerts
 - All existing tests pass + ~16 new tests for registry operations, gate integration, violation response, and persistence
+
 ---
 
-## Phase 45 Build Observability and Cognitive Dashboard
+## Phase 45 — Build Observability & Cognitive Dashboard
 
-Objective: Surface the Phase 40-44 cognitive architecture to the frontend.
+**Objective:** Surface the Phase 40-44 cognitive architecture to the frontend.
 
 ### 45.1 Recon Summary Card
 ### 45.2 Task DAG Panel
@@ -3666,15 +3667,427 @@ Objective: Surface the Phase 40-44 cognitive architecture to the frontend.
 ### 45.4 Context Compaction Indicator
 ### 45.5 Journal Timeline
 ### 45.6 Tests
+
 ---
 
-## Phase 45 Build Observability and Cognitive Dashboard
+## Phase 46 — Contracts Server-Side Lock & Git Exclusion
 
-Objective: Surface the Phase 40-44 cognitive architecture to the frontend.
+**Objective:** Contracts never leave the server. Every build — mini, full, or scout — pushes code and instructions to git but never pushes Forge contract files. The contract framework is ForgeGuard's value proposition; users own their code, the framework stays behind their login.
 
-### 45.1 Recon Summary Card
-### 45.2 Task DAG Panel
-### 45.3 Invariant Status Strip
-### 45.4 Context Compaction Indicator
-### 45.5 Journal Timeline
-### 45.6 Tests
+**Deliverables:**
+- **Global `.gitignore` injection** — the build setup step (`_prepare_working_dir` or equivalent) ensures every target repo's `.gitignore` includes:
+  ```
+  # Forge contracts (server-side only)
+  Forge/
+  *.forge-contract
+  .forge/
+  ```
+  If `.gitignore` exists, append the rules (idempotently). If it doesn't exist, create it.
+- **Git commit filter** — in the git push logic (`app/services/build/git_push.py` or `build_service.py`), before staging files, explicitly `git rm --cached -r Forge/` and exclude any contract files from `git add`. Belt-and-suspenders alongside `.gitignore`.
+- **Builder directive update** — add an explicit instruction to the builder contract / builder directive: "Do not include Forge contract file contents, contract references, or contract metadata in any committed source files, READMEs, or comments."
+- **Existing builds retroactive** — any build that already pushed contracts: no retroactive cleanup needed, but going forward all builds (full, mini, scout) enforce exclusion.
+- **Tests:**
+  - Test that `.gitignore` injection is idempotent (running twice doesn't duplicate rules)
+  - Test that `Forge/` directory contents are never included in staged files
+  - Test that existing `.gitignore` content is preserved when appending
+  - Test that a fresh repo with no `.gitignore` gets one created
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- Every build (full, mini, scout) injects `Forge/` into the target repo's `.gitignore`
+- Contract files are never included in git commits, verified by test
+- Builder directive explicitly prohibits contract content in source files
+- All existing tests pass + ~6 new tests for gitignore injection and commit filtering
+
+---
+
+## Phase 47 — Mini Mode: Database & API Foundation
+
+**Objective:** Add the data model and API surface for build tiers (proof-of-concept vs full) and project modes. This is the schema and routing layer that all subsequent mini mode phases depend on.
+
+**Deliverables:**
+- **Migration `0XX_project_mode.sql`:**
+  ```sql
+  ALTER TABLE projects ADD COLUMN IF NOT EXISTS project_mode VARCHAR(20) DEFAULT 'full';
+  -- 'full' = standard 7-section questionnaire, 6-12 phase build
+  -- 'mini' = 2-section questionnaire, 2-phase proof-of-concept build
+  ```
+- **Migration `0XX_build_tier.sql`:**
+  ```sql
+  ALTER TABLE builds ADD COLUMN IF NOT EXISTS build_tier VARCHAR(20) DEFAULT 'full';
+  -- 'full' = standard multi-phase build
+  -- 'mini' = 2-phase proof-of-concept build
+  ```
+- **`POST /projects` update** — accept optional `project_mode` field (`"full"` | `"mini"`, default `"full"`)
+- **`StartBuildRequest` update** — accept optional `build_tier` field (`"full"` | `"mini"`, default `"full"`). When `project_mode == "mini"`, `build_tier` defaults to `"mini"` automatically.
+- **`GET /projects/{id}` update** — include `project_mode` in response
+- **`GET /projects/{id}/build/status` update** — include `build_tier` in response
+- **Config update** — add `MINI_DEFAULT_STACK` setting in `app/config.py`:
+  ```python
+  MINI_DEFAULT_STACK: str = os.getenv("MINI_DEFAULT_STACK", "fastapi-react")
+  # Valid presets: "fastapi-react", "nextjs", "django-postgres", "go-sqlite"
+  ```
+- **Validation** — `project_mode` must be `"full"` or `"mini"`; `build_tier` must be `"full"` or `"mini"`
+- **Tests:**
+  - Test project creation with `project_mode="mini"`
+  - Test project creation with `project_mode="full"` (default)
+  - Test build start with `build_tier="mini"`
+  - Test that mini project defaults to mini build tier
+  - Test invalid mode/tier values are rejected (422)
+  - Test that existing projects without the column default to `"full"`
+
+**Schema coverage:**
+- projects table: +`project_mode` column
+- builds table: +`build_tier` column
+
+**Exit criteria:**
+- Projects can be created with `project_mode` set to `"full"` or `"mini"`
+- Builds can be started with `build_tier` set to `"full"` or `"mini"`
+- API responses include the new fields
+- Database migrations are reversible
+- All existing tests pass + ~8 new tests for mode/tier CRUD and validation
+
+---
+
+## Phase 48 — Mini Mode: Proof-of-Concept Questionnaire
+
+**Objective:** When `project_mode == "mini"`, the questionnaire runs a focused 2-section flow (Product Intent + Primary UI Flow) with ~6-10 adaptive questions total. The LLM uses section templates with required-field checklists to ensure completeness before marking each section done.
+
+**Deliverables:**
+- **`MINI_QUESTIONNAIRE_SECTIONS`** in `app/services/project/questionnaire.py`:
+  ```python
+  MINI_QUESTIONNAIRE_SECTIONS = ["product_intent", "primary_ui_flow"]
+  ```
+- **Section templates with required fields** — the questionnaire LLM receives a checklist of fields that must be answered before a section can complete:
+
+  **Product Intent template:**
+  - [ ] Product name / working title
+  - [ ] One-line description
+  - [ ] Target user / audience
+  - [ ] Core problem solved
+  - [ ] Primary user action (e.g., "creates a listing", "submits a form")
+  - [ ] Auth required (yes/no)
+
+  **Primary UI Flow template:**
+  - [ ] Landing / first screen description
+  - [ ] Main entity the user interacts with
+  - [ ] Core CRUD flow (what create/view/edit looks like)
+  - [ ] Navigation structure (sidebar, tabs, pages)
+  - [ ] Data display style (cards, tables, feed)
+
+- **Adaptive question count** — the LLM checks off items as the user answers. If a single message covers multiple items, the LLM acknowledges and moves on. If the user is brief, follow-up questions target unfilled items. Section completes only when all checklist items are satisfied.
+- **Mode-aware routing** — `POST /projects/{id}/questionnaire` checks `project.project_mode`:
+  - `"mini"` → uses `MINI_QUESTIONNAIRE_SECTIONS` and mini system prompt
+  - `"full"` → uses existing `QUESTIONNAIRE_SECTIONS` (unchanged)
+- **Mini system prompt** — new system prompt for the mini questionnaire LLM:
+  > "You are a project intake specialist for Forge Proof-of-Concept builds. Your job is to collect just enough information to scaffold a working backend + frontend prototype. You ask about Product Intent and Primary UI Flow only. Be conversational but efficient — most users should finish in 6-10 messages. Do NOT ask about tech stack, deployment, or architectural boundaries — those are auto-decided for proof-of-concept builds."
+- **Completion trigger** — when both mini sections are complete, the questionnaire returns `"status": "complete"` just like the full flow, triggering contract generation.
+- **Tests:**
+  - Test mini questionnaire only asks 2 sections
+  - Test full questionnaire still asks 7 sections (regression)
+  - Test section completion requires all checklist items filled
+  - Test adaptive question count — user gives detailed answers, fewer questions asked
+  - Test mode routing — mini project gets mini sections, full project gets full sections
+  - Test completion signal fires after both mini sections done
+
+**Schema coverage:** No new tables — uses existing `projects.questionnaire_state` JSONB.
+
+**Exit criteria:**
+- Mini mode questionnaire asks only Product Intent and Primary UI Flow
+- Each section has a required-field checklist that must be fully satisfied
+- Questions are adaptive — 6-10 total depending on user detail level
+- Full mode questionnaire is completely unchanged
+- Section routing is driven by `project.project_mode`
+- All existing tests pass + ~10 new tests for mini questionnaire flow
+
+---
+
+## Phase 49 — Mini Mode: Contract Generation, Auto Stack & Docker Release
+
+**Objective:** When `project_mode == "mini"`, contract generation uses a curated default tech stack, injects auto-decided defaults for all remaining config, produces a 2-phase `phases` contract, and targets a Docker-ready release. All 9 contracts are still generated (the builder needs full context), but scoped to proof-of-concept depth.
+
+**Deliverables:**
+- **Curated stack presets** — mini builds use one of 4 battle-tested stack combos. The default is `fastapi-react`, configurable via `MINI_DEFAULT_STACK` env var or overridable per-project:
+
+  | Preset | Backend | Frontend | Database | Best for |
+  |---|---|---|---|---|
+  | `fastapi-react` (default) | Python 3.12 + FastAPI | React 19 + Vite + TypeScript | PostgreSQL | API-driven apps, dashboards |
+  | `nextjs` | Next.js 15 (full-stack) | Next.js (App Router + RSC) | PostgreSQL | Content sites, SSR apps |
+  | `django-postgres` | Python 3.12 + Django 5 | Django templates + HTMX | PostgreSQL | Admin-heavy, data-centric apps |
+  | `go-sqlite` | Go 1.22 + Chi router | React 19 + Vite + TypeScript | SQLite | Lightweight tools, CLIs with UI |
+
+- **Stack preset registry** — `app/services/project/stack_presets.py`:
+  ```python
+  STACK_PRESETS = {
+      "fastapi-react": {
+          "tech_stack": "Backend: Python 3.12 + FastAPI + Uvicorn. Frontend: React 19 + Vite + TypeScript. Database: PostgreSQL 16. ORM: none — raw SQL via asyncpg. Auth: JWT placeholder.",
+          "docker": True,
+          "db_service": "postgres:16-alpine",
+      },
+      "nextjs": {
+          "tech_stack": "Full-stack: Next.js 15 with App Router, React Server Components, TypeScript. Database: PostgreSQL 16 via Prisma ORM.",
+          "docker": True,
+          "db_service": "postgres:16-alpine",
+      },
+      "django-postgres": {
+          "tech_stack": "Backend: Python 3.12 + Django 5 + Django REST Framework. Frontend: Django templates + HTMX for interactivity. Database: PostgreSQL 16.",
+          "docker": True,
+          "db_service": "postgres:16-alpine",
+      },
+      "go-sqlite": {
+          "tech_stack": "Backend: Go 1.22 + Chi router. Frontend: React 19 + Vite + TypeScript. Database: SQLite 3 (embedded, file-based).",
+          "docker": True,
+          "db_service": None,
+      },
+  }
+  ```
+- **Auto answer injection** — before calling `generate_contracts()` for a mini project, inject synthetic questionnaire answers from the selected preset:
+  ```python
+  MINI_AUTO_ANSWERS = {
+      "tech_stack": preset["tech_stack"],  # from selected preset
+      "database_schema": "Infer tables and columns from the product intent and UI flow. Keep it minimal — only the entities the user described.",
+      "api_endpoints": "Standard CRUD endpoints for each entity. REST conventions. No auth middleware unless the user specified login is required.",
+      "architectural_boundaries": "Standard project structure. Single repo. No microservices.",
+      "deployment_target": "Docker-ready release. Include Dockerfile, docker-compose.yaml, and .dockerignore. App should run with a single `docker compose up` command. Also include local dev instructions for running without Docker.",
+      "ui_requirements": "Derive from Primary UI Flow answers. Clean, minimal UI. Inline styles or basic CSS — no component library.",
+  }
+  ```
+- **Docker-ready output** — the builder directive for mini builds explicitly requires:
+  - `Dockerfile` — multi-stage build (builder + runtime), production-ready image
+  - `docker-compose.yaml` — app service + database service (if applicable), volumes, environment variables, health checks
+  - `.dockerignore` — exclude node_modules, .venv, .git, __pycache__, .env
+  - The app must start cleanly with `docker compose up --build`
+- **Mini phase instruction** — when `project_mode == "mini"`, the `_CONTRACT_INSTRUCTIONS["phases"]` override:
+  > "Generate exactly 2 phases. Phase 0 — Backend Scaffold: project structure, config, .env.example, Dockerfile, docker-compose.yaml, .dockerignore, database setup with migrations for core entities, CRUD endpoints for each entity, basic auth placeholder if required, seed data script, API tests, boot script. Phase 1 — Frontend Scaffold: framework setup, routing, dashboard/listing page, primary entity detail page, API integration, working end-to-end flow, component tests, update Dockerfile and docker-compose.yaml to serve frontend. Each phase must be self-contained and shippable. The final output must run with `docker compose up --build`."
+- **Contract depth scoping** — for mini mode, each contract instruction gets a preamble:
+  > "This is a proof-of-concept build. Keep the contract focused on the minimum viable scope needed for a 2-phase scaffold. Do not over-specify — the user may continue to a full build later, at which point contracts will be regenerated at full depth."
+- **All 9 contracts still generated** — blueprint, manifesto, stack, schema, physics, boundaries, phases, ui, builder_directive. The builder needs them for context even in mini mode.
+- **Full build stack handling** — when `project_mode == "full"`, the questionnaire tech_stack section presents the 4 presets as suggestions but lets the user specify anything they want. The presets are conveniences, not constraints.
+- **Tests:**
+  - Test each of the 4 stack presets produces valid auto answers
+  - Test mini mode injects auto answers for missing sections
+  - Test mini mode generates exactly 2 phases in the phases contract
+  - Test phase instruction includes Docker deliverables
+  - Test full mode is completely unchanged (regression)
+  - Test all 9 contract types are generated for both modes
+  - Test `MINI_DEFAULT_STACK` env var switches the preset
+  - Test mini contract depth is scoped (shorter contracts, PoC focus)
+  - Test full build questionnaire shows presets as suggestions, allows custom input
+
+**Schema coverage:** No new tables — uses existing `project_contracts` table.
+
+**Exit criteria:**
+- Mini mode uses one of 4 curated stack presets (default: `fastapi-react`)
+- Auto-fills tech stack, DB schema, endpoints, boundaries, deployment, and UI from preset + inference
+- Phases contract contains exactly 2 phases for mini mode
+- Phase instruction mandates Dockerfile, docker-compose.yaml, and .dockerignore
+- All 9 contracts are generated for both modes
+- Full mode contract generation is completely unchanged but shows presets as suggestions
+- Stack preset is configurable via `MINI_DEFAULT_STACK` env var
+- All existing tests pass + ~14 new tests for stack presets, Docker config, and mini contract generation
+
+---
+
+## Phase 50 — Mini Mode: Build Execution
+
+**Objective:** The build pipeline handles `build_tier == "mini"` — executing exactly 2 phases using the standard plan-execute flow with no pipeline changes. Git pushes exclude all contract files (enforced globally from Phase 46).
+
+**Deliverables:**
+- **Tier-aware phase parsing** — in `_run_build_plan_execute()`, when `build_tier == "mini"`:
+  - Parse phases from the phases contract (should be exactly 2)
+  - If somehow more than 2 exist, take only Phase 0 and Phase 1
+  - Log a warning if phase count doesn't match expected
+- **Same pipeline, compressed scope** — mini builds use identical flow:
+  1. Parse phases → 2. Plan file manifest (Sonnet) → 3. Generate files (Opus) → 4. Per-file audit → 5. Verification (syntax + tests) → 6. Governance gate → 7. Commit & push → 8. Phase complete
+- **Docker verification** — after Phase 1 completes, verify that `Dockerfile`, `docker-compose.yaml`, and `.dockerignore` exist in the project root. If missing, flag as a verification failure and trigger a fix round.
+- **Contract exclusion enforcement** — verify that Phase 46's `.gitignore` injection and commit filtering are active. Mini builds are the most important case for this since the user explicitly expects no contracts in the output.
+- **Build status events** — WebSocket events include `build_tier` so the frontend can display "Proof of Concept" vs "Full Build" labels
+- **Cost tracking** — mini builds track costs the same way. Expected: ~50K-100K tokens (~$1-3 USD with Opus) vs ~200K-500K for full builds.
+- **Tests:**
+  - Test mini build executes exactly 2 phases
+  - Test mini build uses standard plan-execute pipeline
+  - Test mini build git push contains no contract files
+  - Test mini build output includes Dockerfile, docker-compose.yaml, .dockerignore
+  - Test mini build WebSocket events include `build_tier: "mini"`
+  - Test mini build cost tracking works correctly
+  - Test full build is completely unchanged (regression)
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- Mini builds execute exactly 2 phases through the standard pipeline
+- All build infrastructure (planning, generation, audit, verification, governance, git push) works identically for mini and full
+- Output includes `Dockerfile`, `docker-compose.yaml`, and `.dockerignore` — app runs with `docker compose up --build`
+- Contract files are excluded from all git commits
+- WebSocket events identify the build tier
+- Cost is tracked and reported
+- All existing tests pass + ~10 new tests for mini build execution and Docker verification
+
+---
+
+## Phase 51 — Mini Mode: README, Deployment Docs & Instructions
+
+**Objective:** Every build (mini and full) generates comprehensive documentation as a post-build step: `README.md` for setup/usage and `DEPLOYMENT.md` for deployment instructions. For mini builds, the README includes a call-to-action to continue building via ForgeGuard.
+
+**Deliverables:**
+- **Post-build documentation generation** — after the final phase completes and before the build is marked `"completed"`:
+  1. Collect: all generated file paths, the product intent, the tech stack, the phase summaries, Docker config
+  2. Call the planner model (Sonnet) with documentation generation prompts
+  3. Write `README.md` and `DEPLOYMENT.md` to the project root
+  4. Include in the final git commit
+- **`README.md` content — all builds:**
+  - Project name and one-line description
+  - Quick start: `docker compose up --build` (mini) or tailored command (full)
+  - Prerequisites (Docker, or language versions if running locally)
+  - Step-by-step local setup and run instructions (without Docker)
+  - Available API endpoints with method, path, and description
+  - Frontend pages and what they show
+  - How to run tests
+  - Project structure overview
+  - Environment variable reference (from `.env.example`)
+- **`README.md` content — mini builds (additional):**
+  - "This is a proof-of-concept scaffold built by Forge."
+  - "To continue development with the full architectural framework, contract system, and multi-phase build pipeline, visit [ForgeGuard]."
+  - "The scaffold includes a working backend and frontend that demonstrate the core data model and primary user flow."
+- **`README.md` content — full builds (additional):**
+  - "Built with Forge — autonomous build system"
+- **`DEPLOYMENT.md` — all builds:**
+  - **Docker deployment** (primary):
+    - How to build the image(s)
+    - `docker compose up --build` with expected output
+    - Docker Compose service overview (app, db, etc.)
+    - Volume mounts and data persistence
+    - Environment variable configuration
+    - Health check endpoints
+    - How to view logs: `docker compose logs -f`
+    - How to stop: `docker compose down`
+    - How to rebuild after code changes
+  - **Local development** (alternative):
+    - Language/runtime prerequisites
+    - Database setup
+    - Install dependencies
+    - Run migrations
+    - Start dev servers
+  - **Production notes** (mini builds):
+    - "This is a proof-of-concept. For production deployment, consider: HTTPS/TLS, environment-specific configs, database backups, monitoring, CI/CD pipeline."
+  - **Production deployment** (full builds):
+    - Cloud deployment guidance (from deployment contract)
+    - CI/CD pipeline setup
+    - Scaling considerations
+- **README prompt template** — `app/templates/contracts/readme_prompt.md`:
+  > "You are writing a README.md for a freshly built project. The user will deploy this on their machine and needs clear, accurate instructions. Write for a developer audience. Be specific — reference actual file names, actual endpoints, actual commands. Do not be generic. The primary run method is Docker — `docker compose up --build` should be the first thing in Quick Start."
+- **Deployment prompt template** — `app/templates/contracts/deployment_prompt.md`:
+  > "You are writing a DEPLOYMENT.md for a freshly built project. Cover Docker deployment as the primary method with step-by-step instructions. Include a local development section as an alternative. Be specific to the actual Docker configuration in the project."
+- **Tests:**
+  - Test README is generated after build completes
+  - Test README contains Docker quick start
+  - Test README contains endpoint documentation
+  - Test DEPLOYMENT.md is generated after build completes
+  - Test DEPLOYMENT.md contains Docker Compose instructions
+  - Test DEPLOYMENT.md contains local dev alternative
+  - Test mini README includes ForgeGuard call-to-action
+  - Test mini DEPLOYMENT.md includes production notes caveat
+  - Test full DEPLOYMENT.md includes production deployment section
+  - Test both docs are included in the final git commit
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- Every completed build has `README.md` and `DEPLOYMENT.md` in the repo root
+- Both docs are accurate to the actual code and Docker config produced
+- Mini build README includes the ForgeGuard continuation prompt
+- DEPLOYMENT.md covers Docker as primary and local dev as alternative
+- Both docs are part of the final git commit
+- All existing tests pass + ~12 new tests for documentation generation
+
+---
+
+## Phase 52 — Mini Mode: Continue to Full Build
+
+**Objective:** Users who completed a proof-of-concept can upgrade to a full build. This triggers a gap questionnaire (5 remaining sections), full-depth contract regeneration, and build resumption from Phase 2 onward.
+
+**Deliverables:**
+- **`POST /projects/{id}/continue-full`** — new endpoint:
+  1. Validates: project exists, user owns it, `project_mode == "mini"`, latest build is `"completed"` with `build_tier == "mini"`
+  2. Flips `project.project_mode` to `"full"`
+  3. Resets `questionnaire_state` to preserve existing answers but mark the 5 gap sections as pending
+  4. Returns `{ "status": "questionnaire_required", "remaining_sections": [...] }`
+- **Gap questionnaire flow** — the existing `POST /projects/{id}/questionnaire` endpoint now sees 5 remaining sections (tech_stack, database_schema, api_endpoints, ui_requirements, architectural_boundaries, deployment_target) and walks the user through them. Product Intent and Primary UI Flow answers are preserved.
+- **Tech stack question adjustment** — the questionnaire shows the current stack preset and asks: "Your proof of concept used [preset name, e.g. FastAPI + React + PostgreSQL]. Do you want to keep this stack, or change anything?" The user can keep it, pick a different preset, or specify a fully custom stack.
+- **Contract regeneration** — when all 7 sections are complete, `generate_contracts()` runs at full depth with all answers. The LLM also receives a summary of the existing codebase (file tree + key file contents) so contracts account for what's already built.
+- **Build resumption** — `POST /projects/{id}/build` with `build_tier="full"` and `resume_from_phase=2`:
+  1. Loads the full phases contract (6-12 phases)
+  2. Skips Phase 0 and Phase 1 (already completed by mini build)
+  3. Planner sees existing code via workspace snapshot
+  4. Builds Phase 2 onward, extending the scaffold
+- **Frontend flow:**
+  1. Build complete page shows "Continue to Full Build" button (only for mini builds)
+  2. Click → navigates to gap questionnaire
+  3. Complete questionnaire → contract review page
+  4. Click "Start Full Build" → build resumes from Phase 2
+- **Tests:**
+  - Test continue endpoint validates mini mode + completed build
+  - Test continue endpoint rejects full mode projects
+  - Test gap questionnaire preserves existing answers
+  - Test gap questionnaire asks only remaining 5 sections
+  - Test tech stack question shows current auto-decided stack
+  - Test contract regeneration uses all 7 sections of answers
+  - Test build resumption starts from Phase 2
+  - Test build resumption sees existing code
+  - Test full flow: mini build → continue → gap questionnaire → full build
+
+**Schema coverage:** No new tables — uses existing columns.
+
+**Exit criteria:**
+- "Continue to Full Build" flow works end-to-end
+- Gap questionnaire asks only the 5 sections not covered by mini mode
+- Existing PoC answers are preserved, not re-asked
+- Contracts regenerate at full depth with complete context
+- Full build resumes from Phase 2, building on the existing scaffold
+- Frontend has the continuation UX (button + gap questionnaire + build start)
+- All existing tests pass + ~12 new tests for the continuation flow
+
+---
+
+## Phase 53 — Mini Mode: Frontend UX
+
+**Objective:** The frontend surfaces mini mode / proof-of-concept as a first-class option throughout the user journey — project creation, questionnaire, build progress, and build completion.
+
+**Deliverables:**
+- **Project creation modal** — add a mode selector before the questionnaire starts:
+  - Two cards: "Proof of Concept" and "Full Build"
+  - **Proof of Concept card:** "2-phase scaffold. Answer a few questions, get a working backend + frontend in minutes. ~$1-3 in LLM costs."
+  - **Full Build card:** "Complete multi-phase build. Detailed questionnaire, full contract framework, production-ready output. ~$10-30+ in LLM costs."
+  - Selection sets `project_mode` on the `POST /projects` call
+- **Questionnaire page** — mode-aware header:
+  - Mini: "Proof of Concept — tell us about your idea" with a progress indicator showing 2 sections
+  - Full: existing 7-section progress indicator (unchanged)
+- **Build progress page** — tier-aware labels:
+  - Badge: "Proof of Concept" (amber) or "Full Build" (blue) next to the project name
+  - Phase overview shows 2 phases for mini, N phases for full
+- **Build complete page — mini builds:**
+  - Success message: "Your proof of concept is ready!"
+  - Summary of what was built (backend endpoints, frontend pages)
+  - "View Repository" button
+  - "Continue to Full Build" button (prominent, primary action)
+  - Cost breakdown
+- **Build complete page — full builds:**
+  - Existing flow (unchanged)
+- **Project detail page** — show `project_mode` badge, show "Continue to Full Build" option if mode is mini and build is complete
+- **Tests:**
+  - Test mode selector renders on project creation
+  - Test mode selector sets correct project_mode
+  - Test questionnaire header adapts to mode
+  - Test build progress shows correct tier badge
+  - Test build complete shows "Continue to Full Build" for mini
+  - Test build complete does NOT show "Continue" for full builds
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- Mode selection is clear and prominent on project creation
+- The entire UX flow adapts to the selected mode
+- Mini builds have a clear "Continue to Full Build" call-to-action
+- Full build UX is completely unchanged
+- All existing tests pass + ~10 new tests for mode-aware frontend components

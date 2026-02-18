@@ -4,6 +4,7 @@ import { useToast } from '../context/ToastContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import AppShell from '../components/AppShell';
 import HealthBadge from '../components/HealthBadge';
+import ForgeIDEModal from '../components/ForgeIDEModal';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -120,6 +121,12 @@ function Scout() {
 
   /* Score history state (39.4) */
   const [scoreHistory, setScoreHistory] = useState<any[] | null>(null);
+
+  /* Active deep-scan run id for polling fallback */
+  const [activeDeepRunId, setActiveDeepRunId] = useState<string | null>(null);
+
+  /* Forge IDE modal state */
+  const [ideModalOpen, setIdeModalOpen] = useState(false);
 
   /* Fetch repos */
   const fetchRepos = useCallback(async () => {
@@ -243,6 +250,7 @@ function Scout() {
     setDeepSteps({});
     setDeepScanResult(null);
     setDeepScanning(true);
+    setActiveDeepRunId(null);
 
     try {
       const res = await fetch(`${API_BASE}/scout/${repo.id}/deep-scan`, {
@@ -256,7 +264,10 @@ function Scout() {
           include_llm: true,
         }),
       });
-      if (!res.ok) {
+      if (res.ok) {
+        const data = await res.json();
+        if (data.id) setActiveDeepRunId(data.id);
+      } else {
         const err = await res.json().catch(() => ({ detail: 'Deep scan failed' }));
         addToast(err.detail ?? 'Deep scan failed');
         setView('repos');
@@ -268,6 +279,62 @@ function Scout() {
       setDeepScanning(false);
     }
   };
+
+  /* Poll for deep scan completion as WS fallback */
+  useEffect(() => {
+    if (!activeDeepRunId || !deepScanning || view !== 'deep_running') return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/scout/runs/${activeDeepRunId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const detail = await res.json();
+
+        // Update step progress from poll response (WS fallback)
+        if (Array.isArray(detail.deep_steps)) {
+          setDeepSteps((prev) => {
+            const next = { ...prev };
+            for (const step of detail.deep_steps) {
+              if (!(step in next)) next[step] = 'Done';
+            }
+            return next;
+          });
+        }
+
+        if (detail.status === 'completed' || detail.status === 'error') {
+          clearInterval(interval);
+          setDeepScanning(false);
+          setActiveRun(detail);
+          if (detail.status === 'error') {
+            addToast('Deep scan failed');
+            setView('repos');
+          } else if (detail.scan_type === 'deep') {
+            // Fetch dossier
+            const dosRes = await fetch(`${API_BASE}/scout/runs/${activeDeepRunId}/dossier`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (dosRes.ok) {
+              const dosData = await dosRes.json();
+              setDeepScanResult(dosData);
+            }
+            setView('dossier');
+            // Fetch score history
+            if (detail.repo_id) {
+              fetch(`${API_BASE}/scout/${detail.repo_id}/score-history`, {
+                headers: { Authorization: `Bearer ${token}` },
+              })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => { if (d?.history) setScoreHistory(d.history); })
+                .catch(() => {});
+            }
+          }
+          fetchHistory();
+        }
+      } catch { /* polling best-effort */ }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeDeepRunId, deepScanning, view, token, addToast, fetchHistory]);
 
   /* View a past deep scan dossier */
   const handleViewDossier = async (run: ScoutRun) => {
@@ -634,18 +701,21 @@ function Scout() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
                         <span style={{
                           width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-                          background: run.checks_failed > 0 ? '#EF4444' : run.checks_warned > 0 ? '#F59E0B' : '#22C55E',
+                          background: run.status === 'error' ? '#6B7280' : run.checks_failed > 0 ? '#EF4444' : run.checks_warned > 0 ? '#F59E0B' : '#22C55E',
                         }} />
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {run.repo_name}
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, color: '#64748B', fontSize: '0.7rem' }}>
-                        {run.scan_type === 'deep' && (
+                        {run.status === 'error' && (
+                          <span style={{ color: '#EF4444', fontWeight: 600 }}>ERROR</span>
+                        )}
+                        {run.scan_type === 'deep' && run.status !== 'error' && (
                           <span style={{ color: '#7C3AED', fontWeight: 600 }}>DEEP</span>
                         )}
                         <span>{relativeTime(run.started_at)}</span>
-                        <span style={{ color: '#22C55E' }}>{run.checks_passed}✓</span>
+                        {run.status !== 'error' && <span style={{ color: '#22C55E' }}>{run.checks_passed}✓</span>}
                         {run.checks_failed > 0 && <span style={{ color: '#EF4444' }}>{run.checks_failed}✗</span>}
                         {run.checks_warned > 0 && <span style={{ color: '#F59E0B' }}>{run.checks_warned}!</span>}
                         <span>{expandedHistoryRun === run.id ? '▾' : '▸'}</span>
@@ -677,7 +747,7 @@ function Scout() {
                               ))
                             ) : (
                               <div style={{ color: '#64748B', fontSize: '0.75rem' }}>
-                                {run.status === 'running' ? 'Run still in progress…' : 'No results available.'}
+                                {run.status === 'running' ? 'Run still in progress…' : run.status === 'error' ? 'Scan encountered an error. Try re-running.' : 'No results available.'}
                               </div>
                             )}
                             {[...(run.checks ?? []), ...(run.warnings ?? [])].length > 0 && (
@@ -1183,6 +1253,29 @@ function Scout() {
               >
                 ← Back to Repos
               </button>
+              <button
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(deepScanResult, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `scout-report-${activeRepo?.full_name?.replace('/', '-') ?? 'report'}-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                style={{
+                  background: '#2563EB',
+                  color: '#F8FAFC',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                }}
+              >
+                📥 Download Report
+              </button>
               {activeRun && (
                 <button
                   disabled={upgradePlanLoading}
@@ -1451,6 +1544,22 @@ function Scout() {
                 ← Back to Dossier
               </button>
               <button
+                onClick={() => setIdeModalOpen(true)}
+                style={{
+                  background: 'linear-gradient(135deg, #7C3AED 0%, #3B82F6 100%)',
+                  color: '#F8FAFC',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '10px 24px',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  boxShadow: '0 0 20px rgba(124,58,237,0.3)',
+                }}
+              >
+                🚀 Start Upgrade
+              </button>
+              <button
                 onClick={() => { setView('repos'); setActiveRepo(null); setActiveRun(null); setDeepScanResult(null); setUpgradePlan(null); }}
                 style={{
                   background: '#334155',
@@ -1467,6 +1576,15 @@ function Scout() {
               </button>
             </div>
           </div>
+        )}
+
+        {/* ─── FORGE IDE MODAL ─── */}
+        {ideModalOpen && activeRun && activeRepo && (
+          <ForgeIDEModal
+            runId={activeRun.id}
+            repoName={activeRepo.full_name}
+            onClose={() => setIdeModalOpen(false)}
+          />
         )}
 
         {/* ─── RESULTS VIEW ─── */}

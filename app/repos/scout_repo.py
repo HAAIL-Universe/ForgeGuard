@@ -45,13 +45,13 @@ async def update_scout_run(
     row = await pool.fetchrow(
         """
         UPDATE scout_runs
-        SET status = $2,
+        SET status = $2::varchar,
             results = $3::jsonb,
             checks_passed = $4,
             checks_failed = $5,
             checks_warned = $6,
             computed_score = $7,
-            completed_at = CASE WHEN $2 IN ('completed', 'error') THEN now() ELSE completed_at END
+            completed_at = CASE WHEN $2::varchar IN ('completed', 'error') THEN now() ELSE completed_at END
         WHERE id = $1
         RETURNING id, repo_id, user_id, status, hypothesis, scan_type,
                   results, checks_passed, checks_failed, checks_warned,

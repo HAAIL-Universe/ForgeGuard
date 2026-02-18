@@ -81,8 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     // Validate token on mount by calling /auth/me
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     fetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
     }).then(async (res) => {
       if (!res.ok) {
         logout();
@@ -96,8 +99,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Response wasn't JSON — keep existing user data
       }
     }).catch(() => {
-      // Network error -- keep token, user can retry
+      // Network error or timeout -- keep token, user can retry
     }).finally(() => {
+      clearTimeout(timeout);
       setLoading(false);
     });
   }, [token, logout]);
