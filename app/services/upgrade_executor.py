@@ -2043,15 +2043,21 @@ def _strip_codeblock(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 _NARRATOR_SYSTEM_PROMPT = """\
-You are a concise narrator for ForgeGuard's Upgrade IDE. \
-Summarise what just happened in plain English for a non-technical audience.
+You are a live commentator narrating what Forge (the AI coding agent) \
+is doing to the user's repository right now.  You are NOT describing \
+the repository's features — you are describing Forge's actions.
+
+Perspective:
+- "Forge just wrote…" / "Forge is adding…" / "Forge created…"
+- NEVER describe what the code does as if writing release notes.
+- The audience is the developer watching Forge work in real time.
 
 Rules:
 - ONE short sentence only. Two at absolute most.
-- Be direct and informative, not chatty.
+- Be direct and specific — mention file names or tools when relevant.
 - No analogies, no metaphors, no emojis, no cheerleading.
 - Never start with "Great progress" or similar filler.
-- Say WHAT changed and WHY it matters, nothing else."""
+- Say what Forge DID, not what the repo now HAS."""
 
 
 async def _narrate(
@@ -2452,9 +2458,9 @@ async def _run_upgrade(
             )
             _track_task(asyncio.create_task(_narrate(
                 user_id, run_id,
-                f"Starting upgrade for repository '{repo_name}'. "
+                f"Forge is starting an upgrade for '{repo_name}'. "
                 f"Health grade: {grade}. {brief} "
-                f"{len(tasks)} tasks planned: {task_overview}.",
+                f"{len(tasks)} tasks queued: {task_overview}.",
                 narrator_key=narrator_key, narrator_model=narrator_model,
                 tokens=tokens,
             )))
@@ -2479,11 +2485,14 @@ async def _run_upgrade(
 
             # ─ Log Opus's code output ─
             if code_result:
-                thinking = code_result.get("thinking", [])
-                for thought in thinking:
-                    await _log(user_id, run_id,
-                                f"💭 [Opus] {thought}", "thinking")
-                    await asyncio.sleep(0.08)
+                # Extended thinking is already surfaced by
+                # _build_task_with_llm; only show JSON "thinking"
+                # field if no extended thinking was available.
+                if not code_result.get("_extended_thinking"):
+                    for thought in code_result.get("thinking", []):
+                        await _log(user_id, run_id,
+                                    f"💭 [Opus] {thought}", "thinking")
+                        await asyncio.sleep(0.08)
 
                 changes = code_result.get("changes", [])
                 # Build planned file list from Sonnet's plan for scope check
@@ -2785,10 +2794,10 @@ async def _run_upgrade(
                         _an = plan_result.get("analysis", "")
                         _track_task(asyncio.create_task(_narrate(
                             user_id, run_id,
-                            f"Sonnet planned task {i + 1}: "
+                            f"Forge's planner analysed task "
+                            f"{i + 1}/{len(tasks)}: "
                             f"'{task_name}'. {_an} "
-                            f"Files: {_fl}. "
-                            f"Plan queued (pool: {pool_depth}).",
+                            f"Will touch: {_fl}.",
                             narrator_key=narrator_key,
                             narrator_model=narrator_model,
                             tokens=tokens,
@@ -3124,16 +3133,14 @@ async def _run_upgrade(
                             len(tasks) - state["completed_tasks"])
                         _track_task(asyncio.create_task(_narrate(
                             user_id, run_id,
-                            f"Opus finished task "
+                            f"Forge finished coding task "
                             f"{task_index + 1}/{len(tasks)}: "
                             f"'{task_name}'. "
-                            f"{n_changes} file(s) changed: "
+                            f"{n_changes} file(s) written: "
                             f"{', '.join(changed_files)}. "
                             f"{state['completed_tasks']}"
                             f"/{len(tasks)} done, "
-                            f"{remaining} remaining. "
-                            f"Plan pool: {plan_pool.qsize()} "
-                            f"waiting.",
+                            f"{remaining} remaining.",
                             narrator_key=narrator_key,
                             narrator_model=narrator_model,
                             tokens=tokens,
@@ -3609,8 +3616,9 @@ async def _run_retry(
                 n_ch = new_entry["changes_count"]
                 _track_task(asyncio.create_task(_narrate(
                     user_id, run_id,
-                    f"Retry {completed}/{total}: task '{task_name}' "
-                    f"{'produced ' + str(n_ch) + ' change(s)' if new_entry['status'] == 'proposed' else 'still failed'}. "
+                    f"Forge retried task '{task_name}' "
+                    f"({completed}/{total}). "
+                    f"{'Produced ' + str(n_ch) + ' change(s)' if new_entry['status'] == 'proposed' else 'Still failed'}. "
                     f"{total - completed} task(s) remaining.",
                     narrator_key=narrator_key,
                     narrator_model=narrator_model,
@@ -3957,41 +3965,113 @@ async def _build_task_with_llm(
 
     user_msg = json.dumps(payload, indent=2)
 
-    try:
-        result = await chat(
-            api_key=api_key,
-            model=model,
-            system_prompt=_BUILDER_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
-            max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
-            provider="anthropic",
-        )
-        usage = (result.get("usage", {}) if isinstance(result, dict)
-                 else {"input_tokens": 0, "output_tokens": 0})
-        text: str = result["text"] if isinstance(result, dict) else str(result)
-        text = _strip_codeblock(text)
+    _max_tokens = settings.LLM_BUILDER_MAX_TOKENS
+    _thinking = settings.LLM_THINKING_BUDGET
 
-        if not text.strip():
+    for _attempt in range(1, 3):  # up to 2 attempts (retry on truncation)
+        try:
+            result = await chat(
+                api_key=api_key,
+                model=model,
+                system_prompt=_BUILDER_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_msg}],
+                max_tokens=_max_tokens,
+                provider="anthropic",
+                thinking_budget=_thinking,
+            )
+            usage = (result.get("usage", {}) if isinstance(result, dict)
+                     else {"input_tokens": 0, "output_tokens": 0})
+
+            # Surface extended thinking to the UI (real chain-of-thought)
+            if isinstance(result, dict) and result.get("thinking"):
+                _raw_thinking = result["thinking"]
+                # Chunk long thinking into readable segments
+                for _chunk in _raw_thinking.split("\n\n"):
+                    _chunk = _chunk.strip()
+                    if _chunk:
+                        _disp = (_chunk[:300] + "…"
+                                 if len(_chunk) > 300 else _chunk)
+                        await _log(user_id, run_id,
+                                   f"💭 [Opus] {_disp}", "thinking")
+                        await asyncio.sleep(0.05)
+
+            text: str = (result["text"] if isinstance(result, dict)
+                         else str(result))
+            stop = (result.get("stop_reason", "end_turn")
+                    if isinstance(result, dict) else "end_turn")
+
+            # ── Truncation detection ────────────────────────────
+            if stop == "max_tokens" or (
+                text.rstrip() and not text.rstrip().endswith("}")
+            ):
+                if _attempt < 2:
+                    # Retry once with doubled budget
+                    _old_max = _max_tokens
+                    _max_tokens = min(_max_tokens * 2, 65_536)
+                    await _log(
+                        user_id, run_id,
+                        f"⚠ [Opus] Response truncated for "
+                        f"{task.get('id')} (stop={stop}, "
+                        f"tokens={_old_max}) — retrying with "
+                        f"{_max_tokens} tokens…",
+                        "warn",
+                    )
+                    continue
+                else:
+                    await _log(
+                        user_id, run_id,
+                        f"⚠ [Opus] Response still truncated for "
+                        f"{task.get('id')} after retry — dropping task",
+                        "error",
+                    )
+                    return None, usage
+
+            text = _strip_codeblock(text)
+
+            if not text.strip():
+                await _log(user_id, run_id,
+                           f"⚠ [Opus] Empty response for task "
+                           f"{task.get('id')} — model returned "
+                           f"no content", "error")
+                return None, usage
+
+            parsed = json.loads(text)
+            # Attach extended thinking to result so callers can see it
+            if isinstance(result, dict) and result.get("thinking"):
+                parsed["_extended_thinking"] = result["thinking"]
+            return parsed, usage
+        except json.JSONDecodeError as exc:
+            if _attempt < 2 and stop == "max_tokens":
+                # Truncation caused invalid JSON — retry
+                _max_tokens = min(_max_tokens * 2, 65_536)
+                await _log(
+                    user_id, run_id,
+                    f"⚠ [Opus] Truncated JSON for {task.get('id')} "
+                    f"— retrying with {_max_tokens} tokens…",
+                    "warn",
+                )
+                continue
+            logger.warning("Opus returned non-JSON for %s: %s…",
+                           task.get("id"),
+                           text[:120] if text else "(empty)")
+            short = str(exc)[:120]
             await _log(user_id, run_id,
-                       f"⚠ [Opus] Empty response for task {task.get('id')} "
-                       f"— model returned no content", "error")
-            return None, usage
+                       f"⚠ [Opus] Invalid JSON for task "
+                       f"{task.get('id')}: {short}",
+                       "error")
+            return (None,
+                    usage if "usage" in dir()
+                    else {"input_tokens": 0, "output_tokens": 0})
+        except Exception as exc:
+            logger.exception("Opus build failed for %s", task.get("id"))
+            short = f"{type(exc).__name__}: {str(exc)[:180]}"
+            await _log(user_id, run_id,
+                       f"Build failed for task {task.get('id')}: "
+                       f"{short}", "error")
+            return None, {"input_tokens": 0, "output_tokens": 0}
 
-        return json.loads(text), usage
-    except json.JSONDecodeError as exc:
-        logger.warning("Opus returned non-JSON for %s: %s…",
-                       task.get("id"), text[:120] if text else "(empty)")
-        short = str(exc)[:120]
-        await _log(user_id, run_id,
-                   f"⚠ [Opus] Invalid JSON for task {task.get('id')}: {short}",
-                   "error")
-        return None, usage if "usage" in dir() else {"input_tokens": 0, "output_tokens": 0}
-    except Exception as exc:
-        logger.exception("Opus build failed for %s", task.get("id"))
-        short = f"{type(exc).__name__}: {str(exc)[:180]}"
-        await _log(user_id, run_id,
-                   f"Build failed for task {task.get('id')}: {short}", "error")
-        return None, {"input_tokens": 0, "output_tokens": 0}
+    # Should not reach here, but safety net
+    return None, {"input_tokens": 0, "output_tokens": 0}
 
 
 # ---------------------------------------------------------------------------

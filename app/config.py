@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # are NOT rate-limited).  Set via env vars to match your API tier.
     ANTHROPIC_INPUT_TPM: int = 80_000
     ANTHROPIC_OUTPUT_TPM: int = 16_000
-    LLM_BUILDER_MAX_TOKENS: int = 16_384
+    LLM_BUILDER_MAX_TOKENS: int = 32_768
 
     # Token budget for workspace snapshot in planner context (0 = unlimited)
     RECON_TOKEN_BUDGET: int = 30_000

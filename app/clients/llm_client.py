@@ -204,6 +204,7 @@ async def chat_anthropic(
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
             },
+            "stop_reason": data.get("stop_reason", "end_turn"),
         }
         if thinking_parts:
             result["thinking"] = "\n".join(thinking_parts)
