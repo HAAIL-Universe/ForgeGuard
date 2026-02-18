@@ -109,7 +109,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [tasks, setTasks] = useState<UpgradeTask[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [fileDiffs, setFileDiffs] = useState<FileDiff[]>([]);
-  const [status, setStatus] = useState<'connecting' | 'running' | 'paused' | 'stopping' | 'stopped' | 'completed' | 'error'>('connecting');
+  const [status, setStatus] = useState<'preparing' | 'ready' | 'running' | 'paused' | 'stopping' | 'stopped' | 'completed' | 'error'>('preparing');
   const [totalTasks, setTotalTasks] = useState(0);
   const [completedTasks, setCompletedTasks] = useState(0);
   const [expandedDiff, setExpandedDiff] = useState<number | null>(null);
@@ -126,10 +126,11 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const cmdInputRef = useRef<HTMLInputElement>(null);
 
   const SLASH_COMMANDS: Record<string, string> = {
+    '/start':  'Begin the upgrade execution',
     '/pause':  'Pause execution after current task finishes',
     '/resume': 'Resume a paused execution',
     '/stop':   'Abort execution (current task finishes first)',
-    '/push':   'Show proposed changes & push readiness',
+    '/push':   'Apply changes, commit, and push to GitHub',
     '/status': 'Print current progress summary',
     '/help':   'Show available slash commands',
     '/clear':  'Clear the activity log',
@@ -155,44 +156,44 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     }
   }, [logs.length]);
 
-  /* Start execution (guarded against React strict-mode double-fire) */
+  /* Prepare workspace & show preview (soft-landing — no auto-start) */
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
 
-    const start = async () => {
+    const prepare = async () => {
+      // 1. Fetch upgrade preview (task list, repo info)
       try {
-        const res = await fetch(`${API_BASE}/scout/runs/${runId}/execute-upgrade`, {
+        const previewRes = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-preview`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (previewRes.ok) {
+          const preview = await previewRes.json();
+          setTotalTasks(preview.total_tasks || 0);
+          if (Array.isArray(preview.tasks)) {
+            setTasks(preview.tasks.map((t: any) => ({ ...t, status: 'pending' })));
+          }
+        }
+      } catch { /* silent */ }
+
+      // 2. Clone repository in background (WS events show progress)
+      try {
+        const prepRes = await fetch(`${API_BASE}/scout/runs/${runId}/prepare-upgrade`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (res.ok) {
-          const data = await res.json();
-          setStatus('running');
-          setTotalTasks(data.total_tasks);
+        if (prepRes.ok) {
+          setStatus('ready');
         } else {
-          const err = await res.json().catch(() => ({ detail: 'Failed to start' }));
-          const detail = err.detail || 'Failed to start upgrade';
-          // "already in progress" means a prior call succeeded — treat as running
-          if (typeof detail === 'string' && detail.toLowerCase().includes('already in progress')) {
-            setStatus('running');
-            return;
-          }
-          setLogs((prev) => [
-            ...prev,
-            { timestamp: new Date().toISOString(), source: 'system', level: 'error', message: detail },
-          ]);
-          setStatus('error');
+          // Clone failed but still allow IDE usage (analysis works)
+          setStatus('ready');
         }
       } catch {
-        setLogs((prev) => [
-          ...prev,
-          { timestamp: new Date().toISOString(), source: 'system', level: 'error', message: 'Network error starting upgrade' },
-        ]);
-        setStatus('error');
+        setStatus('ready');
       }
+      setCmdInput('/start');
     };
-    start();
+    prepare();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, token]);
 
@@ -293,6 +294,15 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             setStatus('stopping');
             break;
 
+          case 'upgrade_pushed':
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(),
+              source: 'system',
+              level: 'system',
+              message: `🎉 Pushed to ${p.repo_name} branch ${p.branch || 'main'} (${p.commit_sha?.slice(0, 8) || ''})`,
+            }]);
+            break;
+
           case 'upgrade_clear_logs':
             setLogs([]);
             break;
@@ -346,6 +356,48 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const sendCmd = useCallback(async (cmd: string) => {
     const trimmed = cmd.trim();
     if (!trimmed) return;
+
+    // Intercept /start — trigger execution directly
+    if (trimmed.toLowerCase() === '/start') {
+      setCmdInput('');
+      setCmdSuggestions([]);
+      setLogs((prev) => [...prev, {
+        timestamp: new Date().toISOString(),
+        source: 'user',
+        level: 'system',
+        message: '> /start',
+      }]);
+      // Call execute-upgrade
+      try {
+        const res = await fetch(`${API_BASE}/scout/runs/${runId}/execute-upgrade`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setStatus('running');
+          setTotalTasks(data.total_tasks);
+        } else {
+          const err = await res.json().catch(() => ({ detail: 'Failed to start' }));
+          const detail = err.detail || 'Failed to start upgrade';
+          if (typeof detail === 'string' && detail.toLowerCase().includes('already in progress')) {
+            setStatus('running');
+            return;
+          }
+          setLogs((prev) => [...prev, {
+            timestamp: new Date().toISOString(), source: 'system', level: 'error', message: detail,
+          }]);
+          setStatus('error');
+        }
+      } catch {
+        setLogs((prev) => [...prev, {
+          timestamp: new Date().toISOString(), source: 'system', level: 'error', message: 'Network error starting upgrade',
+        }]);
+        setStatus('error');
+      }
+      return;
+    }
+
     setCmdHistoryArr((prev) => [trimmed, ...prev.filter((c) => c !== trimmed)].slice(0, 50));
     setHistoryIdx(-1);
     setCmdInput('');
@@ -419,8 +471,8 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
       }}>
         <div style={{
           width: '10px', height: '10px', borderRadius: '50%',
-          background: status === 'running' ? '#22C55E' : status === 'completed' ? '#3B82F6' : status === 'error' ? '#EF4444' : status === 'paused' ? '#F59E0B' : status === 'stopping' || status === 'stopped' ? '#F97316' : '#64748B',
-          animation: status === 'running' ? 'pulse 1.5s ease-in-out infinite' : status === 'paused' ? 'pulse 2.5s ease-in-out infinite' : 'none',
+          background: status === 'ready' ? '#22C55E' : status === 'running' ? '#22C55E' : status === 'completed' ? '#3B82F6' : status === 'error' ? '#EF4444' : status === 'paused' ? '#F59E0B' : status === 'stopping' || status === 'stopped' ? '#F97316' : status === 'preparing' ? '#38BDF8' : '#64748B',
+          animation: status === 'running' ? 'pulse 1.5s ease-in-out infinite' : status === 'ready' ? 'pulse 2s ease-in-out infinite' : status === 'paused' ? 'pulse 2.5s ease-in-out infinite' : status === 'preparing' ? 'pulse 1s ease-in-out infinite' : 'none',
         }} />
         <span style={{ fontFamily: 'monospace', fontSize: '0.85rem', fontWeight: 600, color: '#F1F5F9' }}>
           FORGE IDE
@@ -434,10 +486,10 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         <span style={{
           padding: '2px 10px', borderRadius: '10px', fontSize: '0.65rem',
           fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px',
-          background: status === 'running' ? '#14532D' : status === 'completed' ? '#1E3A5F' : status === 'error' ? '#7F1D1D' : status === 'paused' ? '#78350F' : status === 'stopping' || status === 'stopped' ? '#7C2D12' : '#1E293B',
-          color: status === 'running' ? '#22C55E' : status === 'completed' ? '#3B82F6' : status === 'error' ? '#EF4444' : status === 'paused' ? '#F59E0B' : status === 'stopping' || status === 'stopped' ? '#F97316' : '#64748B',
+          background: status === 'ready' ? '#14532D' : status === 'running' ? '#14532D' : status === 'completed' ? '#1E3A5F' : status === 'error' ? '#7F1D1D' : status === 'paused' ? '#78350F' : status === 'stopping' || status === 'stopped' ? '#7C2D12' : status === 'preparing' ? '#1E3A5F' : '#1E293B',
+          color: status === 'ready' ? '#22C55E' : status === 'running' ? '#22C55E' : status === 'completed' ? '#3B82F6' : status === 'error' ? '#EF4444' : status === 'paused' ? '#F59E0B' : status === 'stopping' || status === 'stopped' ? '#F97316' : status === 'preparing' ? '#38BDF8' : '#64748B',
         }}>
-          {status === 'connecting' ? 'Connecting…' : status}
+          {status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Ready' : status === 'connecting' ? 'Connecting…' : status}
         </span>
 
         {/* Progress bar */}
@@ -765,7 +817,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             >
               {logs.length === 0 ? (
                 <div style={{ color: '#475569', padding: '20px 0' }}>
-                  {status === 'connecting' ? 'Connecting to Forge IDE…' : 'Waiting for output…'}
+                  {status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 </div>
               ) : (
                 logs.map((log, i) => {
@@ -806,11 +858,14 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           {/* Command input bar — always visible on activity tab */}
           {activeTab === 'activity' && (
             <div style={{
-              flexShrink: 0, borderTop: '1px solid #1E293B',
+              flexShrink: 0,
+              borderTop: status === 'ready' ? '1px solid #22C55E33' : '1px solid #1E293B',
               background: '#0F172A', padding: '0', position: 'relative',
+              boxShadow: status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : 'none',
+              transition: 'box-shadow 0.3s ease, border-color 0.3s ease',
             }}>
               {/* Autocomplete dropdown */}
-              {cmdSuggestions.length > 0 && (
+              {cmdSuggestions.length > 0 && status !== 'ready' && (
                 <div style={{
                   position: 'absolute', bottom: '100%', left: 0, right: 0,
                   background: '#1E293B', border: '1px solid #334155',
@@ -847,6 +902,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                 <span style={{
                   color: '#22C55E', fontFamily: 'monospace', fontSize: '0.8rem',
                   fontWeight: 700, flexShrink: 0,
+                  animation: status === 'ready' ? 'pulseGreen 2s ease-in-out infinite' : 'none',
                 }}>
                   ❯
                 </span>
@@ -891,15 +947,32 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                       setCmdSuggestions([]);
                     }
                   }}
-                  placeholder="Type / for commands\u2026"
+                  placeholder={status === 'ready' ? 'Press Enter to start upgrade…' : 'Type / for commands…'}
                   style={{
                     flex: 1, background: 'transparent', border: 'none', outline: 'none',
-                    color: '#E2E8F0', fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+                    color: status === 'ready' && cmdInput.trim().toLowerCase() === '/start' ? '#22C55E' : '#E2E8F0',
+                    fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
                     fontSize: '0.8rem', caretColor: '#22C55E',
+                    fontWeight: status === 'ready' && cmdInput.trim().toLowerCase() === '/start' ? 700 : 400,
                   }}
                   autoComplete="off"
                   spellCheck={false}
+                  autoFocus={status === 'ready'}
                 />
+                {status === 'ready' && (
+                  <button
+                    onClick={() => sendCmd('/start')}
+                    style={{
+                      background: '#14532D', color: '#22C55E',
+                      border: '1px solid #22C55E44', borderRadius: '4px',
+                      padding: '3px 12px', cursor: 'pointer',
+                      fontSize: '0.7rem', fontWeight: 700,
+                      animation: 'pulseGreen 2s ease-in-out infinite',
+                    }}
+                  >
+                    ▶ START
+                  </button>
+                )}
                 {/* Quick action buttons */}
                 {status === 'running' && (
                   <button
@@ -1054,6 +1127,19 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             {tokenUsage.total > 0 && ` · ${fmtTokens(tokenUsage.total)} tokens used`}
           </span>
           <div style={{ flex: 1 }} />
+          {fileDiffs.length > 0 && (
+            <button
+              onClick={() => sendCmd('/push')}
+              style={{
+                background: 'linear-gradient(135deg, #14532D, #166534)', color: '#22C55E',
+                border: '1px solid #22C55E44', borderRadius: '6px',
+                padding: '6px 16px', cursor: 'pointer',
+                fontSize: '0.75rem', fontWeight: 600,
+              }}
+            >
+              🚀 Push to GitHub
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('changes')}
             style={{
@@ -1077,11 +1163,14 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         </div>
       )}
 
-      {/* CSS animation for pulse + dots */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
+        }
+        @keyframes pulseGreen {
+          0%, 100% { opacity: 1; text-shadow: 0 0 8px rgba(34, 197, 94, 0.8); }
+          50% { opacity: 0.6; text-shadow: 0 0 2px rgba(34, 197, 94, 0.3); }
         }
         .forge-ide-dots::after {
           content: '';

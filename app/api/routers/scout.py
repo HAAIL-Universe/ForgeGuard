@@ -23,10 +23,12 @@ from app.services.upgrade_executor import (
     execute_upgrade,
     get_available_commands,
     get_upgrade_status,
+    prepare_upgrade_workspace,
     send_command,
     set_narrator_watching,
 )
 from app.repos.user_repo import get_user_by_id
+from app.repos.scout_repo import get_scout_run
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scout", tags=["scout"])
@@ -225,6 +227,75 @@ async def trigger_execute_upgrade(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to start upgrade execution",
+        )
+
+
+@router.get("/runs/{run_id}/upgrade-preview")
+async def get_upgrade_preview(
+    run_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Return task list & repo info from renovation plan (no execution)."""
+    import json as _json
+    run = await get_scout_run(run_id)
+    if run is None or str(run["user_id"]) != str(current_user["id"]):
+        raise HTTPException(status_code=404, detail="Scout run not found")
+    results = run.get("results")
+    if isinstance(results, str):
+        results = _json.loads(results)
+    plan = (results or {}).get("renovation_plan")
+    if not plan:
+        raise HTTPException(status_code=404, detail="No renovation plan")
+
+    tasks = plan.get("migration_recommendations", [])
+    executive = plan.get("executive_brief", {})
+
+    return {
+        "run_id": str(run_id),
+        "repo_name": run.get("repo_name", ""),
+        "total_tasks": len(tasks),
+        "tasks": [
+            {
+                "id": t.get("id", f"TASK-{i}"),
+                "name": f"{t.get('from_state', '?')} \u2192 {t.get('to_state', '?')}",
+                "priority": t.get("priority", "medium"),
+                "effort": t.get("effort", "medium"),
+                "forge_automatable": t.get("forge_automatable", False),
+                "category": t.get("category", ""),
+                "worker": "sonnet",
+            }
+            for i, t in enumerate(tasks)
+        ],
+        "executive_brief": {
+            "headline": executive.get("headline", ""),
+            "health_grade": executive.get("health_grade", ""),
+        },
+    }
+
+
+@router.post("/runs/{run_id}/prepare-upgrade")
+async def trigger_prepare_upgrade(
+    run_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Clone the repo into a workspace, ready for /start."""
+    try:
+        user = await get_user_by_id(current_user["id"])
+        access_token = (user or {}).get("access_token", "")
+        return await prepare_upgrade_workspace(
+            current_user["id"],
+            run_id,
+            access_token=access_token,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc),
+        ) from exc
+    except Exception:
+        logger.exception("Prepare workspace failed for run %s", run_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to prepare workspace",
         )
 
 

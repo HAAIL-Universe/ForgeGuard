@@ -3,11 +3,11 @@
 Accepts a renovation plan (from upgrade_service) and executes migration
 tasks using a role-based architecture:
 
-- **Opus (Key 1)** — ``anthropic_api_key`` + ``LLM_BUILDER_MODEL``
-  Executes ALL coding / migration tasks sequentially.
-- **Sonnet (Key 1)** — ``LLM_PLANNER_MODEL``
-  Planning, testing, tool calls, and general IDE work (tracked in
-  ``upgrade_service`` / build services; tokens counted here via ``add("sonnet", ...)``.
+- **Sonnet (Key 1)** — ``anthropic_api_key`` + ``LLM_PLANNER_MODEL``
+  Analyses migration tasks (planning/proposing changes).  Tokens
+  tracked under the ``sonnet`` bucket.
+- **Opus (Key 1)** — ``LLM_BUILDER_MODEL`` (reserved for ``build_service``)
+  Not used directly here; heavy code generation lives in the build flow.
 - **Haiku (Key 2)** — ``anthropic_api_key_2`` + ``LLM_NARRATOR_MODEL``
   Non-blocking plain-English narrator (fires after key events).
 If only one key is available, narration is disabled but execution works.
@@ -30,11 +30,15 @@ import asyncio
 import json
 import logging
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from app.clients import git_client
 from app.clients.llm_client import chat
 from app.config import settings
 from app.repos.scout_repo import get_scout_run, update_scout_run
@@ -78,14 +82,15 @@ def set_narrator_watching(run_id: str, watching: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Command handling  (/pause, /resume, /stop, /push, /status, /help, /clear)
+# Command handling
 # ---------------------------------------------------------------------------
 
 _SLASH_COMMANDS = {
+    "/start":  "Begin the upgrade execution.",
     "/pause":  "Pause execution after the current task finishes.",
     "/resume": "Resume a paused execution.",
     "/stop":   "Abort execution entirely (current task will complete first).",
-    "/push":   "Show proposed changes manifest & push readiness.",
+    "/push":   "Apply proposed changes, commit, and push to GitHub.",
     "/status": "Print a summary of current progress.",
     "/help":   "Show available slash commands.",
     "/clear":  "Clear the activity log.",
@@ -122,6 +127,11 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
 
     if state is None:
         return {"ok": False, "message": "No active upgrade session for this run."}
+
+    if cmd == "/start":
+        # Normally intercepted by the frontend; backend just acknowledges
+        await _log(user_id, run_id, "▶️  Starting upgrade…", "system", "command")
+        return {"ok": True, "message": "Starting execution."}
 
     if cmd == "/pause":
         if state["status"] != "running":
@@ -181,11 +191,7 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
             for f in files:
                 await _log(user_id, run_id, f"  {icon} {act}: {f}", "info", "command")
 
-        await _log(user_id, run_id,
-                    "🚧 Automatic git push is landing in the next release. "
-                    "Changes are saved to your run record.",
-                    "system", "command")
-        return {"ok": True, "message": f"{len(all_changes)} changes catalogued. Git push coming next release."}
+        return await _push_changes(user_id, run_id, state, all_changes, task_results)
 
     if cmd == "/status":
         completed = state.get("completed_tasks", 0)
@@ -232,6 +238,174 @@ async def _log(
     if state:
         state["logs"].append(entry)
     await _emit(user_id, "upgrade_log", {"run_id": run_id, **entry})
+
+
+# ---------------------------------------------------------------------------
+# File change application
+# ---------------------------------------------------------------------------
+
+
+def _apply_file_change(working_dir: str, change: dict) -> None:
+    """Apply a single LLM-proposed file change to the working directory."""
+    rel_path = change.get("file", "")
+    if not rel_path:
+        raise ValueError("Change has no file path")
+    file_path = Path(working_dir) / rel_path
+    action = change.get("action", "modify")
+
+    if action == "create":
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(change.get("after_snippet", ""), encoding="utf-8")
+    elif action == "delete":
+        if file_path.exists():
+            file_path.unlink()
+    elif action == "modify":
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {rel_path}")
+        content = file_path.read_text(encoding="utf-8")
+        before = change.get("before_snippet", "")
+        after = change.get("after_snippet", "")
+        if before and before in content:
+            content = content.replace(before, after, 1)
+        elif after:
+            # Fallback: overwrite with after_snippet if before not found
+            content = after
+        file_path.write_text(content, encoding="utf-8")
+    else:
+        raise ValueError(f"Unknown action: {action}")
+
+
+async def _push_changes(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    all_changes: list[dict],
+    task_results: list[dict],
+) -> dict:
+    """Apply file changes to the cloned workspace, commit, and push."""
+    working_dir = state.get("working_dir")
+    access_token = state.get("access_token", "")
+    repo_name = state.get("repo_name", "unknown")
+
+    if not working_dir or not Path(working_dir).exists():
+        await _log(user_id, run_id,
+                   "❌ No working directory — repository was not cloned.",
+                   "error", "command")
+        await _log(user_id, run_id,
+                   "💡 Close the IDE and re-open to trigger cloning.",
+                   "info", "command")
+        return {"ok": False, "message": "No working directory available."}
+
+    # ── Apply file changes ──────────────────────────────────────────
+    await _log(user_id, run_id,
+               f"📝 Applying {len(all_changes)} file change(s)…",
+               "system", "command")
+    applied, failed = 0, 0
+    for c in all_changes:
+        try:
+            _apply_file_change(working_dir, c)
+            applied += 1
+            await _log(user_id, run_id,
+                       f"  ✅ {c.get('action', 'modify')}: {c.get('file', '?')}",
+                       "info", "command")
+        except Exception as exc:
+            failed += 1
+            await _log(user_id, run_id,
+                       f"  ⚠ {c.get('file', '?')}: {exc}",
+                       "warn", "command")
+
+    summary = f"Applied {applied} change(s)"
+    if failed:
+        summary += f" ({failed} failed)"
+    await _log(user_id, run_id, summary, "system", "command")
+
+    if applied == 0:
+        return {"ok": False, "message": "No changes could be applied."}
+
+    if not access_token:
+        await _log(user_id, run_id,
+                   "❌ No GitHub access token — connect GitHub in Settings.",
+                   "error", "command")
+        await _log(user_id, run_id,
+                   "💡 Changes applied locally. Connect GitHub to push.",
+                   "info", "command")
+        return {"ok": False, "message": "No GitHub access token."}
+
+    # ── Build commit message ────────────────────────────────────────
+    task_lines = []
+    for tr in task_results:
+        if tr.get("status") == "proposed":
+            task_lines.append(
+                f"- {tr['task_name']}: {tr.get('changes_count', 0)} change(s)")
+    commit_msg = (
+        f"forge: upgrade — {repo_name}\n\n"
+        f"{applied} file(s) changed across "
+        f"{len(task_results)} migration task(s):\n"
+        + "\n".join(task_lines)
+        + "\n\nGenerated by ForgeGuard Upgrade IDE"
+    )
+
+    # ── Git add → commit → push ─────────────────────────────────────
+    try:
+        await _log(user_id, run_id, "📋 Staging changes…", "system", "command")
+        await git_client.add_all(working_dir)
+
+        await _log(user_id, run_id, "💾 Committing…", "system", "command")
+        sha = await git_client.commit(working_dir, commit_msg)
+        if sha:
+            await _log(user_id, run_id,
+                       f"  Commit {sha[:8]}", "info", "command")
+
+        # Detect branch
+        try:
+            branch = (await git_client._run_git(
+                ["rev-parse", "--abbrev-ref", "HEAD"], cwd=working_dir,
+            )).strip() or "main"
+        except Exception:
+            branch = state.get("branch", "main")
+
+        remote_url = f"https://github.com/{repo_name}.git"
+        await git_client.set_remote(working_dir, remote_url)
+
+        # Pull rebase first
+        force = False
+        try:
+            await _log(user_id, run_id,
+                       "🔄 Pulling latest changes…", "system", "command")
+            await git_client.pull_rebase(
+                working_dir, branch=branch, access_token=access_token)
+        except RuntimeError:
+            force = True
+            await _log(user_id, run_id,
+                       "  ⚠ Rebase failed — will force-push",
+                       "warn", "command")
+
+        await _log(user_id, run_id,
+                   f"🚀 Pushing to {repo_name} (branch: {branch})…",
+                   "system", "command")
+        await git_client.push(
+            working_dir, branch=branch, access_token=access_token,
+            force_with_lease=force)
+
+        commit_part = f" (commit {sha[:8]})" if sha else ""
+        await _log(user_id, run_id,
+                   f"✅ Pushed to github.com/{repo_name}{commit_part}",
+                   "system", "command")
+
+        await _emit(user_id, "upgrade_pushed", {
+            "run_id": run_id,
+            "repo_name": repo_name,
+            "commit_sha": sha or "",
+            "changes_count": applied,
+            "branch": branch,
+        })
+        return {"ok": True,
+                "message": f"Pushed {applied} changes to {repo_name}"}
+    except Exception as exc:
+        logger.exception("Git push failed for run %s", run_id)
+        await _log(user_id, run_id,
+                   f"❌ Push failed: {exc}", "error", "command")
+        return {"ok": False, "message": f"Push failed: {exc}"}
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +566,127 @@ async def _narrate(
 
 
 # ---------------------------------------------------------------------------
+# Workspace preparation (clone on IDE open)
+# ---------------------------------------------------------------------------
+
+
+async def prepare_upgrade_workspace(
+    user_id: UUID,
+    run_id: UUID,
+    *,
+    access_token: str = "",
+) -> dict[str, Any]:
+    """Clone the target repo into a temp working directory.
+
+    Called when the Forge IDE modal opens (before ``/start``).  Emits WS
+    events so the user sees clone progress in the activity log.  Stores
+    ``working_dir`` and ``access_token`` in ``_active_upgrades`` for
+    later use by ``/push``.
+    """
+    run = await get_scout_run(run_id)
+    if run is None or str(run["user_id"]) != str(user_id):
+        raise ValueError("Scout run not found")
+
+    uid = str(user_id)
+    rid = str(run_id)
+    repo_name = run.get("repo_name", "")
+    if not repo_name:
+        raise ValueError("No repository name on this run")
+
+    # Create pre-execution state so _log can append
+    _active_upgrades[rid] = {
+        "status": "preparing",
+        "run_id": rid,
+        "repo_name": repo_name,
+        "working_dir": None,
+        "access_token": access_token,
+        "total_tasks": 0,
+        "completed_tasks": 0,
+        "current_task": None,
+        "task_results": [],
+        "logs": [],
+        "tokens": {"opus": {"input": 0, "output": 0, "total": 0},
+                    "sonnet": {"input": 0, "output": 0, "total": 0},
+                    "haiku": {"input": 0, "output": 0, "total": 0},
+                    "total": 0},
+        "narrator_enabled": False,
+        "narrator_watching": False,
+    }
+
+    await _log(uid, rid, f"📡 Preparing workspace for {repo_name}…", "system")
+
+    # Clone the repository
+    clone_url = f"https://github.com/{repo_name}.git"
+    tmp_root = tempfile.mkdtemp(prefix="forgeguard_upgrade_")
+    clone_dest = str(Path(tmp_root) / repo_name.split("/")[-1])
+
+    await _log(uid, rid, f"📦 Cloning {repo_name}…", "system")
+    try:
+        await git_client.clone_repo(
+            clone_url,
+            clone_dest,
+            shallow=True,
+            access_token=access_token if access_token else None,
+        )
+    except Exception as exc:
+        await _log(uid, rid, f"❌ Clone failed: {exc}", "error")
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        # Keep state so IDE still opens — analysis works without clone
+        _active_upgrades[rid]["status"] = "ready"
+        await _log(uid, rid,
+                   "⚠ Workspace unavailable — /push won't work, but "
+                   "analysis (/start) will still run.", "warn")
+        await _log(uid, rid, "", "system")
+        await _log(uid, rid,
+                   "🟢 Ready — type /start and press Enter to begin",
+                   "system")
+        return {
+            "run_id": rid,
+            "status": "ready",
+            "repo_name": repo_name,
+            "file_count": 0,
+            "branch": "main",
+            "clone_ok": False,
+        }
+
+    # Count files
+    try:
+        files = await git_client.get_file_list(clone_dest)
+        file_count = len(files)
+    except Exception:
+        file_count = 0
+
+    # Detect default branch
+    try:
+        branch = (await git_client._run_git(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=clone_dest,
+        )).strip() or "main"
+    except Exception:
+        branch = "main"
+
+    _active_upgrades[rid]["working_dir"] = clone_dest
+    _active_upgrades[rid]["status"] = "ready"
+    _active_upgrades[rid]["branch"] = branch
+
+    await _log(uid, rid,
+               f"✅ Repository cloned — {file_count} files ({branch})",
+               "system")
+    await _log(uid, rid, "", "system")
+    await _log(uid, rid,
+               "🟢 Ready — type /start and press Enter to begin upgrade",
+               "system")
+
+    return {
+        "run_id": rid,
+        "status": "ready",
+        "repo_name": repo_name,
+        "file_count": file_count,
+        "branch": branch,
+        "clone_ok": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
@@ -408,10 +703,9 @@ async def execute_upgrade(
     Parameters
     ----------
     api_key : str
-        User's primary Anthropic BYOK key (Opus).
+        User's primary Anthropic BYOK key (Sonnet for analysis).
     api_key_2 : str
-        User's second Anthropic BYOK key (Sonnet).  When provided,
-        tasks are split across two concurrent workers.
+        User's second Anthropic BYOK key (Haiku for narration).
 
     Returns immediately with session info; heavy work runs in background.
     """
@@ -435,8 +729,15 @@ async def execute_upgrade(
     rid = str(run_id)
 
     # Prevent duplicate execution
-    if rid in _active_upgrades and _active_upgrades[rid].get("status") == "running":
+    existing = _active_upgrades.get(rid)
+    if existing and existing.get("status") == "running":
         raise ValueError("Upgrade is already in progress for this run")
+
+    # Preserve workspace from prepare phase
+    prepared_dir = existing.get("working_dir") if existing else None
+    prepared_token = existing.get("access_token", "") if existing else ""
+    prepared_branch = existing.get("branch", "main") if existing else "main"
+    prepared_logs = existing.get("logs", []) if existing else []
 
     # Resolve API keys — prefer user BYOK, fall back to server env
     key1 = (api_key or "").strip() or settings.ANTHROPIC_API_KEY
@@ -447,12 +748,13 @@ async def execute_upgrade(
             "No Anthropic API key available. Add your key in Settings."
         )
 
-    # Build Opus worker — all coding/execution tasks go through Opus
-    opus_worker = _WorkerSlot(
-        label="opus",
+    # Build Sonnet worker — upgrade analysis/planning goes through Sonnet
+    # (Opus is reserved for heavy code generation in build_service)
+    sonnet_worker = _WorkerSlot(
+        label="sonnet",
         api_key=key1,
-        model=settings.LLM_BUILDER_MODEL,
-        display="Opus",
+        model=settings.LLM_PLANNER_MODEL,
+        display="Sonnet",
     )
 
     # Narrator config — Key 2 powers Haiku narration (if available)
@@ -475,7 +777,7 @@ async def execute_upgrade(
         "completed_tasks": 0,
         "current_task": None,
         "task_results": [],
-        "logs": [],
+        "logs": prepared_logs,
         "tokens": {"opus": {"input": 0, "output": 0, "total": 0},
                     "sonnet": {"input": 0, "output": 0, "total": 0},
                     "haiku": {"input": 0, "output": 0, "total": 0},
@@ -483,13 +785,16 @@ async def execute_upgrade(
         "narrator_enabled": narrator_enabled,
         "narrator_watching": False,
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "working_dir": prepared_dir,
+        "access_token": prepared_token,
+        "branch": prepared_branch,
         # private control handles (not serialised)
         "_pause_event": pause_event,
         "_stop_flag": stop_flag,
     }
 
     asyncio.create_task(
-        _run_upgrade(uid, rid, run, results, plan, tasks, opus_worker,
+        _run_upgrade(uid, rid, run, results, plan, tasks, sonnet_worker,
                      narrator_key=narrator_key, narrator_model=narrator_model)
     )
 
@@ -499,7 +804,7 @@ async def execute_upgrade(
         "total_tasks": len(tasks),
         "repo_name": run.get("repo_name", ""),
         "narrator_enabled": narrator_enabled,
-        "workers": ["opus"],
+        "workers": ["sonnet"],
     }
 
 
@@ -519,7 +824,7 @@ async def _run_upgrade(
     narrator_key: str = "",
     narrator_model: str = "",
 ) -> None:
-    """Background coroutine: Opus executes tasks, Haiku narrates."""
+    """Background coroutine: Sonnet analyses tasks, Haiku narrates."""
     state = _active_upgrades[run_id]
     repo_name = run.get("repo_name", "unknown")
     stack_profile = results.get("stack_profile", {})
@@ -536,7 +841,7 @@ async def _run_upgrade(
                 "effort": t.get("effort", "medium"),
                 "forge_automatable": t.get("forge_automatable", False),
                 "category": t.get("category", ""),
-                "worker": "opus",
+                "worker": "sonnet",
             }
             for i, t in enumerate(tasks)
         ]
@@ -551,7 +856,7 @@ async def _run_upgrade(
         })
 
         await _log(user_id, run_id, f"🚀 Forge IDE — Starting upgrade for {repo_name}", "system")
-        await _log(user_id, run_id, f"🤖 Opus executing all migration tasks", "system")
+        await _log(user_id, run_id, f"🤖 Sonnet analysing migration tasks", "system")
         if narrator_enabled:
             await _log(user_id, run_id, "🎙️ Haiku narrator active — plain-English commentary enabled", "system")
         await _log(user_id, run_id, f"📋 {len(tasks)} migration task(s) queued", "system")
@@ -805,6 +1110,11 @@ async def _run_upgrade(
         })
     finally:
         state["current_task"] = None
+        # Clean up cloned workspace
+        wd = state.get("working_dir")
+        if wd:
+            parent = str(Path(wd).parent)
+            shutil.rmtree(parent, ignore_errors=True)
         await asyncio.sleep(300)
         _active_upgrades.pop(run_id, None)
 

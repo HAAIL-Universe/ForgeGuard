@@ -7,6 +7,7 @@ import pytest
 
 from app.services.upgrade_executor import (
     _active_upgrades,
+    _apply_file_change,
     _log,
     _strip_codeblock,
     _TokenAccumulator,
@@ -14,12 +15,20 @@ from app.services.upgrade_executor import (
     execute_upgrade,
     get_available_commands,
     get_upgrade_status,
+    prepare_upgrade_workspace,
     send_command,
     set_narrator_watching,
 )
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_upgrades():
+    """Ensure no state leaks between tests."""
+    yield
+    _active_upgrades.clear()
 
 FAKE_PLAN = {
     "executive_brief": {"headline": "Upgrade needed", "health_grade": "C"},
@@ -192,7 +201,7 @@ async def test_execute_upgrade_starts_background_task():
         assert result["repo_name"] == "test/repo"
         assert result["run_id"] == str(RUN_ID)
         assert result["narrator_enabled"] is False
-        assert result["workers"] == ["opus"]
+        assert result["workers"] == ["sonnet"]
 
         # Background task should have been spawned
         mock_asyncio.create_task.assert_called_once()
@@ -273,7 +282,7 @@ async def test_execute_upgrade_narrator_enabled():
         )
 
         assert result["narrator_enabled"] is True
-        assert result["workers"] == ["opus"]
+        assert result["workers"] == ["sonnet"]
         assert result["status"] == "running"
 
         state = get_upgrade_status(str(RUN_ID))
@@ -296,7 +305,7 @@ async def test_execute_upgrade_single_key_no_narrator():
         result = await execute_upgrade(USER_ID, RUN_ID, api_key="sk-primary")
 
         assert result["narrator_enabled"] is False
-        assert result["workers"] == ["opus"]
+        assert result["workers"] == ["sonnet"]
 
     _active_upgrades.pop(str(RUN_ID), None)
 
@@ -396,6 +405,7 @@ def test_get_available_commands():
     assert "/status" in cmds
     assert "/clear" in cmds
     assert "/push" in cmds
+    assert "/start" in cmds
     # Each value is a description string
     assert isinstance(cmds["/pause"], str)
 
@@ -555,13 +565,15 @@ async def test_send_command_unknown():
 
 
 @pytest.mark.asyncio
-async def test_send_command_push_manifest():
+async def test_send_command_push_no_working_dir():
+    """Push with changes but no working_dir should explain the issue."""
     import asyncio
 
     rid = "cmd-push-test"
     _active_upgrades[rid] = {
         "status": "running",
         "logs": [],
+        "repo_name": "test/repo",
         "task_results": [
             {"llm_result": {"changes": [{"file": "a.py", "action": "modify"}]}},
         ],
@@ -569,10 +581,68 @@ async def test_send_command_push_manifest():
         "_stop_flag": asyncio.Event(),
     }
     try:
-        with patch("app.services.upgrade_executor._log", new_callable=AsyncMock):
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+        ):
+            r = await send_command("u1", rid, "/push")
+            assert r["ok"] is False
+            assert "No working directory" in r["message"]
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_send_command_push_with_working_dir(tmp_path):
+    """Push with a real working_dir applies changes and pushes via git."""
+    import asyncio
+
+    rid = "cmd-push-wd-test"
+    # Create a real file in the temp dir
+    (tmp_path / "a.py").write_text("old content")
+
+    _active_upgrades[rid] = {
+        "status": "completed",
+        "logs": [],
+        "repo_name": "test/repo",
+        "working_dir": str(tmp_path),
+        "access_token": "ghp_test",
+        "branch": "main",
+        "task_results": [
+            {"status": "proposed", "task_name": "Upgrade A", "changes_count": 1,
+             "llm_result": {"changes": [
+                {"file": "a.py", "action": "modify",
+                 "before_snippet": "old content",
+                 "after_snippet": "new content"}
+             ]}},
+        ],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor.git_client") as mock_git,
+        ):
+            mock_git.add_all = AsyncMock()
+            mock_git.commit = AsyncMock(return_value="abc12345")
+            mock_git._run_git = AsyncMock(return_value="main")
+            mock_git.set_remote = AsyncMock()
+            mock_git.pull_rebase = AsyncMock()
+            mock_git.push = AsyncMock()
+
             r = await send_command("u1", rid, "/push")
             assert r["ok"] is True
-            assert "1 changes catalogued" in r["message"]
+            assert "Pushed" in r["message"]
+
+            # File should be modified on disk
+            assert (tmp_path / "a.py").read_text() == "new content"
+
+            # Git operations called
+            mock_git.add_all.assert_awaited_once()
+            mock_git.commit.assert_awaited_once()
+            mock_git.push.assert_awaited_once()
     finally:
         _active_upgrades.pop(rid, None)
 
@@ -616,4 +686,113 @@ def test_set_narrator_watching_toggle():
         assert set_narrator_watching(rid, False) is True
         assert _active_upgrades[rid]["narrator_watching"] is False
     finally:
+        _active_upgrades.pop(rid, None)
+
+
+# -----------------------------------------------------------------------
+# _apply_file_change
+# -----------------------------------------------------------------------
+
+
+def test_apply_file_change_create(tmp_path):
+    _apply_file_change(str(tmp_path), {
+        "file": "new_dir/hello.py",
+        "action": "create",
+        "after_snippet": "print('hello')",
+    })
+    assert (tmp_path / "new_dir" / "hello.py").read_text() == "print('hello')"
+
+
+def test_apply_file_change_modify(tmp_path):
+    (tmp_path / "app.py").write_text("x = 1\ny = 2\nz = 3\n")
+    _apply_file_change(str(tmp_path), {
+        "file": "app.py",
+        "action": "modify",
+        "before_snippet": "y = 2",
+        "after_snippet": "y = 99",
+    })
+    assert "y = 99" in (tmp_path / "app.py").read_text()
+    assert "y = 2" not in (tmp_path / "app.py").read_text()
+
+
+def test_apply_file_change_delete(tmp_path):
+    (tmp_path / "old.txt").write_text("gone")
+    _apply_file_change(str(tmp_path), {
+        "file": "old.txt",
+        "action": "delete",
+    })
+    assert not (tmp_path / "old.txt").exists()
+
+
+def test_apply_file_change_modify_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        _apply_file_change(str(tmp_path), {
+            "file": "nope.py",
+            "action": "modify",
+            "before_snippet": "x",
+            "after_snippet": "y",
+        })
+
+
+# -----------------------------------------------------------------------
+# /start command
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_command_start():
+    """'/start' returns ok (normally intercepted by frontend)."""
+    import asyncio
+
+    rid = "cmd-start-test"
+    _active_upgrades[rid] = {
+        "status": "ready",
+        "logs": [],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    try:
+        with patch("app.services.upgrade_executor._log", new_callable=AsyncMock):
+            r = await send_command("u1", rid, "/start")
+            assert r["ok"] is True
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+# -----------------------------------------------------------------------
+# prepare_upgrade_workspace
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prepare_upgrade_workspace():
+    """prepare_upgrade_workspace clones repo and sets ready state."""
+    with (
+        patch("app.services.upgrade_executor.get_scout_run", new_callable=AsyncMock) as mock_run,
+        patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+        patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+        patch("app.services.upgrade_executor.git_client") as mock_git,
+        patch("app.services.upgrade_executor.tempfile") as mock_tmp,
+    ):
+        mock_run.return_value = {
+            "id": RUN_ID,
+            "user_id": USER_ID,
+            "repo_name": "test/repo",
+        }
+        mock_tmp.mkdtemp.return_value = "/tmp/forgeguard_upgrade_xyz"
+        mock_git.clone_repo = AsyncMock()
+        mock_git.get_file_list = AsyncMock(return_value=["a.py", "b.py"])
+        mock_git._run_git = AsyncMock(return_value="main")
+
+        result = await prepare_upgrade_workspace(
+            USER_ID, RUN_ID, access_token="ghp_test",
+        )
+
+        assert result["status"] == "ready"
+        assert result["file_count"] == 2
+        assert result["clone_ok"] is True
+
+        rid = str(RUN_ID)
+        assert _active_upgrades[rid]["status"] == "ready"
+        assert _active_upgrades[rid]["working_dir"] is not None
         _active_upgrades.pop(rid, None)
