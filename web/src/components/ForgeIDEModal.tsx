@@ -333,7 +333,11 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   /* Keep logsLenRef in sync so polling closures see the latest count */
   useEffect(() => { logsLenRef.current = logs.length; }, [logs.length]);
 
-  /* Derived: split logs by worker for stacked panels */
+  /* Derived: split logs by worker for three-panel display */
+  const systemLogs = useMemo(
+    () => logs.filter(l => l.worker !== 'sonnet' && l.worker !== 'opus'),
+    [logs],
+  );
   const sonnetLogs = useMemo(
     () => logs.filter(l => l.worker === 'sonnet'),
     [logs],
@@ -1082,12 +1086,12 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           {/* Activity log — unified left (40%) + stacked Opus/Sonnet right (60%) */}
           {activeTab === 'activity' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
-              {/* Unified log — 40% */}
+              {/* System/command log — 40% */}
               <div style={{ width: '40%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 <LogPane
-                  logs={logs}
+                  logs={systemLogs}
                   status={status}
-                  label="ALL"
+                  label="LOG"
                   labelColor="#94A3B8"
                   emptyText={status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 />
