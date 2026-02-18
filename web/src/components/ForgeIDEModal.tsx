@@ -325,12 +325,24 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   /* Polling fallback */
   useEffect(() => {
     if (status !== 'running' && status !== 'paused') return;
+    let consecutiveFailures = 0;
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`${API_BASE}/scout/runs/${runId}/upgrade-status`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          consecutiveFailures++;
+          // Session no longer exists — stop polling after a few failures
+          if (res.status === 404 && consecutiveFailures >= 3) {
+            setStatus((prev) =>
+              prev === 'running' || prev === 'paused' ? 'completed' : prev,
+            );
+            clearInterval(interval);
+          }
+          return;
+        }
+        consecutiveFailures = 0;
         const data = await res.json();
         setCompletedTasks(data.completed_tasks || 0);
         if (data.tokens) {
