@@ -119,10 +119,12 @@ const ActiveLogLine = memo(function ActiveLogLine({
   log,
   color,
   icon,
+  accentColor,
 }: {
   log: LogEntry;
   color: string;
   icon: string;
+  accentColor: string;
 }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -144,14 +146,14 @@ const ActiveLogLine = memo(function ActiveLogLine({
         color,
         display: 'flex',
         padding: '1px 0 1px 12px',
-        borderLeft: '2px solid #7C3AED88',
-        background: '#7C3AED0A',
+        borderLeft: `2px solid ${accentColor}88`,
+        background: `${accentColor}0A`,
       }}
     >
       <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
         {ts}
       </span>
-      <span style={{ color: '#94A3B8', flexShrink: 0, width: '28px', fontSize: '0.65rem', paddingTop: '2px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+      <span style={{ color: accentColor, flexShrink: 0, width: '28px', fontSize: '0.65rem', paddingTop: '2px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
         {elapsedLabel}
       </span>
       {icon && (
@@ -270,7 +272,7 @@ const LogPane = memo(function LogPane({
           const isActive = activeIndices.has(i);
 
           if (isActive) {
-            return <ActiveLogLine key={i} log={log} color={color} icon={icon} />;
+            return <ActiveLogLine key={i} log={log} color={color} icon={icon} accentColor={labelColor} />;
           }
 
           const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';

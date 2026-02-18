@@ -1309,9 +1309,13 @@ async def _auto_fix_loop(
     Returns ``(passed, final_test_output)``.  If all attempts are
     exhausted the caller should present a final Y/N prompt.
     """
-    api_key = state.get("api_key", "")
-    planner_model = state.get("planner_model", settings.LLM_PLANNER_MODEL)
-    builder_model = state.get("builder_model", settings.LLM_BUILDER_MODEL)
+    # Extract API key from worker slots — state never stores a bare
+    # "api_key" string; the key lives inside the _WorkerSlot objects.
+    _sw: _WorkerSlot | None = state.get("_sonnet_worker")
+    _ow: _WorkerSlot | None = state.get("_opus_worker")
+    api_key = (_sw.api_key if _sw else "") or (_ow.api_key if _ow else "")
+    planner_model = (_sw.model if _sw else "") or settings.LLM_PLANNER_MODEL
+    builder_model = (_ow.model if _ow else "") or settings.LLM_BUILDER_MODEL
     working_dir = state.get("working_dir", "")
     max_t1 = settings.LLM_FIX_MAX_TIER1
     max_t2 = settings.LLM_FIX_MAX_TIER2
