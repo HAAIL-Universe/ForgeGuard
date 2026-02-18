@@ -513,7 +513,7 @@ async def _run_tests(
         passed = proc.returncode == 0
         if passed:
             await _log(user_id, run_id,
-                       f"✅ Tests passed (exit code 0)", "system", "command")
+                       "✅ Tests passed (exit code 0)", "system", "command")
         else:
             await _log(user_id, run_id,
                        f"❌ Tests failed (exit code {proc.returncode})",
@@ -524,10 +524,16 @@ async def _run_tests(
         await _log(user_id, run_id,
                    "⏱️ Tests timed out after 120s.", "error", "command")
         return False, "Timeout after 120s"
-    except Exception as exc:
+    except FileNotFoundError:
         await _log(user_id, run_id,
-                   f"⚠ Test runner error: {exc}", "error", "command")
-        return False, str(exc)
+                   f"⚠ Test runner not found: '{cmd[0]}' is not installed "
+                   f"or not on PATH.", "error", "command")
+        return False, f"Command not found: {cmd[0]}"
+    except Exception as exc:
+        err_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        await _log(user_id, run_id,
+                   f"⚠ Test runner error: {err_msg}", "error", "command")
+        return False, err_msg
 
 
 async def _commit_and_push(
@@ -1736,10 +1742,25 @@ async def _plan_task_with_llm(
                  else {"input_tokens": 0, "output_tokens": 0})
         text: str = result["text"] if isinstance(result, dict) else str(result)
         text = _strip_codeblock(text)
+
+        if not text.strip():
+            await _log(user_id, run_id,
+                       f"⚠ [Sonnet] Empty response for task {task.get('id')} "
+                       f"— model returned no content", "error")
+            return None, usage
+
         return json.loads(text), usage
+    except json.JSONDecodeError as exc:
+        logger.warning("Sonnet returned non-JSON for %s: %s…",
+                       task.get("id"), text[:120] if text else "(empty)")
+        short = str(exc)[:120]
+        await _log(user_id, run_id,
+                   f"⚠ [Sonnet] Invalid JSON for task {task.get('id')}: {short}",
+                   "error")
+        return None, usage if "usage" in dir() else {"input_tokens": 0, "output_tokens": 0}
     except Exception as exc:
         logger.exception("Sonnet planning failed for %s", task.get("id"))
-        short = str(exc)[:200]
+        short = f"{type(exc).__name__}: {str(exc)[:180]}"
         await _log(user_id, run_id,
                    f"Planning failed for task {task.get('id')}: {short}", "error")
         return None, {"input_tokens": 0, "output_tokens": 0}
@@ -1820,10 +1841,25 @@ async def _build_task_with_llm(
                  else {"input_tokens": 0, "output_tokens": 0})
         text: str = result["text"] if isinstance(result, dict) else str(result)
         text = _strip_codeblock(text)
+
+        if not text.strip():
+            await _log(user_id, run_id,
+                       f"⚠ [Opus] Empty response for task {task.get('id')} "
+                       f"— model returned no content", "error")
+            return None, usage
+
         return json.loads(text), usage
+    except json.JSONDecodeError as exc:
+        logger.warning("Opus returned non-JSON for %s: %s…",
+                       task.get("id"), text[:120] if text else "(empty)")
+        short = str(exc)[:120]
+        await _log(user_id, run_id,
+                   f"⚠ [Opus] Invalid JSON for task {task.get('id')}: {short}",
+                   "error")
+        return None, usage if "usage" in dir() else {"input_tokens": 0, "output_tokens": 0}
     except Exception as exc:
         logger.exception("Opus build failed for %s", task.get("id"))
-        short = str(exc)[:200]
+        short = f"{type(exc).__name__}: {str(exc)[:180]}"
         await _log(user_id, run_id,
                    f"Build failed for task {task.get('id')}: {short}", "error")
         return None, {"input_tokens": 0, "output_tokens": 0}
