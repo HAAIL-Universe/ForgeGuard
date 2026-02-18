@@ -45,6 +45,7 @@ from app.clients import git_client
 from app.clients.llm_client import chat
 from app.config import settings
 from app.repos.scout_repo import get_scout_run, update_scout_run
+from app.repos.user_repo import get_user_by_id
 from app.ws_manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -1652,9 +1653,22 @@ async def _commit_and_push(
 ) -> dict:
     """Git add → commit → push.  Assumes changes are already applied."""
     working_dir = state.get("working_dir", "")
-    access_token = state.get("access_token", "")
     repo_name = state.get("repo_name", "unknown")
     applied = state.get("_applied_count", len(all_changes))
+
+    # Always refresh the OAuth token from DB so that a re-auth
+    # (e.g. to add the 'workflow' scope) takes effect without
+    # needing to reopen the Forge IDE modal.
+    access_token = state.get("access_token", "")
+    try:
+        fresh_user = await get_user_by_id(UUID(user_id))
+        if fresh_user:
+            fresh_token = fresh_user.get("access_token", "")
+            if fresh_token:
+                access_token = fresh_token
+                state["access_token"] = fresh_token
+    except Exception:
+        pass  # fall back to cached token
 
     if not access_token:
         await _log(user_id, run_id,
@@ -1743,9 +1757,20 @@ async def _commit_and_push(
         state["_push_changes"] = all_changes
         state["_push_task_results"] = task_results
         state["_push_failed"] = True
-        await _log(user_id, run_id,
-                   "💾 Changes preserved — type /push to retry.",
-                   "system", "command")
+
+        # Detect OAuth scope errors and surface an actionable message
+        err_str = str(exc).lower()
+        if "workflow" in err_str and "scope" in err_str:
+            await _log(user_id, run_id,
+                       "🔑 Your GitHub token is missing the 'workflow' "
+                       "scope (needed for .github/workflows/ files). "
+                       "Log out and log back in to re-authorize, then "
+                       "type /push to retry.",
+                       "warn", "command")
+        else:
+            await _log(user_id, run_id,
+                       "💾 Changes preserved — type /push to retry.",
+                       "system", "command")
         return {"ok": False, "message": f"Push failed: {exc}"}
 
 
