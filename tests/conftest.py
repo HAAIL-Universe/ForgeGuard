@@ -7,6 +7,7 @@ Provides:
 - ``test_client`` — pre-built TestClient against the app
 """
 
+import os
 from uuid import UUID
 
 import pytest
@@ -14,6 +15,30 @@ from fastapi.testclient import TestClient
 
 from app.auth import create_token
 from app.main import app
+
+
+# ---------------------------------------------------------------------------
+# Marker registration & sandbox detection
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):
+    """Register custom markers.
+
+    Tests that need real external services (database, Redis, etc.) should be
+    decorated with ``@pytest.mark.integration``.  In CI / sandbox environments
+    run pytest with ``-m 'not integration'`` to skip them automatically.
+    """
+    config.addinivalue_line(
+        "markers",
+        "integration: tests requiring external services (database, cache, etc.)",
+    )
+
+
+@pytest.fixture(scope="session")
+def is_sandbox():
+    """Return *True* when running inside the Forge sandbox / CI."""
+    return os.getenv("FORGE_SANDBOX") == "1"
 
 # ---------------------------------------------------------------------------
 # Canonical test identifiers (used by most test modules)

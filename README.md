@@ -1,5 +1,7 @@
 # ForgeGuard
 
+[![CI](https://github.com/HAAIL-Universe/ForgeGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/HAAIL-Universe/ForgeGuard/actions/workflows/ci.yml)
+
 **AI-powered repository governance platform.**
 
 ForgeGuard connects to your GitHub repositories, runs automated audit checks on every commit, generates project contracts via AI-guided questionnaires, orchestrates LLM-driven code builds, and provides deep-scan repository analysis — all from a single real-time dashboard.
