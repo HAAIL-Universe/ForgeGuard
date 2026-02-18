@@ -392,11 +392,40 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
 
     if cmd == "/push":
         task_results = state.get("task_results", [])
+        # Collect all planned file paths across tasks for final scope gate
+        all_planned: set[str] = set()
+        for tr in task_results:
+            plan_data = (tr.get("llm_result") or {}).get("_plan_result") or {}
+            for pe in plan_data.get("plan", []):
+                pf = pe.get("file", "")
+                if pf:
+                    all_planned.add(pf)
+            # Also pull from task-level plan stash
+            plan_stash = tr.get("_plan") or {}
+            for pe in plan_stash.get("plan", []):
+                pf = pe.get("file", "")
+                if pf:
+                    all_planned.add(pf)
+
         all_changes: list[dict] = []
+        dropped_at_push = 0
         for tr in task_results:
             llm_result = tr.get("llm_result") or {}
             for change in llm_result.get("changes", []):
+                fpath = change.get("file", "")
+                # Safety net: if we have planned files and this isn't one, drop it
+                if all_planned and fpath and fpath not in all_planned:
+                    dropped_at_push += 1
+                    await _log(user_id, run_id,
+                               f"  🚫 Push-gate dropped out-of-scope: {fpath}",
+                               "warn", "command")
+                    continue
                 all_changes.append(change)
+
+        if dropped_at_push:
+            await _log(user_id, run_id,
+                       f"⚠ {dropped_at_push} out-of-scope file(s) removed from push manifest.",
+                       "warn", "command")
 
         if not all_changes:
             await _log(user_id, run_id, "📌 No file changes to push yet.", "warn", "command")
@@ -496,15 +525,21 @@ def _audit_file_change(
 ) -> tuple[str, list[str]]:
     """Run deterministic checks on a single proposed file change.
 
-    Returns ``(verdict, findings)`` where *verdict* is ``"PASS"`` or
-    ``"FAIL"`` and *findings* is a (possibly empty) list of human-readable
-    issue descriptions.
+    Returns ``(verdict, findings)`` where *verdict* is one of:
+      - ``"PASS"`` — all checks OK
+      - ``"FAIL"`` — content issues (syntax, secrets, etc.)
+      - ``"REJECT"`` — hard block: file not in planner scope (change must
+        be dropped entirely, not just flagged)
+
+    *findings* is a (possibly empty) list of human-readable issue
+    descriptions.
 
     Checks performed (all pure-Python, zero LLM cost):
       1. **Syntax** — ``compile()`` for ``.py``, ``json.loads()`` for ``.json``
       2. **Secrets scan** — regex patterns from ``app.audit.engine``
       3. **Import-star** — ``from X import *`` in Python files
       4. **Scope compliance** — file path was in Sonnet's planned file list
+         (hard REJECT when violated)
     """
     content = change.get("after_snippet") or ""
     filepath = change.get("file", "")
@@ -542,9 +577,11 @@ def _audit_file_change(
                     f"Wildcard import — {filepath}: {stripped}")
 
     # 4. Scope compliance (when Sonnet's plan is available)
+    #    This is a HARD REJECT — out-of-scope changes must be dropped.
     if planned_files is not None and filepath and filepath not in planned_files:
         findings.append(
             f"Scope deviation — {filepath}: not in Sonnet's planned file list")
+        return "REJECT", findings
 
     verdict = "FAIL" if findings else "PASS"
     return verdict, findings
@@ -1789,12 +1826,26 @@ _BUILDER_SYSTEM_PROMPT = """\
 You are ForgeGuard's Code Builder (Opus). You take a migration plan from \
 the Planner and produce concrete, production-quality code changes.
 
-The Planner has already identified which files need to change and why. \
-Your job is to write the exact code.
+═══ STRICT SCOPE RULES ═══
+You MUST only touch files that appear in the Planner's file list \
+(the "plan" array in "planner_analysis").  Any change to a file not \
+explicitly listed by the Planner will be automatically rejected.
 
-IMPORTANT — you are given the ACTUAL file contents from the cloned \
-repository under the "workspace_files" key.  Use these real contents \
-to craft precise before_snippet / after_snippet values.
+Do NOT:
+- Add helper files, utils, configs, or "nice-to-have" extras.
+- Rename or restructure files beyond what the plan specifies.
+- Create test files, documentation, or supporting modules unless the \
+plan explicitly lists them.
+
+If the plan seems incomplete or you believe an additional file MUST be \
+changed for the migration to work, do NOT silently add it.  Instead, \
+record your concern in the "objections" array (see schema below) so \
+the human operator can review and update the plan.
+
+═══ FILE CONTENT RULES ═══
+You are given the ACTUAL file contents from the cloned repository under \
+the "workspace_files" key.  Use these real contents to craft precise \
+before_snippet / after_snippet values.
 
 Rules for before_snippet (modify action):
 - MUST be an exact, contiguous substring copied from the provided file.
@@ -1807,6 +1858,7 @@ Rules for after_snippet:
 
 For "create" actions, omit before_snippet and put the full file in after_snippet.
 
+═══ RESPONSE SCHEMA ═══
 Respond with valid JSON matching this schema:
 {
   "thinking": ["step-by-step reasoning about implementing each change"],
@@ -1818,6 +1870,11 @@ Respond with valid JSON matching this schema:
       "before_snippet": "exact text from the file (for modify)",
       "after_snippet": "replacement text"
     }
+  ],
+  "objections": [
+    "(optional) Any concerns about the plan — missing files, \
+conflicting requirements, database violations, etc.  The human \
+operator will see these and can adjust the plan."
   ],
   "warnings": ["any risks or things to watch out for"],
   "verification_steps": ["how to verify this migration worked"],
@@ -2332,7 +2389,7 @@ async def _run_upgrade(
                     await _log(user_id, run_id,
                                 f"📝 [Opus] {len(changes)} file change(s) proposed:",
                                 "system")
-                    for change in changes:
+                    for change in list(changes):  # copy — we may .remove() inside
                         icon = {"modify": "✏️", "create": "➕",
                                 "delete": "🗑️"}.get(
                             change.get("action", "modify"), "📄")
@@ -2368,7 +2425,22 @@ async def _run_upgrade(
                         }
                         state.setdefault("audit_results", []).append(
                             audit_entry)
-                        if verdict == "PASS":
+                        if verdict == "REJECT":
+                            # Hard block — drop this change entirely
+                            await _log(user_id, run_id,
+                                        f"    🚫 REJECTED (scope): "
+                                        f"{change.get('file', '?')} "
+                                        f"— not in planner's file list, dropped",
+                                        "warn")
+                            await _emit(user_id, "file_audit_reject", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": change.get("file", ""),
+                                "findings": findings,
+                            })
+                            changes.remove(change)
+                            continue
+                        elif verdict == "PASS":
                             await _log(user_id, run_id,
                                         f"    ✅ Audit PASS: {change.get('file', '?')}",
                                         "info")
@@ -2387,6 +2459,17 @@ async def _run_upgrade(
                                 "file": change.get("file", ""),
                                 "findings": findings,
                             })
+
+                # Surface builder objections to the user
+                for objection in code_result.get("objections", []):
+                    await _log(user_id, run_id,
+                               f"💬 [Opus objection] {objection}", "warn")
+                if code_result.get("objections"):
+                    await _emit(user_id, "upgrade_objections", {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "objections": code_result.get("objections", []),
+                    })
 
                 for warn in code_result.get("warnings", []):
                     await _log(user_id, run_id, f"⚠️ [Opus] {warn}", "warn")
@@ -2409,6 +2492,7 @@ async def _run_upgrade(
                         "opus": code_usage,
                     },
                     "llm_result": code_result,
+                    "_plan": plan_result,
                 }
                 await _log(user_id, run_id,
                             f"✅ Task {task_id} complete — "
@@ -3114,7 +3198,7 @@ async def _run_retry(
                     await _log(user_id, run_id,
                                 f"📝 [Opus] {len(changes)} file change(s) proposed:",
                                 "system")
-                    for change in changes:
+                    for change in list(changes):  # copy — we may .remove() inside
                         icon = {"modify": "✏️", "create": "➕",
                                 "delete": "🗑️"}.get(
                             change.get("action", "modify"), "📄")
@@ -3150,7 +3234,22 @@ async def _run_retry(
                         }
                         state.setdefault("audit_results", []).append(
                             audit_entry)
-                        if verdict == "PASS":
+                        if verdict == "REJECT":
+                            # Hard block — drop this change entirely
+                            await _log(user_id, run_id,
+                                        f"    🚫 REJECTED (scope): "
+                                        f"{change.get('file', '?')} "
+                                        f"— not in planner's file list, dropped",
+                                        "warn")
+                            await _emit(user_id, "file_audit_reject", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "file": change.get("file", ""),
+                                "findings": findings,
+                            })
+                            changes.remove(change)
+                            continue
+                        elif verdict == "PASS":
                             await _log(user_id, run_id,
                                         f"    ✅ Audit PASS: {change.get('file', '?')}",
                                         "info")
@@ -3170,6 +3269,17 @@ async def _run_retry(
                                 "findings": findings,
                             })
 
+                # Surface builder objections to the user
+                for objection in code_result.get("objections", []):
+                    await _log(user_id, run_id,
+                               f"💬 [Opus objection] {objection}", "warn")
+                if code_result.get("objections"):
+                    await _emit(user_id, "upgrade_objections", {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "objections": code_result.get("objections", []),
+                    })
+
                 for warn in code_result.get("warnings", []):
                     await _log(user_id, run_id, f"⚠️ [Opus] {warn}", "warn")
 
@@ -3188,6 +3298,7 @@ async def _run_retry(
                     "worker": "opus",
                     "tokens": {"sonnet": plan_usage, "opus": code_usage},
                     "llm_result": code_result,
+                    "_plan": plan_result,
                 }
                 await _log(user_id, run_id,
                             f"✅ Task {task_id} complete — "

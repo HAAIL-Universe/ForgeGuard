@@ -1417,7 +1417,7 @@ class TestAuditFileChange:
             change, planned_files=["app/main.py", "tests/test_main.py"])
         assert verdict == "PASS"
 
-    def test_fail_out_of_scope(self):
+    def test_reject_out_of_scope(self):
         change = {
             "file": "app/unplanned.py",
             "action": "create",
@@ -1425,7 +1425,7 @@ class TestAuditFileChange:
         }
         verdict, findings = _audit_file_change(
             change, planned_files=["app/main.py"])
-        assert verdict == "FAIL"
+        assert verdict == "REJECT"
         assert any("Scope deviation" in f for f in findings)
 
     def test_no_scope_check_when_none(self):
