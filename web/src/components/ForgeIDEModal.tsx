@@ -200,19 +200,23 @@ const LogPane = memo(function LogPane({
     }
   }, [panelLogs.length]);
 
-  // Find last active thinking line per worker in THIS panel
+  // Find last active thinking line per worker in THIS panel.
+  // A worker is only "active" if its most recent log line is the
+  // thinking line — any subsequent non-thinking message (e.g.
+  // "All tasks planned") means thinking is over for that worker.
   const activeIndices = new Set<number>();
   if (status === 'running') {
     const seenWorkers = new Set<string>();
     for (let j = panelLogs.length - 1; j >= 0; j--) {
+      const wm = panelLogs[j].message.match(/\[(\w+)\]/);
+      const worker = wm ? wm[1] : '_default';
+      if (seenWorkers.has(worker)) continue;
       if (panelLogs[j].level === 'thinking' && panelLogs[j].message.endsWith('…')) {
-        const wm = panelLogs[j].message.match(/\[(\w+)\]/);
-        const worker = wm ? wm[1] : '_default';
-        if (!seenWorkers.has(worker)) {
-          seenWorkers.add(worker);
-          activeIndices.add(j);
-        }
+        activeIndices.add(j);
       }
+      // Mark worker as resolved — if the first line we hit (scanning
+      // backward) was NOT a thinking line, the timer should not tick.
+      seenWorkers.add(worker);
     }
   }
 
