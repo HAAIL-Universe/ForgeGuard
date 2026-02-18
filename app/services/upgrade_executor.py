@@ -580,13 +580,9 @@ async def _narrate(
 ) -> None:
     """Fire a Haiku narration call (non-blocking). Failures are silently logged.
 
-    Skips silently when the user is not viewing the Narrator tab
-    (``narrator_watching`` flag in state).
+    Always fires when narrator is enabled — Haiku is cheap enough to
+    run from the start so users see plain-English commentary immediately.
     """
-    # Respect the watching flag — don't waste tokens if nobody is looking
-    state = _active_upgrades.get(run_id)
-    if state and not state.get("narrator_watching", False):
-        return
     try:
         result = await chat(
             api_key=narrator_key,
@@ -662,7 +658,7 @@ async def prepare_upgrade_workspace(
                     "haiku": {"input": 0, "output": 0, "total": 0},
                     "total": 0},
         "narrator_enabled": False,
-        "narrator_watching": False,
+        "narrator_watching": True,
     }
 
     await _log(uid, rid, f"📡 Preparing workspace for {repo_name}…", "system")
@@ -840,7 +836,7 @@ async def execute_upgrade(
                     "haiku": {"input": 0, "output": 0, "total": 0},
                     "total": 0},
         "narrator_enabled": narrator_enabled,
-        "narrator_watching": False,
+        "narrator_watching": True,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "working_dir": prepared_dir,
         "access_token": prepared_token,
@@ -945,13 +941,20 @@ async def _run_upgrade(
 
         await asyncio.sleep(0.5)
 
-        # Fire opening narration (non-blocking)
+        # Fire opening narration (non-blocking) — rich context
         if narrator_enabled:
             brief = executive.get("headline", "")
+            grade = executive.get("health_grade", "")
+            task_overview = "; ".join(
+                f"{t.get('from_state', '?')} → {t.get('to_state', '?')} "
+                f"({t.get('priority', 'med')} priority)"
+                for t in tasks[:6]
+            )
             asyncio.create_task(_narrate(
                 user_id, run_id,
                 f"Starting upgrade for repository '{repo_name}'. "
-                f"{len(tasks)} migration tasks queued. {brief}",
+                f"Health grade: {grade}. {brief} "
+                f"{len(tasks)} tasks planned: {task_overview}.",
                 narrator_key=narrator_key, narrator_model=narrator_model,
                 tokens=tokens,
             ))
@@ -1128,6 +1131,21 @@ async def _run_upgrade(
             await _emit(user_id, "upgrade_token_tick", {
                 "run_id": run_id, **tokens.snapshot()})
 
+            # Narrate after first plan completes
+            if narrator_enabled and current_plan:
+                plan_files = current_plan.get("plan", [])
+                file_list = ", ".join(p.get("file", "?") for p in plan_files[:5])
+                analysis = current_plan.get("analysis", "")
+                asyncio.create_task(_narrate(
+                    user_id, run_id,
+                    f"Sonnet just finished planning task 1: '{first_name}'. "
+                    f"{analysis} "
+                    f"Files identified: {file_list}. "
+                    f"Now handing off to Opus to write the code.",
+                    narrator_key=narrator_key, narrator_model=narrator_model,
+                    tokens=tokens,
+                ))
+
             # Pipeline loop
             for task_index in range(len(tasks)):
                 # Check /stop
@@ -1240,13 +1258,27 @@ async def _run_upgrade(
                 current_plan = next_plan
                 plan_usage = next_plan_usage
 
-                # Fire narration (non-blocking)
+                # Fire narration (non-blocking) — rich context
                 if narrator_enabled:
+                    # Build a richer summary for Haiku
+                    n_changes = 0
+                    changed_files = []
+                    if code_result:
+                        changes_list = code_result.get("changes", [])
+                        n_changes = len(changes_list)
+                        changed_files = [c.get("file", "?") for c in changes_list[:5]]
+                    plan_summary = ""
+                    if current_plan:
+                        plan_summary = current_plan.get("analysis", "")
+                    remaining = len(tasks) - state["completed_tasks"]
                     asyncio.create_task(_narrate(
                         user_id, run_id,
-                        f"Just finished task {task_index + 1}/{len(tasks)}: "
+                        f"Opus just finished coding task {task_index + 1}/{len(tasks)}: "
                         f"'{task_name}'. "
-                        f"{state['completed_tasks']}/{len(tasks)} done.",
+                        f"{n_changes} file(s) changed: {', '.join(changed_files)}. "
+                        f"{state['completed_tasks']}/{len(tasks)} done, "
+                        f"{remaining} remaining."
+                        + (f" Next up: {plan_summary}" if plan_summary and remaining > 0 else ""),
                         narrator_key=narrator_key,
                         narrator_model=narrator_model,
                         tokens=tokens,

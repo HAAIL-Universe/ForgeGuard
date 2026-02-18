@@ -208,7 +208,11 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           case 'upgrade_started':
             setStatus('running');
             setTotalTasks(p.total_tasks || 0);
-            if (p.narrator_enabled != null) setNarratorEnabled(p.narrator_enabled);
+            if (p.narrator_enabled != null) {
+              setNarratorEnabled(p.narrator_enabled);
+              // Auto-switch to narrator tab when available — commentary from the start
+              if (p.narrator_enabled) setLeftTab('narrator');
+            }
             if (Array.isArray(p.tasks)) {
               setTasks(p.tasks.map((t: any) => ({ ...t, status: 'pending', worker: t.worker })));
             }
