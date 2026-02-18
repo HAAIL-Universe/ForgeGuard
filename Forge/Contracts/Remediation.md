@@ -442,7 +442,7 @@
 
 ---
 
-## R11 — API Polish
+## R11 — API Polish ✅
 
 > Pagination, versioning, OpenAPI quality.
 
