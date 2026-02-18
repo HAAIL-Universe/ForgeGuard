@@ -700,25 +700,40 @@ def _write_audit_trail(
 # ---------------------------------------------------------------------------
 
 _REMEDIATION_SYSTEM_PROMPT = """\
-You are ForgeGuard's Remediation Planner.  Given a file that failed \
-deterministic audit checks, produce a minimal fix plan.
+You are ForgeGuard's Remediation Planner.  A file has failed \
+deterministic audit checks.  Produce a precise, minimal fix plan \
+that the Code Builder (Opus) will implement.
+
+For EACH file in your plan, provide:
+- **file** — exact relative path from repo root
+- **action** — "modify", "create", or "delete"
+- **description** — specific one-line summary of the change
+- **current_state** — what the problematic code looks like now \
+(reference line numbers, function names, patterns)
+- **target_state** — exactly what it should look like after the fix
+- **rationale** — WHY this fix resolves the audit finding
+- **key_considerations** — constraints, things the Builder must not break
 
 Respond with valid JSON:
 {
-  "analysis": "what went wrong and how to fix it",
+  "analysis": "root-cause explanation of what went wrong",
   "plan": [
     {
       "file": "path/to/file",
       "action": "modify",
       "description": "exact change needed",
+      "current_state": "what the code looks like now",
+      "target_state": "what it should look like after",
+      "rationale": "why this fix resolves the finding",
       "key_considerations": "constraints"
     }
   ],
   "risks": [],
-  "verification_strategy": ["re-run audit"],
+  "verification_strategy": ["re-run inline audit — expect PASS"],
   "implementation_notes": "specific code snippet if possible"
 }
-"""
+
+IMPORTANT: Return ONLY the JSON object. No markdown fences, no prose."""
 
 
 def _build_deterministic_fix(
@@ -1851,6 +1866,9 @@ dependencies, or things the Builder needs to know about the codebase"
 ═══ RULES ═══
 - List EVERY file that must change. Omissions mean the Builder cannot \
 touch them.
+- When a "file_tree" key is present in the input, use it to reference \
+REAL paths, function names, and approximate line numbers in your \
+current_state descriptions. Do NOT guess paths that don't exist.
 - Reference actual function names, class names, and approximate line \
 numbers when describing current_state.
 - If the migration requires config/env changes, list those files too.
@@ -2467,7 +2485,7 @@ async def _run_upgrade(
                         if verdict == "REJECT":
                             # Hard block — drop this change entirely
                             await _log(user_id, run_id,
-                                        f"    🚫 REJECTED (scope): "
+                                        f"    🚫 [Opus] REJECTED (scope): "
                                         f"{change.get('file', '?')} "
                                         f"— not in planner's file list, dropped",
                                         "warn")
@@ -2481,7 +2499,7 @@ async def _run_upgrade(
                             continue
                         elif verdict == "PASS":
                             await _log(user_id, run_id,
-                                        f"    ✅ Audit PASS: {change.get('file', '?')}",
+                                        f"    ✅ [Opus] Audit PASS: {change.get('file', '?')}",
                                         "info")
                             await _emit(user_id, "file_audit_pass", {
                                 "run_id": run_id,
@@ -2491,7 +2509,7 @@ async def _run_upgrade(
                         else:
                             for f in findings:
                                 await _log(user_id, run_id,
-                                            f"    ❌ {f}", "warn")
+                                            f"    ❌ [Opus] {f}", "warn")
                             await _emit(user_id, "file_audit_fail", {
                                 "run_id": run_id,
                                 "task_id": task_id,
@@ -2633,6 +2651,7 @@ async def _run_upgrade(
                         task,
                         api_key=sonnet_worker.api_key,
                         model=sonnet_worker.model,
+                        working_dir=state.get("working_dir", ""),
                     )
                     p_in = plan_usage.get("input_tokens", 0)
                     p_out = plan_usage.get("output_tokens", 0)
@@ -2900,6 +2919,119 @@ async def _run_upgrade(
                         task_index, task, current_plan,
                         code_result, plan_usage, code_usage,
                     )
+
+                    # ── Per-task verify-fix loop ─────────────────
+                    # If inline audit found FAIL verdicts for files
+                    # in this task, give Opus ONE re-attempt to fix
+                    # them before moving on.
+                    task_failures = [
+                        r for r in state.get("audit_results", [])
+                        if r.get("task_id") == task_id
+                        and r.get("verdict") == "FAIL"
+                        and not r.get("_retried")
+                    ]
+                    if task_failures and code_result:
+                        await _log(
+                            user_id, run_id,
+                            f"🔄 [Opus] {len(task_failures)} file(s) "
+                            f"failed audit — attempting inline fix…",
+                            "thinking",
+                        )
+                        for fail_entry in task_failures:
+                            fail_entry["_retried"] = True
+
+                        # Build a mini-remediation plan inline
+                        fail_files = [
+                            f.get("file", "?")
+                            for f in task_failures
+                        ]
+                        fail_findings = {
+                            f.get("file", "?"): f.get("findings", [])
+                            for f in task_failures
+                        }
+                        retry_plan = {
+                            "analysis": (
+                                f"Inline audit failures in "
+                                f"{', '.join(fail_files)}. "
+                                f"Fix the issues and keep all other "
+                                f"code unchanged."
+                            ),
+                            "plan": [
+                                {
+                                    "file": ff.get("file", ""),
+                                    "action": ff.get("action", "modify"),
+                                    "description": (
+                                        f"Fix audit findings: "
+                                        f"{'; '.join(ff.get('findings', []))}"
+                                    ),
+                                    "key_considerations": (
+                                        "Only fix the flagged issues. "
+                                        "Do NOT change anything else."
+                                    ),
+                                }
+                                for ff in task_failures
+                            ],
+                            "risks": [],
+                            "verification_strategy": [
+                                "Re-run inline audit — all PASS"
+                            ],
+                            "implementation_notes": (
+                                f"Findings: {json.dumps(fail_findings)}"
+                            ),
+                        }
+                        retry_result, retry_usage = (
+                            await _build_task_with_llm(
+                                user_id, run_id, repo_name,
+                                stack_profile, task, retry_plan,
+                                api_key=opus_worker.api_key,
+                                model=opus_worker.model,
+                                working_dir=state.get(
+                                    "working_dir", ""),
+                            )
+                        )
+                        r_in = retry_usage.get("input_tokens", 0)
+                        r_out = retry_usage.get("output_tokens", 0)
+                        tokens.add("opus", r_in, r_out)
+
+                        if retry_result:
+                            retry_changes = retry_result.get(
+                                "changes", [])
+                            _rp = [
+                                p.get("file", "")
+                                for p in retry_plan.get("plan", [])
+                            ]
+                            fixed = 0
+                            for rc in retry_changes:
+                                v, f = _audit_file_change(
+                                    rc, planned_files=_rp)
+                                if v == "PASS":
+                                    fixed += 1
+                                    await _log(
+                                        user_id, run_id,
+                                        f"    ✅ [Opus] Re-audit PASS: "
+                                        f"{rc.get('file', '?')}",
+                                        "info",
+                                    )
+                                else:
+                                    await _log(
+                                        user_id, run_id,
+                                        f"    ❌ [Opus] Re-audit still "
+                                        f"FAIL: {rc.get('file', '?')}",
+                                        "warn",
+                                    )
+                            await _log(
+                                user_id, run_id,
+                                f"🔄 [Opus] Inline fix: {fixed}/"
+                                f"{len(retry_changes)} file(s) now pass",
+                                "info",
+                            )
+                        else:
+                            await _log(
+                                user_id, run_id,
+                                "⚠ [Opus] Inline fix returned no "
+                                "changes — will rely on remediation "
+                                "pool", "warn",
+                            )
 
                     # Fire narration
                     if narrator_enabled:
@@ -3181,6 +3313,7 @@ async def _run_retry(
             plan_result, plan_usage = await _plan_task_with_llm(
                 user_id, run_id, repo_name, stack_profile, task,
                 api_key=sonnet_worker.api_key, model=sonnet_worker.model,
+                working_dir=state.get("working_dir", ""),
             )
             p_in = plan_usage.get("input_tokens", 0)
             p_out = plan_usage.get("output_tokens", 0)
@@ -3276,7 +3409,7 @@ async def _run_retry(
                         if verdict == "REJECT":
                             # Hard block — drop this change entirely
                             await _log(user_id, run_id,
-                                        f"    🚫 REJECTED (scope): "
+                                        f"    🚫 [Opus] REJECTED (scope): "
                                         f"{change.get('file', '?')} "
                                         f"— not in planner's file list, dropped",
                                         "warn")
@@ -3290,7 +3423,7 @@ async def _run_retry(
                             continue
                         elif verdict == "PASS":
                             await _log(user_id, run_id,
-                                        f"    ✅ Audit PASS: {change.get('file', '?')}",
+                                        f"    ✅ [Opus] Audit PASS: {change.get('file', '?')}",
                                         "info")
                             await _emit(user_id, "file_audit_pass", {
                                 "run_id": run_id,
@@ -3300,7 +3433,7 @@ async def _run_retry(
                         else:
                             for f in findings:
                                 await _log(user_id, run_id,
-                                            f"    ❌ {f}", "warn")
+                                            f"    ❌ [Opus] {f}", "warn")
                             await _emit(user_id, "file_audit_fail", {
                                 "run_id": run_id,
                                 "task_id": task_id,
@@ -3475,6 +3608,58 @@ _FILE_SIZE_LIMIT = 50_000       # max bytes per file
 _TOTAL_CONTENT_BUDGET = 200_000 # max bytes across all files
 
 
+def _gather_tree_listing(
+    working_dir: str,
+    *,
+    max_files: int = 300,
+) -> str:
+    """Build a compact file-tree string from the cloned workspace.
+
+    Returns a newline-separated list of relative paths (sorted), capped
+    at *max_files* entries.  Used to give the Planner (Sonnet) visibility
+    into the actual repo structure before it writes its plan.
+    """
+    if not working_dir:
+        return ""
+    wd = Path(working_dir)
+    if not wd.is_dir():
+        return ""
+
+    # Use git ls-files synchronously (fast, respects .gitignore)
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files"],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        files = sorted(
+            f.strip()
+            for f in proc.stdout.splitlines()
+            if f.strip()
+        )
+    except Exception:
+        # Fallback: walk the directory
+        files = sorted(
+            str(p.relative_to(wd)).replace("\\", "/")
+            for p in wd.rglob("*")
+            if p.is_file()
+            and ".git" not in p.parts
+            and "node_modules" not in p.parts
+            and "__pycache__" not in p.parts
+        )
+
+    if not files:
+        return ""
+
+    if len(files) > max_files:
+        truncated = files[:max_files]
+        truncated.append(f"… and {len(files) - max_files} more files")
+        return "\n".join(truncated)
+    return "\n".join(files)
+
+
 def _gather_file_contents(
     working_dir: str,
     plan: dict | None,
@@ -3545,8 +3730,12 @@ async def _plan_task_with_llm(
     *,
     api_key: str,
     model: str,
+    working_dir: str = "",
 ) -> tuple[dict | None, dict]:
     """Sonnet analyses a migration task and produces an implementation plan.
+
+    When *working_dir* is provided the repo file tree is injected so
+    Sonnet can reference real paths, function names, and line numbers.
 
     Returns ``(plan_dict | None, usage_dict)``.
     """
@@ -3554,7 +3743,7 @@ async def _plan_task_with_llm(
         await _log(user_id, run_id, "No API key — skipping planning", "warn")
         return None, {"input_tokens": 0, "output_tokens": 0}
 
-    user_msg = json.dumps({
+    payload: dict = {
         "repository": repo_name,
         "stack": stack_profile,
         "migration": {
@@ -3567,7 +3756,15 @@ async def _plan_task_with_llm(
             "effort": task.get("effort"),
             "risk": task.get("risk"),
         },
-    }, indent=2)
+    }
+
+    # Inject file tree so Sonnet can reference real paths / structure
+    if working_dir:
+        tree = _gather_tree_listing(working_dir)
+        if tree:
+            payload["file_tree"] = tree
+
+    user_msg = json.dumps(payload, indent=2)
 
     try:
         result = await chat(
