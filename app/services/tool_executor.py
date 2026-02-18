@@ -113,6 +113,7 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
         "list_directory": _exec_list_directory,
         "search_code": _exec_search_code,
         "write_file": _exec_write_file,
+        "edit_file": _exec_edit_file,
     }
     handler = sync_handlers.get(tool_name)
     if handler is None:
@@ -127,7 +128,7 @@ async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str)
     """Dispatch a tool call -- supports both sync and async handlers.
 
     This is the main dispatcher used by the build loop. Sync tools (read_file,
-    list_directory, search_code, write_file) are called directly. Async tools
+    list_directory, search_code, write_file, edit_file) are called directly. Async tools
     (run_tests, check_syntax, run_command) use subprocess execution.
 
     Args:
@@ -143,6 +144,7 @@ async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str)
         "list_directory": _exec_list_directory,
         "search_code": _exec_search_code,
         "write_file": _exec_write_file,
+        "edit_file": _exec_edit_file,
     }
     async_handlers = {
         "run_tests": _exec_run_tests,
@@ -309,6 +311,79 @@ def _exec_write_file(inp: dict, working_dir: str) -> str:
         return f"OK: Wrote {len(content)} bytes to {rel_path}"
     except Exception as exc:
         return f"Error writing '{rel_path}': {exc}"
+
+
+def _exec_edit_file(inp: dict, working_dir: str) -> str:
+    """Apply surgical edits to an existing file.
+
+    Input: {
+        "path": "relative/path/to/file.py",
+        "edits": [
+            {
+                "old_text": "text to find and replace",
+                "new_text": "replacement text",
+                "anchor": "context lines above the edit (optional)",
+                "explanation": "why this change (optional)"
+            }
+        ]
+    }
+    Returns: Summary of applied/failed edits.
+    """
+    from forge_ide.contracts import Edit as _Edit
+    from forge_ide.patcher import apply_edits as _apply_edits
+
+    rel_path = inp.get("path", "")
+    raw_edits = inp.get("edits", [])
+
+    target = _resolve_sandboxed(rel_path, working_dir)
+    if target is None:
+        return f"Error: Invalid or disallowed path '{rel_path}'"
+
+    if not target.exists() or not target.is_file():
+        return f"Error: File '{rel_path}' does not exist — use write_file to create it"
+
+    if not raw_edits:
+        return "Error: No edits provided"
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return f"Error reading '{rel_path}': {exc}"
+
+    edits = [
+        _Edit(
+            old_text=e.get("old_text", ""),
+            new_text=e.get("new_text", ""),
+            anchor=e.get("anchor", ""),
+            explanation=e.get("explanation", ""),
+        )
+        for e in raw_edits
+    ]
+
+    result = _apply_edits(content, edits, file_path=rel_path)
+
+    if result.success:
+        try:
+            target.write_text(result.final_content, encoding="utf-8")
+        except Exception as exc:
+            return f"Error writing '{rel_path}': {exc}"
+
+        parts = [f"OK: Applied {len(result.applied)}/{len(edits)} edits to {rel_path}"]
+        if result.retargeted > 0:
+            parts.append(f" ({result.retargeted} retargeted via fuzzy match)")
+        return "".join(parts)
+    else:
+        parts = [f"PARTIAL: {len(result.applied)}/{len(edits)} edits applied to {rel_path}"]
+        for preview, reason in result.failed:
+            parts.append(f"  FAILED: {preview} — {reason}")
+        if result.applied:
+            # Write partial result
+            try:
+                target.write_text(result.final_content, encoding="utf-8")
+                parts.append(f"  (partial result written — {len(result.applied)} edits applied)")
+            except Exception:
+                parts.append("  (partial result NOT written due to I/O error)")
+        return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +652,59 @@ BUILDER_TOOLS = [
                 },
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": (
+            "Apply surgical edits to an existing file. Preferred over write_file "
+            "when modifying an existing file — avoids rewriting the entire file "
+            "and reduces the risk of regressions in unchanged code. "
+            "Each edit specifies old_text to find and new_text to replace it with. "
+            "Optionally provide anchor (context lines above the edit) to help "
+            "locate the edit point if the file has shifted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path to the existing file to edit.",
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "List of surgical edits to apply in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": {
+                                "type": "string",
+                                "description": (
+                                    "The exact text to find and replace. Include 2-3 lines "
+                                    "of surrounding context for unambiguous matching."
+                                ),
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": "The replacement text.",
+                            },
+                            "anchor": {
+                                "type": "string",
+                                "description": (
+                                    "Optional: 2-3 lines of unchanged code ABOVE the edit "
+                                    "point. Used to locate the edit if exact match fails."
+                                ),
+                            },
+                            "explanation": {
+                                "type": "string",
+                                "description": "Optional: brief reason for this edit.",
+                            },
+                        },
+                        "required": ["old_text", "new_text"],
+                    },
+                },
+            },
+            "required": ["path", "edits"],
         },
     },
     {

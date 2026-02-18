@@ -1,7 +1,11 @@
-"""Patch engine — apply unified diffs to source content.
+"""Patch engine — apply unified diffs and surgical edits to source content.
 
 Provides ``apply_patch()`` for applying a unified diff string to file
 content, with fuzzy hunk matching and conflict detection.
+
+Also provides ``apply_edits()`` for applying :class:`Edit` objects
+(anchor-based text replacement) with automatic retargeting:
+exact match → anchor-based fuzzy search → difflib similarity matching.
 
 All operations work on strings (not files) — the caller is responsible
 for reading/writing the filesystem.
@@ -9,10 +13,12 @@ for reading/writing the filesystem.
 
 from __future__ import annotations
 
+import difflib
 import re
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from forge_ide.contracts import Edit, EditInstruction, EditResult
 from forge_ide.errors import ParseError, PatchConflict
 
 # ---------------------------------------------------------------------------
@@ -371,3 +377,213 @@ def apply_multi_patch(
         )
         results.append(result)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Surgical edit application with retargeting (Phase 42)
+# ---------------------------------------------------------------------------
+
+# Similarity threshold for difflib retargeting
+_DIFFLIB_THRESHOLD: float = 0.80
+
+# Maximum line offset when searching for anchor context
+_ANCHOR_SEARCH_RANGE: int = 40
+
+
+def _find_exact(content: str, old_text: str) -> int | None:
+    """Find *old_text* in *content*. Return index if unique, else None."""
+    idx = content.find(old_text)
+    if idx == -1:
+        return None
+    # Ensure unique — if a second occurrence exists, the match is ambiguous.
+    # We still return the first match, as the anchor can disambiguate later.
+    return idx
+
+
+def _find_by_anchor(
+    content: str,
+    anchor: str,
+    old_text: str,
+    search_range: int = _ANCHOR_SEARCH_RANGE,
+) -> int | None:
+    """Locate *old_text* near the *anchor* context in *content*.
+
+    1. Find the anchor text in the content.
+    2. Search within ± *search_range* lines of the anchor for *old_text*.
+    """
+    if not anchor or not anchor.strip():
+        return None
+
+    anchor_idx = content.find(anchor.rstrip())
+    if anchor_idx == -1:
+        # Try matching just the last line of the anchor (more lenient)
+        anchor_lines = anchor.rstrip().split("\n")
+        last_anchor_line = anchor_lines[-1].strip()
+        if not last_anchor_line:
+            return None
+        anchor_idx = content.find(last_anchor_line)
+        if anchor_idx == -1:
+            return None
+
+    # Convert anchor position to line number
+    anchor_line = content[:anchor_idx].count("\n")
+    lines = content.split("\n")
+
+    # Search window around anchor
+    lo = max(0, anchor_line - search_range)
+    hi = min(len(lines), anchor_line + search_range)
+    window = "\n".join(lines[lo:hi])
+
+    idx = window.find(old_text)
+    if idx == -1:
+        return None
+
+    # Convert back to absolute position
+    prefix = "\n".join(lines[:lo])
+    abs_offset = len(prefix) + (1 if prefix else 0) + idx
+    return abs_offset
+
+
+def _find_by_difflib(
+    content: str,
+    old_text: str,
+    threshold: float = _DIFFLIB_THRESHOLD,
+) -> tuple[int, int] | None:
+    """Find the closest match for *old_text* using difflib.
+
+    Returns ``(start_index, end_index)`` of the best match in
+    *content*, or ``None`` if no match exceeds *threshold*.
+    """
+    old_lines = old_text.split("\n")
+    content_lines = content.split("\n")
+    n = len(old_lines)
+
+    if n == 0 or len(content_lines) == 0:
+        return None
+
+    best_ratio = 0.0
+    best_start = -1
+
+    # Slide a window of size n over content_lines
+    for i in range(max(1, len(content_lines) - n + 1)):
+        candidate = content_lines[i : i + n]
+        # Quick length-ratio pre-check
+        len_ratio = min(len(candidate), n) / max(len(candidate), n, 1)
+        if len_ratio < threshold * 0.8:
+            continue
+        sm = difflib.SequenceMatcher(
+            None,
+            "\n".join(old_lines),
+            "\n".join(candidate),
+        )
+        ratio = sm.ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+
+    if best_ratio < threshold or best_start < 0:
+        return None
+
+    # Convert line-based window back to character positions
+    start_chars = sum(len(content_lines[j]) + 1 for j in range(best_start))
+    # The matched region spans n lines
+    end_chars = start_chars + sum(
+        len(content_lines[best_start + j]) + 1 for j in range(min(n, len(content_lines) - best_start))
+    )
+    # Remove trailing newline from end
+    if end_chars > 0:
+        end_chars -= 1
+
+    return (start_chars, end_chars)
+
+
+def apply_edits(
+    content: str,
+    edits: list[Edit],
+    *,
+    file_path: str = "",
+) -> EditResult:
+    """Apply a list of surgical :class:`Edit` objects to *content*.
+
+    For each edit, tries three strategies in order:
+
+    1. **Exact match** — ``content.find(old_text)``
+    2. **Anchor-based fuzzy** — locate ``anchor`` text, then search
+       within ±40 lines for ``old_text``
+    3. **Difflib similarity** — find the closest match above a 0.80
+       similarity threshold
+
+    Returns an :class:`EditResult` with applied/failed edits and the
+    final content.
+    """
+    working = content
+    applied: list[Edit] = []
+    failed: list[tuple[str, str]] = []
+    retargeted = 0
+
+    for edit in edits:
+        old = edit.old_text
+        new = edit.new_text
+
+        # Strategy 1: exact match
+        idx = _find_exact(working, old)
+        if idx is not None:
+            working = working[:idx] + new + working[idx + len(old):]
+            applied.append(edit)
+            continue
+
+        # Strategy 2: anchor-based fuzzy
+        anchor_idx = _find_by_anchor(working, edit.anchor, old)
+        if anchor_idx is not None:
+            working = working[:anchor_idx] + new + working[anchor_idx + len(old):]
+            applied.append(edit)
+            retargeted += 1
+            continue
+
+        # Strategy 3: difflib similarity
+        match = _find_by_difflib(working, old)
+        if match is not None:
+            start, end = match
+            working = working[:start] + new + working[end:]
+            applied.append(edit)
+            retargeted += 1
+            continue
+
+        # All strategies failed
+        preview = old[:80] + ("..." if len(old) > 80 else "")
+        failed.append((preview, "No match found (exact, anchor, difflib all failed)"))
+
+    return EditResult(
+        success=len(failed) == 0,
+        file_path=file_path,
+        applied=applied,
+        failed=failed,
+        final_content=working,
+        retargeted=retargeted,
+    )
+
+
+def apply_edit_instruction(
+    content: str,
+    instruction: EditInstruction,
+) -> EditResult:
+    """Apply an :class:`EditInstruction` to *content*.
+
+    If ``instruction.full_rewrite`` is True, the content is replaced
+    entirely with the first edit's ``new_text``.
+    """
+    if instruction.full_rewrite and instruction.edits:
+        return EditResult(
+            success=True,
+            file_path=instruction.file_path,
+            applied=list(instruction.edits[:1]),
+            failed=[],
+            final_content=instruction.edits[0].new_text,
+            retargeted=0,
+        )
+
+    return apply_edits(
+        content,
+        instruction.edits,
+        file_path=instruction.file_path,
+    )

@@ -67,6 +67,55 @@ class UnifiedDiff(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Surgical edit models — Phase 42 (Patch Retargeting)
+# ---------------------------------------------------------------------------
+
+
+class Edit(BaseModel):
+    """A single surgical text replacement.
+
+    The ``anchor`` provides context lines to locate the edit point
+    when exact positioning has shifted due to earlier edits.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    anchor: str = Field("", description="Context lines above the edit to locate it")
+    old_text: str = Field(..., description="Exact text to replace")
+    new_text: str = Field(..., description="Replacement text")
+    explanation: str = Field("", description="Why this change is needed")
+
+
+class EditInstruction(BaseModel):
+    """A set of surgical edits for a single file."""
+
+    model_config = ConfigDict(frozen=True)
+
+    file_path: str
+    edits: list[Edit]
+    full_rewrite: bool = Field(
+        False,
+        description="If True, edits[0].new_text is the complete file content",
+    )
+
+
+class EditResult(BaseModel):
+    """Result of applying surgical edits to a file."""
+
+    model_config = ConfigDict(frozen=True)
+
+    success: bool
+    file_path: str = ""
+    applied: list[Edit] = Field(default_factory=list)
+    failed: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description="[(old_text_preview, failure_reason), ...]",
+    )
+    final_content: str = ""
+    retargeted: int = Field(0, ge=0, description="Edits that needed fuzzy/difflib matching")
+
+
+# ---------------------------------------------------------------------------
 # Task DAG — dependency-aware build execution (Phase 41)
 # ---------------------------------------------------------------------------
 

@@ -357,14 +357,14 @@ class TestExecuteTool:
 class TestBuilderToolsSpec:
     """Verify the BUILDER_TOOLS constant is well-formed."""
 
-    def test_has_seven_tools(self):
-        assert len(BUILDER_TOOLS) == 7
+    def test_has_eight_tools(self):
+        assert len(BUILDER_TOOLS) == 8
 
     def test_tool_names(self):
         names = {t["name"] for t in BUILDER_TOOLS}
         assert names == {
             "read_file", "list_directory", "search_code", "write_file",
-            "run_tests", "check_syntax", "run_command",
+            "edit_file", "run_tests", "check_syntax", "run_command",
         }
 
     def test_each_tool_has_required_fields(self):
