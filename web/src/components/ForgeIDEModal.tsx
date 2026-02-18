@@ -69,7 +69,7 @@ interface LogEntry {
 
 function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
   if (msg.includes('[Sonnet]')) return 'sonnet';
-  if (msg.includes('[Opus]')) return 'opus';
+  if (msg.includes('[Opus]') || msg.includes('[Opus-2]')) return 'opus';
   return 'system';
 }
 
@@ -1255,6 +1255,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   labelColor="#94A3B8"
                   emptyText={status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 />
+                {fileChecklist.length > 0 && <FileChecklist items={fileChecklist} />}
               </div>
               {/* Divider */}
               <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
@@ -1271,7 +1272,6 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                       emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
                     />
                   </div>
-                  {fileChecklist.length > 0 && <FileChecklist items={fileChecklist} />}
                 </div>
                 {/* Draggable resize handle */}
                 <div
