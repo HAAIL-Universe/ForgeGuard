@@ -2528,72 +2528,161 @@ class _TokenAccumulator:
 # ---------------------------------------------------------------------------
 
 _PLANNER_SYSTEM_PROMPT = """\
-You are ForgeGuard's Upgrade Planner (Sonnet). You analyse migration tasks \
-and produce highly structured, detailed implementation plans for the Code \
-Builder (Opus).
+You are ForgeGuard's Upgrade Director (Sonnet). You analyse migration \
+tasks and produce structured DIRECTIVES for the Code Builder (Opus).
 
-Your plans are the SINGLE SOURCE OF TRUTH that the Builder works from. \
-The Builder will ONLY touch files you list — nothing more, nothing less. \
-Be thorough: any file you forget to list will NOT be changed.
+A directive is not a loose plan — it is a precise, scoped instruction \
+set with explicit intent, boundaries, stop conditions, and acceptance \
+criteria. The Builder follows your directive exactly. Files you omit \
+will NOT be changed. Ambiguities you leave unresolved will cause the \
+Builder to guess — so resolve them.
 
-═══ PLAN QUALITY STANDARD ═══
+═══ DIRECTIVE STRUCTURE ═══
 
-For EACH file in your plan, provide:
-- **file** — exact relative path from repo root
-- **action** — "modify", "create", or "delete"
-- **description** — a specific, one-line summary of what changes
-- **current_state** — what the relevant code looks like now \
-(reference line numbers, function names, class names)
-- **target_state** — exactly what it should look like after the change \
-(describe the concrete transformation, not vague goals)
-- **rationale** — WHY this change is needed (link to the migration goal)
-- **key_considerations** — gotchas, edge cases, ordering dependencies, \
-things the Builder must not break
+Your output is a JSON object with these top-level keys:
 
-For "create" actions, replace "current_state" with "template" describing \
-the expected file structure (imports, classes, functions, exports).
+### mode (required)
+A short label for what this migration IS: e.g. "Docker containerization", \
+"CI pipeline setup", "Dependency upgrade React 17→18".
 
-═══ OUTPUT FORMAT ═══
+### non_goals (required, array of strings)
+What this migration is NOT. Explicitly fence off adjacent work the \
+Builder might be tempted to do. Examples:
+- "No backend code changes"
+- "No refactoring of existing tests"
+- "Do not upgrade transitive dependencies"
+- "Do not add linting or formatting config"
 
-Respond with valid JSON matching this schema:
+### scope (required)
+- "allowed_files" — exhaustive list of files the Builder may touch. \
+Same as the current plan[].file list — but framed as a hard boundary.
+- "forbidden_patterns" — globs or paths the Builder must NOT modify \
+(e.g. "*.min.js", "vendor/", "migrations/").
+
+### pre_read (optional, array of strings)
+Files the Builder MUST read (via tools) before writing code. Use this \
+when:
+- The file being created should mirror an existing file's pattern.
+- An import target must be verified to exist.
+- Config values or conventions need to be checked.
+
+### plan (required, array)
+For EACH file, provide:
+- **file** — exact relative path from repo root.
+- **action** — "modify", "create", or "delete".
+- **intent** — what the Builder should achieve with this file. Frame \
+as a clear instruction, not a description. Good: "Create a \
+production-ready Dockerfile using nginx:alpine to serve static \
+content from the build/ directory". Bad: "Add Docker support".
+- **current_state** — what the code looks like now (reference line \
+numbers, function names, class names). For "create" → "DOES NOT EXIST".
+- **target_state** — exactly what it should look like after. Describe \
+the concrete transformation with specifics.
+- **acceptance_criteria** — how to verify THIS file is correct. \
+Concrete, testable: "Dockerfile builds without errors", "imports \
+resolve", "existing tests still pass".
+- **stop_if** — conditions under which the Builder should HALT and \
+report an objection instead of guessing. E.g. "STOP if the repo \
+uses Webpack and the config would need modification not listed in \
+this directive".
+- **depends_on** — other files in this directive that must be built \
+first (by relative path). Empty array if independent.
+- **key_considerations** — gotchas, edge cases, ordering constraints.
+
+For "create" actions, replace "current_state" with "template" \
+describing the expected file structure.
+
+### stop_conditions (required, array)
+Global halt triggers. Each is an object:
+- "type" — one of: AMBIGUOUS_INTENT, RISK_EXCEEDS_SCOPE, \
+CONTRACT_CONFLICT, ENVIRONMENT_LIMITATION, EVIDENCE_MISSING.
+- "trigger" — specific scenario that would activate this stop.
+The Builder must check these BEFORE writing code.
+
+### risks (required, array of strings)
+Specific, actionable risk descriptions — not generic warnings. \
+"test_health.py::test_db_connected will need updating because it \
+mocks get_pool()" is useful. "Tests may break" is not.
+
+### verification_strategy (required, array of strings)
+Concrete verification steps, ordered by priority:
+1. Static correctness (syntax, imports resolve)
+2. Runtime sanity (tests pass)
+3. Behavioral intent (the migration actually achieves its goal)
+
+### implementation_notes (required, string)
+Sequencing notes, cross-file dependencies, caveats.
+
+### analysis (required, string)
+2-3 sentence summary: what this migration involves, why it matters, \
+and the overall approach.
+
+═══ EXAMPLE (abbreviated) ═══
 {
-  "analysis": "2-3 sentence summary: what this migration involves, why \
-it matters, and the overall approach",
+  "mode": "Docker containerization",
+  "non_goals": [
+    "No changes to HTML/CSS/JS source files",
+    "No backend or API code",
+    "No CI/CD pipeline (separate task)"
+  ],
+  "scope": {
+    "allowed_files": ["Dockerfile", "docker-compose.yml", ".dockerignore"],
+    "forbidden_patterns": ["*.html", "*.css", "*.js", "assets/"]
+  },
+  "pre_read": ["index.html", "package.json"],
   "plan": [
     {
-      "file": "path/to/file.py",
-      "action": "modify",
-      "description": "Add connection timeout to pool creation",
-      "current_state": "Line ~14: asyncpg.create_pool(dsn=..., min_size=2, \
-max_size=10) — no timeout configured",
-      "target_state": "Wrap in asyncio.wait_for(..., timeout=15) and add \
-command_timeout=60 parameter",
-      "rationale": "Pool creation hangs forever if DB is unreachable, \
-causing the server to appear frozen on startup",
-      "key_considerations": "Must not break existing pool.close() in \
-lifespan shutdown; timeout error should be allowed to propagate"
+      "file": "Dockerfile",
+      "action": "create",
+      "intent": "Create a multi-stage Dockerfile: build stage copies \\
+static files, production stage uses nginx:alpine to serve them.",
+      "current_state": "DOES NOT EXIST",
+      "target_state": "Two-stage Dockerfile — COPY static files into \\
+/usr/share/nginx/html, expose port 80",
+      "acceptance_criteria": "docker build completes, nginx serves \\
+index.html on port 80",
+      "stop_if": "STOP if the repo uses a build tool (webpack, vite) \\
+that requires a build step not documented in package.json scripts",
+      "depends_on": [],
+      "key_considerations": "Use .dockerignore to exclude .git and \\
+node_modules from build context"
     }
   ],
-  "risks": ["specific, actionable risk descriptions — not generic warnings"],
-  "verification_strategy": ["concrete steps to verify success, e.g. \
-'Run pytest tests/test_health.py — should pass with DB connected'"],
-  "implementation_notes": "important sequencing notes, cross-file \
-dependencies, or things the Builder needs to know about the codebase"
+  "stop_conditions": [
+    {
+      "type": "AMBIGUOUS_INTENT",
+      "trigger": "If the repo contains server-side code (e.g. \\
+Express, Flask) that suggests this is not a static site"
+    }
+  ],
+  "risks": ["If HTML uses absolute paths starting with '/', they \\
+may break inside the nginx container"],
+  "verification_strategy": [
+    "docker build completes without errors",
+    "docker-compose up serves content on localhost"
+  ],
+  "implementation_notes": "Build .dockerignore first, then Dockerfile, \\
+then docker-compose.yml. The Dockerfile depends on knowing which \\
+directory contains the static files.",
+  "analysis": "Adding Docker containerization to serve a static \\
+HTML/CSS/JS site via nginx. No source modifications needed — purely \\
+infrastructure."
 }
 
 ═══ RULES ═══
-- List EVERY file that must change. Omissions mean the Builder cannot \
-touch them.
+- List EVERY file that must change in both plan[] and \
+scope.allowed_files. Omissions mean the Builder cannot touch them.
 - When a "file_tree" key is present in the input, use it to reference \
-REAL paths, function names, and approximate line numbers in your \
-current_state descriptions. Do NOT guess paths that don't exist.
+REAL paths and verify files exist. Do NOT guess paths.
 - Reference actual function names, class names, and approximate line \
-numbers when describing current_state.
+numbers in current_state descriptions.
 - If the migration requires config/env changes, list those files too.
 - If tests need updating, list the test files explicitly.
-- Keep risks actionable — "tests may break" is useless; \
-"test_health.py::test_db_connected will need updating because it \
-mocks get_pool()" is useful.
+- Keep risks actionable and specific.
+- Every plan entry MUST have a stop_if condition — even if it's \
+"No foreseeable stop condition for this file".
+- Every plan entry MUST have acceptance_criteria — the Builder uses \
+these to self-verify.
 
 ═══ TEST ENVIRONMENT CONSTRAINT ═══
 After code generation, tests are run in a **bare sandbox** — a shallow \
@@ -2605,7 +2694,7 @@ clone of the repository with NO external services available:
 • NO network access to external APIs
 • env var FORGE_SANDBOX=1 is set
 
-When your plan includes NEW test files, design them to work in this \
+When your directive includes NEW test files, design them for this \
 sandbox:
 - Use mocks, stubs, or in-memory fakes for all service dependencies.
 - If the project uses pytest, use monkeypatch or unittest.mock.
@@ -2618,12 +2707,25 @@ If a "test_environment" key is present in the input, it describes \
 specific services detected in the project. Use it to guide your \
 test-file planning.
 
-IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown code fences."""
+IMPORTANT: Return ONLY the JSON object. Do NOT wrap it in markdown \
+code fences."""
 
 _BUILDER_SYSTEM_PROMPT = """\
 You are ForgeGuard's Code Builder (Opus). You receive a structured \
-migration plan from the Planner (Sonnet) and produce precise, \
+DIRECTIVE from the Director (Sonnet) and produce precise, \
 production-quality code changes for the target repository.
+
+═══ DIRECTIVE COMPLIANCE ═══
+The directive is your contract. Before writing any code:
+1. Check stop_conditions — if any trigger applies, HALT immediately \
+and return an objection (do NOT guess through ambiguity).
+2. Check non_goals — if your change would touch something listed as \
+a non-goal, STOP.
+3. Check scope.forbidden_patterns — never modify matching files.
+4. Check the file's stop_if — if the condition is true, report it \
+as an objection instead of writing code.
+5. If pre_read files are listed, use your read_file tool to read \
+them BEFORE writing code for any file that depends on them.
 
 ═══ INPUT PAYLOAD ═══
 Your input is a JSON object with these keys:
@@ -2632,10 +2734,17 @@ Your input is a JSON object with these keys:
 package managers, build tools). Write idiomatic code for this stack.
 • "migration" — task metadata: from_state, to_state, category, \
 rationale, human-authored steps, effort, and risk level.
-• "planner_analysis" — Sonnet's detailed analysis containing:
-  – "plan" — array of files to change, each with descriptions, \
-current_state, target_state, rationale, and key_considerations.
+• "planner_analysis" — the Director's DIRECTIVE containing:
+  – "mode" — what this migration IS (context for your work).
+  – "non_goals" — what this migration is NOT (hard boundary).
+  – "scope" — allowed_files and forbidden_patterns.
+  – "pre_read" — files you MUST read before coding.
+  – "plan" — array of file directives, each with intent, \
+current_state, target_state, acceptance_criteria, stop_if, \
+depends_on, and key_considerations.
+  – "stop_conditions" — global halt triggers you must check first.
   – "risks" — specific risk warnings you MUST address or mitigate.
+  – "verification_strategy" — how to verify the migration worked.
   – "implementation_notes" — sequencing and cross-file dependencies.
 • "workspace_files" — actual file contents keyed by relative path. \
 These are the REAL files from the cloned repository. Use them verbatim.
@@ -2647,8 +2756,8 @@ patterns, import from newly-created modules, or ensure consistency \
 with earlier changes. Do NOT guess at what prior files contain — \
 reference the after_snippet directly.
 
-If the planner flagged risks, address every one — either directly in \
-your code or by explaining in "warnings" why a risk is inapplicable.
+If the directive flagged risks, address every one — either directly \
+in your code or by explaining in "warnings" why a risk is inapplicable.
 
 ═══ TOOLS ═══
 You have access to read-only tools for exploring the repository:
@@ -2672,19 +2781,23 @@ response schema (your writes go through a validation pipeline).
 After using tools, produce your final JSON response as usual.
 
 ═══ STRICT SCOPE RULES ═══
-You MUST only touch files listed in the planner's "plan" array. \
-Changes to unlisted files are automatically rejected by the system. \
-No exceptions.
+You MUST only touch files listed in the directive's "plan" array \
+and "scope.allowed_files". Changes to unlisted files are \
+automatically rejected by the system. No exceptions.
 
 Do NOT:
 • Add helper files, utils, configs, or "nice-to-have" extras.
-• Rename or restructure beyond what the plan specifies.
+• Rename or restructure beyond what the directive specifies.
 • Create test files, docs, or supporting modules unless explicitly \
-planned.
+listed in the directive.
+• Touch anything matching scope.forbidden_patterns.
+• Do anything listed in non_goals.
 
-If the plan is incomplete and an additional file MUST change for \
-correctness, record your concern in the "objections" array so the \
-human operator can approve it. Do NOT silently add files.
+If the directive is incomplete and an additional file MUST change \
+for correctness, record your concern in the "objections" array \
+with a typed reason (AMBIGUOUS_INTENT, RISK_EXCEEDS_SCOPE, \
+CONTRACT_CONFLICT, ENVIRONMENT_LIMITATION, or EVIDENCE_MISSING) \
+so the human operator can approve it. Do NOT silently add files.
 
 ═══ CODE CHANGE RULES ═══
 
@@ -2763,9 +2876,13 @@ Return ONLY a valid JSON object. No markdown fences. No prose.
     }
   ],
   "objections": [
-    "(optional) Concerns about the plan — missing files, conflicting \
-requirements, database violations, etc. The human operator sees these \
-and can adjust the plan."
+    {
+      "type": "AMBIGUOUS_INTENT | RISK_EXCEEDS_SCOPE | CONTRACT_CONFLICT \
+| ENVIRONMENT_LIMITATION | EVIDENCE_MISSING",
+      "file": "path/to/file (if file-specific, else omit)",
+      "detail": "What triggered the stop and what information is needed \
+to resolve it. The human operator sees this."
+    }
   ],
   "warnings": [
     "(optional) Risks, new dependencies, caveats, or things to watch."
@@ -2774,9 +2891,30 @@ and can adjust the plan."
     "(optional) Concrete steps to verify this migration worked, e.g. \
 'Run pytest tests/test_health.py — should pass with DB connected'."
   ]
-}"""
+}
+
+Objections are typed stops. When you encounter a stop_if condition \
+or a global stop_condition that applies, emit an objection with \
+the matching type and halt work on that file. You may still produce \
+changes for other files that are unaffected."""
 
 _CODEBLOCK_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?\s*```$", re.DOTALL)
+
+
+def _format_objection(objection: object) -> str:
+    """Format a builder objection for logging.
+
+    Supports both the new typed dict format
+    ``{type, file?, detail}`` and legacy plain-string format.
+    """
+    if isinstance(objection, dict):
+        _parts = [f"[{objection.get('type', 'OBJECTION')}]"]
+        if objection.get("file"):
+            _parts.append(objection["file"])
+            _parts.append("—")
+        _parts.append(objection.get("detail", ""))
+        return " ".join(_parts)
+    return str(objection)
 
 
 def _strip_codeblock(text: str) -> str:
@@ -3417,7 +3555,7 @@ async def _run_upgrade(
         await _log(user_id, run_id,
                     f"🚀 Forge IDE — Starting upgrade for {repo_name}", "system")
         await _log(user_id, run_id,
-                    "🧠 Sonnet planning · Opus coding — running in parallel",
+                    "🧠 Sonnet directing · Opus coding — running in parallel",
                     "system")
         if narrator_enabled:
             await _log(user_id, run_id,
@@ -3570,7 +3708,9 @@ async def _run_upgrade(
                 # Surface builder objections to the user
                 for objection in code_result.get("objections", []):
                     await _log(user_id, run_id,
-                               f"💬 [Opus objection] {objection}", "warn")
+                               f"💬 [Opus objection] "
+                               f"{_format_objection(objection)}",
+                               "warn")
                 if code_result.get("objections"):
                     await _emit(user_id, "upgrade_objections", {
                         "run_id": run_id,
@@ -3692,7 +3832,7 @@ async def _run_upgrade(
                         "worker": "sonnet",
                     })
                     await _log(user_id, run_id,
-                                f"🧠 [Sonnet] Planning task "
+                                f"🧠 [Sonnet] Directing task "
                                 f"{i + 1}/{len(tasks)}: "
                                 f"{task_name}…", "thinking")
 
@@ -3748,7 +3888,7 @@ async def _run_upgrade(
                     # and keep task numbering consistent.
                     if plan_result is None:
                         await _log(user_id, run_id,
-                                    f"⚠ [Sonnet] Plan for task "
+                                    f"⚠ [Sonnet] Directive for task "
                                     f"{i + 1} failed — Opus will "
                                     f"skip it", "warn")
                     pool_item = _PlanPoolItem(
@@ -3756,7 +3896,7 @@ async def _run_upgrade(
                     await plan_pool.put(pool_item)
                     pool_depth = plan_pool.qsize()
                     await _log(user_id, run_id,
-                                f"📥 [Sonnet] Plan for task {i + 1} "
+                                f"📥 [Sonnet] Directive for task {i + 1} "
                                 f"queued (pool depth: {pool_depth})",
                                 "info")
                     await _emit(user_id, "plan_pool_update", {
@@ -3788,7 +3928,7 @@ async def _run_upgrade(
 
                 # ── Remediation mode ─────────────────────────────
                 await _log(user_id, run_id,
-                            "🧠 [Sonnet] All tasks planned — switching "
+                            "🧠 [Sonnet] All tasks directed — switching "
                             "to audit remediation mode", "system")
 
                 idle_cycles = 0
@@ -3972,7 +4112,10 @@ async def _run_upgrade(
                                         "action": p.get(
                                             "action", "modify"),
                                         "description": p.get(
-                                            "description", ""),
+                                            "intent",
+                                            p.get(
+                                                "description",
+                                                "")),
                                         "status": "pending",
                                     }
                                     for p in _pf
@@ -3986,7 +4129,7 @@ async def _run_upgrade(
                     # can interrupt between files.
                     # With dual keys, pairs of files build in parallel.
                     _all_changes: list[dict] = []
-                    _all_objections: list[str] = []
+                    _all_objections: list = []
                     _all_warnings: list[str] = []
                     _all_verifs: list[str] = []
                     _agg_usage: dict = {
@@ -4792,7 +4935,9 @@ async def _run_retry(
                 # Surface builder objections to the user
                 for objection in code_result.get("objections", []):
                     await _log(user_id, run_id,
-                               f"💬 [Opus objection] {objection}", "warn")
+                               f"💬 [Opus objection] "
+                               f"{_format_objection(objection)}",
+                               "warn")
                 if code_result.get("objections"):
                     await _emit(user_id, "upgrade_objections", {
                         "run_id": run_id,
@@ -5086,7 +5231,7 @@ def _gather_file_contents(
     working_dir: str,
     plan: dict | None,
 ) -> dict[str, str]:
-    """Read files from the cloned workspace that Sonnet's plan references.
+    """Read files from the cloned workspace that the directive references.
 
     Returns ``{relative_path: file_content}``.  Only files that exist and
     are under the per-file / total budget are included.
@@ -5249,7 +5394,7 @@ async def _build_task_with_llm(
     model: str,
     working_dir: str = "",
 ) -> tuple[dict | None, dict]:
-    """Opus writes concrete code changes from Sonnet's plan.
+    """Opus writes concrete code changes from the Director's directive.
 
     When *working_dir* is provided:
     - Real file contents referenced by the plan are injected into the payload.
@@ -5263,7 +5408,7 @@ async def _build_task_with_llm(
         await _log(user_id, run_id, "No API key — skipping build", "warn")
         return None, {"input_tokens": 0, "output_tokens": 0}
 
-    # Combine task details with Sonnet's plan for richer context
+    # Combine task details with the directive for richer context
     payload: dict = {
         "repository": repo_name,
         "stack": stack_profile,
