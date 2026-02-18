@@ -15,14 +15,16 @@ If only one key is available, narration is disabled but execution works.
 
 WS event types emitted
 -----------------------
-- ``upgrade_started``      – session opened (includes task list + worker info)
-- ``upgrade_log``          – timestamped log line
-- ``upgrade_task_start``   – beginning a specific migration task
-- ``upgrade_task_complete``– task finished (includes token delta)
-- ``upgrade_file_diff``    – proposed file change
-- ``upgrade_token_tick``   – cumulative token usage update
-- ``upgrade_narration``    – plain-English narrator commentary (Haiku)
-- ``upgrade_complete``     – all tasks done
+- ``upgrade_started``         – session opened (includes task list + worker info)
+- ``upgrade_log``             – timestamped log line
+- ``upgrade_task_start``      – beginning a specific migration task
+- ``upgrade_task_complete``   – task finished (includes token delta)
+- ``upgrade_file_diff``       – proposed file change
+- ``upgrade_file_checklist``  – per-task file list for live progress checklist
+- ``upgrade_file_progress``   – single file written (checklist tick)
+- ``upgrade_token_tick``      – cumulative token usage update
+- ``upgrade_narration``       – plain-English narrator commentary (Haiku)
+- ``upgrade_complete``        – all tasks done
 """
 
 from __future__ import annotations
@@ -93,6 +95,12 @@ class _RemediationItem:
         if self.priority != other.priority:
             return self.priority < other.priority
         return self._seq < other._seq
+
+
+# Max files per Opus build call.  When Sonnet's plan exceeds this,
+# the builder splits into sequential sub-batches so the UI can show
+# incremental progress and Opus gets a focused context window.
+_MAX_BUILD_FILES: int = 6
 
 
 # ---------------------------------------------------------------------------
@@ -3360,7 +3368,8 @@ async def _run_upgrade(
                             })
                         continue
 
-                    # Show what Opus will work on
+                    # Show what Opus will work on + emit
+                    # file checklist for real-time UI progress
                     _pf = current_plan.get("plan", [])
                     if _pf:
                         _fn = [p.get("file", "?")
@@ -3374,23 +3383,182 @@ async def _run_upgrade(
                             f"{', '.join(_fn)}{_ex}",
                             "thinking",
                         )
-
-                    # Code the task
-                    code_result, code_usage = (
-                        await _build_task_with_llm(
-                            user_id, run_id, repo_name,
-                            stack_profile, task, current_plan,
-                            api_key=opus_worker.api_key,
-                            model=opus_worker.model,
-                            working_dir=state.get("working_dir", ""),
+                        # Checklist event — frontend renders a
+                        # live file progress list in the Opus panel
+                        await _emit(
+                            user_id,
+                            "upgrade_file_checklist",
+                            {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "task_index": task_index,
+                                "files": [
+                                    {
+                                        "file": p.get(
+                                            "file", "?"),
+                                        "action": p.get(
+                                            "action", "modify"),
+                                        "description": p.get(
+                                            "description", ""),
+                                        "status": "pending",
+                                    }
+                                    for p in _pf
+                                ],
+                            },
                         )
-                    )
-                    c_in = code_usage.get("input_tokens", 0)
-                    c_out = code_usage.get("output_tokens", 0)
-                    tokens.add("opus", c_in, c_out)
 
-                    await _emit(user_id, "upgrade_token_tick", {
-                        "run_id": run_id, **tokens.snapshot()})
+                    # ── Code the task ────────────────────────
+                    # When the plan has many files, split into
+                    # sub-batches so Opus gets a focused context
+                    # window and the UI shows incremental progress.
+                    if _pf and len(_pf) > _MAX_BUILD_FILES:
+                        _chunks = [
+                            _pf[ci:ci + _MAX_BUILD_FILES]
+                            for ci in range(
+                                0, len(_pf), _MAX_BUILD_FILES)
+                        ]
+                        _all_changes: list[dict] = []
+                        _all_objections: list[str] = []
+                        _all_warnings: list[str] = []
+                        _all_verifs: list[str] = []
+                        _agg_usage: dict = {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                        }
+                        for _ci, _chunk in enumerate(_chunks):
+                            if state["_stop_flag"].is_set():
+                                break
+                            _cf = [p.get("file", "?")
+                                   for p in _chunk]
+                            await _log(
+                                user_id, run_id,
+                                f"  🔨 [Opus] Sub-batch "
+                                f"{_ci + 1}/{len(_chunks)}: "
+                                f"{', '.join(_cf)}…",
+                                "thinking",
+                            )
+                            _sub_plan = {
+                                **current_plan,
+                                "plan": _chunk,
+                            }
+                            _sub_result, _sub_usage = (
+                                await _build_task_with_llm(
+                                    user_id, run_id,
+                                    repo_name,
+                                    stack_profile, task,
+                                    _sub_plan,
+                                    api_key=opus_worker.api_key,
+                                    model=opus_worker.model,
+                                    working_dir=state.get(
+                                        "working_dir", ""),
+                                )
+                            )
+                            _si = _sub_usage.get(
+                                "input_tokens", 0)
+                            _so = _sub_usage.get(
+                                "output_tokens", 0)
+                            _agg_usage["input_tokens"] += _si
+                            _agg_usage["output_tokens"] += _so
+                            tokens.add("opus", _si, _so)
+                            await _emit(
+                                user_id,
+                                "upgrade_token_tick",
+                                {"run_id": run_id,
+                                 **tokens.snapshot()},
+                            )
+                            if _sub_result:
+                                _sc = _sub_result.get(
+                                    "changes", [])
+                                _all_changes.extend(_sc)
+                                _all_objections.extend(
+                                    _sub_result.get(
+                                        "objections", []))
+                                _all_warnings.extend(
+                                    _sub_result.get(
+                                        "warnings", []))
+                                _all_verifs.extend(
+                                    _sub_result.get(
+                                        "verification_steps",
+                                        []))
+                                # Per-file progress → checklist
+                                for _ch in _sc:
+                                    await _emit(
+                                        user_id,
+                                        "upgrade_file_progress",
+                                        {
+                                            "run_id": run_id,
+                                            "task_id": task_id,
+                                            "file": _ch.get(
+                                                "file", ""),
+                                            "status": "written",
+                                        },
+                                    )
+                                await _log(
+                                    user_id, run_id,
+                                    f"  ✅ [Opus] Sub-batch "
+                                    f"{_ci + 1}: "
+                                    f"{len(_sc)} file(s) done",
+                                    "info",
+                                )
+                            else:
+                                await _log(
+                                    user_id, run_id,
+                                    f"  ⚠ [Opus] Sub-batch "
+                                    f"{_ci + 1}: no result",
+                                    "warn",
+                                )
+
+                        # Merge sub-batch results
+                        code_result: dict | None = (
+                            {
+                                "changes": _all_changes,
+                                "objections": _all_objections,
+                                "warnings": _all_warnings,
+                                "verification_steps":
+                                    _all_verifs,
+                            }
+                            if _all_changes
+                            else None
+                        )
+                        code_usage = _agg_usage
+                    else:
+                        # Single build call (plan ≤ threshold)
+                        code_result, code_usage = (
+                            await _build_task_with_llm(
+                                user_id, run_id, repo_name,
+                                stack_profile, task,
+                                current_plan,
+                                api_key=opus_worker.api_key,
+                                model=opus_worker.model,
+                                working_dir=state.get(
+                                    "working_dir", ""),
+                            )
+                        )
+                        c_in = code_usage.get(
+                            "input_tokens", 0)
+                        c_out = code_usage.get(
+                            "output_tokens", 0)
+                        tokens.add("opus", c_in, c_out)
+                        await _emit(
+                            user_id, "upgrade_token_tick",
+                            {"run_id": run_id,
+                             **tokens.snapshot()},
+                        )
+                        # File progress for single-batch builds
+                        if code_result:
+                            for _ch in code_result.get(
+                                    "changes", []):
+                                await _emit(
+                                    user_id,
+                                    "upgrade_file_progress",
+                                    {
+                                        "run_id": run_id,
+                                        "task_id": task_id,
+                                        "file": _ch.get(
+                                            "file", ""),
+                                        "status": "written",
+                                    },
+                                )
 
                     # Emit results + inline audit
                     await _emit_task_results(

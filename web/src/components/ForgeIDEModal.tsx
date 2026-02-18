@@ -7,7 +7,8 @@
  *   - Bottom: proposed file changes as they arrive
  *
  * Receives WS events: upgrade_started, upgrade_log, upgrade_task_start,
- * upgrade_task_complete, upgrade_file_diff, upgrade_complete.
+ * upgrade_task_complete, upgrade_file_diff, upgrade_file_checklist,
+ * upgrade_file_progress, upgrade_complete.
  */
 import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
@@ -83,6 +84,13 @@ interface FileDiff {
   findings?: string[];
 }
 
+interface ChecklistItem {
+  file: string;
+  action: string;
+  description: string;
+  status: 'pending' | 'written' | 'auditing' | 'passed' | 'failed' | 'rejected';
+}
+
 interface ForgeIDEModalProps {
   runId: string;
   repoName: string;
@@ -108,6 +116,58 @@ const LEVEL_ICONS: Record<string, string> = {
   system: '▸',
   thinking: '◉',
 };
+
+/* ---------- File checklist (Opus progress) ---------- */
+
+const ACTION_ICON: Record<string, string> = { modify: '✏️', create: '➕', delete: '🗑️' };
+
+const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistItem[] }) {
+  if (items.length === 0) return null;
+  const done = items.filter(i => i.status !== 'pending').length;
+  return (
+    <div style={{
+      borderTop: '1px solid #1E293B', padding: '6px 12px',
+      background: '#0D0D1A', fontSize: '0.7rem', flexShrink: 0,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+        <span style={{ color: '#94A3B8', fontWeight: 700, letterSpacing: '0.5px', fontSize: '0.6rem' }}>FILE PROGRESS</span>
+        <span style={{ color: '#94A3B8', fontSize: '0.6rem', fontVariantNumeric: 'tabular-nums' }}>{done}/{items.length}</span>
+      </div>
+      {/* Progress bar */}
+      <div style={{ height: '3px', background: '#1E293B', borderRadius: '2px', marginBottom: '5px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%', borderRadius: '2px',
+          width: `${(done / items.length) * 100}%`,
+          background: 'linear-gradient(90deg, #D946EF, #A855F7)',
+          transition: 'width 0.4s ease',
+        }} />
+      </div>
+      {items.map((item, i) => {
+        const icon = item.status === 'pending' ? '☐'
+          : item.status === 'written' ? '☑'
+          : item.status === 'passed' ? '✅'
+          : item.status === 'failed' ? '❌'
+          : item.status === 'rejected' ? '🚫'
+          : '⏳';
+        const color = item.status === 'pending' ? '#475569'
+          : item.status === 'written' ? '#A78BFA'
+          : item.status === 'passed' ? '#22C55E'
+          : item.status === 'failed' ? '#EF4444'
+          : item.status === 'rejected' ? '#EF4444'
+          : '#94A3B8';
+        const strike = item.status !== 'pending';
+        return (
+          <div key={i} style={{ display: 'flex', gap: '6px', lineHeight: 1.6, color }}>
+            <span style={{ flexShrink: 0, width: '16px' }}>{icon}</span>
+            <span style={{ textDecoration: strike ? 'line-through' : 'none', opacity: strike ? 0.6 : 1 }}>
+              {ACTION_ICON[item.action] || '📄'} {item.file}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
 
 /* ---------- Active log line (own timer) ---------- */
 
@@ -329,6 +389,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const [fixProgress, setFixProgress] = useState<{ tier: number; attempt: number; max: number } | null>(null);
+  const [fileChecklist, setFileChecklist] = useState<ChecklistItem[]>([]);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
@@ -487,6 +548,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   : t,
               ),
             );
+            setFileChecklist([]);  // Clear checklist between tasks
             setCompletedTasks((prev) => Math.max(prev, prev + 1));
             if (p.token_cumulative) {
               setTokenUsage({
@@ -525,6 +587,9 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                 ? { ...d, audit_status: 'auditing' as const }
                 : d
             ));
+            setFileChecklist((prev) => prev.map((c) =>
+              c.file === p.file ? { ...c, status: 'auditing' as const } : c
+            ));
             break;
 
           case 'file_audit_pass':
@@ -533,6 +598,9 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                 ? { ...d, audit_status: 'passed' as const }
                 : d
             ));
+            setFileChecklist((prev) => prev.map((c) =>
+              c.file === p.file ? { ...c, status: 'passed' as const } : c
+            ));
             break;
 
           case 'file_audit_fail':
@@ -540,6 +608,24 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
               d.file === p.file && d.task_id === p.task_id
                 ? { ...d, audit_status: 'failed' as const, findings: p.findings || [] }
                 : d
+            ));
+            setFileChecklist((prev) => prev.map((c) =>
+              c.file === p.file ? { ...c, status: 'failed' as const } : c
+            ));
+            break;
+
+          case 'upgrade_file_checklist':
+            setFileChecklist(
+              (p.files || []).map((f: any) => ({
+                file: f.file, action: f.action,
+                description: f.description, status: f.status || 'pending',
+              })),
+            );
+            break;
+
+          case 'upgrade_file_progress':
+            setFileChecklist((prev) => prev.map((c) =>
+              c.file === p.file ? { ...c, status: (p.status || 'written') as ChecklistItem['status'] } : c
             ));
             break;
 
@@ -1176,13 +1262,16 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
               <div ref={rightColRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 {/* Opus — top */}
                 <div style={{ height: `${opusPct}%`, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <LogPane
-                    logs={opusLogs}
-                    status={status}
-                    label="OPUS"
-                    labelColor="#D946EF"
-                    emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
-                  />
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <LogPane
+                      logs={opusLogs}
+                      status={status}
+                      label="OPUS"
+                      labelColor="#D946EF"
+                      emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
+                    />
+                  </div>
+                  {fileChecklist.length > 0 && <FileChecklist items={fileChecklist} />}
                 </div>
                 {/* Draggable resize handle */}
                 <div
