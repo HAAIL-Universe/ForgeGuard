@@ -9,7 +9,7 @@
  * Receives WS events: upgrade_started, upgrade_log, upgrade_task_start,
  * upgrade_task_complete, upgrade_file_diff, upgrade_complete.
  */
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 
@@ -63,6 +63,13 @@ interface LogEntry {
   source: string;
   level: string;
   message: string;
+  worker?: 'sonnet' | 'opus' | 'system';
+}
+
+function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
+  if (msg.includes('[Sonnet]')) return 'sonnet';
+  if (msg.includes('[Opus]')) return 'opus';
+  return 'system';
 }
 
 interface FileDiff {
@@ -160,6 +167,126 @@ const ActiveLogLine = memo(function ActiveLogLine({
   );
 });
 
+/* ---------- Log Pane (reusable per-worker panel) ---------- */
+
+const LogPane = memo(function LogPane({
+  logs: panelLogs,
+  status,
+  label,
+  labelColor,
+  emptyText,
+}: {
+  logs: LogEntry[];
+  status: string;
+  label: string;
+  labelColor: string;
+  emptyText: string;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scrolledAway = useRef(false);
+
+  const handleScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    scrolledAway.current = remaining >= el.clientHeight * 0.30;
+  }, []);
+
+  useEffect(() => {
+    if (!scrolledAway.current && containerRef.current) {
+      const el = containerRef.current;
+      const target = el.scrollHeight - el.clientHeight * 0.25;
+      el.scrollTop = Math.max(0, target);
+    }
+  }, [panelLogs.length]);
+
+  // Find last active thinking line per worker in THIS panel
+  const activeIndices = new Set<number>();
+  if (status === 'running') {
+    const seenWorkers = new Set<string>();
+    for (let j = panelLogs.length - 1; j >= 0; j--) {
+      if (panelLogs[j].level === 'thinking' && panelLogs[j].message.endsWith('…')) {
+        const wm = panelLogs[j].message.match(/\[(\w+)\]/);
+        const worker = wm ? wm[1] : '_default';
+        if (!seenWorkers.has(worker)) {
+          seenWorkers.add(worker);
+          activeIndices.add(j);
+        }
+      }
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* Panel header */}
+      <div style={{
+        padding: '4px 12px', borderBottom: '1px solid #1E293B',
+        fontSize: '0.6rem', fontWeight: 700, color: labelColor,
+        letterSpacing: '0.5px', background: labelColor + '08',
+        display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0,
+      }}>
+        <span style={{
+          width: '6px', height: '6px', borderRadius: '50%',
+          background: labelColor, display: 'inline-block',
+        }} />
+        {label}
+        <span style={{ color: '#475569', fontSize: '0.55rem', fontWeight: 400 }}>
+          ({panelLogs.length})
+        </span>
+      </div>
+      {/* Scroll container */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        style={{
+          flex: 1, overflowY: 'auto', padding: '8px 12px',
+          fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+          fontSize: '0.75rem', lineHeight: 1.7,
+        }}
+      >
+        {panelLogs.length === 0 ? (
+          <div style={{ color: '#475569', padding: '12px 0', fontSize: '0.7rem' }}>
+            {emptyText}
+          </div>
+        ) : panelLogs.map((log, i) => {
+          const isBox = /^[\u2554\u2557\u255A\u255D\u2551\u2550]/.test(log.message) || /[\u2554\u2557\u255A\u255D\u2551\u2550]{2,}/.test(log.message);
+          const color = isBox ? '#FBBF24' : (LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info);
+          const icon = LEVEL_ICONS[log.level] ?? '';
+          const isActive = activeIndices.has(i);
+
+          if (isActive) {
+            return <ActiveLogLine key={i} log={log} color={color} icon={icon} />;
+          }
+
+          const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+          const isThinking = log.level === 'thinking';
+          return (
+            <div key={i} style={{
+              color,
+              display: 'flex', gap: '8px',
+              padding: isThinking ? '1px 0 1px 12px' : '1px 0',
+              borderLeft: isThinking ? '2px solid #7C3AED33' : 'none',
+              opacity: log.level === 'debug' ? 0.5 : 1,
+            }}>
+              <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
+                {ts}
+              </span>
+              {icon && (
+                <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
+                  {icon}
+                </span>
+              )}
+              <span style={{ wordBreak: 'break-word' }}>
+                {log.message}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
 /* ---------- Component ---------- */
 
 export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModalProps) {
@@ -199,35 +326,22 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   };
 
   /* Refs */
-  const logEndRef = useRef<HTMLDivElement>(null);
-  const userScrolled = useRef(false);
-  const logContainerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const lastNarratorWatching = useRef<boolean | null>(null);
   const logsLenRef = useRef(0);
 
-  /* Auto-scroll management */
-  const handleScroll = useCallback(() => {
-    const el = logContainerRef.current;
-    if (!el) return;
-    // "near bottom" = within the bottom 30% of the scrollable area
-    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = remaining < el.clientHeight * 0.30;
-    userScrolled.current = !nearBottom;
-  }, []);
-/* Keep logsLenRef in sync so polling closures see the latest count */
+  /* Keep logsLenRef in sync so polling closures see the latest count */
   useEffect(() => { logsLenRef.current = logs.length; }, [logs.length]);
 
-  
-  useEffect(() => {
-    if (!userScrolled.current && logContainerRef.current) {
-      const el = logContainerRef.current;
-      // Scroll so latest text sits at ~75% of the container height,
-      // leaving a ~25% gap at the bottom for popup bars.
-      const target = el.scrollHeight - el.clientHeight * 0.25;
-      el.scrollTop = Math.max(0, target);
-    }
-  }, [logs.length]);
+  /* Derived: split logs by worker for dual-panel display */
+  const sonnetLogs = useMemo(
+    () => logs.filter(l => l.worker === 'sonnet' || l.worker === 'system' || !l.worker),
+    [logs],
+  );
+  const opusLogs = useMemo(
+    () => logs.filter(l => l.worker === 'opus' || l.worker === 'system' || !l.worker),
+    [logs],
+  );
 
   /* Prepare workspace & show preview (soft-landing — no auto-start) */
   useEffect(() => {
@@ -297,6 +411,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
               source: p.source,
               level: p.level,
               message: p.message,
+              worker: classifyWorker(p.message),
             }]);
             break;
 
@@ -464,7 +579,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         }
         // Backfill logs if WS missed them (use ref to avoid stale closure)
         if (Array.isArray(data.logs) && data.logs.length > logsLenRef.current) {
-          setLogs(data.logs);
+          setLogs(data.logs.map((l: any) => ({ ...l, worker: classifyWorker(l.message || '') })));
         }
       } catch { /* silent */ }
     }, 4000);
@@ -964,78 +1079,31 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             ))}
           </div>
 
-          {/* Activity log */}
+          {/* Activity log — dual Sonnet/Opus split panels */}
           {activeTab === 'activity' && (
-            <div
-              ref={logContainerRef}
-              onScroll={handleScroll}
-              style={{
-                flex: 1, overflowY: 'auto', padding: '12px 16px',
-                fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
-                fontSize: '0.75rem', lineHeight: 1.7,
-              }}
-            >
-              {logs.length === 0 ? (
-                <div style={{ color: '#475569', padding: '20px 0' }}>
-                  {status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
-                </div>
-              ) : (() => {
-                // Find the last thinking "…" line per worker (Opus, Sonnet, etc.)
-                // so both can animate simultaneously during dual-worker pipeline.
-                const activeIndices = new Set<number>();
-                if (status === 'running') {
-                  const seenWorkers = new Set<string>();
-                  for (let j = logs.length - 1; j >= 0; j--) {
-                    if (logs[j].level === 'thinking' && logs[j].message.endsWith('…')) {
-                      const wm = logs[j].message.match(/\[(\w+)\]/);
-                      const worker = wm ? wm[1] : '_default';
-                      if (!seenWorkers.has(worker)) {
-                        seenWorkers.add(worker);
-                        activeIndices.add(j);
-                      }
-                    }
-                  }
-                }
-                return logs.map((log, i) => {
-                  const isBox = /^[╔╗╚╝║═]/.test(log.message) || /[╔╗╚╝║═]{2,}/.test(log.message);
-                  const color = isBox ? '#FBBF24' : (LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info);
-                  const icon = LEVEL_ICONS[log.level] ?? '';
-                  const isActive = activeIndices.has(i);
-
-                  // Delegate active thinking line to self-ticking component
-                  if (isActive) {
-                    return <ActiveLogLine key={i} log={log} color={color} icon={icon} />;
-                  }
-
-                  const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
-                  const isThinking = log.level === 'thinking';
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        color,
-                        display: 'flex', gap: '8px',
-                        padding: isThinking ? '1px 0 1px 12px' : '1px 0',
-                        borderLeft: isThinking ? '2px solid #7C3AED33' : 'none',
-                        opacity: log.level === 'debug' ? 0.5 : 1,
-                      }}
-                    >
-                      <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
-                        {ts}
-                      </span>
-                      {icon && (
-                        <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
-                          {icon}
-                        </span>
-                      )}
-                      <span style={{ wordBreak: 'break-word' }}>
-                        {log.message}
-                      </span>
-                    </div>
-                  );
-                });
-              })()}
-              <div ref={logEndRef} />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+              {/* Sonnet panel — 40% */}
+              <div style={{ width: '40%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <LogPane
+                  logs={sonnetLogs}
+                  status={status}
+                  label="SONNET"
+                  labelColor="#38BDF8"
+                  emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Sonnet planner will appear here' : 'Waiting for planner…'}
+                />
+              </div>
+              {/* Divider */}
+              <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
+              {/* Opus panel — 60% */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <LogPane
+                  logs={opusLogs}
+                  status={status}
+                  label="OPUS"
+                  labelColor="#D946EF"
+                  emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
+                />
+              </div>
             </div>
           )}
 
