@@ -191,6 +191,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     '/pause':  'Pause execution after current task finishes',
     '/resume': 'Resume a paused execution',
     '/stop':   'Abort execution (current task finishes first)',
+    '/retry':  'Re-run failed/skipped tasks',
     '/push':   'Apply changes, commit, and push to GitHub',
     '/status': 'Print current progress summary',
     '/help':   'Show available slash commands',

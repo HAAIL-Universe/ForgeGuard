@@ -14,8 +14,10 @@ from app.services.upgrade_executor import (
     _gather_file_contents,
     _log,
     _plan_task_with_llm,
+    _run_retry,
     _strip_codeblock,
     _TokenAccumulator,
+    _WorkerSlot,
     _fmt_tokens,
     execute_upgrade,
     get_available_commands,
@@ -1097,3 +1099,239 @@ async def test_build_task_with_llm_injects_workspace_files(tmp_path):
         msg_content = call_args[1]["messages"][0]["content"]
         assert "workspace_files" in msg_content
         assert "const x = 1;" in msg_content
+
+
+# -----------------------------------------------------------------------
+# /retry command
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_no_failed_tasks():
+    """'/retry' when there are no skipped tasks returns nothing-to-retry."""
+    import asyncio
+
+    rid = "retry-noop-test"
+    _active_upgrades[rid] = {
+        "status": "completed",
+        "logs": [],
+        "task_results": [
+            {"task_id": "MIG-1", "status": "proposed", "changes_count": 2},
+        ],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+        ):
+            r = await send_command("u1", rid, "/retry")
+            assert r["ok"] is True
+            assert "Nothing to retry" in r["message"]
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_retry_requires_finished_state():
+    """'/retry' while still running should be rejected."""
+    import asyncio
+
+    rid = "retry-running-test"
+    _active_upgrades[rid] = {
+        "status": "running",
+        "logs": [],
+        "task_results": [],
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+        ):
+            r = await send_command("u1", rid, "/retry")
+            assert r["ok"] is False
+            assert "Wait for the run" in r["message"]
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_retry_launches_run_for_skipped_tasks():
+    """'/retry' with skipped tasks should launch _run_retry."""
+    import asyncio
+
+    rid = "retry-launch-test"
+    sonnet_w = _WorkerSlot(label="sonnet", api_key="sk-test",
+                           model="claude-sonnet-4-5", display="Sonnet")
+    opus_w = _WorkerSlot(label="opus", api_key="sk-test",
+                         model="claude-opus-4-6", display="Opus")
+    _active_upgrades[rid] = {
+        "status": "completed",
+        "logs": [],
+        "task_results": [
+            {"task_id": "MIG-1", "status": "proposed", "changes_count": 2},
+            {
+                "task_id": "MIG-2", "status": "skipped", "changes_count": 0,
+                "_retry_task": {
+                    "id": "MIG-2", "from_state": "v1", "to_state": "v2",
+                    "priority": "high", "category": "deps",
+                    "rationale": "EOL", "steps": ["update"],
+                },
+                "_retry_plan": None,
+            },
+        ],
+        "_sonnet_worker": sonnet_w,
+        "_opus_worker": opus_w,
+        "_stack_profile": {},
+        "_narrator_key": "",
+        "_narrator_model": "",
+        "repo_name": "test/repo",
+        "_pause_event": asyncio.Event(),
+        "_stop_flag": asyncio.Event(),
+    }
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._run_retry", new_callable=AsyncMock) as mock_retry,
+        ):
+            r = await send_command("u1", rid, "/retry")
+            assert r["ok"] is True
+            assert "Retrying 1 task(s)" in r["message"]
+            assert _active_upgrades[rid]["status"] == "running"
+            # _run_retry should have been scheduled (we patched it)
+            # Allow the created task to execute
+            await asyncio.sleep(0.05)
+            mock_retry.assert_awaited_once()
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_run_retry_replaces_skipped_entry():
+    """_run_retry should replace skipped entries in-place with new results."""
+    rid = "retry-replace-test"
+    tok = _TokenAccumulator()
+    task = {
+        "id": "MIG-3", "from_state": "old", "to_state": "new",
+        "priority": "medium", "category": "framework",
+        "rationale": "upgrade", "steps": ["migrate"],
+    }
+    skipped_entry = {
+        "task_id": "MIG-3", "task_name": "old → new",
+        "status": "skipped", "changes_count": 0,
+        "_retry_task": task, "_retry_plan": None,
+    }
+    state = {
+        "status": "running",
+        "logs": [],
+        "task_results": [{"status": "proposed"}, skipped_entry],
+        "tokens": {},
+        "_token_tracker": tok,
+    }
+    _active_upgrades[rid] = state
+
+    sonnet_w = _WorkerSlot(label="sonnet", api_key="sk-test",
+                           model="claude-sonnet-4-5", display="Sonnet")
+    opus_w = _WorkerSlot(label="opus", api_key="sk-test",
+                         model="claude-opus-4-6", display="Opus")
+
+    plan_result = {
+        "analysis": "Need to upgrade",
+        "plan": [{"file": "index.js", "action": "modify", "description": "update"}],
+        "risks": [],
+    }
+    code_result = {
+        "thinking": ["Updating index.js"],
+        "changes": [{"file": "index.js", "action": "modify",
+                     "description": "updated import", "content": "new code"}],
+        "warnings": [],
+        "verification_steps": ["Run tests"],
+        "status": "proposed",
+    }
+
+    failed_entries = [(1, skipped_entry)]
+
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._plan_task_with_llm",
+                  new_callable=AsyncMock,
+                  return_value=(plan_result, {"input_tokens": 100, "output_tokens": 50})),
+            patch("app.services.upgrade_executor._build_task_with_llm",
+                  new_callable=AsyncMock,
+                  return_value=(code_result, {"input_tokens": 200, "output_tokens": 100})),
+        ):
+            await _run_retry(
+                "u1", rid, state, failed_entries,
+                sonnet_w, opus_w, "test/repo", {},
+            )
+
+        # The skipped entry should now be proposed
+        assert state["task_results"][1]["status"] == "proposed"
+        assert state["task_results"][1]["changes_count"] == 1
+        assert state["task_results"][1]["task_id"] == "MIG-3"
+        assert state["status"] == "completed"
+        # First entry should be untouched
+        assert state["task_results"][0]["status"] == "proposed"
+    finally:
+        _active_upgrades.pop(rid, None)
+
+
+@pytest.mark.asyncio
+async def test_run_retry_still_failed_keeps_retry_data():
+    """When Opus returns None on retry, entry stays skipped with retry data."""
+    rid = "retry-stillfail-test"
+    tok = _TokenAccumulator()
+    task = {
+        "id": "MIG-4", "from_state": "a", "to_state": "b",
+        "priority": "low", "category": "lib",
+        "rationale": "update", "steps": ["bump"],
+    }
+    skipped_entry = {
+        "task_id": "MIG-4", "task_name": "a → b",
+        "status": "skipped", "changes_count": 0,
+        "_retry_task": task, "_retry_plan": None,
+    }
+    state = {
+        "status": "running",
+        "logs": [],
+        "task_results": [skipped_entry],
+        "tokens": {},
+        "_token_tracker": tok,
+    }
+    _active_upgrades[rid] = state
+
+    sonnet_w = _WorkerSlot(label="sonnet", api_key="sk-test",
+                           model="claude-sonnet-4-5", display="Sonnet")
+    opus_w = _WorkerSlot(label="opus", api_key="sk-test",
+                         model="claude-opus-4-6", display="Opus")
+
+    failed_entries = [(0, skipped_entry)]
+
+    try:
+        with (
+            patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
+            patch("app.services.upgrade_executor._plan_task_with_llm",
+                  new_callable=AsyncMock,
+                  return_value=(None, {"input_tokens": 50, "output_tokens": 10})),
+            patch("app.services.upgrade_executor._build_task_with_llm",
+                  new_callable=AsyncMock,
+                  return_value=(None, {"input_tokens": 60, "output_tokens": 15})),
+        ):
+            await _run_retry(
+                "u1", rid, state, failed_entries,
+                sonnet_w, opus_w, "test/repo", {},
+            )
+
+        # Should still be skipped but with retry data preserved
+        assert state["task_results"][0]["status"] == "skipped"
+        assert state["task_results"][0]["_retry_task"] == task
+        assert state["status"] == "completed"
+    finally:
+        _active_upgrades.pop(rid, None)

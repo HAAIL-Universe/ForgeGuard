@@ -91,6 +91,7 @@ _SLASH_COMMANDS = {
     "/pause":  "Pause execution after the current task finishes.",
     "/resume": "Resume a paused execution.",
     "/stop":   "Abort execution entirely (current task will complete first).",
+    "/retry":  "Re-run failed/skipped tasks through Sonnet + Opus.",
     "/push":   "Apply proposed changes, commit, and push to GitHub.",
     "/status": "Print a summary of current progress.",
     "/help":   "Show available slash commands.",
@@ -252,6 +253,61 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
         await _log(user_id, run_id, "🛑 Stopping… current task will finish first.", "system", "command")
         await _emit(user_id, "upgrade_stopping", {"run_id": run_id})
         return {"ok": True, "message": "Stopping after current task."}
+
+    if cmd == "/retry":
+        if state["status"] not in ("completed", "stopped", "error"):
+            return {"ok": False,
+                    "message": "Wait for the run to finish before retrying."}
+
+        # Collect all skipped/failed entries that have retry data
+        failed_entries = [
+            (idx, tr) for idx, tr in enumerate(state["task_results"])
+            if tr.get("status") == "skipped" and tr.get("_retry_task")
+        ]
+        if not failed_entries:
+            await _log(user_id, run_id,
+                       "✅ No failed tasks to retry.", "system", "command")
+            return {"ok": True, "message": "Nothing to retry."}
+
+        # Retrieve stashed worker config
+        sonnet_w: _WorkerSlot | None = state.get("_sonnet_worker")
+        opus_w: _WorkerSlot | None = state.get("_opus_worker")
+        if not sonnet_w or not opus_w:
+            await _log(user_id, run_id,
+                       "❌ Worker config unavailable — cannot retry.",
+                       "error", "command")
+            return {"ok": False, "message": "Worker config lost."}
+
+        stack_profile = state.get("_stack_profile", {})
+        repo_name = state.get("repo_name", "unknown")
+        narrator_key = state.get("_narrator_key", "")
+        narrator_model = state.get("_narrator_model", "")
+
+        # Announce
+        task_names = [
+            tr.get("task_name")
+            or f"{tr.get('_retry_task', {}).get('from_state', '?')} → "
+               f"{tr.get('_retry_task', {}).get('to_state', '?')}"
+            for _, tr in failed_entries
+        ]
+        await _log(user_id, run_id, "", "system", "command")
+        await _log(user_id, run_id,
+                   f"🔄 Retrying {len(failed_entries)} failed task(s):",
+                   "system", "command")
+        for name in task_names:
+            await _log(user_id, run_id, f"  • {name}", "info", "command")
+        await _log(user_id, run_id, "", "system", "command")
+
+        # Launch retry in background
+        state["status"] = "running"
+        asyncio.create_task(
+            _run_retry(user_id, run_id, state, failed_entries,
+                       sonnet_w, opus_w, repo_name, stack_profile,
+                       narrator_key=narrator_key,
+                       narrator_model=narrator_model)
+        )
+        return {"ok": True,
+                "message": f"Retrying {len(failed_entries)} task(s)."}
 
     if cmd == "/push":
         task_results = state.get("task_results", [])
@@ -1077,6 +1133,12 @@ async def execute_upgrade(
         # private control handles (not serialised)
         "_pause_event": pause_event,
         "_stop_flag": stop_flag,
+        # retry context — stashed so /retry can re-run failed tasks
+        "_sonnet_worker": sonnet_worker,
+        "_opus_worker": opus_worker,
+        "_stack_profile": results.get("stack_profile", {}),
+        "_narrator_key": narrator_key,
+        "_narrator_model": narrator_model,
     }
 
     asyncio.create_task(
@@ -1121,6 +1183,7 @@ async def _run_upgrade(
     repo_name = run.get("repo_name", "unknown")
     stack_profile = results.get("stack_profile", {})
     tokens = _TokenAccumulator()
+    state["_token_tracker"] = tokens
     narrator_enabled = bool(narrator_key)
 
     try:
@@ -1293,6 +1356,9 @@ async def _run_upgrade(
                         "sonnet": plan_usage,
                         "opus": code_usage,
                     },
+                    # Stash originals so /retry can re-run this task
+                    "_retry_task": task,
+                    "_retry_plan": plan_result,
                 }
                 await _log(user_id, run_id,
                             f"⏭️ Task {task_id} skipped (no result)",
@@ -1616,6 +1682,272 @@ async def _run_upgrade(
             parent = str(Path(wd).parent)
             shutil.rmtree(parent, ignore_errors=True)
         _active_upgrades.pop(run_id, None)
+
+
+# ---------------------------------------------------------------------------
+# /retry — re-run failed/skipped tasks
+# ---------------------------------------------------------------------------
+
+async def _run_retry(
+    user_id: str,
+    run_id: str,
+    state: dict,
+    failed_entries: list[tuple[int, dict]],
+    sonnet_worker: _WorkerSlot,
+    opus_worker: _WorkerSlot,
+    repo_name: str,
+    stack_profile: dict,
+    *,
+    narrator_key: str = "",
+    narrator_model: str = "",
+) -> None:
+    """Re-run skipped/failed tasks through the Sonnet→Opus pipeline.
+
+    Each entry in *failed_entries* is ``(index_in_task_results, result_dict)``
+    where *result_dict* contains ``_retry_task`` (original task) and
+    optionally ``_retry_plan`` (Sonnet's previous plan, unused in full
+    re-plan mode).  Results are replaced **in-place** inside
+    ``state["task_results"]``.
+    """
+    tokens: _TokenAccumulator = state.get("_token_tracker") or _TokenAccumulator()
+    narrator_enabled = bool(narrator_key and narrator_model)
+
+    try:
+        total = len(failed_entries)
+        completed = 0
+
+        for idx, tr in failed_entries:
+            task = tr["_retry_task"]
+            task_id = task.get("id", f"TASK-{idx}")
+            task_name = (
+                f"{task.get('from_state', '?')} → "
+                f"{task.get('to_state', '?')}"
+            )
+
+            # ── Announce ──
+            await _log(user_id, run_id, "", "system")
+            await _log(user_id, run_id,
+                        f"━━━ Retry {completed + 1}/{total}: {task_name} ━━━",
+                        "system")
+
+            await _emit(user_id, "upgrade_task_start", {
+                "run_id": run_id,
+                "task_id": task_id,
+                "task_index": idx,
+                "task_name": task_name,
+                "priority": task.get("priority", "medium"),
+                "category": task.get("category", ""),
+                "steps": task.get("steps", []),
+                "worker": "sonnet",
+            })
+
+            # ── Sonnet re-plans ──
+            await _log(user_id, run_id,
+                        f"🧠 [Sonnet] Re-planning task {task_id}…",
+                        "thinking")
+
+            plan_result, plan_usage = await _plan_task_with_llm(
+                user_id, run_id, repo_name, stack_profile, task,
+                api_key=sonnet_worker.api_key, model=sonnet_worker.model,
+            )
+            p_in = plan_usage.get("input_tokens", 0)
+            p_out = plan_usage.get("output_tokens", 0)
+            tokens.add("sonnet", p_in, p_out)
+
+            if plan_result:
+                analysis = plan_result.get("analysis", "")
+                if analysis:
+                    await _log(user_id, run_id,
+                                f"🧠 [Sonnet] {analysis}", "thinking")
+                plan_files = plan_result.get("plan", [])
+                if plan_files:
+                    await _log(user_id, run_id,
+                                f"📋 [Sonnet] Identified {len(plan_files)} file(s) to change:",
+                                "info")
+                    for pf in plan_files:
+                        await _log(user_id, run_id,
+                                    f"  📄 {pf.get('file', '?')} — {pf.get('description', '')}",
+                                    "info")
+                for risk in plan_result.get("risks", []):
+                    await _log(user_id, run_id, f"  ⚠ [Sonnet] {risk}", "warn")
+
+            # ── Opus builds ──
+            await _log(user_id, run_id,
+                        f"⚡ [Opus] Writing code for task {task_id}…",
+                        "thinking")
+
+            code_result, code_usage = await _build_task_with_llm(
+                user_id, run_id, repo_name, stack_profile,
+                task, plan_result,
+                api_key=opus_worker.api_key, model=opus_worker.model,
+                working_dir=state.get("working_dir", ""),
+            )
+            c_in = code_usage.get("input_tokens", 0)
+            c_out = code_usage.get("output_tokens", 0)
+            tokens.add("opus", c_in, c_out)
+
+            # ── Log Opus output ──
+            if code_result:
+                for thought in code_result.get("thinking", []):
+                    await _log(user_id, run_id,
+                                f"💭 [Opus] {thought}", "thinking")
+                    await asyncio.sleep(0.08)
+
+                changes = code_result.get("changes", [])
+                if changes:
+                    await _log(user_id, run_id,
+                                f"📝 [Opus] {len(changes)} file change(s) proposed:",
+                                "system")
+                    for change in changes:
+                        icon = {"modify": "✏️", "create": "➕",
+                                "delete": "🗑️"}.get(
+                            change.get("action", "modify"), "📄")
+                        await _log(
+                            user_id, run_id,
+                            f"  {icon} {change.get('file', '?')} — "
+                            f"{change.get('description', '')}",
+                            "info",
+                        )
+                        await _emit(user_id, "upgrade_file_diff", {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "worker": "opus",
+                            **change,
+                        })
+                        await asyncio.sleep(0.05)
+
+                for warn in code_result.get("warnings", []):
+                    await _log(user_id, run_id, f"⚠️ [Opus] {warn}", "warn")
+
+                verifications = code_result.get("verification_steps", [])
+                if verifications:
+                    await _log(user_id, run_id, "✅ [Opus] Verification:", "info")
+                    for v in verifications:
+                        await _log(user_id, run_id, f"  → {v}", "info")
+
+                n_changes = len(changes)
+                new_entry = {
+                    "task_id": task_id,
+                    "task_name": task_name,
+                    "status": "proposed",
+                    "changes_count": n_changes,
+                    "worker": "opus",
+                    "tokens": {"sonnet": plan_usage, "opus": code_usage},
+                    "llm_result": code_result,
+                }
+                await _log(user_id, run_id,
+                            f"✅ Task {task_id} complete — "
+                            f"{n_changes} changes proposed", "system")
+            else:
+                # Still failed — keep retry data for another attempt
+                new_entry = {
+                    "task_id": task_id,
+                    "task_name": task_name,
+                    "status": "skipped",
+                    "changes_count": 0,
+                    "worker": "opus",
+                    "tokens": {"sonnet": plan_usage, "opus": code_usage},
+                    "_retry_task": task,
+                    "_retry_plan": plan_result,
+                }
+                await _log(user_id, run_id,
+                            f"⏭️ Task {task_id} still failed on retry",
+                            "warn")
+
+            # Replace the old entry in-place
+            state["task_results"][idx] = new_entry
+
+            # Token tick
+            snap = tokens.snapshot()
+            state["tokens"] = snap
+            await _emit(user_id, "upgrade_token_tick", {
+                "run_id": run_id, **snap})
+            await _emit(user_id, "upgrade_task_complete", {
+                "run_id": run_id,
+                "task_id": task_id,
+                "task_index": idx,
+                "status": new_entry["status"],
+                "changes_count": new_entry["changes_count"],
+                "worker": "opus",
+                "token_delta": {"sonnet": plan_usage, "opus": code_usage},
+                "token_cumulative": snap,
+            })
+
+            completed += 1
+
+            # Narrate (non-blocking)
+            if narrator_enabled:
+                n_ch = new_entry["changes_count"]
+                asyncio.create_task(_narrate(
+                    user_id, run_id,
+                    f"Retry {completed}/{total}: task '{task_name}' "
+                    f"{'produced ' + str(n_ch) + ' change(s)' if new_entry['status'] == 'proposed' else 'still failed'}. "
+                    f"{total - completed} task(s) remaining.",
+                    narrator_key=narrator_key,
+                    narrator_model=narrator_model,
+                    tokens=tokens,
+                ))
+            await asyncio.sleep(0.15)
+
+        # ── Retry wrap-up ──
+        final_tokens = tokens.snapshot()
+        proposed = sum(
+            1 for r in state["task_results"] if r["status"] == "proposed")
+        still_skipped = sum(
+            1 for r in state["task_results"] if r["status"] == "skipped")
+        total_changes = sum(
+            r.get("changes_count", 0) for r in state["task_results"])
+
+        await _log(user_id, run_id, "", "system")
+        await _log(user_id, run_id, "━━━ Retry Complete ━━━", "system")
+        await _log(user_id, run_id,
+                    f"📊 {proposed} task(s) proposed, {still_skipped} still skipped",
+                    "system")
+        await _log(user_id, run_id,
+                    f"📝 {total_changes} total file changes proposed",
+                    "system")
+        await _log(user_id, run_id,
+                    f"⚡ Tokens used — "
+                    f"Sonnet: {_fmt_tokens(final_tokens['sonnet']['total'])} | "
+                    f"Opus: {_fmt_tokens(final_tokens['opus']['total'])} | "
+                    f"Haiku: {_fmt_tokens(final_tokens['haiku']['total'])} | "
+                    f"Total: {_fmt_tokens(final_tokens['total'])}",
+                    "system")
+
+        if still_skipped > 0:
+            await _log(user_id, run_id,
+                        f"💡 {still_skipped} task(s) still failed — "
+                        "you can /retry again or /push what succeeded.",
+                        "system")
+        else:
+            await _log(user_id, run_id,
+                        "✅ All tasks now have proposed changes — "
+                        "use /push to apply them.",
+                        "system")
+
+        state["status"] = "completed"
+        state["tokens"] = final_tokens
+
+        await _emit(user_id, "upgrade_complete", {
+            "run_id": run_id,
+            "status": "completed",
+            "total_tasks": len(state["task_results"]),
+            "proposed": proposed,
+            "skipped": still_skipped,
+            "total_changes": total_changes,
+            "tokens": final_tokens,
+        })
+
+    except Exception:
+        logger.exception("Retry execution %s failed", run_id)
+        state["status"] = "error"
+        await _log(user_id, run_id,
+                    "❌ Retry failed with an unexpected error", "error")
+        await _emit(user_id, "upgrade_complete", {
+            "run_id": run_id,
+            "status": "error",
+            "tokens": tokens.snapshot(),
+        })
 
 
 def _fmt_tokens(n: int) -> str:
