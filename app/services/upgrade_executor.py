@@ -610,7 +610,15 @@ async def _narrate(
             **tokens.snapshot(),
         })
     except Exception:
-        logger.debug("Narration failed (non-critical)", exc_info=True)
+        logger.warning("Narration failed for run %s", run_id, exc_info=True)
+        # Let the user know narration failed so they're not stuck on "Loading"
+        state = _active_upgrades.get(run_id)
+        if state:
+            await _emit(user_id, "upgrade_narration", {
+                "run_id": run_id,
+                "text": "(Narration unavailable — Haiku call failed. Check your second API key in Settings.)",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
 
 # ---------------------------------------------------------------------------
