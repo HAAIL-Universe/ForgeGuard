@@ -2230,17 +2230,53 @@ async def prepare_upgrade_workspace(
     if not repo_name:
         raise ValueError("No repository name on this run")
 
+    # ── Stash recovery ────────────────────────────────────────────
+    # If a previous run stashed unpushed changes and the working
+    # directory still exists on disk, carry that state forward so the
+    # user can /push without re-generating everything.
+    prev = _active_upgrades.get(rid)
+    prev_stash = {}
+    if prev:
+        has_stash = (
+            prev.get("_push_changes")
+            or prev.get("_push_task_results")
+            or prev.get("_push_failed")
+        )
+        prev_wd = prev.get("working_dir")
+        if has_stash and prev_wd and Path(prev_wd).is_dir():
+            # Working dir is intact — cancel the old cleanup timer so
+            # it doesn't nuke the directory while we're re-using it.
+            prev["_cleanup_cancelled"] = True
+            prev_stash = {
+                "_push_changes": prev.get("_push_changes", []),
+                "_push_task_results": prev.get("_push_task_results", []),
+                "_push_failed": prev.get("_push_failed", False),
+                "task_results": prev.get("task_results", []),
+                "working_dir": prev_wd,
+                "branch": prev.get("branch", "main"),
+                "access_token": prev.get("access_token", access_token),
+            }
+        elif has_stash:
+            # Stash exists but working dir was cleaned up — we can only
+            # carry the metadata forward (changes list, task results).
+            prev_stash = {
+                "_push_changes": prev.get("_push_changes", []),
+                "_push_task_results": prev.get("_push_task_results", []),
+                "_push_failed": prev.get("_push_failed", False),
+                "task_results": prev.get("task_results", []),
+            }
+
     # Create pre-execution state so _log can append
     _active_upgrades[rid] = {
         "status": "preparing",
         "run_id": rid,
         "repo_name": repo_name,
-        "working_dir": None,
-        "access_token": access_token,
+        "working_dir": prev_stash.get("working_dir"),
+        "access_token": prev_stash.get("access_token", access_token),
         "total_tasks": 0,
         "completed_tasks": 0,
         "current_task": None,
-        "task_results": [],
+        "task_results": prev_stash.get("task_results", []),
         "logs": [],
         "tokens": {"opus": {"input": 0, "output": 0, "total": 0},
                     "sonnet": {"input": 0, "output": 0, "total": 0},
@@ -2248,7 +2284,41 @@ async def prepare_upgrade_workspace(
                     "total": 0},
         "narrator_enabled": False,
         "narrator_watching": True,
+        # Carry forward push stash if any
+        **{k: v for k, v in prev_stash.items()
+           if k.startswith("_push")},
     }
+
+    # If we already have a valid working directory from the stash,
+    # skip the clone and jump straight to the ready state.
+    if prev_stash.get("working_dir"):
+        wd = prev_stash["working_dir"]
+        branch = prev_stash.get("branch", "main")
+        _active_upgrades[rid]["status"] = "ready"
+        _active_upgrades[rid]["branch"] = branch
+        n_stashed = len(prev_stash.get("_push_changes", []))
+        await _log(uid, rid,
+                   f"♻ Recovered workspace with {n_stashed} unpushed "
+                   f"change(s) — type /push to retry", "system")
+        await _log(uid, rid, "", "system")
+        await _log(uid, rid,
+                   "🟢 Ready — type /push to push stashed changes, or "
+                   "/start to run a fresh upgrade", "system")
+        try:
+            files = await git_client.get_file_list(wd)
+            file_count = len(files)
+        except Exception:
+            file_count = 0
+        return {
+            "run_id": rid,
+            "status": "ready",
+            "repo_name": repo_name,
+            "file_count": file_count,
+            "branch": branch,
+            "clone_ok": True,
+            "stash_recovered": True,
+            "stashed_changes": n_stashed,
+        }
 
     await _log(uid, rid, f"📡 Preparing workspace for {repo_name}…", "system")
 
@@ -2375,6 +2445,11 @@ async def execute_upgrade(
     prepared_token = existing.get("access_token", "") if existing else ""
     prepared_branch = existing.get("branch", "main") if existing else "main"
     prepared_logs = existing.get("logs", []) if existing else []
+    # Carry forward any stashed push data from a previous failed push
+    stashed_push_changes = existing.get("_push_changes", []) if existing else []
+    stashed_push_results = existing.get("_push_task_results", []) if existing else []
+    stashed_push_failed = existing.get("_push_failed", False) if existing else False
+    stashed_task_results = existing.get("task_results", []) if existing else []
 
     # Resolve API keys — prefer user BYOK, fall back to server env
     key1 = (api_key or "").strip() or settings.ANTHROPIC_API_KEY
@@ -2418,7 +2493,7 @@ async def execute_upgrade(
         "total_tasks": len(tasks),
         "completed_tasks": 0,
         "current_task": None,
-        "task_results": [],
+        "task_results": stashed_task_results or [],
         "logs": prepared_logs,
         "tokens": {"opus": {"input": 0, "output": 0, "total": 0},
                     "sonnet": {"input": 0, "output": 0, "total": 0},
@@ -2430,6 +2505,10 @@ async def execute_upgrade(
         "working_dir": prepared_dir,
         "access_token": prepared_token,
         "branch": prepared_branch,
+        # Carry forward stashed push data from previous failure
+        "_push_changes": stashed_push_changes,
+        "_push_task_results": stashed_push_results,
+        "_push_failed": stashed_push_failed,
         # private control handles (not serialised)
         "_pause_event": pause_event,
         "_stop_flag": stop_flag,

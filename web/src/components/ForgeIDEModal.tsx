@@ -419,7 +419,14 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           headers: { Authorization: `Bearer ${token}` },
         });
         if (prepRes.ok) {
+          const prepData = await prepRes.json();
           setStatus('ready');
+          // If backend recovered a stash from a previous failed push,
+          // pre-fill /push instead of /start so the user can retry.
+          if (prepData.stash_recovered) {
+            setCmdInput('/push');
+            return;
+          }
         } else {
           // Clone failed but still allow IDE usage (analysis works)
           setStatus('ready');
