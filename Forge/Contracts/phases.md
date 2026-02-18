@@ -3006,3 +3006,651 @@ Updated user message: includes `Computed Metrics:` and `Detected Smells:` sectio
 - `tests/test_scout_score_history.py` — ~5 tests (repo function + endpoint)
 - Frontend tests for new components
 - Full suite regression, evidence, commit + push
+
+---
+---
+
+# ForgeIDE — Cognitive Architecture Phases
+
+The phases below encode the **five cognitive patterns** that enable a coding agent to maintain accuracy, momentum, and zero-regression across long multi-phase build sessions. These are the patterns observed in high-performance agentic workflows (Copilot agent mode, Cursor, Windsurf) — reverse-engineered and formalised as implementable ForgeIDE features.
+
+Each phase is self-contained and builds on the previous. Together they transform the builder from a "fire-and-hope" single-call generator into a **stateful, self-correcting, context-aware autonomous developer**.
+
+**Dependency chain:** Phase 40 → 41 → 42 → 43 → 44
+
+---
+
+## Phase 40 — Structured Reconnaissance
+
+**Objective:** Before writing a single line of code, the builder performs a systematic inventory of the existing codebase — gathering imports, exports, schemas, test counts, file structure, and dependency graphs. This inventory becomes the **ground truth** that all subsequent planning and code generation references.
+
+**Background — why blind generation fails:**
+
+The current builder receives contracts (blueprint, schema, stack, phases) and starts generating code based on those specifications alone. It has no awareness of what already exists in the workspace. This causes:
+1. **Import collisions** — generated code imports from modules that don't exist yet, or uses wrong import paths
+2. **Schema drift** — generated models don't match the actual database tables
+3. **Duplicate functionality** — builder recreates utilities that already exist
+4. **Test fragility** — new code breaks existing tests the builder didn't know about
+
+IDE-based agents (Copilot, Cursor) solve this by having full workspace access via tools. ForgeIDE's builder needs the same awareness, but gathered **once** upfront and maintained incrementally — not re-explored every turn.
+
+**Deliverables:**
+
+### 40.1 — Workspace Snapshot Engine (`forge_ide/workspace.py`)
+
+A module that produces a structured `WorkspaceSnapshot` from any project directory.
+
+- **`async def capture_snapshot(working_dir: Path) -> WorkspaceSnapshot`**
+  - Walks the directory tree (respecting `.gitignore`, skipping `node_modules`, `__pycache__`, `.git`, `venv`)
+  - For each source file (`.py`, `.ts`, `.tsx`, `.js`, `.jsx`):
+    - Extract: path, line count, language, top-level exports (functions, classes, constants)
+    - For Python: parse with `ast` module — collect `class`, `def`, `import`, `from ... import` at module level
+    - For TypeScript: regex-based extraction of `export function`, `export class`, `export const`, `export default`, `export interface`, `export type`
+  - Produce a **symbol table**: `{ "app.config.Settings": "class", "app.main.app": "FastAPI instance", ... }`
+  - Produce a **dependency graph**: `{ "app/main.py": ["app/config", "app/auth", "app/api.routers..."] }`
+  - Produce a **file tree string**: indented directory listing with line counts
+  - Produce **test inventory**: list of test files, count of test functions (functions starting with `test_`), total test count
+  - Produce **schema inventory**: if `db/migrations/` exists, extract table names and columns from SQL files; if `alembic/versions/` exists, parse migration files
+
+- **`WorkspaceSnapshot` dataclass:**
+  ```python
+  @dataclass
+  class WorkspaceSnapshot:
+      file_tree: str                              # indented directory listing
+      symbol_table: dict[str, str]                # dotted.path -> kind (class/function/const)
+      dependency_graph: dict[str, list[str]]      # file -> [imported modules]
+      test_inventory: TestInventory               # test files, test count, frameworks
+      schema_inventory: SchemaInventory           # tables, columns, migrations
+      total_files: int
+      total_lines: int
+      languages: dict[str, int]                   # language -> line count
+      captured_at: datetime
+  ```
+
+- **Incremental update**: `async def update_snapshot(snapshot: WorkspaceSnapshot, changed_files: list[Path]) -> WorkspaceSnapshot` — re-scans only changed files and updates the symbol table + dependency graph without a full walk
+
+### 40.2 — Reconnaissance Phase in Build Loop
+
+Insert a **recon step** at the start of each phase in `_run_build()`, before the planning call.
+
+- Before calling `_generate_file_manifest()`, capture (or update) the workspace snapshot
+- Pass the snapshot to the planner so it knows:
+  - What files already exist (don't recreate them)
+  - What symbols are available (use correct import paths)
+  - What tests exist (don't break them)
+  - What DB tables exist (match schema exactly)
+- The planner's context now includes: contracts + snapshot + phase deliverables
+- Emit `recon_complete` WS event: `{ total_files, total_lines, test_count, tables, symbols_count }`
+
+### 40.3 — Context Pack Builder (`forge_ide/context_pack.py`)
+
+Builds minimal, relevant context for each file generation call. Instead of sending ALL contracts to every call, selects only what's relevant.
+
+- **`def build_context_pack(file_entry: ManifestEntry, snapshot: WorkspaceSnapshot, contracts: dict) -> ContextPack`**
+  - For a Python backend file:
+    - Include: `blueprint.md`, `schema.md`, `stack.md`, `boundaries.json`
+    - Include: symbol table entries for modules this file will import from (from `depends_on` + dependency graph)
+    - Include: full content of `context_files` listed in the manifest
+    - Exclude: `ui.md`, frontend contracts, unrelated phases
+  - For a React frontend file:
+    - Include: `ui.md`, `blueprint.md`, `stack.md`
+    - Include: TypeScript type exports from shared types/interfaces
+    - Exclude: Python-specific contracts, schema.md (unless it defines API response shapes)
+  - For a test file:
+    - Include: the implementation file it tests (full content)
+    - Include: existing test patterns (first test file from the same directory as an example)
+    - Include: test framework info from snapshot
+  - For a migration file:
+    - Include: `schema.md`, existing migration files (to maintain numbering)
+    - Include: current schema inventory from snapshot
+
+- **Token budget enforcement**: each `ContextPack` has a max token budget (default 30K). If the selected context exceeds the budget, prioritise: (1) target file's direct dependencies, (2) contracts, (3) examples — and truncate the rest with `[... truncated ...]` markers.
+
+### 40.4 — Tests
+
+- Test `capture_snapshot` on a fixture directory with known Python + TypeScript files → verify symbol table, dependency graph, test count
+- Test `update_snapshot` with changed files → verify incremental update correctness
+- Test `build_context_pack` for Python backend file → verify correct contracts selected, correct symbols included
+- Test `build_context_pack` for React file → verify ui.md included, schema.md excluded
+- Test `build_context_pack` token budget enforcement → verify truncation at limit
+- Test recon step integration → verify snapshot is captured before planning call
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- Workspace snapshot captures file tree, symbol table, dependency graph, test inventory, and schema inventory
+- Incremental snapshot update works for changed files without full re-scan
+- Context packs contain only relevant contracts and symbols for each file type
+- Token budget enforcement prevents context overflow
+- Recon step runs before every phase's planning call
+- Builder no longer generates imports for non-existent modules (verified in integration test)
+- All existing tests pass + ~12 new tests for snapshot, context pack, and recon integration
+
+---
+
+## Phase 41 — Task DAG & Progress Tracking
+
+**Objective:** Replace the flat task list with a **directed acyclic graph** (DAG) of tasks with explicit dependencies, estimated costs, and state tracking. The DAG serves as the builder's "program counter" — it always knows exactly what has been done, what's in progress, and what's blocked.
+
+**Background — why flat lists fail:**
+
+The current `plan_tasks` is a flat list of strings. There's no dependency tracking, no state machine, no cost estimation. The builder emits tasks in whatever order it wants, and the orchestrator has no way to verify that prerequisites are met before a task begins. When a task fails and requires a fix, there's no way to determine which downstream tasks are affected.
+
+The cognitive pattern being replicated: **the todo list is the program counter**. At any moment, the builder should be able to ask "What one thing am I doing right now?" and get a single, unambiguous answer. Completed tasks are checkpoints. Blocked tasks are visible. The DAG enforces ordering.
+
+**Deliverables:**
+
+### 41.1 — Task DAG Data Model (`forge_ide/contracts.py`)
+
+- **`TaskNode` dataclass:**
+  ```python
+  @dataclass
+  class TaskNode:
+      id: str                          # e.g., "p0_t1"
+      title: str                       # "Create app/config.py"
+      phase: str                       # "Phase 0"
+      status: TaskStatus               # pending | in_progress | completed | failed | blocked | skipped
+      depends_on: list[str]            # IDs of prerequisite tasks
+      blocks: list[str]                # IDs of tasks this blocks (computed)
+      file_path: str | None            # primary file this task produces
+      estimated_tokens: int            # estimated API token cost
+      actual_tokens: int               # actual cost after completion
+      started_at: datetime | None
+      completed_at: datetime | None
+      error: str | None                # failure reason if status == failed
+      retry_count: int                 # number of retry attempts
+  ```
+
+- **`TaskDAG` class:**
+  ```python
+  class TaskDAG:
+      nodes: dict[str, TaskNode]
+      
+      def add_task(self, node: TaskNode) -> None
+      def get_ready_tasks(self) -> list[TaskNode]          # tasks whose deps are all completed
+      def mark_in_progress(self, task_id: str) -> None     # enforces single in-progress
+      def mark_completed(self, task_id: str, actual_tokens: int) -> None
+      def mark_failed(self, task_id: str, error: str) -> None
+      def get_blocked_by(self, task_id: str) -> list[TaskNode]  # what does this failure block?
+      def get_progress(self) -> DAGProgress                # {completed, total, pct, est_remaining_tokens}
+      def topological_order(self) -> list[TaskNode]        # full execution order
+      def to_dict(self) -> dict                            # serialisable for WS events + persistence
+      def from_manifest(cls, manifest: FileManifest) -> "TaskDAG"  # factory from planner output
+  ```
+
+- **`DAGProgress` dataclass:**
+  ```python
+  @dataclass
+  class DAGProgress:
+      total: int
+      completed: int
+      failed: int
+      blocked: int
+      in_progress: int
+      pending: int
+      percentage: float
+      estimated_remaining_tokens: int
+      estimated_remaining_cost_usd: float
+  ```
+
+### 41.2 — DAG Integration in Build Loop
+
+- After `_generate_file_manifest()` returns, convert the manifest into a `TaskDAG` via `TaskDAG.from_manifest()`
+- Replace the linear file iteration with: `while ready := dag.get_ready_tasks(): process(ready[0])`
+- Before processing each file: `dag.mark_in_progress(task_id)` — emits `task_started` WS event
+- After successful generation: `dag.mark_completed(task_id, tokens)` — emits `task_completed` WS event
+- On generation failure: `dag.mark_failed(task_id, error)` — emits `task_failed` WS event, all tasks in `blocks` become `blocked`
+- Progress broadcast after each task: `dag_progress` WS event with `DAGProgress` data
+- Phase-level progress: the DAG resets per phase (same as `plan_tasks` reset in Phase 16)
+
+### 41.3 — Failure Cascade & Recovery
+
+When a task fails:
+1. Mark all downstream tasks (reachable via `blocks`) as `blocked`
+2. Attempt a fix (targeted fix call, same pattern as Phase 21 verification)
+3. If fix succeeds: mark task completed, unblock downstream tasks
+4. If fix fails after 2 retries: leave as `failed`, report blocked cascade to user
+5. At pause threshold: report the full cascade — "Task X failed, which blocks Y and Z"
+
+### 41.4 — Frontend: DAG Visualisation
+
+- Replace the flat task checklist with a vertically stacked DAG view
+- Each task shows: status icon, title, file path, estimated/actual tokens
+- Dependency lines connect tasks (simple vertical lines with indentation, not a full graph layout)
+- Blocked tasks are greyed out with a lock icon
+- Progress bar at the top: `{completed}/{total} tasks — {pct}% — est. {tokens} tokens remaining`
+- Failed tasks show error detail on expand
+
+### 41.5 — Tests
+
+- Test `TaskDAG.from_manifest()` — correct node creation, dependency wiring
+- Test `get_ready_tasks()` — returns only tasks with all deps completed
+- Test `mark_failed()` — downstream tasks become blocked
+- Test failure cascade — deep dependency chain, one failure blocks 5 tasks
+- Test recovery — failed task fixed, downstream unblocked
+- Test `topological_order()` — correct ordering with complex dependency graph
+- Test `get_progress()` — accurate counts and percentages
+- Test circular dependency detection — raises error
+
+**Schema coverage:** No new tables — DAG state is in-memory during build execution, serialised to build_logs for persistence.
+
+**Exit criteria:**
+- File manifest converts to a dependency-aware DAG with correct ordering
+- Build loop processes tasks in dependency order (no task runs before its prerequisites)
+- Task failures cascade to block downstream tasks
+- Failed tasks can be fixed and downstream tasks unblocked
+- Progress tracking is accurate (counts, percentages, estimated remaining cost)
+- DAG state is broadcast via WebSocket and displayed in the frontend
+- All existing tests pass + ~15 new tests for DAG operations, cascade, and recovery
+
+---
+
+## Phase 42 — Patch Retargeting & Self-Healing Edits
+
+**Objective:** When the builder needs to modify an existing file (fix a bug, update an import, add a method), it generates a **targeted patch** rather than rewriting the entire file. If the file has changed since the builder last saw it (due to a previous fix or a parallel task), the patch engine automatically retargets to the new file content.
+
+**Background — why full-file rewrites are dangerous:**
+
+The current builder always generates complete file content via `write_file`. When fixing a bug in a 200-line file, it regenerates all 200 lines — and often introduces regressions in the parts it didn't mean to change (dropped imports, altered function signatures, reformatted code). IDE-based agents use surgical edits (replace lines 45-52 with new content). ForgeIDE needs the same capability.
+
+The cognitive pattern being replicated: **patch retargeting**. When you read a file at line 100 and later try to edit it, but someone (or a previous fix) has shifted line 100 to line 107, the edit engine finds the correct location by matching surrounding context rather than trusting line numbers.
+
+**Deliverables:**
+
+### 42.1 — Diff Generator (`forge_ide/diff_generator.py`)
+
+Generate surgical patches instead of full-file rewrites for modification tasks.
+
+- **`def generate_edit_instruction(original: str, purpose: str, contracts: dict, snapshot: WorkspaceSnapshot) -> EditInstruction`**
+  - Makes an API call (Sonnet, not Opus — cheaper for targeted edits) with:
+    - The original file content
+    - The modification purpose (e.g., "Add `get_user_by_email` method to UserRepo class")
+    - Relevant context from the snapshot (what modules import this file, what tests cover it)
+  - System prompt instructs the model to output a structured edit, NOT the complete file:
+    ```
+    Output your edit as a JSON object:
+    {
+      "edits": [
+        {
+          "anchor": "three lines of unchanged code above the edit point",
+          "old_text": "the exact text being replaced (include 3 lines of context before and after)",
+          "new_text": "the replacement text",
+          "explanation": "why this change is needed"
+        }
+      ]
+    }
+    ```
+  - Returns `EditInstruction` with a list of surgical edits
+
+- **`EditInstruction` dataclass:**
+  ```python
+  @dataclass
+  class Edit:
+      anchor: str          # context lines to locate the edit point
+      old_text: str        # exact text to replace
+      new_text: str        # replacement text
+      explanation: str
+  
+  @dataclass
+  class EditInstruction:
+      file_path: str
+      edits: list[Edit]
+      full_rewrite: bool   # fallback flag — if True, new_text is the complete file
+  ```
+
+### 42.2 — Patch Application Engine (`forge_ide/patcher.py`)
+
+Apply edits to files with automatic retargeting when content has shifted.
+
+- **`def apply_edits(file_path: Path, edits: list[Edit]) -> PatchResult`**
+  - For each edit:
+    1. **Exact match**: try `file_content.find(old_text)` — if found at exactly one location, replace
+    2. **Fuzzy match**: if exact match fails, use the `anchor` text to locate the region, then find `old_text` within ±20 lines of the anchor
+    3. **Difflib fallback**: if fuzzy match fails, use `difflib.SequenceMatcher` to find the closest match above a similarity threshold (0.85)
+    4. **Abort**: if no match found above threshold, mark the edit as failed and return the error
+  - Track all applied edits for logging
+  - Return `PatchResult` with: applied edits, failed edits, final file content
+
+- **`PatchResult` dataclass:**
+  ```python
+  @dataclass
+  class PatchResult:
+      success: bool
+      applied: list[Edit]
+      failed: list[tuple[Edit, str]]  # (edit, reason)
+      final_content: str
+      retargeted: int                 # how many edits needed fuzzy/difflib matching
+  ```
+
+### 42.3 — Retargeting Integration
+
+When an edit fails to apply (file changed since the builder last saw it):
+
+1. Re-read the current file content
+2. Attempt retargeting via fuzzy match / difflib
+3. If retargeting succeeds: apply and log "Edit retargeted from line N to line M"
+4. If retargeting fails: fall back to a **targeted fix call** — send the current file + the intended change + "Apply this modification to the current file" — and receive the complete modified file
+5. Last resort: full-file rewrite (the current behaviour, but now it's the fallback, not the default)
+
+### 42.4 — Build Loop Integration
+
+- Manifest entries gain an `action` field: `"create"` (new file) or `"modify"` (edit existing file)
+- For `"create"` actions: use the existing full-file generation flow
+- For `"modify"` actions: use `generate_edit_instruction()` + `apply_edits()`
+- The verification step (Phase 21) uses `apply_edits()` for fixes instead of full-file regeneration
+- The recovery planner's fix calls use `apply_edits()` for surgical corrections
+
+### 42.5 — `write_file` Tool Enhancement
+
+Update the builder's `write_file` tool to support a `mode` parameter:
+- `mode: "create"` — write complete file (current behaviour)
+- `mode: "edit"` — apply a surgical patch (new behaviour)
+  - Additional parameters: `anchor`, `old_text`, `new_text`
+  - Uses `apply_edits()` internally
+
+### 42.6 — Tests
+
+- Test exact match application — simple edit on unchanged file
+- Test fuzzy retargeting — file has new lines inserted above the edit point, edit still applies correctly
+- Test difflib retargeting — old_text has minor whitespace differences, still matches
+- Test retarget failure — file completely rewritten, no match found → fallback to full rewrite
+- Test multiple edits on same file — all apply in order
+- Test `generate_edit_instruction()` with mocked API — correct prompt assembly, correct parsing
+- Test `write_file` tool in edit mode — surgical patch via tool call
+- Test build loop with `"modify"` manifest entries — uses edit flow, not full-file generation
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- Modification tasks generate surgical patches, not full-file rewrites
+- Patches retarget automatically when files have shifted (fuzzy + difflib matching)
+- Failed retargeting falls back to targeted fix call, then full rewrite
+- `write_file` tool supports both create and edit modes
+- Verification fixes use surgical edits instead of full-file regeneration
+- Retargeting is logged (how many edits needed fuzzy matching)
+- All existing tests pass + ~14 new tests for diff generation, patch application, retargeting, and fallback
+
+---
+
+## Phase 43 — Session Journal & Context Continuity
+
+**Objective:** Implement a persistent **session journal** that survives context window rotations, API timeouts, and process restarts. The journal captures every significant event (task completed, test baseline changed, file written, error encountered) so the builder can resume from any point without re-discovering what it has already done.
+
+**Background — why context windows kill multi-phase builds:**
+
+A single Anthropic API call has a 200K token context window. A full build across 10+ phases easily exceeds this. The current `_compact_conversation()` handles this by summarising old turns — but summarisation is lossy. The builder forgets specific import paths, exact test counts, and which files it already wrote. When it resumes after compaction, it explores the workspace again (wasting tokens) and sometimes contradicts its own earlier work.
+
+The cognitive pattern being replicated: **the conversation summary is the journal**. At the end of each work block, a structured summary is written capturing: what was accomplished, what the invariants are (test count, file count), what the current state is, and what remains. When context rotates, the journal is loaded as a compressed but complete state document — the builder picks up exactly where it left off.
+
+**Deliverables:**
+
+### 43.1 — Session Journal Data Model (`forge_ide/runner.py` or new module)
+
+- **`SessionJournal` class:**
+  ```python
+  class SessionJournal:
+      build_id: str
+      entries: list[JournalEntry]
+      invariants: dict[str, Any]      # tracked invariants (test_count, file_count, etc.)
+      
+      def record(self, event_type: str, detail: str, metadata: dict = None) -> None
+      def set_invariant(self, key: str, value: Any) -> None
+      def check_invariant(self, key: str, current: Any) -> InvariantResult
+      def get_summary(self, max_tokens: int = 4000) -> str   # compressed summary for context injection
+      def get_checkpoint(self) -> JournalCheckpoint            # serialisable state for persistence
+      def restore_from_checkpoint(cls, checkpoint: JournalCheckpoint) -> "SessionJournal"
+      def to_context_block(self) -> str                        # formatted for injection into API prompts
+  ```
+
+- **`JournalEntry` dataclass:**
+  ```python
+  @dataclass
+  class JournalEntry:
+      timestamp: datetime
+      event_type: str          # task_completed | test_run | file_written | error | recon | phase_start | phase_complete | invariant_set | invariant_violated
+      phase: str
+      task_id: str | None
+      detail: str              # human-readable description
+      metadata: dict           # structured data (tokens, file paths, test counts, etc.)
+  ```
+
+- **`JournalCheckpoint` dataclass** (serialisable to JSON for DB persistence):
+  ```python
+  @dataclass
+  class JournalCheckpoint:
+      build_id: str
+      phase: str
+      task_dag_state: dict       # serialised DAG with task statuses
+      invariants: dict[str, Any]
+      files_written: list[str]
+      snapshot_hash: str         # hash of workspace snapshot for drift detection
+      compressed_history: str    # the journal summary text
+      created_at: datetime
+  ```
+
+### 43.2 — Journal Recording in Build Loop
+
+Instrument the build loop to record every significant event:
+
+- **Phase start**: `journal.record("phase_start", f"Beginning {phase}", {"phase": phase, "task_count": dag.total})`
+- **Task completed**: `journal.record("task_completed", f"Generated {file_path}", {"task_id": id, "tokens_in": n, "tokens_out": m, "file_path": path})`
+- **Test run**: `journal.record("test_run", f"Tests: {passed} passed, {failed} failed", {"passed": n, "failed": m, "baseline": baseline})`
+- **Error**: `journal.record("error", f"Generation failed for {path}: {error}", {"task_id": id, "error": str})`
+- **Invariant set**: `journal.record("invariant_set", f"Test baseline: {count}", {"key": "test_count", "value": count})`
+- **Phase complete**: `journal.record("phase_complete", f"Phase {phase} done", {"tasks_completed": n, "tokens_total": t})`
+
+### 43.3 — Context Window Rotation
+
+Replace `_compact_conversation()` with journal-based context management:
+
+1. Before each API call, calculate total conversation tokens
+2. If approaching the limit (80% of context window):
+   - Write a journal checkpoint
+   - Generate a journal summary: `journal.get_summary(max_tokens=4000)`
+   - Replace the conversation history with: `[system_prompt, journal_summary_as_user_message, last_2_turns]`
+   - The journal summary contains: all completed tasks, current invariants, current phase position, files written, recent errors
+3. The builder receives a **dense, structured state document** instead of a lossy conversation summary
+4. The builder can immediately continue without re-exploring — it knows what exists, what was done, and what's next
+
+### 43.4 — Checkpoint Persistence
+
+- Save journal checkpoints to the `build_logs` table (source: `journal`, message: serialised JSON)
+- On build resume (after pause, crash, or restart): load the latest checkpoint, restore the journal, restore the DAG state
+- `POST /projects/{id}/build/resume` now also restores the journal from the checkpoint
+- Checkpoint saved after every phase completion and every pause event
+
+### 43.5 — Journal Summary Format
+
+The `get_summary()` method produces a structured text block optimised for LLM context injection:
+
+```
+=== SESSION JOURNAL (Build {id}, Phase {phase}) ===
+
+## Completed Phases
+- Phase 0 (Genesis): 5/5 tasks ✓ — 12,340 tokens
+- Phase 1 (Auth): 8/8 tasks ✓ — 28,100 tokens
+
+## Current Phase: Phase 2 (Repos)
+- Tasks: 3/7 completed, 1 in progress, 3 pending
+- Current task: Create app/api/routers/repos.py
+
+## Invariants
+- Backend test count: 45 (baseline: 45) ✓
+- Frontend test count: 12 (baseline: 12) ✓
+- Total files written: 18
+
+## Files Written This Phase
+- app/repos/repo_repo.py (42 lines)
+- app/services/repo_service.py (78 lines)
+- tests/test_repo_service.py (95 lines)
+
+## Recent Events (last 5)
+- [14:32:01] Generated tests/test_repo_service.py — 3,200 tokens
+- [14:31:45] Generated app/services/repo_service.py — 2,800 tokens
+- [14:31:20] Generated app/repos/repo_repo.py — 1,200 tokens
+- [14:31:00] Test run: 45 passed, 0 failed ✓
+- [14:30:45] Phase 2 started — 7 tasks planned
+
+=== END JOURNAL ===
+```
+
+### 43.6 — Tests
+
+- Test `SessionJournal.record()` — entries stored with correct timestamps and types
+- Test `get_summary()` — produces structured text within token budget
+- Test `get_checkpoint()` + `restore_from_checkpoint()` — round-trip serialisation preserves all state
+- Test context rotation — conversation replaced with journal summary, builder continues correctly (mocked)
+- Test checkpoint persistence to build_logs — serialised, retrievable
+- Test build resume from checkpoint — DAG state, invariants, and files_written restored
+- Test journal with 500+ entries — summary still within token budget, includes most recent events
+
+**Schema coverage:** No new tables — checkpoints stored in build_logs.
+
+**Exit criteria:**
+- Every significant build event is recorded in the session journal
+- Journal summary provides a dense, structured state document suitable for context injection
+- Context window rotation uses journal summary instead of lossy conversation compaction
+- Checkpoints persist to the database and can be restored after pause/crash/restart
+- Build resume from checkpoint restores full state (DAG, invariants, files_written)
+- Builder maintains accuracy after context rotation (verified in integration test with mocked agent)
+- All existing tests pass + ~12 new tests for journal operations, summarisation, checkpointing, and restoration
+
+---
+
+## Phase 44 — Invariant Gates & Test Baseline Tracking
+
+**Objective:** Implement a **hard invariant system** that prevents the build from ever regressing on key metrics. The test count is the primary invariant: it must never decrease. If a code change causes a test to fail or a test file to be deleted, the build halts immediately — before committing, before moving on, before the error propagates into downstream phases.
+
+**Background — why "929 passed" matters:**
+
+In a long build session, the most dangerous failure mode is **silent regression**. The builder writes new code that breaks an existing test. If the break isn't caught immediately, the builder continues building on top of broken code. By the time the audit catches it (if it catches it at all), the fix requires unwinding multiple phases of work. The solution: after every file write, run the test suite and compare against the invariant baseline. If the count drops, stop immediately.
+
+The cognitive pattern being replicated: **the test baseline is the invariant**. After every phase, the builder records "929 tests pass." Before starting the next phase, it runs tests and verifies "929 tests still pass." If the count drops to 928, something broke — stop and fix before continuing. The test count only ever goes up.
+
+**Deliverables:**
+
+### 44.1 — Invariant Registry (`forge_ide/registry.py`)
+
+A generalised invariant system that tracks named values and enforces monotonic or equality constraints.
+
+- **`InvariantRegistry` class:**
+  ```python
+  class InvariantRegistry:
+      invariants: dict[str, Invariant]
+      
+      def register(self, name: str, value: Any, constraint: Constraint) -> None
+      def check(self, name: str, current_value: Any) -> InvariantResult
+      def check_all(self, current_values: dict[str, Any]) -> list[InvariantResult]
+      def update(self, name: str, new_value: Any) -> None  # only if new value satisfies constraint
+  ```
+
+- **`Constraint` enum:**
+  - `MONOTONIC_UP` — value must be >= previous (test count: can only go up)
+  - `MONOTONIC_DOWN` — value must be <= previous (error count: can only go down)
+  - `EQUAL` — value must match exactly (schema hash: don't accidentally alter migrations)
+  - `NON_ZERO` — value must be > 0 (at least one test must exist)
+
+- **`InvariantResult` dataclass:**
+  ```python
+  @dataclass
+  class InvariantResult:
+      name: str
+      passed: bool
+      expected: Any         # the invariant value
+      actual: Any           # the current value
+      constraint: Constraint
+      message: str          # human-readable description
+  ```
+
+### 44.2 — Built-in Invariants
+
+Pre-registered invariants for every build:
+
+| Invariant | Constraint | Description |
+|-----------|-----------|-------------|
+| `backend_test_count` | MONOTONIC_UP | Number of passing backend tests (pytest) |
+| `frontend_test_count` | MONOTONIC_UP | Number of passing frontend tests (vitest) |
+| `backend_test_failures` | EQUAL (to 0) | Number of failing backend tests |
+| `frontend_test_failures` | EQUAL (to 0) | Number of failing frontend tests |
+| `total_files` | MONOTONIC_UP | Number of files in the project |
+| `migration_count` | MONOTONIC_UP | Number of DB migrations (don't delete migrations) |
+| `syntax_errors` | EQUAL (to 0) | No syntax errors in any source file |
+
+### 44.3 — Invariant Gate in Build Loop
+
+Insert invariant checks at two critical points:
+
+1. **After file generation** (per-file gate):
+   - Run syntax check on the generated file
+   - Check `syntax_errors` invariant
+   - If violated: immediately fix (targeted fix call) before proceeding
+
+2. **After phase verification** (phase gate):
+   - Run the full test suite
+   - Parse test output: extract passed count, failed count
+   - Check `backend_test_count` invariant (must be >= baseline)
+   - Check `backend_test_failures` invariant (must be 0)
+   - If violated:
+     1. Identify which tests broke (diff test output against previous run)
+     2. Read the failing test + the file it tests
+     3. Make a targeted fix call to restore the broken test
+     4. Re-run tests
+     5. If still broken after 2 attempts: pause build with invariant violation detail
+   - If passed: update the invariant baseline (test count may have increased due to new tests)
+   - Emit `invariant_check` WS event: `{ name, passed, expected, actual }`
+
+### 44.4 — Invariant Violation Response
+
+When an invariant is violated:
+
+1. **Log the violation** to the session journal: `journal.record("invariant_violated", f"Test count dropped: {expected} -> {actual}", {...})`
+2. **Identify the cause**: diff the workspace snapshot before and after the latest change to find what changed
+3. **Attempt automatic fix**: targeted fix call with the broken test + recent changes
+4. **If fix succeeds**: log recovery, update baseline, continue
+5. **If fix fails**: pause the build with a detailed violation report:
+   ```
+   INVARIANT VIOLATION: backend_test_count
+   Expected: >= 45
+   Actual: 43
+   Constraint: MONOTONIC_UP
+   
+   Failing tests:
+   - tests/test_auth.py::test_jwt_decode_expired — NameError: name 'Settings' is not defined
+   - tests/test_config.py::test_missing_env_var — ImportError: cannot import name 'settings'
+   
+   Recent changes:
+   - Modified: app/config.py (renamed Settings class)
+   ```
+
+### 44.5 — Frontend: Invariant Dashboard
+
+- **Invariant status strip** at the top of BuildProgress page:
+  - Horizontal row of invariant badges: `Tests: 45 ✓` | `Errors: 0 ✓` | `Files: 18 ↑`
+  - Green for passing, red for violated, amber for recently recovered
+  - Clicking a badge shows history: value at each checkpoint
+- **Violation alert**: when an invariant is violated, show an inline alert card (red border) with the violation details, cause analysis, and fix status
+
+### 44.6 — Tests
+
+- Test `InvariantRegistry.register()` + `check()` — all constraint types
+- Test `MONOTONIC_UP` — value increase passes, decrease fails
+- Test `MONOTONIC_DOWN` — value decrease passes, increase fails
+- Test `EQUAL` — exact match passes, any change fails
+- Test `NON_ZERO` — positive passes, zero fails
+- Test `check_all()` — multiple invariants checked, mixed results
+- Test `update()` — only updates if new value satisfies constraint
+- Test build loop integration — invariant gate runs after verification, violation triggers fix
+- Test invariant recovery — fix restores the invariant, build continues
+- Test invariant persistence — invariants saved in journal checkpoint, restored on resume
+
+**Schema coverage:** No new tables — invariants stored in session journal checkpoints.
+
+**Exit criteria:**
+- Invariant registry supports MONOTONIC_UP, MONOTONIC_DOWN, EQUAL, and NON_ZERO constraints
+- Test count is tracked as a MONOTONIC_UP invariant — it can never decrease
+- Invariant gates run after every file generation (syntax) and after every phase verification (tests)
+- Violations trigger automatic fix attempts before pausing
+- Violation reports include: expected vs actual, failing tests, recent changes
+- Invariants persist across checkpoints and are restored on resume
+- Frontend shows invariant status strip and violation alerts
+- All existing tests pass + ~16 new tests for registry operations, gate integration, violation response, and persistence
