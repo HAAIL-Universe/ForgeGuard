@@ -169,7 +169,7 @@ class SessionJournal:
             self._phase_tokens[effective_phase] = self._phase_stats[effective_phase]["tokens"]
         elif event_type == "phase_complete" and effective_phase in self._phase_stats:
             self._phase_stats[effective_phase]["completed_at"] = entry.timestamp
-            if (metadata or {}).get("tokens_total"):
+            if metadata is not None and metadata.get("tokens_total"):
                 self._phase_stats[effective_phase]["tokens"] = metadata["tokens_total"]
                 self._phase_tokens[effective_phase] = metadata["tokens_total"]
 

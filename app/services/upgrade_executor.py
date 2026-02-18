@@ -538,7 +538,7 @@ async def _commit_and_push(
     task_results: list[dict],
 ) -> dict:
     """Git add → commit → push.  Assumes changes are already applied."""
-    working_dir = state.get("working_dir")
+    working_dir = state.get("working_dir", "")
     access_token = state.get("access_token", "")
     repo_name = state.get("repo_name", "unknown")
     applied = state.get("_applied_count", len(all_changes))

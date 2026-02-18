@@ -3,11 +3,13 @@
 import json
 import logging
 
+from app.audit.engine import CheckResult
+
 logger = logging.getLogger(__name__)
 
 
 def _build_check_list(
-    engine_results: list[dict],
+    engine_results: list[CheckResult],
     changed_paths: list[str],
     files: dict[str, str],
 ) -> list[dict]:

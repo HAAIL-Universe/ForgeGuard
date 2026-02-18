@@ -9,7 +9,7 @@
  * Receives WS events: upgrade_started, upgrade_log, upgrade_task_start,
  * upgrade_task_complete, upgrade_file_diff, upgrade_complete.
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 
@@ -100,6 +100,66 @@ const LEVEL_ICONS: Record<string, string> = {
   thinking: '◉',
 };
 
+/* ---------- Active log line (own timer) ---------- */
+
+/**
+ * A single "thinking" log line that self-updates its elapsed timer
+ * every second. Isolates re-renders so the parent log list stays stable.
+ */
+const ActiveLogLine = memo(function ActiveLogLine({
+  log,
+  color,
+  icon,
+}: {
+  log: LogEntry;
+  color: string;
+  icon: string;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!log.timestamp) return;
+    // Seed with current elapsed so it doesn't flash "0s"
+    setElapsed(Math.max(0, Math.floor((Date.now() - new Date(log.timestamp).getTime()) / 1000)));
+    const id = setInterval(() => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - new Date(log.timestamp).getTime()) / 1000)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [log.timestamp]);
+
+  const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+  const elapsedLabel = elapsed >= 3 ? `${elapsed}s` : '';
+
+  return (
+    <div
+      style={{
+        color,
+        display: 'flex', gap: '8px',
+        padding: '1px 0 1px 12px',
+        borderLeft: '2px solid #7C3AED88',
+        background: '#7C3AED0A',
+      }}
+    >
+      <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
+        {ts}
+      </span>
+      {icon && (
+        <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
+          {icon}
+        </span>
+      )}
+      <span style={{ wordBreak: 'break-word' }}>
+        {log.message.replace(/…$/, '')}
+        <span className="forge-ide-dots" />
+        {elapsedLabel && (
+          <span style={{ color: '#475569', fontSize: '0.65rem', marginLeft: '8px', fontVariantNumeric: 'tabular-nums' }}>
+            {elapsedLabel}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+});
+
 /* ---------- Component ---------- */
 
 export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModalProps) {
@@ -123,7 +183,6 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
-  const [tick, setTick] = useState(0);           // triggers re-render for elapsed timer
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const cmdInputRef = useRef<HTMLInputElement>(null);
 
@@ -144,6 +203,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const logContainerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const lastNarratorWatching = useRef<boolean | null>(null);
+  const logsLenRef = useRef(0);
 
   /* Auto-scroll management */
   const handleScroll = useCallback(() => {
@@ -152,19 +212,15 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     userScrolled.current = !atBottom;
   }, []);
+/* Keep logsLenRef in sync so polling closures see the latest count */
+  useEffect(() => { logsLenRef.current = logs.length; }, [logs.length]);
 
+  
   useEffect(() => {
     if (!userScrolled.current && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      logEndRef.current.scrollIntoView({ behavior: 'auto' });
     }
   }, [logs.length]);
-
-  /* Tick elapsed timer every second while running */
-  useEffect(() => {
-    if (status !== 'running') return;
-    const id = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [status]);
 
   /* Prepare workspace & show preview (soft-landing — no auto-start) */
   useEffect(() => {
@@ -374,8 +430,8 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           setStatus(data.status as any);
           clearInterval(interval);
         }
-        // Backfill logs if WS missed them
-        if (Array.isArray(data.logs) && data.logs.length > logs.length) {
+        // Backfill logs if WS missed them (use ref to avoid stale closure)
+        if (Array.isArray(data.logs) && data.logs.length > logsLenRef.current) {
           setLogs(data.logs);
         }
       } catch { /* silent */ }
@@ -869,16 +925,15 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   const isBox = /^[╔╗╚╝║═]/.test(log.message) || /[╔╗╚╝║═]{2,}/.test(log.message);
                   const color = isBox ? '#FBBF24' : (LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info);
                   const icon = LEVEL_ICONS[log.level] ?? '';
+                  const isActive = i === lastActiveIdx;
+
+                  // Delegate active thinking line to self-ticking component
+                  if (isActive) {
+                    return <ActiveLogLine key={i} log={log} color={color} icon={icon} />;
+                  }
+
                   const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
                   const isThinking = log.level === 'thinking';
-                  const isActive = i === lastActiveIdx;
-                  // Elapsed time for active thinking line
-                  let elapsedLabel = '';
-                  if (isActive && log.timestamp) {
-                    void tick; // reference tick to trigger re-render
-                    const secs = Math.max(0, Math.floor((Date.now() - new Date(log.timestamp).getTime()) / 1000));
-                    if (secs >= 3) elapsedLabel = `${secs}s`;
-                  }
                   return (
                     <div
                       key={i}
@@ -886,9 +941,8 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                         color,
                         display: 'flex', gap: '8px',
                         padding: isThinking ? '1px 0 1px 12px' : '1px 0',
-                        borderLeft: isThinking ? `2px solid ${isActive ? '#7C3AED88' : '#7C3AED33'}` : 'none',
+                        borderLeft: isThinking ? '2px solid #7C3AED33' : 'none',
                         opacity: log.level === 'debug' ? 0.5 : 1,
-                        background: isActive ? '#7C3AED0A' : 'transparent',
                       }}
                     >
                       <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
@@ -900,17 +954,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                         </span>
                       )}
                       <span style={{ wordBreak: 'break-word' }}>
-                        {isActive ? (
-                          <>
-                            {log.message.replace(/…$/, '')}
-                            <span className="forge-ide-dots" />
-                            {elapsedLabel && (
-                              <span style={{ color: '#475569', fontSize: '0.65rem', marginLeft: '8px', fontVariantNumeric: 'tabular-nums' }}>
-                                {elapsedLabel}
-                              </span>
-                            )}
-                          </>
-                        ) : log.message}
+                        {log.message}
                       </span>
                     </div>
                   );

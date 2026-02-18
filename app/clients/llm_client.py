@@ -128,7 +128,7 @@ async def chat_anthropic(
     messages: list[dict],
     max_tokens: int = 2048,
     tools: list[dict] | None = None,
-) -> str:
+) -> dict:
     """Send a chat request to the Anthropic Messages API.
 
     When *tools* is provided the raw API response dict is returned so the
@@ -208,7 +208,7 @@ async def chat_openai(
     system_prompt: str,
     messages: list[dict],
     max_tokens: int = 2048,
-) -> str:
+) -> dict:
     """Send a chat request to the OpenAI Chat Completions API."""
     oai_messages = [{"role": "system", "content": system_prompt}]
     oai_messages.extend(messages)
@@ -267,7 +267,7 @@ async def chat(
     max_tokens: int = 2048,
     provider: str = "anthropic",
     tools: list[dict] | None = None,
-) -> str:
+) -> dict:
     """Send a chat request to the configured LLM provider.
 
     Parameters
