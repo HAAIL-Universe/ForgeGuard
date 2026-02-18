@@ -18,17 +18,17 @@
 | [R5](#r5--auth-hardening) | Auth Hardening | 4 | Low | ✅ |
 | [R6](#r6--http-client-reuse) | HTTP Client Reuse | 3 | Med | ✅ |
 | [R7](#r7--decompose-build_servicepy) | Decompose `build_service.py` | 1 | High | ✅ |
-| [R8](#r8--decompose-other-services) | Decompose Other Services | 2 | Med | ⬜ |
-| [R9](#r9--websocket-reliability) | WebSocket Reliability | 4 | Low | ⬜ |
-| [R10](#r10--logging--observability) | Logging & Observability | 4 | Low | ⬜ |
-| [R11](#r11--api-polish) | API Polish | 4 | Med | ⬜ |
-| [R12](#r12--frontend-stability) | Frontend Stability | 3 | Low | ⬜ |
-| [R13](#r13--frontend-decomposition) | Frontend Decomposition | 3 | Med | ⬜ |
-| [R14](#r14--frontend-styling) | Frontend Styling | 1 | High | ⬜ |
-| [R15](#r15--testing-infrastructure) | Testing Infrastructure | 3 | High | ⬜ |
-| [R16](#r16--code-quality-tooling) | Code Quality Tooling | 3 | Low | ⬜ |
-| [R17](#r17--scalability) | Scalability | 4 | High | ⬜ |
-| [R18](#r18--devex-polish) | DevEx Polish | 1 | Low | ⬜ |
+| [R8](#r8--decompose-other-services) | Decompose Other Services | 2 | Med | ✅ |
+| [R9](#r9--websocket-reliability) | WebSocket Reliability | 4 | Low | ✅ |
+| [R10](#r10--logging--observability) | Logging & Observability | 4 | Low | ✅ |
+| [R11](#r11--api-polish) | API Polish | 4 | Med | ✅ |
+| [R12](#r12--frontend-stability) | Frontend Stability | 3 | Low | ✅ |
+| [R13](#r13--frontend-decomposition) | Frontend Decomposition | 3 | Med | ⏭️ |
+| [R14](#r14--frontend-styling) | Frontend Styling | 1 | High | ⏭️ |
+| [R15](#r15--testing-infrastructure) | Testing Infrastructure | 3 | High | ✅ |
+| [R16](#r16--code-quality-tooling) | Code Quality Tooling | 3 | Low | ✅ |
+| [R17](#r17--scalability) | Scalability | 4 | High | ✅ |
+| [R18](#r18--devex-polish) | DevEx Polish | 1 | Low | ✅ |
 
 ---
 
