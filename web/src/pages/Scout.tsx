@@ -60,6 +60,7 @@ interface Dossier {
 
 interface DeepScanResult {
   metadata?: Record<string, any>;
+  metrics?: Record<string, any>;
   stack_profile?: StackProfile | null;
   architecture?: Record<string, any> | null;
   dossier?: Dossier | null;
@@ -1544,7 +1545,13 @@ function Scout() {
                 ← Back to Dossier
               </button>
               <button
-                onClick={() => setIdeModalOpen(true)}
+                onClick={() => {
+                  if (!activeRun) {
+                    addToast('No active run — try re-scanning first.');
+                    return;
+                  }
+                  setIdeModalOpen(true);
+                }}
                 style={{
                   background: 'linear-gradient(135deg, #7C3AED 0%, #3B82F6 100%)',
                   color: '#F8FAFC',
@@ -1579,10 +1586,10 @@ function Scout() {
         )}
 
         {/* ─── FORGE IDE MODAL ─── */}
-        {ideModalOpen && activeRun && activeRepo && (
+        {ideModalOpen && activeRun && (
           <ForgeIDEModal
             runId={activeRun.id}
-            repoName={activeRepo.full_name}
+            repoName={activeRun.repo_name || activeRepo?.full_name || 'Unknown Repo'}
             onClose={() => setIdeModalOpen(false)}
           />
         )}

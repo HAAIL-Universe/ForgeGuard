@@ -27,7 +27,7 @@ interface UpgradeTask {
   status: 'pending' | 'running' | 'proposed' | 'skipped' | 'error';
   changes_count?: number;
   steps?: string[];
-  worker?: 'opus' | 'haiku';
+  worker?: 'opus' | 'sonnet' | 'haiku';
 }
 
 interface TokenBucket {
@@ -38,12 +38,13 @@ interface TokenBucket {
 
 interface TokenUsage {
   opus: TokenBucket;
+  sonnet: TokenBucket;
   haiku: TokenBucket;
   total: number;
 }
 
 const EMPTY_BUCKET: TokenBucket = { input: 0, output: 0, total: 0 };
-const EMPTY_TOKENS: TokenUsage = { opus: { ...EMPTY_BUCKET }, haiku: { ...EMPTY_BUCKET }, total: 0 };
+const EMPTY_TOKENS: TokenUsage = { opus: { ...EMPTY_BUCKET }, sonnet: { ...EMPTY_BUCKET }, haiku: { ...EMPTY_BUCKET }, total: 0 };
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -53,6 +54,7 @@ function fmtTokens(n: number): string {
 
 const WORKER_COLORS: Record<string, string> = {
   opus: '#D946EF',   // purple
+  sonnet: '#38BDF8', // blue
   haiku: '#F472B6',  // pink
 };
 
@@ -240,6 +242,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             if (p.token_cumulative) {
               setTokenUsage({
                 opus: p.token_cumulative.opus || { ...EMPTY_BUCKET },
+                sonnet: p.token_cumulative.sonnet || { ...EMPTY_BUCKET },
                 haiku: p.token_cumulative.haiku || { ...EMPTY_BUCKET },
                 total: p.token_cumulative.total || 0,
               });
@@ -249,6 +252,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
           case 'upgrade_token_tick':
             setTokenUsage({
               opus: p.opus || { ...EMPTY_BUCKET },
+              sonnet: p.sonnet || { ...EMPTY_BUCKET },
               haiku: p.haiku || { ...EMPTY_BUCKET },
               total: p.total || 0,
             });
@@ -270,6 +274,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             if (p.tokens) {
               setTokenUsage({
                 opus: p.tokens.opus || { ...EMPTY_BUCKET },
+                sonnet: p.tokens.sonnet || { ...EMPTY_BUCKET },
                 haiku: p.tokens.haiku || { ...EMPTY_BUCKET },
                 total: p.tokens.total || 0,
               });
@@ -316,6 +321,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         if (data.tokens) {
           setTokenUsage({
             opus: data.tokens.opus || { ...EMPTY_BUCKET },
+            sonnet: data.tokens.sonnet || { ...EMPTY_BUCKET },
             haiku: data.tokens.haiku || { ...EMPTY_BUCKET },
             total: data.tokens.total || 0,
           });
@@ -474,6 +480,21 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                 fontWeight: 600, minWidth: '44px', textAlign: 'right',
               }}>
                 {fmtTokens(tokenUsage.opus.total)}
+              </span>
+            </div>
+            {/* Sonnet counter (planning / IDE) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{
+                fontSize: '0.5rem', fontWeight: 700, padding: '1px 5px',
+                borderRadius: '3px', background: '#38BDF822', color: '#38BDF8',
+              }}>
+                SONNET
+              </span>
+              <span style={{
+                fontSize: '0.7rem', fontFamily: 'monospace', color: '#E2E8F0',
+                fontWeight: 600, minWidth: '44px', textAlign: 'right',
+              }}>
+                {fmtTokens(tokenUsage.sonnet.total)}
               </span>
             </div>
             {/* Haiku counter (narrator) */}

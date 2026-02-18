@@ -5,10 +5,11 @@ tasks using a role-based architecture:
 
 - **Opus (Key 1)** — ``anthropic_api_key`` + ``LLM_BUILDER_MODEL``
   Executes ALL coding / migration tasks sequentially.
+- **Sonnet (Key 1)** — ``LLM_PLANNER_MODEL``
+  Planning, testing, tool calls, and general IDE work (tracked in
+  ``upgrade_service`` / build services; tokens counted here via ``add("sonnet", ...)``.
 - **Haiku (Key 2)** — ``anthropic_api_key_2`` + ``LLM_NARRATOR_MODEL``
   Non-blocking plain-English narrator (fires after key events).
-
-Sonnet handles planning (in ``upgrade_service``, not here).
 If only one key is available, narration is disabled but execution works.
 
 WS event types emitted
@@ -239,20 +240,27 @@ async def _log(
 
 @dataclass
 class _TokenAccumulator:
-    """Cumulative token counter — Opus (coding) + Haiku (narration)."""
+    """Cumulative token counter — Opus (coding) + Sonnet (planning) + Haiku (narration)."""
     opus_in: int = 0
     opus_out: int = 0
+    sonnet_in: int = 0
+    sonnet_out: int = 0
     haiku_in: int = 0
     haiku_out: int = 0
 
     @property
     def total(self) -> int:
-        return self.opus_in + self.opus_out + self.haiku_in + self.haiku_out
+        return (self.opus_in + self.opus_out
+                + self.sonnet_in + self.sonnet_out
+                + self.haiku_in + self.haiku_out)
 
     def add(self, worker_label: str, input_tokens: int, output_tokens: int) -> None:
         if worker_label == "opus":
             self.opus_in += input_tokens
             self.opus_out += output_tokens
+        elif worker_label == "sonnet":
+            self.sonnet_in += input_tokens
+            self.sonnet_out += output_tokens
         else:  # haiku
             self.haiku_in += input_tokens
             self.haiku_out += output_tokens
@@ -261,6 +269,8 @@ class _TokenAccumulator:
         return {
             "opus": {"input": self.opus_in, "output": self.opus_out,
                      "total": self.opus_in + self.opus_out},
+            "sonnet": {"input": self.sonnet_in, "output": self.sonnet_out,
+                       "total": self.sonnet_in + self.sonnet_out},
             "haiku": {"input": self.haiku_in, "output": self.haiku_out,
                        "total": self.haiku_in + self.haiku_out},
             "total": self.total,
@@ -467,6 +477,7 @@ async def execute_upgrade(
         "task_results": [],
         "logs": [],
         "tokens": {"opus": {"input": 0, "output": 0, "total": 0},
+                    "sonnet": {"input": 0, "output": 0, "total": 0},
                     "haiku": {"input": 0, "output": 0, "total": 0},
                     "total": 0},
         "narrator_enabled": narrator_enabled,

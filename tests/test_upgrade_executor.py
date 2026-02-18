@@ -332,7 +332,12 @@ def test_token_accumulator_add_and_snapshot():
     t.add("opus", 100, 50)
     assert t.opus_in == 100
     assert t.opus_out == 50
+    assert t.sonnet_in == 0
     assert t.haiku_in == 0
+
+    t.add("sonnet", 300, 120)
+    assert t.sonnet_in == 300
+    assert t.sonnet_out == 120
 
     t.add("haiku", 200, 80)
     assert t.haiku_in == 200
@@ -342,17 +347,21 @@ def test_token_accumulator_add_and_snapshot():
     assert snap["opus"]["input"] == 100
     assert snap["opus"]["output"] == 50
     assert snap["opus"]["total"] == 150
+    assert snap["sonnet"]["total"] == 420
     assert snap["haiku"]["total"] == 280
-    assert snap["total"] == 430
+    assert snap["total"] == 850
 
 
 def test_token_accumulator_multiple_adds():
     t = _TokenAccumulator()
     t.add("opus", 500, 200)
     t.add("opus", 300, 100)
+    t.add("sonnet", 150, 50)
     assert t.opus_in == 800
     assert t.opus_out == 300
+    assert t.sonnet_in == 150
     assert t.snapshot()["opus"]["total"] == 1100
+    assert t.snapshot()["sonnet"]["total"] == 200
 
 
 # -----------------------------------------------------------------------
