@@ -911,13 +911,19 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   {status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 </div>
               ) : (() => {
-                // Find the last thinking log ending with … (active spinner candidate)
-                let lastActiveIdx = -1;
+                // Find the last thinking "…" line per worker (Opus, Sonnet, etc.)
+                // so both can animate simultaneously during dual-worker pipeline.
+                const activeIndices = new Set<number>();
                 if (status === 'running') {
+                  const seenWorkers = new Set<string>();
                   for (let j = logs.length - 1; j >= 0; j--) {
                     if (logs[j].level === 'thinking' && logs[j].message.endsWith('…')) {
-                      lastActiveIdx = j;
-                      break;
+                      const wm = logs[j].message.match(/\[(\w+)\]/);
+                      const worker = wm ? wm[1] : '_default';
+                      if (!seenWorkers.has(worker)) {
+                        seenWorkers.add(worker);
+                        activeIndices.add(j);
+                      }
                     }
                   }
                 }
@@ -925,7 +931,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                   const isBox = /^[╔╗╚╝║═]/.test(log.message) || /[╔╗╚╝║═]{2,}/.test(log.message);
                   const color = isBox ? '#FBBF24' : (LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info);
                   const icon = LEVEL_ICONS[log.level] ?? '';
-                  const isActive = i === lastActiveIdx;
+                  const isActive = activeIndices.has(i);
 
                   // Delegate active thinking line to self-ticking component
                   if (isActive) {
