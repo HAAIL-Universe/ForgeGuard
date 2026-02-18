@@ -297,7 +297,7 @@ async def test_execute_upgrade_narrator_enabled():
         )
 
         assert result["narrator_enabled"] is True
-        assert result["workers"] == ["sonnet", "opus"]
+        assert result["workers"] == ["sonnet", "opus", "opus-2"]
         assert result["status"] == "running"
 
         state = get_upgrade_status(str(RUN_ID))

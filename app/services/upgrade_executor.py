@@ -9,6 +9,9 @@ tasks using a role-based architecture:
 - **Opus (Key 1)** — ``anthropic_api_key`` + ``LLM_BUILDER_MODEL``
   Writes concrete code changes from Sonnet's plans.  Tokens tracked
   under the ``opus`` bucket.  Runs in parallel with Sonnet (pipeline).
+- **Opus-2 (Key 2)** — ``anthropic_api_key_2`` + ``LLM_BUILDER_MODEL``
+  When Key 2 is available AND a plan exceeds ``_MAX_BUILD_FILES``,
+  sub-batches are processed in parallel across both Opus workers.
 - **Haiku (Key 2)** — ``anthropic_api_key_2`` + ``LLM_NARRATOR_MODEL``
   Non-blocking plain-English narrator (fires after key events).
 If only one key is available, narration is disabled but execution works.
@@ -2726,6 +2729,18 @@ async def execute_upgrade(
     narrator_model = settings.LLM_NARRATOR_MODEL if key2 else ""
     narrator_enabled = bool(narrator_key)
 
+    # Secondary Opus worker — Key 2 can also run builds in parallel
+    # with the primary Opus worker when plans are split into sub-batches.
+    # Haiku narration is fire-and-forget (80 tokens) so it won't clash.
+    opus_worker_2: _WorkerSlot | None = None
+    if key2:
+        opus_worker_2 = _WorkerSlot(
+            label="opus-2",
+            api_key=key2,
+            model=settings.LLM_BUILDER_MODEL,
+            display="Opus-2",
+        )
+
     tasks = plan.get("migration_recommendations", [])
 
     # Pause/stop coordination events
@@ -2765,13 +2780,19 @@ async def execute_upgrade(
         "_stack_profile": results.get("stack_profile", {}),
         "_narrator_key": narrator_key,
         "_narrator_model": narrator_model,
+        "_opus_worker_2": opus_worker_2,
     }
 
     _track_task(asyncio.create_task(
         _run_upgrade(uid, rid, run, results, plan, tasks,
                      sonnet_worker, opus_worker,
-                     narrator_key=narrator_key, narrator_model=narrator_model)
+                     narrator_key=narrator_key, narrator_model=narrator_model,
+                     opus_worker_2=opus_worker_2)
     ))
+
+    _workers = ["sonnet", "opus"]
+    if opus_worker_2:
+        _workers.append("opus-2")
 
     return {
         "run_id": rid,
@@ -2779,7 +2800,7 @@ async def execute_upgrade(
         "total_tasks": len(tasks),
         "repo_name": run.get("repo_name", ""),
         "narrator_enabled": narrator_enabled,
-        "workers": ["sonnet", "opus"],
+        "workers": _workers,
     }
 
 
@@ -2799,10 +2820,14 @@ async def _run_upgrade(
     opus_worker: _WorkerSlot,
     narrator_key: str = "",
     narrator_model: str = "",
+    opus_worker_2: _WorkerSlot | None = None,
 ) -> None:
     """Background coroutine — pipelined dual-worker execution.
 
     Sonnet plans task N+1 **in parallel** with Opus coding task N.
+    When a plan exceeds ``_MAX_BUILD_FILES``, it is split into
+    sub-batches.  If *opus_worker_2* is available (Key 2), pairs of
+    sub-batches run in parallel across both API keys.
     Haiku narrates (non-blocking) after each task completes.
     """
     state = _active_upgrades[run_id]
@@ -3411,6 +3436,8 @@ async def _run_upgrade(
                     # When the plan has many files, split into
                     # sub-batches so Opus gets a focused context
                     # window and the UI shows incremental progress.
+                    # If Key 2 supplied an opus_worker_2, pairs of
+                    # sub-batches run in parallel on both keys.
                     if _pf and len(_pf) > _MAX_BUILD_FILES:
                         _chunks = [
                             _pf[ci:ci + _MAX_BUILD_FILES]
@@ -3425,88 +3452,150 @@ async def _run_upgrade(
                             "input_tokens": 0,
                             "output_tokens": 0,
                         }
-                        for _ci, _chunk in enumerate(_chunks):
-                            if state["_stop_flag"].is_set():
-                                break
-                            _cf = [p.get("file", "?")
-                                   for p in _chunk]
+                        _dual = opus_worker_2 is not None
+
+                        async def _run_sub_batch(
+                            _sb_idx: int,
+                            _sb_chunk: list[dict],
+                            _sb_worker: _WorkerSlot,
+                        ) -> tuple[dict | None, dict, int]:
+                            """Execute one sub-batch build.
+                            Returns (result, usage, index)."""
+                            _sb_cf = [p.get("file", "?")
+                                      for p in _sb_chunk]
+                            _wb = ("Opus-2" if _sb_worker.label
+                                   == "opus-2" else "Opus")
                             await _log(
                                 user_id, run_id,
-                                f"  🔨 [Opus] Sub-batch "
-                                f"{_ci + 1}/{len(_chunks)}: "
-                                f"{', '.join(_cf)}…",
+                                f"  🔨 [{_wb}] Sub-batch "
+                                f"{_sb_idx + 1}/"
+                                f"{len(_chunks)}: "
+                                f"{', '.join(_sb_cf)}…",
                                 "thinking",
                             )
-                            _sub_plan = {
+                            _sb_plan = {
                                 **current_plan,
-                                "plan": _chunk,
+                                "plan": _sb_chunk,
                             }
-                            _sub_result, _sub_usage = (
+                            _sb_res, _sb_usg = (
                                 await _build_task_with_llm(
                                     user_id, run_id,
                                     repo_name,
                                     stack_profile, task,
-                                    _sub_plan,
-                                    api_key=opus_worker.api_key,
-                                    model=opus_worker.model,
+                                    _sb_plan,
+                                    api_key=_sb_worker.api_key,
+                                    model=_sb_worker.model,
                                     working_dir=state.get(
                                         "working_dir", ""),
                                 )
                             )
-                            _si = _sub_usage.get(
-                                "input_tokens", 0)
-                            _so = _sub_usage.get(
-                                "output_tokens", 0)
-                            _agg_usage["input_tokens"] += _si
-                            _agg_usage["output_tokens"] += _so
-                            tokens.add("opus", _si, _so)
-                            await _emit(
-                                user_id,
-                                "upgrade_token_tick",
-                                {"run_id": run_id,
-                                 **tokens.snapshot()},
+                            return _sb_res, _sb_usg, _sb_idx
+
+                        if _dual:
+                            await _log(
+                                user_id, run_id,
+                                f"  ⚡ [Opus] Dual-key "
+                                f"parallel build: "
+                                f"{len(_chunks)} sub-batch(es) "
+                                f"across 2 API keys",
+                                "info",
                             )
-                            if _sub_result:
-                                _sc = _sub_result.get(
-                                    "changes", [])
-                                _all_changes.extend(_sc)
-                                _all_objections.extend(
-                                    _sub_result.get(
-                                        "objections", []))
-                                _all_warnings.extend(
-                                    _sub_result.get(
-                                        "warnings", []))
-                                _all_verifs.extend(
-                                    _sub_result.get(
-                                        "verification_steps",
-                                        []))
-                                # Per-file progress → checklist
-                                for _ch in _sc:
-                                    await _emit(
-                                        user_id,
-                                        "upgrade_file_progress",
-                                        {
-                                            "run_id": run_id,
-                                            "task_id": task_id,
-                                            "file": _ch.get(
-                                                "file", ""),
-                                            "status": "written",
-                                        },
-                                    )
-                                await _log(
-                                    user_id, run_id,
-                                    f"  ✅ [Opus] Sub-batch "
-                                    f"{_ci + 1}: "
-                                    f"{len(_sc)} file(s) done",
-                                    "info",
+
+                        # Process chunks — in pairs if dual,
+                        # sequentially otherwise.
+                        _ci = 0
+                        while _ci < len(_chunks):
+                            if state["_stop_flag"].is_set():
+                                break
+
+                            if (_dual
+                                    and _ci + 1 < len(_chunks)):
+                                # Run two sub-batches in parallel
+                                _r1, _r2 = await asyncio.gather(
+                                    _run_sub_batch(
+                                        _ci, _chunks[_ci],
+                                        opus_worker),
+                                    _run_sub_batch(
+                                        _ci + 1,
+                                        _chunks[_ci + 1],
+                                        opus_worker_2),
                                 )
+                                _results_pair = [_r1, _r2]
+                                _ci += 2
                             else:
-                                await _log(
-                                    user_id, run_id,
-                                    f"  ⚠ [Opus] Sub-batch "
-                                    f"{_ci + 1}: no result",
-                                    "warn",
+                                # Single sub-batch (odd remainder
+                                # or no dual key)
+                                _r1 = await _run_sub_batch(
+                                    _ci, _chunks[_ci],
+                                    opus_worker)
+                                _results_pair = [_r1]
+                                _ci += 1
+
+                            for (_sb_res, _sb_usg,
+                                 _sb_i) in _results_pair:
+                                _si = _sb_usg.get(
+                                    "input_tokens", 0)
+                                _so = _sb_usg.get(
+                                    "output_tokens", 0)
+                                _agg_usage[
+                                    "input_tokens"] += _si
+                                _agg_usage[
+                                    "output_tokens"] += _so
+                                tokens.add("opus", _si, _so)
+                                await _emit(
+                                    user_id,
+                                    "upgrade_token_tick",
+                                    {"run_id": run_id,
+                                     **tokens.snapshot()},
                                 )
+                                if _sb_res:
+                                    _sc = _sb_res.get(
+                                        "changes", [])
+                                    _all_changes.extend(_sc)
+                                    _all_objections.extend(
+                                        _sb_res.get(
+                                            "objections", []))
+                                    _all_warnings.extend(
+                                        _sb_res.get(
+                                            "warnings", []))
+                                    _all_verifs.extend(
+                                        _sb_res.get(
+                                            "verification_steps",
+                                            []))
+                                    for _ch in _sc:
+                                        await _emit(
+                                            user_id,
+                                            "upgrade_file_"
+                                            "progress",
+                                            {
+                                                "run_id":
+                                                    run_id,
+                                                "task_id":
+                                                    task_id,
+                                                "file":
+                                                    _ch.get(
+                                                        "file",
+                                                        ""),
+                                                "status":
+                                                    "written",
+                                            },
+                                        )
+                                    await _log(
+                                        user_id, run_id,
+                                        f"  ✅ [Opus] Sub-batch"
+                                        f" {_sb_i + 1}: "
+                                        f"{len(_sc)} file(s)"
+                                        f" done",
+                                        "info",
+                                    )
+                                else:
+                                    await _log(
+                                        user_id, run_id,
+                                        f"  ⚠ [Opus] Sub-batch"
+                                        f" {_sb_i + 1}:"
+                                        f" no result",
+                                        "warn",
+                                    )
 
                         # Merge sub-batch results
                         code_result: dict | None = (
