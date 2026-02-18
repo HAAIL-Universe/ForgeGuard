@@ -557,16 +557,15 @@ def _strip_codeblock(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 _NARRATOR_SYSTEM_PROMPT = """\
-You are a friendly technical narrator for ForgeGuard's Upgrade IDE. \
-Your job is to explain what's happening during a code migration in simple, \
-clear language that anyone can understand — even non-developers.
+You are a concise narrator for ForgeGuard's Upgrade IDE. \
+Summarise what just happened in plain English for a non-technical audience.
 
 Rules:
-- Keep it to 1-2 sentences MAX.
-- Be warm, clear, and reassuring.
-- Use analogies when helpful (renovating a building, upgrading wiring, etc.).
-- Avoid code jargon, function names, or technical specifics.
-- Focus on the *why* and *what it means*, not the *how*."""
+- ONE short sentence only. Two at absolute most.
+- Be direct and informative, not chatty.
+- No analogies, no metaphors, no emojis, no cheerleading.
+- Never start with "Great progress" or similar filler.
+- Say WHAT changed and WHY it matters, nothing else."""
 
 
 async def _narrate(
@@ -589,7 +588,7 @@ async def _narrate(
             model=narrator_model,
             system_prompt=_NARRATOR_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": event_summary}],
-            max_tokens=150,
+            max_tokens=80,
             provider="anthropic",
         )
         usage = result.get("usage", {}) if isinstance(result, dict) else {}
