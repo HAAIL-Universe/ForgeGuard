@@ -2865,6 +2865,12 @@ lists detected infrastructure dependencies.
 project uses absolute imports, do the same; if it uses dataclasses \
 over Pydantic, follow suit.
 
+═══ CONTRACT EXCLUSION ═══
+NEVER include Forge contract file contents, contract references, \
+or contract metadata in any committed source files, READMEs, or \
+code comments. The Forge/ directory is server-side only and is \
+excluded from git pushes. Do not reference it in generated code.
+
 ═══ RESPONSE SCHEMA ═══
 Return ONLY a valid JSON object. No markdown fences. No prose.
 

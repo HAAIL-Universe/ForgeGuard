@@ -19,6 +19,7 @@ __all__ = [
     "_build_directive",
     "_write_contracts_to_workdir",
     "_extract_phase_window",
+    "inject_forge_gitignore",
 ]
 
 
@@ -181,6 +182,52 @@ def _build_directive(contracts: list[dict]) -> str:
         parts.append(contract["content"])
         parts.append("\n")
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# .gitignore injection — Phase 46
+# ---------------------------------------------------------------------------
+
+_FORGE_GITIGNORE_RULES = [
+    "# Forge contracts (server-side only — do not push)",
+    "Forge/",
+    "*.forge-contract",
+    ".forge/",
+]
+
+_FORGE_GITIGNORE_MARKER = "# Forge contracts (server-side only — do not push)"
+
+
+def inject_forge_gitignore(working_dir: str | Path) -> bool:
+    """Ensure the target repo's ``.gitignore`` excludes Forge contract files.
+
+    * If ``.gitignore`` exists and already contains the marker comment,
+      this is a no-op (idempotent).
+    * If ``.gitignore`` exists without the rules, the rules are appended.
+    * If ``.gitignore`` does not exist, it is created with the rules.
+
+    Returns ``True`` if the file was modified/created, ``False`` if already
+    correct.
+    """
+    gi_path = Path(working_dir) / ".gitignore"
+
+    if gi_path.exists():
+        existing = gi_path.read_text(encoding="utf-8")
+        if _FORGE_GITIGNORE_MARKER in existing:
+            return False  # already injected
+        # Append rules — ensure blank line separator
+        separator = "" if existing.endswith("\n") else "\n"
+        gi_path.write_text(
+            existing + separator + "\n".join(_FORGE_GITIGNORE_RULES) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("Appended Forge exclusion rules to .gitignore in %s", working_dir)
+        return True
+
+    # No .gitignore — create one
+    gi_path.write_text("\n".join(_FORGE_GITIGNORE_RULES) + "\n", encoding="utf-8")
+    logger.info("Created .gitignore with Forge exclusion rules in %s", working_dir)
+    return True
 
 
 def _write_contracts_to_workdir(

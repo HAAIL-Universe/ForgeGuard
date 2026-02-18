@@ -91,9 +91,31 @@ async def checkout_branch(repo_path: str | Path, branch_name: str) -> None:
     await _run_git(["checkout", branch_name], cwd=repo_path)
 
 
+async def exclude_contracts_from_staging(repo_path: str | Path) -> None:
+    """Remove Forge contract files from the git index (belt-and-suspenders).
+
+    Even though ``.gitignore`` should prevent staging, this explicitly
+    un-stages ``Forge/`` so contract files are **never** committed.
+    Silently succeeds if nothing is staged or the directory doesn't exist.
+    """
+    forge_dir = Path(repo_path) / "Forge"
+    if not forge_dir.exists():
+        return
+    try:
+        await _run_git(
+            ["rm", "-r", "--cached", "--ignore-unmatch", "Forge/"],
+            cwd=repo_path,
+        )
+    except RuntimeError:
+        # Non-fatal — .gitignore is the primary guard
+        logger.debug("git rm --cached Forge/ failed (non-fatal) in %s", repo_path)
+
+
 async def add_all(repo_path: str | Path) -> None:
-    """Stage all changes in the repo."""
+    """Stage all changes in the repo, excluding Forge contract files."""
     await _run_git(["add", "-A"], cwd=repo_path)
+    # Belt-and-suspenders: ensure contracts are never staged
+    await exclude_contracts_from_staging(repo_path)
 
 
 async def commit(repo_path: str | Path, message: str) -> str | None:
@@ -115,6 +137,7 @@ async def commit(repo_path: str | Path, message: str) -> str | None:
         pass  # May already be configured
 
     await _run_git(["add", "-A"], cwd=repo_path)
+    await exclude_contracts_from_staging(repo_path)
     await _run_git(["commit", "-m", message], cwd=repo_path)
     sha = await _run_git(["rev-parse", "HEAD"], cwd=repo_path)
     return sha

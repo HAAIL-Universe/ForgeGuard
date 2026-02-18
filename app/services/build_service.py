@@ -98,6 +98,7 @@ from app.services.build.context import (  # noqa: E402
     _build_directive,
     _write_contracts_to_workdir,
     _extract_phase_window,
+    inject_forge_gitignore,
 )
 from app.services.build.planner import (  # noqa: E402
     _parse_build_plan,
@@ -1783,6 +1784,13 @@ async def _run_build_conversation(
             except Exception as exc:
                 logger.warning("Failed to write contracts to workdir: %s", exc)
 
+        # Ensure .gitignore excludes Forge/ so contracts never leak to git
+        if working_dir:
+            try:
+                inject_forge_gitignore(working_dir)
+            except Exception as exc:
+                logger.warning("Failed to inject Forge .gitignore rules: %s", exc)
+
         # Commit + push contracts so the GitHub repo is populated before
         # the builder starts coding.  This ensures the user can see the
         # Forge/Contracts/ folder in their repo immediately.
@@ -1952,6 +1960,11 @@ async def _run_build_conversation(
             "- Usage examples\n"
             "- API reference (if applicable)\n"
             "- License placeholder\n"
+            "\n"
+            "## Contract Exclusion\n"
+            "NEVER include Forge contract file contents, contract references, or\n"
+            "contract metadata in any committed source files, READMEs, or code comments.\n"
+            "The `Forge/` directory is on the server only and excluded from git pushes.\n"
         )
 
         # Emit build overview (high-level phase list) at build start
@@ -3147,6 +3160,12 @@ async def _run_build_plan_execute(
             _write_contracts_to_workdir(working_dir, contracts)
         except Exception as exc:
             logger.warning("Failed to write contracts to workdir: %s", exc)
+
+        # Ensure .gitignore excludes Forge/ so contracts never leak to git
+        try:
+            inject_forge_gitignore(working_dir)
+        except Exception as exc:
+            logger.warning("Failed to inject Forge .gitignore rules: %s", exc)
 
         # Commit + push contracts seed
         if target_type in ("github_new", "github_existing") and access_token:
