@@ -3477,6 +3477,38 @@ async def _run_build_plan_execute(
             "tasks": plan_tasks,
         })
 
+        # --- Build Task DAG for dependency-aware execution ---
+        from forge_ide.contracts import TaskDAG as _TaskDAG, CyclicDependencyError as _CyclicDepError
+        _phase_dag: _TaskDAG | None = None
+        try:
+            _phase_dag = _TaskDAG.from_manifest(
+                manifest,
+                phase_label=str(phase.get("number", "")),
+            )
+            # Pre-mark cached/audited files as skipped in the DAG
+            for _dag_node in _phase_dag.nodes.values():
+                for _mf in manifest:
+                    if _mf["path"] == _dag_node.file_path and _mf.get("status") in ("audited", "fixed"):
+                        _phase_dag.mark_skipped(_dag_node.id)
+                        break
+            await _broadcast_build_event(user_id, build_id, "dag_initialized", {
+                "phase": phase_name,
+                "dag": _phase_dag.to_dict(),
+            })
+        except _CyclicDepError:
+            logger.warning("Cyclic dependency in manifest for %s — DAG disabled", phase_name)
+            _phase_dag = None
+        except Exception:
+            logger.warning("Failed to build task DAG for %s", phase_name, exc_info=True)
+            _phase_dag = None
+
+        # Map file paths to DAG node IDs for quick lookup
+        _path_to_dag_id: dict[str, str] = {}
+        if _phase_dag is not None:
+            for _n in _phase_dag.nodes.values():
+                if _n.file_path:
+                    _path_to_dag_id[_n.file_path] = _n.id
+
         if _cached_count > 0:
             _log_msg = (
                 f"Resuming {phase_name}: {_cached_count}/{len(manifest)} files "
@@ -3601,6 +3633,10 @@ async def _run_build_plan_execute(
                         blocking_files.append((file_path, file_entry.get("audit_findings", "")))
                     else:
                         passed_files.append(file_path)
+                    # DAG: mark skipped (already handled in DAG init, but ensure)
+                    _skip_tid = _path_to_dag_id.get(file_path)
+                    if _phase_dag is not None and _skip_tid and _phase_dag.nodes[_skip_tid].status.value == "pending":
+                        _phase_dag.mark_skipped(_skip_tid)
                     continue
 
             if file_entry.get("action", "create") == "create":
@@ -3641,12 +3677,25 @@ async def _run_build_plan_execute(
                         "duration_ms": 0,
                     })
                     passed_files.append(file_path)
+                    # DAG: mark skipped (file already on disk)
+                    _skip_tid = _path_to_dag_id.get(file_path)
+                    if _phase_dag is not None and _skip_tid and _phase_dag.nodes[_skip_tid].status.value == "pending":
+                        _phase_dag.mark_skipped(_skip_tid)
                     continue
 
             # Track which file is being generated (for audit trail on /stop etc.)
             _current_generating[bid] = file_path
             _touch_progress(build_id)
             await _set_build_activity(build_id, user_id, f"Generating {file_path}")
+
+            # DAG: mark task in-progress
+            _dag_tid = _path_to_dag_id.get(file_path)
+            if _phase_dag is not None and _dag_tid:
+                _phase_dag.mark_in_progress(_dag_tid)
+                await _broadcast_build_event(user_id, build_id, "task_started", {
+                    "task_id": _dag_tid,
+                    "file_path": file_path,
+                })
 
             # Resolve context files from disk
             context = {}
@@ -3698,6 +3747,17 @@ async def _run_build_plan_execute(
                     "status": "done",
                 })
 
+                # DAG: mark task completed + emit progress
+                if _phase_dag is not None and _dag_tid:
+                    _phase_dag.mark_completed(_dag_tid, actual_tokens=0)
+                    await _broadcast_build_event(user_id, build_id, "task_completed", {
+                        "task_id": _dag_tid,
+                        "file_path": file_path,
+                    })
+                    await _broadcast_build_event(user_id, build_id, "dag_progress",
+                        _phase_dag.get_progress().model_dump(),
+                    )
+
                 # Kick off per-file audit+fix in background (uses key 2)
                 _audit_idx = len(pending_file_audits) + 1
                 pending_file_audits.append(asyncio.create_task(
@@ -3722,6 +3782,26 @@ async def _run_build_plan_execute(
                     f"Failed to generate {file_path}: {exc}",
                     source="system", level="error",
                 )
+
+                # DAG: mark task failed + cascade blocks + emit progress
+                if _phase_dag is not None and _dag_tid:
+                    _phase_dag.mark_failed(_dag_tid, str(exc))
+                    _blocked = _phase_dag.get_blocked_by(_dag_tid)
+                    if _blocked:
+                        _blocked_paths = [b.file_path for b in _blocked if b.file_path]
+                        logger.warning(
+                            "Task %s failed → %d downstream tasks blocked: %s",
+                            _dag_tid, len(_blocked), _blocked_paths,
+                        )
+                    await _broadcast_build_event(user_id, build_id, "task_failed", {
+                        "task_id": _dag_tid,
+                        "file_path": file_path,
+                        "error": str(exc),
+                        "blocked_count": len(_blocked) if _blocked else 0,
+                    })
+                    await _broadcast_build_event(user_id, build_id, "dag_progress",
+                        _phase_dag.get_progress().model_dump(),
+                    )
 
         # 3. Collect per-file audit results (streamed in parallel during generation)
         _log_msg = f"All {len(phase_files_written)} files generated for {phase_name} — collecting audit results..."
