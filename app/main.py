@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routers.audit import router as audit_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.builds import router as builds_router
+from app.api.routers.forge import router as forge_router
 from app.api.routers.health import router as health_router
 from app.api.routers.projects import router as projects_router
 from app.api.routers.repos import router as repos_router
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     application.include_router(ws_router)
     application.include_router(audit_router)
     application.include_router(scout_router)
+    application.include_router(forge_router)
     return application
 
 

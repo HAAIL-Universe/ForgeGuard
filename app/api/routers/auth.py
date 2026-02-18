@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.api.deps import get_current_user
 from app.clients.github_client import GITHUB_OAUTH_URL
 from app.config import settings
+from app.repos.forge_key_repo import create_api_key, list_api_keys, revoke_api_key
 from app.repos.user_repo import set_anthropic_api_key, set_anthropic_api_key_2, set_audit_llm_enabled, set_build_spend_cap
 from app.services.auth_service import handle_github_callback
 
@@ -182,3 +183,71 @@ async def remove_spend_cap(
     """Remove the per-build spend cap (unlimited)."""
     await set_build_spend_cap(current_user["id"], None)
     return {"removed": True}
+
+
+# ---------------------------------------------------------------------------
+# Forge API keys (for CLI / MCP access)
+# ---------------------------------------------------------------------------
+
+
+class ForgeKeyBody(BaseModel):
+    label: str = Field(default="default", max_length=100)
+
+
+@router.post("/forge-keys")
+async def create_forge_key(
+    body: ForgeKeyBody,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Generate a new Forge API key for CLI / MCP access.
+
+    Returns the raw key **once** — it cannot be retrieved again.
+    """
+    raw_key, row = await create_api_key(current_user["id"], label=body.label)
+    return {
+        "key": raw_key,
+        "id": str(row["id"]),
+        "prefix": row["prefix"],
+        "label": row["label"],
+        "scopes": row["scopes"],
+        "created_at": str(row["created_at"]),
+        "message": "Save this key — it will not be shown again.",
+    }
+
+
+@router.get("/forge-keys")
+async def list_forge_keys(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """List all active Forge API keys (prefix only, no secrets)."""
+    keys = await list_api_keys(current_user["id"])
+    return {
+        "keys": [
+            {
+                "id": str(k["id"]),
+                "prefix": k["prefix"],
+                "label": k["label"],
+                "scopes": k["scopes"],
+                "created_at": str(k["created_at"]),
+                "last_used": str(k["last_used"]) if k["last_used"] else None,
+            }
+            for k in keys
+        ],
+    }
+
+
+@router.delete("/forge-keys/{key_id}")
+async def revoke_forge_key(
+    key_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Revoke a Forge API key."""
+    from uuid import UUID
+    try:
+        kid = UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key ID")
+    revoked = await revoke_api_key(current_user["id"], kid)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Key not found or already revoked")
+    return {"revoked": True}

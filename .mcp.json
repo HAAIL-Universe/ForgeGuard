@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "forgeguard": {
+      "command": "python",
+      "args": ["forge_mcp_server.py"]
+    }
+  }
+}
