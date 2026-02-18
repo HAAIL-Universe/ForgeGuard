@@ -1299,7 +1299,17 @@ _CODEBLOCK_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?\s*```$", re.DOTALL)
 
 
 def _strip_codeblock(text: str) -> str:
-    """Remove optional ```json ... ``` wrapper and whitespace."""
+    """Remove optional ```json ... ``` wrapper, surrounding prose, and whitespace.
+
+    LLMs sometimes emit prose preamble before the JSON object.  After
+    stripping markdown fences we fall back to extracting the outermost
+    ``{…}`` (or ``[…]``) so a response like::
+
+        I'll produce the changes now.
+        {"changes": [...]}
+
+    still parses correctly.
+    """
     text = text.strip()
     m = _CODEBLOCK_RE.match(text)
     if m:
@@ -1308,7 +1318,26 @@ def _strip_codeblock(text: str) -> str:
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
     if text.endswith("```"):
         text = text[:-3]
-    return text.strip()
+    text = text.strip()
+
+    # If the text already looks like JSON, return as-is
+    if text.startswith("{") or text.startswith("["):
+        return text
+
+    # Extract outermost JSON object/array from surrounding prose.
+    # Pick whichever delimiter ({…} or […]) appears first.
+    best_start = len(text)
+    best: str | None = None
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = text.find(open_ch)
+        if start == -1 or start >= best_start:
+            continue
+        end = text.rfind(close_ch)
+        if end > start:
+            best_start = start
+            best = text[start:end + 1]
+
+    return best if best is not None else text
 
 
 # ---------------------------------------------------------------------------

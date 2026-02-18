@@ -311,7 +311,10 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
+  const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
   const cmdInputRef = useRef<HTMLInputElement>(null);
+  const rightColRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
 
   const SLASH_COMMANDS: Record<string, string> = {
     '/start':  'Begin the upgrade execution',
@@ -324,6 +327,30 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     '/help':   'Show available slash commands',
     '/clear':  'Clear the activity log',
   };
+
+  /* Drag-to-resize Opus/Sonnet split */
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    const onMove = (ev: MouseEvent) => {
+      if (!draggingRef.current || !rightColRef.current) return;
+      const rect = rightColRef.current.getBoundingClientRect();
+      const y = ev.clientY - rect.top;
+      const pct = Math.min(85, Math.max(15, (y / rect.height) * 100));
+      setOpusPct(pct);
+    };
+    const onUp = () => {
+      draggingRef.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
   /* Refs */
   const startedRef = useRef(false);
@@ -1099,9 +1126,9 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
               {/* Divider */}
               <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
               {/* Right column — stacked Opus (top) + Sonnet (bottom) — 60% */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                {/* Opus — top 50% */}
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div ref={rightColRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Opus — top */}
+                <div style={{ height: `${opusPct}%`, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <LogPane
                     logs={opusLogs}
                     status={status}
@@ -1110,9 +1137,29 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
                     emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
                   />
                 </div>
-                {/* Horizontal divider */}
-                <div style={{ height: '1px', background: '#1E293B', flexShrink: 0 }} />
-                {/* Sonnet — bottom 50% */}
+                {/* Draggable resize handle */}
+                <div
+                  onMouseDown={handleDragStart}
+                  style={{
+                    height: '5px', flexShrink: 0, cursor: 'row-resize',
+                    background: '#1E293B', position: 'relative',
+                    transition: draggingRef.current ? 'none' : 'background 0.2s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#334155'; }}
+                  onMouseLeave={e => { if (!draggingRef.current) e.currentTarget.style.background = '#1E293B'; }}
+                >
+                  {/* Grip dots */}
+                  <div style={{
+                    position: 'absolute', left: '50%', top: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    display: 'flex', gap: '3px',
+                  }}>
+                    {[0,1,2].map(k => (
+                      <div key={k} style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#475569' }} />
+                    ))}
+                  </div>
+                </div>
+                {/* Sonnet — bottom */}
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <LogPane
                     logs={sonnetLogs}
