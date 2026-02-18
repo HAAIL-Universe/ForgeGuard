@@ -82,7 +82,7 @@ class ConnectionManager:
         dead = []
         for ws in conns:
             try:
-                await ws.send_text(message)
+                await asyncio.wait_for(ws.send_text(message), timeout=5.0)
             except Exception:
                 dead.append(ws)
         if dead:

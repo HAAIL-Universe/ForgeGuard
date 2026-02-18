@@ -11,10 +11,14 @@ from app.services.upgrade_executor import (
     _active_upgrades,
     _apply_file_change,
     _audit_file_change,
+    _build_deterministic_fix,
     _build_task_with_llm,
     _gather_file_contents,
+    _generate_remediation_plan,
     _log,
     _plan_task_with_llm,
+    _PlanPoolItem,
+    _RemediationItem,
     _run_pre_push_audit,
     _run_retry,
     _strip_codeblock,
@@ -778,13 +782,12 @@ async def test_push_prompt_y_runs_tests(tmp_path):
             patch("app.services.upgrade_executor._log", new_callable=AsyncMock),
             patch("app.services.upgrade_executor._emit", new_callable=AsyncMock),
             patch("app.services.upgrade_executor.git_client") as mock_git,
-            patch("asyncio.create_subprocess_exec") as mock_proc,
+            patch("subprocess.run") as mock_sub_run,
         ):
             # Mock test run — pass
-            proc_mock = AsyncMock()
-            proc_mock.communicate.return_value = (b"1 passed\n", b"")
-            proc_mock.returncode = 0
-            mock_proc.return_value = proc_mock
+            mock_sub_run.return_value = MagicMock(
+                stdout="1 passed\n", stderr="", returncode=0,
+            )
 
             mock_git.add_all = AsyncMock()
             mock_git.commit = AsyncMock(return_value="abc12345")
@@ -1635,3 +1638,171 @@ async def test_push_audit_confirm_no_cancels():
             assert "cancelled" in r["message"].lower()
     finally:
         _active_upgrades.pop(rid, None)
+
+
+# -----------------------------------------------------------------------
+# Plan Pool dataclass tests
+# -----------------------------------------------------------------------
+
+
+class TestPlanPoolItem:
+    """Tests for _PlanPoolItem dataclass."""
+
+    def test_create_item(self):
+        task = {"id": "T-0", "from_state": "A", "to_state": "B"}
+        plan = {"analysis": "test", "plan": []}
+        usage = {"input_tokens": 100, "output_tokens": 50}
+        item = _PlanPoolItem(
+            task_index=0, task=task,
+            plan_result=plan, plan_usage=usage)
+        assert item.task_index == 0
+        assert item.task is task
+        assert item.plan_result == plan
+        assert item.plan_usage == usage
+
+    def test_none_plan(self):
+        item = _PlanPoolItem(task_index=1, task={},
+                             plan_result=None, plan_usage={})
+        assert item.plan_result is None
+
+
+class TestRemediationItem:
+    """Tests for _RemediationItem dataclass."""
+
+    def test_priority_ordering(self):
+        high = _RemediationItem(
+            file="a.py", findings=["err"], original_change={},
+            task_id="T-0", priority=1, _seq=1)
+        low = _RemediationItem(
+            file="b.py", findings=["err"], original_change={},
+            task_id="T-1", priority=10, _seq=2)
+        assert high < low
+        assert not low < high
+
+    def test_seq_tiebreaker(self):
+        a = _RemediationItem(
+            file="a.py", findings=[], original_change={},
+            task_id="T-0", priority=10, _seq=1)
+        b = _RemediationItem(
+            file="b.py", findings=[], original_change={},
+            task_id="T-0", priority=10, _seq=2)
+        assert a < b
+
+    def test_default_priority(self):
+        item = _RemediationItem(
+            file="x.py", findings=[], original_change={},
+            task_id="T-0")
+        assert item.priority == 10
+
+
+# -----------------------------------------------------------------------
+# Plan pool queue integration
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_plan_pool_ordering():
+    """Plans pushed into asyncio.Queue come out in FIFO order."""
+    import asyncio
+    pool: asyncio.Queue[_PlanPoolItem | None] = asyncio.Queue()
+    items = [
+        _PlanPoolItem(i, {"id": f"T-{i}"}, None, {})
+        for i in range(5)
+    ]
+    for item in items:
+        await pool.put(item)
+    await pool.put(None)  # sentinel
+
+    retrieved = []
+    while True:
+        it = await pool.get()
+        if it is None:
+            break
+        retrieved.append(it.task_index)
+
+    assert retrieved == [0, 1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_remediation_pool_priority_ordering():
+    """Remediation pool returns items in priority order."""
+    import asyncio
+    pool: asyncio.PriorityQueue = asyncio.PriorityQueue()
+    low = _RemediationItem(
+        file="low.py", findings=[], original_change={},
+        task_id="T-0", priority=10, _seq=1)
+    high = _RemediationItem(
+        file="high.py", findings=[], original_change={},
+        task_id="T-1", priority=1, _seq=2)
+    # Insert low-priority first
+    await pool.put(low)
+    await pool.put(high)
+
+    first = await pool.get()
+    second = await pool.get()
+    assert first.file == "high.py"
+    assert second.file == "low.py"
+
+
+# -----------------------------------------------------------------------
+# Deterministic remediation plan builder
+# -----------------------------------------------------------------------
+
+
+class TestBuildDeterministicFix:
+    """Tests for _build_deterministic_fix."""
+
+    def test_wildcard_import(self):
+        fix = _build_deterministic_fix(
+            "app/utils.py",
+            ["Wildcard import — app/utils.py: from os import *"],
+            {"after_snippet": "from os import *\n"},
+        )
+        assert fix is not None
+        assert len(fix["plan"]) == 1
+        assert fix["plan"][0]["action"] == "modify"
+        assert "wildcard" in fix["plan"][0]["description"].lower()
+
+    def test_scope_deviation(self):
+        fix = _build_deterministic_fix(
+            "app/unplanned.py",
+            ["Scope deviation — app/unplanned.py: not in plan"],
+            {"after_snippet": "x = 1\n"},
+        )
+        assert fix is not None
+        assert fix["plan"][0]["action"] == "delete"
+
+    def test_syntax_error(self):
+        fix = _build_deterministic_fix(
+            "app/bad.py",
+            ["Syntax error — app/bad.py:1: invalid syntax"],
+            {"after_snippet": "def(\n"},
+        )
+        assert fix is not None
+        assert fix["plan"][0]["action"] == "modify"
+
+    def test_unknown_finding_returns_none(self):
+        fix = _build_deterministic_fix(
+            "app/x.py",
+            ["Secret detected — app/x.py: AWS key"],
+            {"after_snippet": "AKIA...\n"},
+        )
+        assert fix is None
+
+
+@pytest.mark.asyncio
+async def test_generate_remediation_plan_deterministic():
+    """_generate_remediation_plan uses deterministic path for known types."""
+    tokens = _TokenAccumulator()
+    result = await _generate_remediation_plan(
+        "u1", "r1", "app/bad.py",
+        ["Syntax error — app/bad.py:1: invalid syntax"],
+        {"after_snippet": "def(\n"},
+        api_key="fake", model="fake",
+        tokens=tokens,
+    )
+    assert result is not None
+    assert result["plan"][0]["action"] == "modify"
+    # No LLM call — tokens should be untouched
+    assert tokens.sonnet_in == 0
+    assert tokens.sonnet_out == 0

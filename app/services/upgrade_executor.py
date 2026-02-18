@@ -30,8 +30,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -59,6 +61,37 @@ class _WorkerSlot:
     api_key: str
     model: str
     display: str        # Human label for logs — e.g. "Opus 4.6"
+
+
+@dataclass
+class _PlanPoolItem:
+    """A completed plan sitting in the pool, waiting for the builder."""
+    task_index: int
+    task: dict
+    plan_result: dict | None
+    plan_usage: dict
+
+
+@dataclass
+class _RemediationItem:
+    """An audit-failure fix sitting in the remediation pool.
+
+    Sonnet generates *fix_plan* (a dict in the same schema as
+    ``_plan_task_with_llm`` output) while the builder is busy.
+    Opus picks it up between tasks and applies the fix.
+    """
+    file: str
+    findings: list[str]
+    original_change: dict
+    task_id: str
+    fix_plan: dict | None = None
+    priority: int = 10            # lower = higher priority
+    _seq: int = 0                 # monotonic tiebreaker for PriorityQueue
+
+    def __lt__(self, other: "_RemediationItem") -> bool:
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self._seq < other._seq
 
 
 # ---------------------------------------------------------------------------
@@ -182,30 +215,32 @@ async def send_command(user_id: str, run_id: str, command: str) -> dict:
                     user_id, run_id, state, all_changes, task_results)
 
         elif prompt_id == "push_force_confirm":
-            all_changes = state.pop("_push_changes", [])
-            task_results = state.pop("_push_task_results", [])
             if is_yes:
+                all_changes = state.pop("_push_changes", [])
+                task_results = state.pop("_push_task_results", [])
                 await _log(user_id, run_id,
                            "⚠ Force pushing despite test failures…",
                            "warn", "command")
                 return await _run_pre_push_audit(
                     user_id, run_id, state, all_changes, task_results)
             else:
+                # Keep changes in state so /push works again
                 await _log(user_id, run_id,
                            "🛑 Push cancelled. Fix the issues and try "
                            "/push again.", "system", "command")
                 return {"ok": True, "message": "Push cancelled."}
 
         elif prompt_id == "push_audit_confirm":
-            all_changes = state.pop("_push_changes", [])
-            task_results = state.pop("_push_task_results", [])
             if is_yes:
+                all_changes = state.pop("_push_changes", [])
+                task_results = state.pop("_push_task_results", [])
                 await _log(user_id, run_id,
                            "⚠ Pushing despite audit failures…",
                            "warn", "command")
                 return await _commit_and_push(
                     user_id, run_id, state, all_changes, task_results)
             else:
+                # Keep changes in state so /push works again
                 await _log(user_id, run_id,
                            "🛑 Push cancelled. Fix the audit failures "
                            "and try /push again.", "system", "command")
@@ -593,6 +628,152 @@ def _write_audit_trail(
 
 
 # ---------------------------------------------------------------------------
+# Remediation plan generator (deterministic + optional LLM fallback)
+# ---------------------------------------------------------------------------
+
+_REMEDIATION_SYSTEM_PROMPT = """\
+You are ForgeGuard's Remediation Planner.  Given a file that failed \
+deterministic audit checks, produce a minimal fix plan.
+
+Respond with valid JSON:
+{
+  "analysis": "what went wrong and how to fix it",
+  "plan": [
+    {
+      "file": "path/to/file",
+      "action": "modify",
+      "description": "exact change needed",
+      "key_considerations": "constraints"
+    }
+  ],
+  "risks": [],
+  "verification_strategy": ["re-run audit"],
+  "implementation_notes": "specific code snippet if possible"
+}
+"""
+
+
+def _build_deterministic_fix(
+    file_path: str, findings: list[str], original_change: dict,
+) -> dict | None:
+    """Try to produce a fix plan without calling the LLM.
+
+    Returns a plan dict (same schema as ``_plan_task_with_llm`` output)
+    for well-understood failure modes, or ``None`` when human/LLM
+    judgement is needed.
+    """
+    content = original_change.get("after_snippet", "")
+    plan_entries: list[dict] = []
+
+    for finding in findings:
+        if "Wildcard import" in finding:
+            # Extract the wildcard line and suggest explicit imports
+            plan_entries.append({
+                "file": file_path,
+                "action": "modify",
+                "description": f"Replace wildcard import: {finding}",
+                "key_considerations": (
+                    "Replace 'from X import *' with explicit named imports"
+                ),
+            })
+        elif "Scope deviation" in finding:
+            # Out-of-scope file — suggest removal
+            plan_entries.append({
+                "file": file_path,
+                "action": "delete",
+                "description": f"Remove out-of-scope file: {finding}",
+                "key_considerations": (
+                    "File not in Sonnet's plan — remove to maintain scope"
+                ),
+            })
+        elif "Syntax error" in finding:
+            plan_entries.append({
+                "file": file_path,
+                "action": "modify",
+                "description": f"Fix syntax: {finding}",
+                "key_considerations": (
+                    "Re-generate with corrected syntax"
+                ),
+            })
+        elif "Invalid JSON" in finding:
+            plan_entries.append({
+                "file": file_path,
+                "action": "modify",
+                "description": f"Fix JSON: {finding}",
+                "key_considerations": "Ensure valid JSON structure",
+            })
+
+    if not plan_entries:
+        return None  # unknown failure type — needs LLM
+
+    return {
+        "analysis": f"Deterministic fix for {len(plan_entries)} finding(s) "
+                     f"in {file_path}",
+        "plan": plan_entries,
+        "risks": [],
+        "verification_strategy": ["Re-run inline audit"],
+        "implementation_notes": (
+            f"Original content length: {len(content)} chars. "
+            f"Apply minimal targeted fix."
+        ),
+    }
+
+
+async def _generate_remediation_plan(
+    user_id: str,
+    run_id: str,
+    file_path: str,
+    findings: list[str],
+    original_change: dict,
+    *,
+    api_key: str,
+    model: str,
+    tokens: Any,
+) -> dict | None:
+    """Generate a fix plan for an audit failure.
+
+    First tries a deterministic fix; falls back to Sonnet LLM only for
+    cases that need human-level judgement (e.g. secret removal).
+    """
+    # Fast path — deterministic fix
+    det_fix = _build_deterministic_fix(file_path, findings, original_change)
+    if det_fix is not None:
+        return det_fix
+
+    # Slow path — Sonnet LLM
+    try:
+        prompt = (
+            f"File: {file_path}\n"
+            f"Findings:\n" +
+            "\n".join(f"  - {f}" for f in findings) +
+            f"\n\nOriginal content (first 2000 chars):\n"
+            f"{(original_change.get('after_snippet', ''))[:2000]}\n\n"
+            f"Generate a minimal fix plan."
+        )
+        raw = await chat(
+            system=_REMEDIATION_SYSTEM_PROMPT,
+            user=prompt,
+            api_key=api_key,
+            model=model,
+        )
+        text = raw.get("text", "")
+        usage = raw.get("usage", {})
+        p_in = usage.get("input_tokens", 0)
+        p_out = usage.get("output_tokens", 0)
+        tokens.add("sonnet", p_in, p_out)
+
+        # Parse JSON
+        text = _strip_codeblock(text)
+        return json.loads(text)
+    except Exception:
+        logger.warning(
+            "Remediation LLM call failed for %s — will skip auto-fix",
+            file_path,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # File change application
 # ---------------------------------------------------------------------------
 
@@ -736,17 +917,21 @@ async def _run_tests(
     await _log(user_id, run_id,
                f"🧪 Running tests: {label}…", "thinking", "command")
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+    def _blocking_run() -> subprocess.CompletedProcess[str]:
+        """Run test command in a thread — avoids event-loop subprocess
+        issues on Windows (NotImplementedError with ProactorEventLoop)."""
+        return subprocess.run(
+            cmd,
             cwd=working_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env={**__import__("os").environ, "CI": "1"},
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "CI": "1"},
         )
-        stdout_bytes, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=120)
-        output = stdout_bytes.decode("utf-8", errors="replace")
+
+    try:
+        result = await asyncio.to_thread(_blocking_run)
+        output = (result.stdout or "") + (result.stderr or "")
 
         # Limit log output to last 40 lines
         lines = output.strip().splitlines()
@@ -758,17 +943,17 @@ async def _run_tests(
         for line in display:
             await _log(user_id, run_id, line, "info", "command")
 
-        passed = proc.returncode == 0
+        passed = result.returncode == 0
         if passed:
             await _log(user_id, run_id,
                        "✅ Tests passed (exit code 0)", "system", "command")
         else:
             await _log(user_id, run_id,
-                       f"❌ Tests failed (exit code {proc.returncode})",
+                       f"❌ Tests failed (exit code {result.returncode})",
                        "error", "command")
         return passed, output
 
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         await _log(user_id, run_id,
                    "⏱️ Tests timed out after 120s.", "error", "command")
         return False, "Timeout after 120s"
@@ -1560,23 +1745,7 @@ async def _run_upgrade(
                 f"{task.get('from_state', '?')} → {task.get('to_state', '?')}"
             )
 
-            # ─ Log Sonnet's analysis ─
-            if plan_result:
-                analysis = plan_result.get("analysis", "")
-                if analysis:
-                    await _log(user_id, run_id,
-                                f"🧠 [Sonnet] {analysis}", "thinking")
-                plan_files = plan_result.get("plan", [])
-                if plan_files:
-                    await _log(user_id, run_id,
-                                f"📋 [Sonnet] Identified {len(plan_files)} file(s) to change:",
-                                "info")
-                    for pf in plan_files:
-                        await _log(user_id, run_id,
-                                    f"  📄 {pf.get('file', '?')} — {pf.get('description', '')}",
-                                    "info")
-                for risk in plan_result.get("risks", []):
-                    await _log(user_id, run_id, f"  ⚠ [Sonnet] {risk}", "warn")
+            # (Sonnet's analysis was already logged in _sonnet_planner)
 
             # ─ Log Opus's code output ─
             if code_result:
@@ -1630,6 +1799,7 @@ async def _run_upgrade(
                             "verdict": verdict,
                             "findings": findings,
                             "task_id": task_id,
+                            "original_change": change,
                         }
                         state.setdefault("audit_results", []).append(
                             audit_entry)
@@ -1717,219 +1887,455 @@ async def _run_upgrade(
                 "token_cumulative": snap,
             })
 
-        # ── Pipelined dual-worker execution ──────────────────────
-        # Sonnet plans task N+1 while Opus codes task N.
+        # ── Pool-based dual-worker execution ─────────────────────
+        # Sonnet plans ALL tasks as fast as possible → plan pool.
+        # Opus pulls plans from the pool when ready → codes them.
+        # After planning, Sonnet generates remediation plans for
+        # audit failures → remediation pool.  Opus drains these
+        # between tasks.
         #
         # Time 0: [Sonnet] Plan Task 0
-        # Time 1: [Sonnet] Plan Task 1 ‖ [Opus] Code Task 0
-        # Time 2: [Sonnet] Plan Task 2 ‖ [Opus] Code Task 1
+        # Time 1: [Sonnet] Plan Task 1  (pool←)  ‖  [Opus] Code Task 0  (←pool)
+        # Time 2: [Sonnet] Plan Task 2  (pool←)  ‖  [Opus] still on 0
+        # Time 3: [Sonnet] Plan Task 3  (pool←)  ‖  [Opus] Code Task 1  (←pool)
         # …
-        # Time N:                         [Opus] Code Task N-1
+        # Time K: [Sonnet] Remediate F0           ‖  [Opus] Code Task N
 
-        # Phase 0: Sonnet plans the first task
-        if not tasks:
-            # Nothing to do — fall through to wrap-up
-            pass
-        else:
-            first_task = tasks[0]
-            first_id = first_task.get("id", "TASK-0")
-            first_name = (f"{first_task.get('from_state', '?')} → "
-                          f"{first_task.get('to_state', '?')}")
+        if tasks:
+            plan_pool: asyncio.Queue[_PlanPoolItem | None] = asyncio.Queue()
+            remediation_pool: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            sonnet_done = asyncio.Event()
+            _rem_seq = 0
 
-            await _emit(user_id, "upgrade_task_start", {
-                "run_id": run_id,
-                "task_id": first_id,
-                "task_index": 0,
-                "task_name": first_name,
-                "priority": first_task.get("priority", "medium"),
-                "category": first_task.get("category", ""),
-                "steps": first_task.get("steps", []),
-                "worker": "sonnet",
-            })
-            await _log(user_id, run_id, "", "system")
-            await _log(user_id, run_id,
-                        f"━━━ Task 1/{len(tasks)}: {first_name} ━━━",
-                        "system")
-            await _log(user_id, run_id,
-                        f"🧠 [Sonnet] Planning task 1…", "thinking")
+            state["_plan_pool"] = plan_pool
+            state["_remediation_pool"] = remediation_pool
 
-            current_plan, plan_usage = await _plan_task_with_llm(
-                user_id, run_id, repo_name, stack_profile, first_task,
-                api_key=sonnet_worker.api_key, model=sonnet_worker.model,
-            )
-            p_in = plan_usage.get("input_tokens", 0)
-            p_out = plan_usage.get("output_tokens", 0)
-            tokens.add("sonnet", p_in, p_out)
-            await _emit(user_id, "upgrade_token_tick", {
-                "run_id": run_id, **tokens.snapshot()})
+            # ── Sonnet planner coroutine ─────────────────────────
+            async def _sonnet_planner() -> None:
+                nonlocal _rem_seq
 
-            # Narrate after first plan completes
-            if narrator_enabled and current_plan:
-                plan_files = current_plan.get("plan", [])
-                file_list = ", ".join(p.get("file", "?") for p in plan_files[:5])
-                analysis = current_plan.get("analysis", "")
-                asyncio.create_task(_narrate(
-                    user_id, run_id,
-                    f"Sonnet just finished planning task 1: '{first_name}'. "
-                    f"{analysis} "
-                    f"Files identified: {file_list}. "
-                    f"Now handing off to Opus to write the code.",
-                    narrator_key=narrator_key, narrator_model=narrator_model,
-                    tokens=tokens,
-                ))
-
-            # Pipeline loop
-            for task_index in range(len(tasks)):
-                # Check /stop
-                if state["_stop_flag"].is_set():
-                    await _log(user_id, run_id,
-                                "🛑 Stopped by user.", "system")
-                    break
-                # Honour /pause
-                if not state["_pause_event"].is_set():
-                    await _log(user_id, run_id,
-                                "⏸️  Paused — waiting for /resume…",
-                                "system")
-                    await state["_pause_event"].wait()
+                for i, task in enumerate(tasks):
                     if state["_stop_flag"].is_set():
                         break
+                    if not state["_pause_event"].is_set():
+                        await state["_pause_event"].wait()
+                        if state["_stop_flag"].is_set():
+                            break
 
-                task = tasks[task_index]
-                task_id = task.get("id", f"TASK-{task_index}")
-                task_name = (f"{task.get('from_state', '?')} → "
-                             f"{task.get('to_state', '?')}")
-
-                # Announce Opus coding this task
-                await _log(user_id, run_id,
-                            f"⚡ [Opus] Writing code for task "
-                            f"{task_index + 1}…", "thinking")
-
-                # Show what Opus will work on (immediate feedback)
-                if current_plan:
-                    _plan_files = current_plan.get("plan", [])
-                    if _plan_files:
-                        _fnames = [p.get("file", "?") for p in _plan_files[:6]]
-                        _extra = (f" +{len(_plan_files) - 6} more"
-                                  if len(_plan_files) > 6 else "")
-                        await _log(
-                            user_id, run_id,
-                            f"  📖 [Opus] Reading {len(_plan_files)} file(s): "
-                            f"{', '.join(_fnames)}{_extra}",
-                            "thinking",
-                        )
-
-                # Build parallel coroutines
-                has_next = task_index + 1 < len(tasks)
-
-                async def _opus_code(
-                    _task: dict = task,
-                    _plan: dict | None = current_plan,
-                ) -> tuple[dict | None, dict]:
-                    return await _build_task_with_llm(
-                        user_id, run_id, repo_name, stack_profile,
-                        _task, _plan,
-                        api_key=opus_worker.api_key,
-                        model=opus_worker.model,
-                        working_dir=state.get("working_dir", ""),
+                    task_id = task.get("id", f"TASK-{i}")
+                    task_name = (
+                        f"{task.get('from_state', '?')} → "
+                        f"{task.get('to_state', '?')}"
                     )
 
-                async def _sonnet_plan_next(
-                    _next_task: dict,
-                    _next_idx: int,
-                ) -> tuple[dict | None, dict]:
-                    next_id = _next_task.get("id", f"TASK-{_next_idx}")
-                    next_name = (
-                        f"{_next_task.get('from_state', '?')} → "
-                        f"{_next_task.get('to_state', '?')}"
-                    )
-                    await _emit(user_id, "upgrade_task_start", {
+                    await _emit(user_id, "plan_task_start", {
                         "run_id": run_id,
-                        "task_id": next_id,
-                        "task_index": _next_idx,
-                        "task_name": next_name,
-                        "priority": _next_task.get("priority", "medium"),
-                        "category": _next_task.get("category", ""),
-                        "steps": _next_task.get("steps", []),
+                        "task_id": task_id,
+                        "task_index": i,
+                        "task_name": task_name,
                         "worker": "sonnet",
                     })
-                    await _log(user_id, run_id, "", "system")
-                    await _log(user_id, run_id,
-                                f"━━━ Task {_next_idx + 1}/{len(tasks)}: "
-                                f"{next_name} ━━━", "system")
                     await _log(user_id, run_id,
                                 f"🧠 [Sonnet] Planning task "
-                                f"{_next_idx + 1}…", "thinking")
-                    return await _plan_task_with_llm(
+                                f"{i + 1}/{len(tasks)}: "
+                                f"{task_name}…", "thinking")
+
+                    plan_result, plan_usage = await _plan_task_with_llm(
                         user_id, run_id, repo_name, stack_profile,
-                        _next_task,
+                        task,
                         api_key=sonnet_worker.api_key,
                         model=sonnet_worker.model,
                     )
+                    p_in = plan_usage.get("input_tokens", 0)
+                    p_out = plan_usage.get("output_tokens", 0)
+                    tokens.add("sonnet", p_in, p_out)
+                    await _emit(user_id, "upgrade_token_tick", {
+                        "run_id": run_id, **tokens.snapshot()})
 
-                # Run Opus + (optionally) Sonnet in parallel
-                if has_next:
-                    next_task = tasks[task_index + 1]
-                    next_idx = task_index + 1
-                    (code_result, code_usage), (next_plan, next_plan_usage) = (
-                        await asyncio.gather(
-                            _opus_code(),
-                            _sonnet_plan_next(next_task, next_idx),
+                    # Log plan details
+                    if plan_result:
+                        analysis = plan_result.get("analysis", "")
+                        if analysis:
+                            await _log(user_id, run_id,
+                                        f"🧠 [Sonnet] {analysis}",
+                                        "thinking")
+                        plan_files = plan_result.get("plan", [])
+                        if plan_files:
+                            await _log(
+                                user_id, run_id,
+                                f"📋 [Sonnet] Identified "
+                                f"{len(plan_files)} file(s):",
+                                "info",
+                            )
+                            for pf in plan_files:
+                                await _log(
+                                    user_id, run_id,
+                                    f"  📄 {pf.get('file', '?')} — "
+                                    f"{pf.get('description', '')}",
+                                    "info",
+                                )
+                        for risk in plan_result.get("risks", []):
+                            await _log(user_id, run_id,
+                                        f"  ⚠ [Sonnet] {risk}", "warn")
+
+                    # Push to pool — Opus will pick it up when ready.
+                    # If planning failed (plan_result is None), still
+                    # enqueue so Opus can emit the skip/failure status
+                    # and keep task numbering consistent.
+                    if plan_result is None:
+                        await _log(user_id, run_id,
+                                    f"⚠ [Sonnet] Plan for task "
+                                    f"{i + 1} failed — Opus will "
+                                    f"skip it", "warn")
+                    pool_item = _PlanPoolItem(
+                        i, task, plan_result, plan_usage)
+                    await plan_pool.put(pool_item)
+                    pool_depth = plan_pool.qsize()
+                    await _log(user_id, run_id,
+                                f"📥 [Sonnet] Plan for task {i + 1} "
+                                f"queued (pool depth: {pool_depth})",
+                                "info")
+                    await _emit(user_id, "plan_pool_update", {
+                        "run_id": run_id,
+                        "action": "push",
+                        "task_index": i,
+                        "pool_depth": pool_depth,
+                    })
+
+                    # Fire narration (non-blocking)
+                    if narrator_enabled and plan_result:
+                        _pf = plan_result.get("plan", [])
+                        _fl = ", ".join(
+                            p.get("file", "?") for p in _pf[:5])
+                        _an = plan_result.get("analysis", "")
+                        asyncio.create_task(_narrate(
+                            user_id, run_id,
+                            f"Sonnet planned task {i + 1}: "
+                            f"'{task_name}'. {_an} "
+                            f"Files: {_fl}. "
+                            f"Plan queued (pool: {pool_depth}).",
+                            narrator_key=narrator_key,
+                            narrator_model=narrator_model,
+                            tokens=tokens,
+                        ))
+
+                # Sentinel — tells Opus no more plans are coming
+                await plan_pool.put(None)
+
+                # ── Remediation mode ─────────────────────────────
+                await _log(user_id, run_id,
+                            "🧠 [Sonnet] All tasks planned — switching "
+                            "to audit remediation mode", "system")
+
+                idle_cycles = 0
+                while not state["_stop_flag"].is_set():
+                    failures = [
+                        r for r in state.get("audit_results", [])
+                        if r.get("verdict") == "FAIL"
+                        and not r.get("_remediation_queued")
+                    ]
+                    if not failures:
+                        idle_cycles += 1
+                        if idle_cycles > 5:
+                            break
+                        await asyncio.sleep(2.0)
+                        continue
+                    idle_cycles = 0
+
+                    for failure in failures:
+                        if state["_stop_flag"].is_set():
+                            break
+                        failure["_remediation_queued"] = True
+                        fp = failure.get("file", "?")
+                        fi = failure.get("findings", [])
+                        tid = failure.get("task_id", "")
+
+                        await _log(user_id, run_id,
+                                    f"🔧 [Sonnet] Generating fix for "
+                                    f"{fp}…", "thinking")
+
+                        fix_plan = await _generate_remediation_plan(
+                            user_id, run_id, fp, fi,
+                            failure.get("original_change", {}),
+                            api_key=sonnet_worker.api_key,
+                            model=sonnet_worker.model,
+                            tokens=tokens,
+                        )
+
+                        _rem_seq += 1
+                        rem_item = _RemediationItem(
+                            file=fp, findings=fi,
+                            original_change=failure.get(
+                                "original_change", {}),
+                            task_id=tid, fix_plan=fix_plan,
+                            _seq=_rem_seq,
+                        )
+                        await remediation_pool.put(rem_item)
+                        await _emit(user_id, "remediation_queued", {
+                            "run_id": run_id,
+                            "file": fp,
+                            "findings": fi,
+                            "has_fix": fix_plan is not None,
+                            "pool_depth": remediation_pool.qsize(),
+                        })
+                        await _log(user_id, run_id,
+                                    f"📥 [Sonnet] Remediation for "
+                                    f"{fp} queued "
+                                    f"(pool: {remediation_pool.qsize()})",
+                                    "info")
+
+                sonnet_done.set()
+
+            # ── Opus builder coroutine ───────────────────────────
+            async def _opus_builder() -> None:
+                while True:
+                    if state["_stop_flag"].is_set():
+                        break
+                    if not state["_pause_event"].is_set():
+                        await _log(user_id, run_id,
+                                    "⏸️  Paused — waiting for /resume…",
+                                    "system")
+                        await state["_pause_event"].wait()
+                        if state["_stop_flag"].is_set():
+                            break
+
+                    # Pull next plan from pool (blocks until ready)
+                    pool_item = await plan_pool.get()
+                    if pool_item is None:
+                        # Sentinel — no more plan tasks.
+                        # Wait for Sonnet's remediations, then drain.
+                        await sonnet_done.wait()
+                        await _drain_remediation_pool()
+                        break
+
+                    task_index = pool_item.task_index
+                    task = pool_item.task
+                    current_plan = pool_item.plan_result
+                    plan_usage = pool_item.plan_usage
+                    task_id = task.get("id", f"TASK-{task_index}")
+                    task_name = (
+                        f"{task.get('from_state', '?')} → "
+                        f"{task.get('to_state', '?')}"
+                    )
+                    state["current_task"] = task_id
+
+                    # ── Task section header (shown when Opus
+                    #    starts, not when Sonnet plans) ──
+                    await _log(user_id, run_id, "", "system")
+                    await _log(user_id, run_id,
+                                f"━━━ Task {task_index + 1}"
+                                f"/{len(tasks)}: "
+                                f"{task_name} ━━━", "system")
+                    await _emit(user_id, "upgrade_task_start", {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "task_index": task_index,
+                        "task_name": task_name,
+                        "priority": task.get(
+                            "priority", "medium"),
+                        "category": task.get("category", ""),
+                        "steps": task.get("steps", []),
+                        "worker": "opus",
+                    })
+
+                    pool_depth = plan_pool.qsize()
+                    await _log(user_id, run_id,
+                                f"⚡ [Opus] Writing code for task "
+                                f"{task_index + 1}… "
+                                f"(pool depth: {pool_depth})",
+                                "thinking")
+                    await _emit(user_id, "plan_pool_update", {
+                        "run_id": run_id,
+                        "action": "pull",
+                        "task_index": task_index,
+                        "pool_depth": pool_depth,
+                    })
+
+                    # Skip tasks whose plan failed
+                    if current_plan is None:
+                        await _log(
+                            user_id, run_id,
+                            f"⏭️ [Opus] Skipping task "
+                            f"{task_index + 1} — Sonnet's "
+                            f"plan failed", "warn")
+                        state["completed_tasks"] = (
+                            state.get("completed_tasks", 0) + 1)
+                        state["task_results"].append({
+                            "task_id": task_id,
+                            "task_name": task_name,
+                            "status": "skipped",
+                            "reason": "planning_failed",
+                            "changes_count": 0,
+                        })
+                        await _emit(
+                            user_id, "upgrade_task_complete", {
+                                "run_id": run_id,
+                                "task_id": task_id,
+                                "status": "skipped",
+                            })
+                        continue
+
+                    # Show what Opus will work on
+                    _pf = current_plan.get("plan", [])
+                    if _pf:
+                        _fn = [p.get("file", "?")
+                               for p in _pf[:6]]
+                        _ex = (f" +{len(_pf) - 6} more"
+                               if len(_pf) > 6 else "")
+                        await _log(
+                            user_id, run_id,
+                            f"  📖 [Opus] Reading {len(_pf)} "
+                            f"file(s): "
+                            f"{', '.join(_fn)}{_ex}",
+                            "thinking",
+                        )
+
+                    # Code the task
+                    code_result, code_usage = (
+                        await _build_task_with_llm(
+                            user_id, run_id, repo_name,
+                            stack_profile, task, current_plan,
+                            api_key=opus_worker.api_key,
+                            model=opus_worker.model,
+                            working_dir=state.get("working_dir", ""),
                         )
                     )
-                    # Track Sonnet tokens for next task's planning
-                    np_in = next_plan_usage.get("input_tokens", 0)
-                    np_out = next_plan_usage.get("output_tokens", 0)
-                    tokens.add("sonnet", np_in, np_out)
-                else:
-                    code_result, code_usage = await _opus_code()
-                    next_plan = None
-                    next_plan_usage = {"input_tokens": 0, "output_tokens": 0}
+                    c_in = code_usage.get("input_tokens", 0)
+                    c_out = code_usage.get("output_tokens", 0)
+                    tokens.add("opus", c_in, c_out)
 
-                # Track Opus tokens
-                c_in = code_usage.get("input_tokens", 0)
-                c_out = code_usage.get("output_tokens", 0)
-                tokens.add("opus", c_in, c_out)
+                    await _emit(user_id, "upgrade_token_tick", {
+                        "run_id": run_id, **tokens.snapshot()})
 
-                # Emit token tick
-                await _emit(user_id, "upgrade_token_tick", {
-                    "run_id": run_id, **tokens.snapshot()})
+                    # Emit results + inline audit
+                    await _emit_task_results(
+                        task_index, task, current_plan,
+                        code_result, plan_usage, code_usage,
+                    )
 
-                # Emit results for this task
-                await _emit_task_results(
-                    task_index, task, current_plan, code_result,
-                    plan_usage, code_usage,
-                )
+                    # Fire narration
+                    if narrator_enabled:
+                        n_changes = 0
+                        changed_files: list[str] = []
+                        if code_result:
+                            cl = code_result.get("changes", [])
+                            n_changes = len(cl)
+                            changed_files = [
+                                c.get("file", "?")
+                                for c in cl[:5]
+                            ]
+                        remaining = (
+                            len(tasks) - state["completed_tasks"])
+                        asyncio.create_task(_narrate(
+                            user_id, run_id,
+                            f"Opus finished task "
+                            f"{task_index + 1}/{len(tasks)}: "
+                            f"'{task_name}'. "
+                            f"{n_changes} file(s) changed: "
+                            f"{', '.join(changed_files)}. "
+                            f"{state['completed_tasks']}"
+                            f"/{len(tasks)} done, "
+                            f"{remaining} remaining. "
+                            f"Plan pool: {plan_pool.qsize()} "
+                            f"waiting.",
+                            narrator_key=narrator_key,
+                            narrator_model=narrator_model,
+                            tokens=tokens,
+                        ))
 
-                # Advance pipeline — next plan becomes current
-                current_plan = next_plan
-                plan_usage = next_plan_usage
+                    # Between tasks: apply any ready remediations
+                    await _drain_remediation_pool()
+                    await asyncio.sleep(0.15)
 
-                # Fire narration (non-blocking) — rich context
-                if narrator_enabled:
-                    # Build a richer summary for Haiku
-                    n_changes = 0
-                    changed_files = []
-                    if code_result:
-                        changes_list = code_result.get("changes", [])
-                        n_changes = len(changes_list)
-                        changed_files = [c.get("file", "?") for c in changes_list[:5]]
-                    plan_summary = ""
-                    if current_plan:
-                        plan_summary = current_plan.get("analysis", "")
-                    remaining = len(tasks) - state["completed_tasks"]
-                    asyncio.create_task(_narrate(
-                        user_id, run_id,
-                        f"Opus just finished coding task {task_index + 1}/{len(tasks)}: "
-                        f"'{task_name}'. "
-                        f"{n_changes} file(s) changed: {', '.join(changed_files)}. "
-                        f"{state['completed_tasks']}/{len(tasks)} done, "
-                        f"{remaining} remaining."
-                        + (f" Next up: {plan_summary}" if plan_summary and remaining > 0 else ""),
-                        narrator_key=narrator_key,
-                        narrator_model=narrator_model,
-                        tokens=tokens,
-                    ))
-                await asyncio.sleep(0.15)
+            # ── Remediation applier ──────────────────────────────
+            async def _drain_remediation_pool() -> None:
+                """Apply all available remediation items."""
+                applied = 0
+                while not remediation_pool.empty():
+                    try:
+                        fix_item = remediation_pool.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
+                    await _log(user_id, run_id,
+                                f"🔧 [Opus] Applying remediation for "
+                                f"{fix_item.file}…", "thinking")
+
+                    if fix_item.fix_plan:
+                        fix_task = {
+                            "id": (f"FIX-{fix_item.task_id}"
+                                   f"-{fix_item.file}"),
+                            "from_state": "audit failure",
+                            "to_state": "remediated",
+                            "steps": [
+                                f"Fix: {f}"
+                                for f in fix_item.findings
+                            ],
+                            "priority": "high",
+                        }
+                        code_result, code_usage = (
+                            await _build_task_with_llm(
+                                user_id, run_id, repo_name,
+                                stack_profile, fix_task,
+                                fix_item.fix_plan,
+                                api_key=opus_worker.api_key,
+                                model=opus_worker.model,
+                                working_dir=state.get(
+                                    "working_dir", ""),
+                            )
+                        )
+                        c_in = code_usage.get("input_tokens", 0)
+                        c_out = code_usage.get("output_tokens", 0)
+                        tokens.add("opus", c_in, c_out)
+
+                        if code_result:
+                            changes = code_result.get("changes", [])
+                            for change in changes:
+                                await _emit(
+                                    user_id,
+                                    "upgrade_file_diff",
+                                    {
+                                        "run_id": run_id,
+                                        "task_id": fix_task["id"],
+                                        "worker": "opus",
+                                        "source": "remediation",
+                                        **change,
+                                    },
+                                )
+                            await _log(
+                                user_id, run_id,
+                                f"✅ Remediation applied: "
+                                f"{fix_item.file} "
+                                f"({len(changes)} change(s))",
+                                "info",
+                            )
+                        applied += 1
+                    else:
+                        await _log(
+                            user_id, run_id,
+                            f"⚠️ No auto-fix for "
+                            f"{fix_item.file}: "
+                            f"{'; '.join(fix_item.findings)}",
+                            "warn",
+                        )
+
+                    await _emit(user_id, "remediation_applied", {
+                        "run_id": run_id,
+                        "file": fix_item.file,
+                        "had_fix": fix_item.fix_plan is not None,
+                        "pool_remaining":
+                            remediation_pool.qsize(),
+                    })
+
+                if applied:
+                    await _emit(user_id, "upgrade_token_tick", {
+                        "run_id": run_id, **tokens.snapshot()})
+
+            # Launch both workers in parallel — fully decoupled
+            await asyncio.gather(
+                _sonnet_planner(),
+                _opus_builder(),
+            )
 
         # ── Wrap up ──────────────────────────────────────────────
         was_stopped = state["_stop_flag"].is_set()
@@ -2170,6 +2576,7 @@ async def _run_retry(
                             "verdict": verdict,
                             "findings": findings,
                             "task_id": task_id,
+                            "original_change": change,
                         }
                         state.setdefault("audit_results", []).append(
                             audit_entry)

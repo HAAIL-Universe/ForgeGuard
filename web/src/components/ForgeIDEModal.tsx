@@ -135,7 +135,7 @@ const ActiveLogLine = memo(function ActiveLogLine({
     <div
       style={{
         color,
-        display: 'flex', gap: '8px',
+        display: 'flex',
         padding: '1px 0 1px 12px',
         borderLeft: '2px solid #7C3AED88',
         background: '#7C3AED0A',
@@ -144,19 +144,17 @@ const ActiveLogLine = memo(function ActiveLogLine({
       <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
         {ts}
       </span>
+      <span style={{ color: '#94A3B8', flexShrink: 0, width: '28px', fontSize: '0.65rem', paddingTop: '2px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+        {elapsedLabel}
+      </span>
       {icon && (
-        <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
+        <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem', marginLeft: '8px' }}>
           {icon}
         </span>
       )}
-      <span style={{ wordBreak: 'break-word' }}>
+      <span style={{ wordBreak: 'break-word', marginLeft: icon ? '8px' : '30px' }}>
         {log.message.replace(/…$/, '')}
         <span className="forge-ide-dots" />
-        {elapsedLabel && (
-          <span style={{ color: '#475569', fontSize: '0.65rem', marginLeft: '8px', fontVariantNumeric: 'tabular-nums' }}>
-            {elapsedLabel}
-          </span>
-        )}
       </span>
     </div>
   );
@@ -212,16 +210,22 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   const handleScroll = useCallback(() => {
     const el = logContainerRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    userScrolled.current = !atBottom;
+    // "near bottom" = within the bottom 30% of the scrollable area
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = remaining < el.clientHeight * 0.30;
+    userScrolled.current = !nearBottom;
   }, []);
 /* Keep logsLenRef in sync so polling closures see the latest count */
   useEffect(() => { logsLenRef.current = logs.length; }, [logs.length]);
 
   
   useEffect(() => {
-    if (!userScrolled.current && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'auto' });
+    if (!userScrolled.current && logContainerRef.current) {
+      const el = logContainerRef.current;
+      // Scroll so latest text sits at ~75% of the container height,
+      // leaving a ~25% gap at the bottom for popup bars.
+      const target = el.scrollHeight - el.clientHeight * 0.25;
+      el.scrollTop = Math.max(0, target);
     }
   }, [logs.length]);
 
@@ -529,7 +533,7 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
     }]);
 
     try {
-      await fetch(`${API_BASE}/scout/runs/${runId}/command`, {
+      const res = await fetch(`${API_BASE}/scout/runs/${runId}/command`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -537,6 +541,19 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
         },
         body: JSON.stringify({ command: trimmed }),
       });
+      // Surface the backend response as a local log line so the user
+      // always sees feedback even if the WS relay is stale/slow.
+      try {
+        const body = await res.json();
+        if (body.message) {
+          setLogs((prev) => [...prev, {
+            timestamp: new Date().toISOString(),
+            source: 'command-ack',
+            level: body.ok === false ? 'error' : 'system',
+            message: body.message,
+          }]);
+        }
+      } catch { /* response may not be JSON — ignore */ }
     } catch {
       setLogs((prev) => [...prev, {
         timestamp: new Date().toISOString(),
