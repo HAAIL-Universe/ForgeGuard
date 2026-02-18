@@ -960,17 +960,39 @@ async def _incremental_commit_push(
         return True  # nothing to commit is not an error
 
     try:
-        # Apply changes to disk
+        # Apply changes to disk — validate each file after write
         applied = 0
         for c in changes:
+            rel = c.get("file", "?")
             try:
                 _apply_file_change(working_dir, c)
-                applied += 1
             except Exception as exc:
                 await _log(user_id, run_id,
-                           f"  ⚠ [Git] Failed to apply "
-                           f"{c.get('file', '?')}: {exc}",
+                           f"  ⚠ [Git] Failed to apply {rel}: {exc}",
                            "warn")
+                continue
+            # Post-apply syntax validation — rollback on failure
+            fpath = Path(working_dir) / rel
+            err = _validate_file_on_disk(fpath)
+            if err:
+                await _log(user_id, run_id,
+                           f"  🚫 [Git] Post-apply validation failed "
+                           f"for {rel}: {err} — reverting",
+                           "warn")
+                # Restore original content from before the apply
+                before = c.get("before_snippet", "")
+                action = c.get("action", "modify")
+                if before and action == "modify":
+                    # Re-read (it has the broken content) and undo
+                    broken = fpath.read_text(encoding="utf-8")
+                    after = c.get("after_snippet", "")
+                    restored = broken.replace(after, before, 1)
+                    fpath.write_text(restored, encoding="utf-8")
+                # For creates / no-before: just delete the broken file
+                elif action == "create" and fpath.exists():
+                    fpath.unlink()
+                continue
+            applied += 1
         if not applied:
             return False
 
@@ -1090,6 +1112,33 @@ def _apply_file_change(working_dir: str, change: dict) -> None:
         raise ValueError(f"Unknown action: {action}")
 
 
+def _validate_file_on_disk(file_path: Path) -> str | None:
+    """Syntax-check a file after it has been written to disk.
+
+    Returns an error message on failure, or ``None`` if the file is OK.
+    Only validates languages we can check cheaply (Python, JSON).
+    """
+    suffix = file_path.suffix
+    if suffix == ".py":
+        try:
+            source = file_path.read_text(encoding="utf-8")
+            compile(source, str(file_path), "exec")
+        except SyntaxError as exc:
+            loc = f"{file_path.name}:{exc.lineno}" if exc.lineno else file_path.name
+            return f"SyntaxError — {loc}: {exc.msg}"
+        except Exception as exc:
+            return f"Read error — {file_path.name}: {exc}"
+    elif suffix == ".json":
+        try:
+            source = file_path.read_text(encoding="utf-8")
+            json.loads(source)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return f"Invalid JSON — {file_path.name}: {exc}"
+        except Exception as exc:
+            return f"Read error — {file_path.name}: {exc}"
+    return None
+
+
 async def _apply_all_changes(
     user_id: str,
     run_id: str,
@@ -1109,17 +1158,38 @@ async def _apply_all_changes(
                "system", "command")
     applied, failed = 0, 0
     for c in all_changes:
+        rel = c.get("file", "?")
         try:
             _apply_file_change(working_dir, c)
-            applied += 1
-            await _log(user_id, run_id,
-                       f"  ✅ {c.get('action', 'modify')}: {c.get('file', '?')}",
-                       "info", "command")
         except Exception as exc:
             failed += 1
             await _log(user_id, run_id,
-                       f"  ⚠ {c.get('file', '?')}: {exc}",
+                       f"  ⚠ {rel}: {exc}",
                        "warn", "command")
+            continue
+        # Post-apply syntax validation
+        fpath = Path(working_dir) / rel
+        err = _validate_file_on_disk(fpath)
+        if err:
+            failed += 1
+            await _log(user_id, run_id,
+                       f"  🚫 {rel}: post-apply validation failed — {err}",
+                       "warn", "command")
+            # Attempt rollback
+            before = c.get("before_snippet", "")
+            action = c.get("action", "modify")
+            if before and action == "modify":
+                broken = fpath.read_text(encoding="utf-8")
+                after = c.get("after_snippet", "")
+                restored = broken.replace(after, before, 1)
+                fpath.write_text(restored, encoding="utf-8")
+            elif action == "create" and fpath.exists():
+                fpath.unlink()
+            continue
+        applied += 1
+        await _log(user_id, run_id,
+                   f"  ✅ {c.get('action', 'modify')}: {rel}",
+                   "info", "command")
 
     summary = f"Applied {applied} change(s)"
     if failed:

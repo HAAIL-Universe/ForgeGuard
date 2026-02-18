@@ -22,6 +22,7 @@ from app.services.upgrade_executor import (
     _read_failing_files,
     _extract_json_bracket,
     _safe_json_parse,
+    _validate_file_on_disk,
 )
 
 
@@ -447,3 +448,54 @@ class TestFailureSeveritySorting:
         """)
         result = _parse_test_failures(output)
         assert result[0]["error_type"] == "SyntaxError"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _validate_file_on_disk
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestValidateFileOnDisk:
+    """Post-apply syntax validation for files written to disk."""
+
+    def test_valid_python_passes(self, tmp_path):
+        f = tmp_path / "ok.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        assert _validate_file_on_disk(f) is None
+
+    def test_invalid_python_returns_error(self, tmp_path):
+        f = tmp_path / "bad.py"
+        f.write_text("def foo(\n", encoding="utf-8")
+        err = _validate_file_on_disk(f)
+        assert err is not None
+        assert "SyntaxError" in err
+
+    def test_indentation_error_caught(self, tmp_path):
+        f = tmp_path / "indent.py"
+        f.write_text("    if True:\n        pass\n", encoding="utf-8")
+        err = _validate_file_on_disk(f)
+        assert err is not None
+        assert "indent" in err.lower()
+
+    def test_valid_json_passes(self, tmp_path):
+        f = tmp_path / "ok.json"
+        f.write_text('{"a": 1}\n', encoding="utf-8")
+        assert _validate_file_on_disk(f) is None
+
+    def test_invalid_json_returns_error(self, tmp_path):
+        f = tmp_path / "bad.json"
+        f.write_text('{"a": 1}\n{"b": 2}\n', encoding="utf-8")
+        err = _validate_file_on_disk(f)
+        assert err is not None
+        assert "JSON" in err
+
+    def test_non_python_non_json_skipped(self, tmp_path):
+        f = tmp_path / "readme.md"
+        f.write_text("# not code{{{{", encoding="utf-8")
+        assert _validate_file_on_disk(f) is None
+
+    def test_undefined_base_class_not_caught(self, tmp_path):
+        """compile() only checks syntax — undefined names are runtime errors."""
+        f = tmp_path / "ref.py"
+        f.write_text("class Foo(UndefinedBase):\n    pass\n", encoding="utf-8")
+        assert _validate_file_on_disk(f) is None

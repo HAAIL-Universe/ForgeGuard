@@ -620,7 +620,7 @@ async def test_send_command_push_with_working_dir(tmp_path):
 
     rid = "cmd-push-wd-test"
     # Create a real file in the temp dir
-    (tmp_path / "a.py").write_text("old content")
+    (tmp_path / "a.py").write_text("x = 1\n")
 
     _active_upgrades[rid] = {
         "status": "completed",
@@ -633,8 +633,8 @@ async def test_send_command_push_with_working_dir(tmp_path):
             {"status": "proposed", "task_name": "Upgrade A", "changes_count": 1,
              "llm_result": {"changes": [
                 {"file": "a.py", "action": "modify",
-                 "before_snippet": "old content",
-                 "after_snippet": "new content"}
+                 "before_snippet": "x = 1\n",
+                 "after_snippet": "x = 2\n"}
              ]}},
         ],
         "_pause_event": asyncio.Event(),
@@ -664,7 +664,7 @@ async def test_send_command_push_with_working_dir(tmp_path):
             assert "Pushed" in r["message"]
 
             # File should be modified on disk
-            assert (tmp_path / "a.py").read_text() == "new content"
+            assert (tmp_path / "a.py").read_text() == "x = 2\n"
 
             # Git operations called
             mock_git.add_all.assert_awaited_once()
@@ -756,7 +756,7 @@ async def test_push_prompt_y_runs_tests(tmp_path):
     import asyncio
 
     rid = "cmd-push-y-test"
-    (tmp_path / "a.py").write_text("old content")
+    (tmp_path / "a.py").write_text("x = 1\n")
     (tmp_path / "tests").mkdir()  # so _detect_test_command picks pytest
 
     _active_upgrades[rid] = {
@@ -770,8 +770,8 @@ async def test_push_prompt_y_runs_tests(tmp_path):
             {"status": "proposed", "task_name": "Upgrade A", "changes_count": 1,
              "llm_result": {"changes": [
                 {"file": "a.py", "action": "modify",
-                 "before_snippet": "old content",
-                 "after_snippet": "new content"}
+                 "before_snippet": "x = 1\n",
+                 "after_snippet": "x = 2\n"}
              ]}},
         ],
         "_pause_event": asyncio.Event(),
@@ -806,7 +806,7 @@ async def test_push_prompt_y_runs_tests(tmp_path):
             assert "Pushed" in r["message"]
 
             # File modified + git called
-            assert (tmp_path / "a.py").read_text() == "new content"
+            assert (tmp_path / "a.py").read_text() == "x = 2\n"
             mock_git.push.assert_awaited_once()
     finally:
         _active_upgrades.pop(rid, None)
