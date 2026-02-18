@@ -1067,8 +1067,23 @@ def _apply_file_change(working_dir: str, change: dict) -> None:
         after = change.get("after_snippet", "")
         if before and before in content:
             content = content.replace(before, after, 1)
-        elif after:
-            # Fallback: overwrite with after_snippet if before not found
+        elif before and after:
+            # before_snippet not found verbatim — refuse rather than
+            # overwriting the entire file with a partial fragment.
+            raise ValueError(
+                f"before_snippet not found in {rel_path} "
+                f"(len={len(before)}, file_len={len(content)})")
+        elif after and not before:
+            # No before_snippet (possibly a create mislabelled as modify)
+            # Only overwrite if after_snippet looks like a complete file
+            # (has at least half the lines of the original).
+            orig_lines = content.count("\n")
+            new_lines = after.count("\n")
+            if orig_lines > 5 and new_lines < orig_lines // 2:
+                raise ValueError(
+                    f"after_snippet ({new_lines} lines) too small to "
+                    f"replace {rel_path} ({orig_lines} lines) — "
+                    f"refusing to overwrite")
             content = after
         file_path.write_text(content, encoding="utf-8")
     else:
@@ -1384,95 +1399,133 @@ async def _run_tests(
 
 _FIX_PLANNER_PROMPT = """\
 You are ForgeGuard's Fix Planner. Test failures were detected after \
-applying migration changes. Your job is to diagnose the failures and \
-produce a precise fix plan that the Code Builder will implement.
+applying migration changes. Your job is to diagnose and fix them.
 
-You will receive:
-1. The pytest output showing which tests failed and why.
-2. The file changes that were applied (what was changed).
-3. The current contents of the failing files.
-4. Previous fix attempts that did NOT resolve the problem (if any).
+CRITICAL STRATEGY — FIX ONE ROOT CAUSE AT A TIME:
+The failures have been sorted by severity. Import errors and syntax \
+errors are listed first because they BLOCK all downstream tests. \
+Focus ONLY on the FIRST root cause. Fixing it will likely resolve \
+multiple downstream failures. Do NOT try to fix all failures at once.
 
-CRITICAL — SANDBOX ENVIRONMENT:
-Tests run in a bare sandbox with NO external services. If tests fail \
-because they require a database, Redis, message queue, or any other \
-external service that is not available, the correct fix is to MOCK \
-the dependency or add @pytest.mark.integration to skip the test — \
-NOT to try to fix a connection error. Env var FORGE_SANDBOX=1 is set.
+SANDBOX ENVIRONMENT:
+Tests run in a bare sandbox — NO database, Redis, Docker, or network \
+services. Env vars: FORGE_SANDBOX=1, CI=1, TESTING=1, \
+DATABASE_URL=sqlite:///:memory:.
+- If a test fails because it needs a missing service → MOCK it or \
+add @pytest.mark.integration. Do NOT fix connection errors.
+- If conftest.py or __init__.py has an import that pulls in a DB \
+module at load time, THAT is likely the root cause — the import \
+fails and blocks all test collection.
 
 Rules:
-- Focus ONLY on fixing the test failures. Do not refactor unrelated code.
-- Identify the root cause of each failure before proposing changes.
-- If a test fails due to a missing service (connection refused, \
-  database error, timeout on service connect), the fix is to mock it \
-  or mark it @pytest.mark.integration, NOT to fix the connection.
-- If a previous attempt failed, analyse WHY it failed and try a \
-  different approach — do NOT repeat the same fix.
-- Produce a JSON plan matching this schema:
+- Fix ONLY the first/most-blocking root cause (usually 1-3 files max).
+- If a previous attempt failed, study WHY and take a DIFFERENT approach.
+- Keep the plan minimal — fewer files = fewer chances for error.
 
+Output JSON ONLY (no markdown fences, no prose):
 {
-  "diagnosis": "root-cause explanation of why tests fail",
+  "diagnosis": "root-cause explanation (be specific: file, line, symbol)",
+  "root_cause_category": "import_error" | "syntax_error" | "assertion" | "missing_mock" | "infra_dependency" | "other",
   "plan": [
     {
       "file": "path/to/file",
       "action": "modify" | "create" | "delete",
-      "description": "what needs to change and why",
-      "target_symbols": ["function or class names to change"]
+      "description": "what to change and why",
+      "target_symbols": ["function or class names"]
     }
   ]
-}
-
-Respond with ONLY the JSON object. No markdown fences, no prose."""
+}"""
 
 _FIX_THINKING_PLANNER_PROMPT = """\
 You are ForgeGuard's Fix Planner (deep analysis mode). Previous \
-standard-mode fix attempts have ALL FAILED. You MUST use extended \
-thinking to deeply reason about what went wrong.
+fix attempts ALL FAILED. Use extended thinking to reason carefully.
 
-CRITICAL — SANDBOX ENVIRONMENT:
-Tests run in a bare sandbox with NO external services (no database, \
-no Redis, no Docker, no containers). If tests fail because they \
-require a service that is not available, the correct fix is to MOCK \
-the dependency or add @pytest.mark.integration to skip the test. \
-Do NOT waste attempts trying to fix connection/infrastructure errors.
+SANDBOX ENVIRONMENT:
+Tests run in a bare sandbox — NO database, Redis, Docker, or network \
+services. Env vars: FORGE_SANDBOX=1, CI=1, TESTING=1, \
+DATABASE_URL=sqlite:///:memory:.
+- Service-dependent tests → MOCK or @pytest.mark.integration.
 
-You will receive the full history of failed attempts including the \
-exact error output from each try. Study EVERY past attempt carefully \
-before proposing a new fix — you must NOT repeat any approach that \
-has already failed.
+CRITICAL: FIX ONE ROOT CAUSE AT A TIME.
+Failures are sorted by severity. Import/syntax errors block everything.
 
 Diagnostic steps (use your thinking capacity):
-1. Read every past attempt and understand exactly what was tried.
-2. Compare the error output before and after each attempt.
-3. Identify the TRUE root cause (it may be different from what \
-   previous attempts assumed).
-4. Consider indirect causes: missing imports, wrong module paths, \
-   side-effects in __init__.py, fixture issues, conftest problems.
-5. Design a fix that addresses the root cause directly.
+1. Read EVERY past attempt. What was tried? What EXACT error resulted?
+2. Compare error output before and after each attempt.
+3. Identify why previous fixes failed (wrong file? wrong import? \
+   partial fix that left other references broken?).
+4. Find the TRUE blocking root cause — often it's an import chain: \
+   conftest → app.main → middleware → missing symbol.
+5. Make the MINIMAL fix. If a function is missing, ADD it. If an \
+   import is wrong, FIX the import. Don't reorganise.
 
-Respond with JSON matching this schema:
-
+Output JSON ONLY (no markdown fences, no prose):
 {
-  "diagnosis": "deep root-cause analysis (be specific)",
+  "diagnosis": "deep root-cause analysis (file:line:symbol)",
+  "root_cause_category": "import_error" | "syntax_error" | "assertion" | "missing_mock" | "infra_dependency" | "other",
   "failed_approach_analysis": "why each previous attempt failed",
   "plan": [
     {
       "file": "path/to/file",
       "action": "modify" | "create" | "delete",
-      "description": "what needs to change and why",
-      "target_symbols": ["function or class names to change"]
+      "description": "minimal change needed",
+      "target_symbols": ["function or class names"]
     }
   ]
-}
+}"""
 
-Respond with ONLY the JSON object. No markdown fences, no prose."""
+
+# ── Dedicated fix builder prompt (replaces _BUILDER_SYSTEM_PROMPT in fixes) ──
+_FIX_BUILDER_PROMPT = """\
+You are ForgeGuard's Code Fixer. You receive a diagnosis and fix plan \
+from the Planner and produce the MINIMAL code changes to fix a test \
+failure.
+
+RULES:
+1. Fix ONLY what the plan says. Do NOT refactor, optimise, or improve.
+2. Make the SMALLEST possible change. If a function is missing, add \
+   JUST that function. If an import is wrong, fix JUST the import.
+3. before_snippet MUST be an EXACT verbatim substring from the file \
+   (workspace_files). Copy-paste it character-for-character including \
+   whitespace. Include 3-5 lines of context.
+4. For "create" actions: put full file content in after_snippet.
+5. If the plan says to add a missing symbol to a module, add it \
+   near related code with the MINIMUM viable implementation.
+
+SANDBOX: Tests run with NO external services. DATABASE_URL=sqlite:///:memory:.
+
+Return ONLY valid JSON (no markdown fences, no preamble, no prose):
+{
+  "changes": [
+    {
+      "file": "path/to/file",
+      "action": "modify" | "create" | "delete",
+      "description": "what this change does",
+      "before_snippet": "exact text from workspace_files (modify only)",
+      "after_snippet": "replacement text"
+    }
+  ]
+}"""
+
+
+# Severity ordering — lower number = more critical (blocks other tests).
+_FAILURE_SEVERITY: dict[str, int] = {
+    "ImportError": 0,
+    "ModuleNotFoundError": 0,
+    "SyntaxError": 1,
+    "IndentationError": 1,
+    "TabError": 1,
+    "NameError": 2,
+    "AttributeError": 3,
+    "TypeError": 4,
+}
 
 
 def _parse_test_failures(output: str) -> list[dict]:
     """Extract structured failure info from pytest output.
 
     Returns a list of ``{"file", "line", "test", "error_type", "message"}``
-    dicts — one per detected failure.
+    dicts — sorted with blocking errors (ImportError, SyntaxError) first.
     """
     failures: list[dict] = []
     # Match FAILED lines: FAILED tests/test_foo.py::test_bar - ErrorType: msg
@@ -1542,6 +1595,10 @@ def _parse_test_failures(output: str) -> list[dict]:
                 })
             pending_tb_file = None
             continue
+
+    # Sort by severity: import/syntax errors first (they block everything)
+    failures.sort(
+        key=lambda f: _FAILURE_SEVERITY.get(f.get("error_type", ""), 99))
 
     return failures
 
@@ -1724,7 +1781,11 @@ async def _single_fix_attempt(
     Returns ``(passed, test_output)``.
     """
     failures = _parse_test_failures(test_output)
-    file_contents = _read_failing_files(working_dir, failures, all_changes)
+    # Only read files relevant to the first/blocking root cause to
+    # keep token usage low.  Failures are already severity-sorted.
+    _blocking_failures = failures[:5]  # cap at first 5 failures
+    file_contents = _read_failing_files(
+        working_dir, _blocking_failures, all_changes)
 
     # ── Step 1: Sonnet diagnoses and plans the fix ──────────────────
     system_prompt = (
@@ -1735,19 +1796,23 @@ async def _single_fix_attempt(
     # Include accumulated planner risks so Sonnet
     # can factor them into its test-failure diagnosis.
     _accum_risks = state.get("accumulated_risks", [])
+
+    # Trim attempt history to last 2 to avoid context bloat.
+    # Each attempt carries test output which adds up quickly.
+    _recent_attempts = attempt_history[-2:] if len(attempt_history) > 2 else attempt_history
+
     user_payload = json.dumps({
-        "test_output": test_output[-8000:],  # last 8 KB of output
-        "parsed_failures": failures,
+        "test_output": test_output[-6000:],  # last 6 KB of output
+        "parsed_failures": failures[:8],  # cap parsed failures
         "applied_changes": [
             {"file": c.get("file"), "action": c.get("action"),
              "description": c.get("description", "")}
             for c in all_changes
         ],
         "current_file_contents": file_contents,
-        "previous_attempts": attempt_history,
-        **({
-            "planner_risk_warnings": _accum_risks
-        } if _accum_risks else {}),
+        "previous_attempts": _recent_attempts,
+        **({"planner_risk_warnings": _accum_risks}
+           if _accum_risks else {}),
     }, indent=2)
 
     # Pull token tracker from state so auto-fix costs are visible
@@ -1777,7 +1842,6 @@ async def _single_fix_attempt(
                 _st["tokens"] = _tokens.snapshot()
 
         plan_text = plan_result.get("text", "") if isinstance(plan_result, dict) else str(plan_result)
-        plan_text = _strip_codeblock(plan_text)
 
         if not plan_text.strip():
             await _log(user_id, run_id,
@@ -1785,12 +1849,16 @@ async def _single_fix_attempt(
                        "error", "command")
             attempt_history.append({
                 "tier_label": tier_label, "diagnosis": None,
-                "fix_result": None, "test_output": test_output,
+                "fix_result": None, "test_output": test_output[-2000:],
                 "error": "empty diagnosis",
             })
             return False, test_output
 
-        plan = json.loads(plan_text)
+        plan = _safe_json_parse(plan_text)
+        if plan is None:
+            raise json.JSONDecodeError(
+                "Could not extract JSON from Sonnet response",
+                plan_text[:200], 0)
     except (json.JSONDecodeError, Exception) as exc:
         short = f"{type(exc).__name__}: {str(exc)[:200]}"
         await _log(user_id, run_id,
@@ -1798,7 +1866,7 @@ async def _single_fix_attempt(
                    "error", "command")
         attempt_history.append({
             "tier_label": tier_label, "diagnosis": None,
-            "fix_result": None, "test_output": test_output,
+            "fix_result": None, "test_output": test_output[-2000:],
             "error": short,
         })
         return False, test_output
@@ -1815,9 +1883,21 @@ async def _single_fix_attempt(
     await _log(user_id, run_id,
                f"  🔧 [{tier_label}] Opus writing fix…", "thinking", "command")
 
+    # Only send file contents for files referenced in the plan —
+    # avoids sending 200 KB of irrelevant code to Opus.
+    plan_files: set[str] = set()
+    for pe in plan.get("plan", []):
+        pf = pe.get("file", "")
+        if pf:
+            plan_files.add(pf)
+    scoped_contents = (
+        {k: v for k, v in file_contents.items() if k in plan_files}
+        if plan_files else file_contents
+    )
+
     fix_payload: dict = {
         "fix_plan": plan,
-        "workspace_files": file_contents,
+        "workspace_files": scoped_contents,
     }
     fix_user_msg = json.dumps(fix_payload, indent=2)
 
@@ -1825,9 +1905,9 @@ async def _single_fix_attempt(
         build_result = await chat(
             api_key=api_key,
             model=builder_model,
-            system_prompt=_BUILDER_SYSTEM_PROMPT,
+            system_prompt=_FIX_BUILDER_PROMPT,
             messages=[{"role": "user", "content": fix_user_msg}],
-            max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
+            max_tokens=16384,  # fixes are small — no need for 32K
             provider="anthropic",
         )
         # Track Opus fix tokens
@@ -1844,7 +1924,6 @@ async def _single_fix_attempt(
                 _st["tokens"] = _tokens.snapshot()
 
         build_text = build_result.get("text", "") if isinstance(build_result, dict) else str(build_result)
-        build_text = _strip_codeblock(build_text)
 
         if not build_text.strip():
             await _log(user_id, run_id,
@@ -1852,12 +1931,18 @@ async def _single_fix_attempt(
                        "error", "command")
             attempt_history.append({
                 "tier_label": tier_label, "diagnosis": diagnosis,
-                "fix_result": None, "test_output": test_output,
+                "fix_result": None, "test_output": test_output[-2000:],
                 "error": "empty builder response",
             })
             return False, test_output
 
-        fix_result = json.loads(build_text)
+        fix_result = _safe_json_parse(build_text)
+        if fix_result is None:
+            raise json.JSONDecodeError(
+                "Could not extract JSON from Opus fix response",
+                build_text[:200], 0)
+        if not isinstance(fix_result, dict):
+            fix_result = {"changes": fix_result if isinstance(fix_result, list) else []}
     except (json.JSONDecodeError, Exception) as exc:
         short = f"{type(exc).__name__}: {str(exc)[:200]}"
         await _log(user_id, run_id,
@@ -1865,7 +1950,7 @@ async def _single_fix_attempt(
                    "error", "command")
         attempt_history.append({
             "tier_label": tier_label, "diagnosis": diagnosis,
-            "fix_result": None, "test_output": test_output,
+            "fix_result": None, "test_output": test_output[-2000:],
             "error": short,
         })
         return False, test_output
@@ -1885,15 +1970,53 @@ async def _single_fix_attempt(
 
     applied = 0
     for c in fix_changes:
+        fpath = c.get("file", "?")
         try:
             _apply_file_change(working_dir, c)
+            # Syntax-check .py files immediately after applying
+            if fpath.endswith(".py"):
+                full = Path(working_dir) / fpath
+                if full.is_file():
+                    src = full.read_text(encoding="utf-8", errors="replace")
+                    try:
+                        compile(src, fpath, "exec")
+                    except SyntaxError as syn:
+                        # Roll back this change — restore original
+                        await _log(user_id, run_id,
+                                   f"  ⚠ [{tier_label}] {fpath}: "
+                                   f"syntax error after apply "
+                                   f"(L{syn.lineno}) — rolling back",
+                                   "warn", "command")
+                        # Re-read from file_contents if available
+                        if fpath in file_contents:
+                            full.write_text(
+                                file_contents[fpath],
+                                encoding="utf-8")
+                        continue
+            # Syntax-check .json files
+            if fpath.endswith(".json"):
+                full = Path(working_dir) / fpath
+                if full.is_file():
+                    src = full.read_text(encoding="utf-8", errors="replace")
+                    try:
+                        json.loads(src)
+                    except json.JSONDecodeError as je:
+                        await _log(user_id, run_id,
+                                   f"  ⚠ [{tier_label}] {fpath}: "
+                                   f"invalid JSON after apply — rolling back",
+                                   "warn", "command")
+                        if fpath in file_contents:
+                            full.write_text(
+                                file_contents[fpath],
+                                encoding="utf-8")
+                        continue
             applied += 1
             await _log(user_id, run_id,
                        f"  ✅ [{tier_label}] {c.get('action', 'modify')}: "
-                       f"{c.get('file', '?')}", "info", "command")
+                       f"{fpath}", "info", "command")
         except Exception as exc:
             await _log(user_id, run_id,
-                       f"  ⚠ [{tier_label}] {c.get('file', '?')}: {exc}",
+                       f"  ⚠ [{tier_label}] {fpath}: {exc}",
                        "warn", "command")
 
     if applied == 0:
@@ -1918,13 +2041,13 @@ async def _single_fix_attempt(
 
     attempt_history.append({
         "tier_label": tier_label,
-        "diagnosis": diagnosis,
+        "diagnosis": diagnosis[:500] if diagnosis else "",
         "fix_changes": [
             {"file": c.get("file"), "action": c.get("action")}
             for c in fix_changes
         ],
         "test_passed": passed,
-        "test_output": new_output[-4000:],  # keep last 4 KB for context
+        "test_output": new_output[-2000:],  # keep last 2 KB for context
     })
 
     if passed:
@@ -2577,20 +2700,107 @@ def _strip_codeblock(text: str) -> str:
     if text.startswith("{") or text.startswith("["):
         return text
 
-    # Extract outermost JSON object/array from surrounding prose.
-    # Pick whichever delimiter ({…} or […]) appears first.
-    best_start = len(text)
-    best: str | None = None
-    for open_ch, close_ch in (("{", "}"), ("[", "]")):
-        start = text.find(open_ch)
-        if start == -1 or start >= best_start:
-            continue
-        end = text.rfind(close_ch)
-        if end > start:
-            best_start = start
-            best = text[start:end + 1]
+    # Extract outermost JSON object/array from surrounding prose
+    # using bracket-counting for correctness.
+    extracted = _extract_json_bracket(text)
+    return extracted if extracted is not None else text
 
-    return best if best is not None else text
+
+def _extract_json_bracket(text: str) -> str | None:
+    """Extract the first balanced JSON object/array using bracket counting.
+
+    Unlike ``rfind('}')`` this correctly handles cases where the LLM
+    emits multiple JSON objects or trailing prose after the closing
+    bracket (the "Extra data" JSONDecodeError scenario).
+
+    Tries whichever delimiter (``{`` or ``[``) appears first in the
+    text so ``[{"a": 1}]`` correctly returns the array, not the inner
+    object.
+    """
+    # Determine which delimiter appears first
+    obj_start = text.find("{")
+    arr_start = text.find("[")
+    if obj_start == -1 and arr_start == -1:
+        return None
+    # Build ordered list of (open, close) pairs — first-found first
+    pairs: list[tuple[str, str]] = []
+    if obj_start != -1 and arr_start != -1:
+        if arr_start <= obj_start:
+            pairs = [("[", "]"), ("{", "}")]
+        else:
+            pairs = [("{", "}"), ("[", "]")]
+    elif arr_start != -1:
+        pairs = [("[", "]")]
+    else:
+        pairs = [("{", "}")]
+
+    for open_ch, close_ch in pairs:
+        start = text.find(open_ch)
+        if start == -1:
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_string:
+                escape = True
+                continue
+            if ch == '"' and not escape:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
+
+
+def _safe_json_parse(text: str) -> dict | list | None:
+    """Best-effort JSON parse with multiple fallback strategies.
+
+    1. Direct parse of stripped text.
+    2. Strip codeblock wrapper then parse.
+    3. Bracket-counting extraction then parse.
+    """
+    text = text.strip()
+    # Strategy 1: direct parse
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strategy 2: strip codeblock then parse
+    stripped = _strip_codeblock(text)
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strategy 3: bracket-counting extraction
+    extracted = _extract_json_bracket(text)
+    if extracted:
+        try:
+            return json.loads(extracted)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Strategy 4: try extracting from stripped version too
+    extracted2 = _extract_json_bracket(stripped)
+    if extracted2 and extracted2 != extracted:
+        try:
+            return json.loads(extracted2)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None
 
 
 # ---------------------------------------------------------------------------

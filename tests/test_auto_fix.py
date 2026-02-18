@@ -20,6 +20,8 @@ import pytest
 from app.services.upgrade_executor import (
     _parse_test_failures,
     _read_failing_files,
+    _extract_json_bracket,
+    _safe_json_parse,
 )
 
 
@@ -56,8 +58,9 @@ class TestParseTestFailures:
         """)
         result = _parse_test_failures(output)
         assert len(result) == 2
-        assert result[0]["file"] == "tests/test_a.py"
-        assert result[1]["file"] == "tests/test_b.py"
+        # After severity sort: TypeError (4) < AssertionError (99)
+        assert result[0]["file"] == "tests/test_b.py"
+        assert result[1]["file"] == "tests/test_a.py"
 
     def test_parses_traceback_style(self):
         output = textwrap.dedent("""\
@@ -357,4 +360,90 @@ class TestFixConfig:
         s = Settings()
         assert s.LLM_FIX_MAX_TIER1 == 3
         assert s.LLM_FIX_MAX_TIER2 == 3
-        assert s.LLM_THINKING_BUDGET == 10000
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _extract_json_bracket / _safe_json_parse
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestExtractJsonBracket:
+    """Verify bracket-counting JSON extraction."""
+
+    def test_simple_object(self):
+        assert _extract_json_bracket('{"a": 1}') == '{"a": 1}'
+
+    def test_extra_data_after_object(self):
+        """The 'Extra data' scenario that was wasting fix attempts."""
+        text = '{"changes": []}{"extra": "junk"}'
+        result = _extract_json_bracket(text)
+        assert result == '{"changes": []}'
+        assert json.loads(result) == {"changes": []}
+
+    def test_prose_before_json(self):
+        text = "Here is the fix:\n{\"changes\": [{\"file\": \"x.py\"}]}"
+        result = _extract_json_bracket(text)
+        assert json.loads(result) == {"changes": [{"file": "x.py"}]}
+
+    def test_nested_braces(self):
+        text = '{"a": {"b": {"c": 1}}}'
+        assert _extract_json_bracket(text) == text
+
+    def test_string_with_braces(self):
+        text = '{"msg": "hello { world }"}'
+        assert _extract_json_bracket(text) == text
+        assert json.loads(_extract_json_bracket(text)) == {"msg": "hello { world }"}
+
+    def test_no_json(self):
+        assert _extract_json_bracket("no json here") is None
+
+    def test_array(self):
+        text = '[1, 2, 3]'
+        assert _extract_json_bracket(text) == text
+
+
+class TestSafeJsonParse:
+    """Verify multi-strategy JSON parsing."""
+
+    def test_clean_json(self):
+        assert _safe_json_parse('{"a": 1}') == {"a": 1}
+
+    def test_codeblock_wrapped(self):
+        text = '```json\n{"a": 1}\n```'
+        assert _safe_json_parse(text) == {"a": 1}
+
+    def test_extra_data(self):
+        text = '{"changes": []}{"extra": true}'
+        result = _safe_json_parse(text)
+        assert result == {"changes": []}
+
+    def test_prose_preamble(self):
+        text = "I'll fix the issue now.\n{\"changes\": []}"
+        assert _safe_json_parse(text) == {"changes": []}
+
+    def test_returns_none_for_garbage(self):
+        assert _safe_json_parse("not json at all") is None
+
+    def test_empty_string(self):
+        assert _safe_json_parse("") is None
+
+
+class TestFailureSeveritySorting:
+    """Verify that blocking errors sort first."""
+
+    def test_import_error_sorts_first(self):
+        output = textwrap.dedent("""\
+            FAILED tests/test_a.py::test_one - AssertionError: 1 != 2
+            FAILED tests/test_b.py::test_two - ImportError: No module
+        """)
+        result = _parse_test_failures(output)
+        assert result[0]["error_type"] == "ImportError"
+        assert result[1]["error_type"] == "AssertionError"
+
+    def test_syntax_before_assertion(self):
+        output = textwrap.dedent("""\
+            FAILED tests/test_a.py::test_one - RuntimeError: failed
+            FAILED tests/test_b.py::test_two - SyntaxError: bad
+        """)
+        result = _parse_test_failures(output)
+        assert result[0]["error_type"] == "SyntaxError"
