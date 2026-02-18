@@ -333,13 +333,13 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
   /* Keep logsLenRef in sync so polling closures see the latest count */
   useEffect(() => { logsLenRef.current = logs.length; }, [logs.length]);
 
-  /* Derived: split logs by worker for dual-panel display */
+  /* Derived: split logs by worker for stacked panels */
   const sonnetLogs = useMemo(
-    () => logs.filter(l => l.worker === 'sonnet' || l.worker === 'system' || !l.worker),
+    () => logs.filter(l => l.worker === 'sonnet'),
     [logs],
   );
   const opusLogs = useMemo(
-    () => logs.filter(l => l.worker === 'opus' || l.worker === 'system' || !l.worker),
+    () => logs.filter(l => l.worker === 'opus'),
     [logs],
   );
 
@@ -1079,30 +1079,45 @@ export default function ForgeIDEModal({ runId, repoName, onClose }: ForgeIDEModa
             ))}
           </div>
 
-          {/* Activity log — dual Sonnet/Opus split panels */}
+          {/* Activity log — unified left (40%) + stacked Opus/Sonnet right (60%) */}
           {activeTab === 'activity' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
-              {/* Sonnet panel — 40% */}
+              {/* Unified log — 40% */}
               <div style={{ width: '40%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 <LogPane
-                  logs={sonnetLogs}
+                  logs={logs}
                   status={status}
-                  label="SONNET"
-                  labelColor="#38BDF8"
-                  emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Sonnet planner will appear here' : 'Waiting for planner…'}
+                  label="ALL"
+                  labelColor="#94A3B8"
+                  emptyText={status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 />
               </div>
               {/* Divider */}
               <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
-              {/* Opus panel — 60% */}
+              {/* Right column — stacked Opus (top) + Sonnet (bottom) — 60% */}
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                <LogPane
-                  logs={opusLogs}
-                  status={status}
-                  label="OPUS"
-                  labelColor="#D946EF"
-                  emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
-                />
+                {/* Opus — top 50% */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <LogPane
+                    logs={opusLogs}
+                    status={status}
+                    label="OPUS"
+                    labelColor="#D946EF"
+                    emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}
+                  />
+                </div>
+                {/* Horizontal divider */}
+                <div style={{ height: '1px', background: '#1E293B', flexShrink: 0 }} />
+                {/* Sonnet — bottom 50% */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <LogPane
+                    logs={sonnetLogs}
+                    status={status}
+                    label="SONNET"
+                    labelColor="#38BDF8"
+                    emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Sonnet planner will appear here' : 'Waiting for planner…'}
+                  />
+                </div>
               </div>
             </div>
           )}
