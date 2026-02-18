@@ -4,7 +4,7 @@ import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.auth import decode_token
-from app.ws_manager import manager
+from app.ws_manager import MAX_MESSAGE_SIZE, manager
 
 router = APIRouter(tags=["websocket"])
 
@@ -38,6 +38,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             # Keep connection alive; ignore client messages
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            if len(data) > MAX_MESSAGE_SIZE:
+                await websocket.close(code=1009, reason="Message too large")
+                return
     except WebSocketDisconnect:
         await manager.disconnect(user_id, websocket)

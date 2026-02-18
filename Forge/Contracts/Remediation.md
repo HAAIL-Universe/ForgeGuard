@@ -315,7 +315,7 @@
 
 ---
 
-## R8 — Decompose Other Services
+## R8 — Decompose Other Services ✅
 
 > Same pattern as R7, for the next two largest service files.
 

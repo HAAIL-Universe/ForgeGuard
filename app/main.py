@@ -21,6 +21,7 @@ from app.clients import github_client, llm_client
 from app.config import settings
 from app.errors import ForgeError
 from app.repos.db import close_pool, get_pool
+from app.ws_manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,9 @@ async def lifespan(application: FastAPI):
     """Application lifespan: startup and shutdown hooks."""
     if "pytest" not in sys.modules:
         await get_pool()  # fail-fast if DB unreachable
+    await ws_manager.start_heartbeat()
     yield
+    await ws_manager.stop_heartbeat()
     await github_client.close_client()
     await llm_client.close_client()
     await close_pool()
