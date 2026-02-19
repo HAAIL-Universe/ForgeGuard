@@ -152,6 +152,15 @@ def _build_patches():
             new_callable=AsyncMock,
             return_value="Mocked remediation plan",
         ),
+        # Patch out the real venv/pip subprocess so tests don't spend 10-30s
+        # creating a virtual environment before the mocked build loop starts.
+        # Without this, auto_resume()/auto_skip() exhaust their 2.5-second
+        # polling window while the subprocess runs, causing spurious timeouts.
+        "setup_env": patch(
+            "app.services.build_service._setup_project_environment",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     }
 
 
