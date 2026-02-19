@@ -43,6 +43,7 @@ coverage/
 
 # Forge runtime
 .forge_watcher.lock
+.forge_artifacts/
 
 # Case study
 casestudy.md
