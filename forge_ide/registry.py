@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -17,6 +18,8 @@ from pydantic import BaseModel, ValidationError
 
 from forge_ide.contracts import ToolResponse
 from forge_ide.errors import ToolNotFound
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -90,15 +93,20 @@ class Registry:
         entry = self._tools.get(name)
         if entry is None:
             elapsed = _elapsed_ms(start)
+            logger.warning("Tool dispatch unknown tool '%s' (available: %s)", name, list(self._tools.keys()))
             raise ToolNotFound(name, list(self._tools.keys()))
+
+        logger.info("[tool:dispatch] %s  params=%s", name, _summarise_params(params))
 
         # Validate input ------------------------------------------------
         try:
             validated = entry.request_model.model_validate(params)
         except ValidationError as exc:
+            elapsed = _elapsed_ms(start)
+            logger.warning("[tool:dispatch] %s  INVALID params (%dms): %s", name, elapsed, exc)
             return ToolResponse.fail(
                 f"Invalid params for '{name}': {exc}",
-                duration_ms=_elapsed_ms(start),
+                duration_ms=elapsed,
             )
 
         # Call handler ---------------------------------------------------
@@ -108,12 +116,15 @@ class Registry:
             else:
                 result = entry.handler(validated, working_dir)
         except Exception as exc:
-            return ToolResponse.fail(str(exc), duration_ms=_elapsed_ms(start))
+            elapsed = _elapsed_ms(start)
+            logger.error("[tool:dispatch] %s  EXCEPTION (%dms): %s", name, elapsed, exc)
+            return ToolResponse.fail(str(exc), duration_ms=elapsed)
 
         # Wrap result ----------------------------------------------------
         elapsed = _elapsed_ms(start)
         if isinstance(result, ToolResponse):
-            # Handler already returned a ToolResponse — just stamp duration
+            status = "OK" if result.success else "FAIL"
+            logger.info("[tool:result]   %s  %s (%dms)", name, status, elapsed)
             return ToolResponse(
                 success=result.success,
                 data=result.data,
@@ -123,9 +134,11 @@ class Registry:
 
         # Handler returned a plain dict — wrap as success
         if isinstance(result, dict):
+            logger.info("[tool:result]   %s  OK (%dms)", name, elapsed)
             return ToolResponse.ok(result, duration_ms=elapsed)
 
         # Fallback: stringify
+        logger.info("[tool:result]   %s  OK (%dms)", name, elapsed)
         return ToolResponse.ok({"result": str(result)}, duration_ms=elapsed)
 
     # ------------------------------------------------------------------
@@ -152,6 +165,15 @@ class Registry:
 
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+def _summarise_params(params: dict[str, Any], max_len: int = 200) -> str:
+    """One-line summary of *params* for logging (truncated)."""
+    try:
+        raw = ", ".join(f"{k}={v!r}" for k, v in params.items())
+    except Exception:
+        raw = str(params)
+    return raw[:max_len] + ("…" if len(raw) > max_len else "")
 
 
 def _build_tool_definition(

@@ -800,3 +800,54 @@ def test_delete_builds_no_eligible(mock_get_user, mock_delete, client):
 
     assert resp.status_code == 400
     assert "active builds" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /projects/{id}/build/clarify
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.routers.builds.build_service.resume_clarification", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_clarify_build_success(mock_get_user, mock_resume, client):
+    """POST /projects/{id}/build/clarify returns 200 with ok=True."""
+    mock_get_user.return_value = _USER
+    mock_resume.return_value = {"ok": True, "build_id": str(_BUILD_ID)}
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/clarify",
+        headers=_auth_header(),
+        json={"question_id": "q-123", "answer": "JWT tokens"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    mock_resume.assert_awaited_once_with(
+        _PROJECT_ID, _USER["id"], "q-123", "JWT tokens"
+    )
+
+
+@patch("app.api.routers.builds.build_service.resume_clarification", new_callable=AsyncMock)
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+def test_clarify_build_no_active_build(mock_get_user, mock_resume, client):
+    """POST /projects/{id}/build/clarify returns 404 when no active build."""
+    mock_get_user.return_value = _USER
+    mock_resume.side_effect = ValueError("No active build found for this project")
+
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/clarify",
+        headers=_auth_header(),
+        json={"question_id": "q-123", "answer": "JWT tokens"},
+    )
+
+    assert resp.status_code == 404
+    assert "active build" in resp.json()["detail"]
+
+
+def test_clarify_build_requires_auth(client):
+    """POST /projects/{id}/build/clarify returns 401 without auth."""
+    resp = client.post(
+        f"/projects/{_PROJECT_ID}/build/clarify",
+        json={"question_id": "q-123", "answer": "JWT tokens"},
+    )
+    assert resp.status_code == 401

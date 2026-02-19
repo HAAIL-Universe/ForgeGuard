@@ -332,3 +332,59 @@ def test_list_all_repos(mock_connected, mock_github, mock_svc_user, mock_dep_use
 def test_list_all_repos_requires_auth():
     response = client.get("/repos/all")
     assert response.status_code == 401
+
+
+# ---------- POST /repos/health-check ----------
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.api.routers.repos.run_repo_health_check", new_callable=AsyncMock)
+@patch("app.api.routers.repos.asyncio.create_task")
+def test_trigger_health_check_returns_checking(mock_task, mock_health, mock_dep_user):
+    """POST /repos/health-check fires a background task and returns checking."""
+    mock_dep_user.return_value = MOCK_USER
+    mock_task.return_value = None
+
+    response = client.post("/repos/health-check", headers=_auth_header())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "checking"
+    mock_task.assert_called_once()
+
+
+def test_trigger_health_check_requires_auth():
+    response = client.post("/repos/health-check")
+    assert response.status_code == 401
+
+
+# ---------- GET /repos — background health check when stale ----------
+
+
+@patch("app.api.deps.get_user_by_id", new_callable=AsyncMock)
+@patch("app.api.routers.repos.run_repo_health_check", new_callable=AsyncMock)
+@patch("app.api.routers.repos.asyncio.create_task")
+@patch("app.services.repo_service.get_repos_with_health", new_callable=AsyncMock)
+def test_list_repos_fires_health_check_when_never_checked(
+    mock_get_repos, mock_task, mock_health, mock_dep_user
+):
+    """GET /repos fires background check when last_health_check_at is null."""
+    mock_dep_user.return_value = MOCK_USER
+    mock_get_repos.return_value = [
+        {
+            "id": UUID("33333333-3333-3333-3333-333333333333"),
+            "user_id": UUID(USER_ID),
+            "full_name": "octocat/hello-world",
+            "default_branch": "main",
+            "webhook_active": True,
+            "total_count": 0,
+            "pass_count": 0,
+            "last_audit_at": None,
+            "last_health_check_at": None,  # never checked → triggers background task
+        }
+    ]
+    mock_task.return_value = None
+
+    response = client.get("/repos", headers=_auth_header())
+
+    assert response.status_code == 200
+    mock_task.assert_called_once()

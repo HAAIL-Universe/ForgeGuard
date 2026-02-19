@@ -14,6 +14,7 @@ interface Repo {
   id: string;
   full_name: string;
   health_score: string;
+  repo_status?: string;
 }
 
 interface ScoutCheck {
@@ -129,6 +130,9 @@ function Scout() {
   /* Forge IDE modal state */
   const [ideModalOpen, setIdeModalOpen] = useState(false);
 
+  /* Health-check refresh state */
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   /* Fetch repos */
   const fetchRepos = useCallback(async () => {
     try {
@@ -162,11 +166,26 @@ function Scout() {
     fetchHistory();
   }, [fetchRepos, fetchHistory]);
 
+  const triggerHealthCheck = async () => {
+    setIsRefreshing(true);
+    try {
+      await fetch(`${API_BASE}/repos/health-check`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      setIsRefreshing(false);
+    }
+  };
+
   /* WS handler for scout events */
   useWebSocket(
     useCallback(
       (data: { type: string; payload: any }) => {
-        if (data.type === 'scout_progress') {
+        if (data.type === 'repos_health_updated') {
+          setIsRefreshing(false);
+          fetchRepos();
+        } else if (data.type === 'scout_progress') {
           const p = data.payload;
           if (p.step) {
             // Deep scan step-by-step progress
@@ -563,9 +582,27 @@ function Scout() {
             />
 
             {/* Repo list */}
-            <h3 style={{ fontSize: '0.75rem', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>
-              Connected Repos
-            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <h3 style={{ fontSize: '0.75rem', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.5px', margin: 0 }}>
+                Connected Repos
+              </h3>
+              <button
+                onClick={triggerHealthCheck}
+                disabled={isRefreshing}
+                title="Refresh repo health"
+                style={{
+                  background: 'transparent',
+                  color: isRefreshing ? '#64748B' : '#94A3B8',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  cursor: isRefreshing ? 'wait' : 'pointer',
+                  fontSize: '0.7rem',
+                }}
+              >
+                {isRefreshing ? '↻ Checking…' : '↻ Refresh'}
+              </button>
+            </div>
             {reposLoading ? (
               <div style={{ color: '#64748B', fontSize: '0.8rem', padding: '12px 0' }}>Loading…</div>
             ) : filteredRepos.length === 0 ? (
@@ -574,7 +611,12 @@ function Scout() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '32px' }}>
-                {filteredRepos.map((repo) => (
+                {filteredRepos.map((repo) => {
+                  const isDeleted = repo.repo_status === 'deleted';
+                  const badgeScore = (repo.repo_status && repo.repo_status !== 'connected')
+                    ? repo.repo_status
+                    : repo.health_score;
+                  return (
                   <div
                     key={repo.id}
                     style={{
@@ -585,14 +627,29 @@ function Scout() {
                       background: '#1E293B',
                       borderRadius: '8px',
                       border: '1px solid #334155',
+                      opacity: isDeleted ? 0.6 : 1,
+                      flexWrap: 'wrap',
+                      gap: '8px',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
-                      <HealthBadge score={repo.health_score} size={10} />
-                      <span style={{ fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {repo.full_name}
-                      </span>
+                      <HealthBadge score={badgeScore} size={10} />
+                      <div>
+                        <span style={{
+                          fontSize: '0.85rem',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          textDecoration: isDeleted ? 'line-through' : 'none',
+                        }}>
+                          {repo.full_name}
+                        </span>
+                        {isDeleted && (
+                          <div style={{ fontSize: '0.7rem', color: '#64748B' }}>Deleted on GitHub</div>
+                        )}
+                      </div>
                     </div>
+                    {!isDeleted && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                       {/* Hypothesis toggle */}
                       <button
@@ -645,6 +702,7 @@ function Scout() {
                         Deep Scan 🔬
                       </button>
                     </div>
+                    )}
                     {/* Hypothesis input row */}
                     {showHypothesis === repo.id && (
                       <div style={{ width: '100%', marginTop: '8px' }}>
@@ -669,7 +727,8 @@ function Scout() {
                       </div>
                     )}
                   </div>
-                ))}
+                );
+                })}
               </div>
             )}
 

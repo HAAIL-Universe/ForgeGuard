@@ -482,8 +482,17 @@ async def _generate_file_manifest(
     contracts: list[dict],
     current_phase: dict,
     workspace_info: str,
+    prior_phase_context: str = "",
 ) -> list[dict] | None:
-    """Generate a structured file manifest for a phase via Sonnet planner."""
+    """Generate a structured file manifest for a phase via Sonnet planner.
+
+    Parameters
+    ----------
+    prior_phase_context : str
+        Markdown summary of what previous phases planned and produced.
+        Injected into the planner prompt so the manifest accounts for
+        cross-phase dependencies.
+    """
     from app.clients.llm_client import chat as llm_chat
 
     if not _PLANNER_BUILD_PROMPT_PATH.exists():
@@ -520,6 +529,10 @@ async def _generate_file_manifest(
     user_message = (
         f"## Project Contracts\n\n{contracts_text}\n\n"
         f"## Current Phase\n\n{phase_text}\n\n"
+    )
+    if prior_phase_context:
+        user_message += f"{prior_phase_context}\n\n"
+    user_message += (
         f"## Existing Workspace\n\n{workspace_info}\n\n"
         f"Produce the JSON file manifest for this phase."
     )
@@ -681,8 +694,16 @@ async def _generate_single_file(
     phase_deliverables: str,
     working_dir: str,
     error_context: str = "",
+    phase_plan_context: str = "",
 ) -> str:
-    """Generate a single file via an independent API call."""
+    """Generate a single file via an independent API call.
+
+    Parameters
+    ----------
+    phase_plan_context : str
+        Markdown listing all files being created in the same phase.
+        Helps the generator understand sibling imports and interfaces.
+    """
     from app.clients.llm_client import chat as llm_chat
 
     file_path = file_entry["path"]
@@ -744,6 +765,10 @@ async def _generate_single_file(
 
     parts = [f"## Project Contracts (reference)\n{contracts_text}\n"]
     parts.append(f"## Current Phase Deliverables\n{phase_deliverables}\n")
+
+    if phase_plan_context:
+        parts.append(f"\n{phase_plan_context}\n")
+
     parts.append(
         f"\n## File to Write\n"
         f"Path: {file_path}\n"

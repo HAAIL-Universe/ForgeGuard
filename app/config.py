@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     # (requirements.txt, package.json, etc.) into the project.
     AUTO_INSTALL_DEPS: bool = True
 
+    # Builder clarification tool settings
+    CLARIFICATION_TIMEOUT_MINUTES: int = 10   # how long to wait before auto-skip
+    MAX_CLARIFICATIONS_PER_BUILD: int = 10    # abuse guard
+
 
 settings = Settings()
 

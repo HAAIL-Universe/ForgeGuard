@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.api.rate_limit import build_limiter
@@ -33,6 +33,12 @@ class ResumeRequest(BaseModel):
 class InterjectRequest(BaseModel):
     """Request body for injecting a user message into an active build."""
     message: str
+
+
+class ClarifyRequest(BaseModel):
+    """Request body for answering a builder clarification question."""
+    question_id: str
+    answer: str = Field(..., min_length=1, max_length=1000)
 
 
 # ── POST /projects/{project_id}/build ────────────────────────────────────
@@ -138,6 +144,24 @@ async def interject_build(
     return await build_service.interject_build(
         project_id, user["id"], body.message
     )
+
+
+# ── POST /projects/{project_id}/build/clarify ────────────────────────────
+
+
+@router.post("/{project_id}/build/clarify")
+async def clarify_build(
+    project_id: UUID,
+    body: ClarifyRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Submit the user's answer to a builder clarification question."""
+    try:
+        return await build_service.resume_clarification(
+            project_id, user["id"], body.question_id, body.answer
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── GET /projects/{project_id}/build/files ────────────────────────────────
@@ -272,3 +296,56 @@ async def get_live_cost(
         raise HTTPException(status_code=404, detail="No builds found")
     bid = str(latest["id"])
     return build_service.get_build_cost_live(bid)
+
+
+# ── Build Errors ─────────────────────────────────────────────────────────
+
+
+@router.get("/{project_id}/build/errors")
+async def get_build_errors(
+    project_id: UUID,
+    resolved: bool | None = Query(None, description="Filter by resolved status"),
+    user: dict = Depends(get_current_user),
+):
+    """Return aggregated build errors for the latest build."""
+    from app.repos import build_repo as _br
+    latest = await _br.get_latest_build_for_project(project_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No builds found")
+    errors = await _br.get_build_errors(
+        latest["id"], resolved_filter=resolved,
+    )
+    # Serialize UUIDs + datetimes for JSON
+    for e in errors:
+        for k, v in e.items():
+            if isinstance(v, UUID):
+                e[k] = str(v)
+            elif hasattr(v, "isoformat"):
+                e[k] = v.isoformat()
+    return errors
+
+
+class DismissErrorRequest(BaseModel):
+    error_id: str
+
+
+@router.post("/{project_id}/build/errors/dismiss")
+async def dismiss_build_error(
+    project_id: UUID,
+    body: DismissErrorRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Mark a build error as dismissed by the user."""
+    from app.repos import build_repo as _br
+    result = await _br.resolve_build_error(
+        UUID(body.error_id),
+        method="dismissed",
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Error not found")
+    for k, v in result.items():
+        if isinstance(v, UUID):
+            result[k] = str(v)
+        elif hasattr(v, "isoformat"):
+            result[k] = v.isoformat()
+    return result

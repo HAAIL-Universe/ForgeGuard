@@ -4196,3 +4196,157 @@ When an invariant is violated:
 - Real build completes successfully with MCP flow
 - All existing tests pass + flag-aware tests pass
 - All existing tests pass + ~10 new tests for mode-aware frontend components
+
+---
+
+## Phase 57 — Repo Health Check & Commit Status Display
+
+**Objective:** Detect when connected GitHub repositories have been deleted, archived, renamed, or become inaccessible since they were connected to Forge. Display real-time commit information on every repo card so users can see the current state of each repo at a glance. Trigger health checks automatically on page load and manually via a refresh button.
+
+**Background:**
+The `repos` table stores `full_name`, `default_branch`, `webhook_active`, and audit-derived health scores, but has no fields for GitHub-side existence state or latest commit data. When a user deletes a repo on GitHub the app shows it as healthy indefinitely. No commit-level information (SHA, message, timestamp) appears anywhere in the UI.
+
+**Deliverables:**
+
+- **DB migration** — new file `db/migrations/NNN_repo_health_fields.sql`:
+  ```sql
+  ALTER TABLE repos
+    ADD COLUMN repo_status          VARCHAR(30)  NOT NULL DEFAULT 'connected',
+    ADD COLUMN last_health_check_at TIMESTAMPTZ,
+    ADD COLUMN latest_commit_sha    VARCHAR(40),
+    ADD COLUMN latest_commit_message TEXT,
+    ADD COLUMN latest_commit_at     TIMESTAMPTZ,
+    ADD COLUMN latest_commit_author VARCHAR(255);
+  ```
+  `repo_status` enum: `connected` | `deleted` | `archived` | `inaccessible` | `renamed`
+
+- **`app/repos/repo_repo.py`** — two new DB functions:
+  - `update_repo_health(repo_id, fields: dict) → None` — UPDATE repos SET repo_status, last_health_check_at, latest_commit_sha, latest_commit_message, latest_commit_at, latest_commit_author WHERE id=repo_id
+  - `update_repo_full_name(repo_id, new_full_name) → None` — UPDATE repos SET full_name WHERE id=repo_id
+  - `get_repos_with_health()` (existing) updated to SELECT the 6 new columns
+
+- **`app/services/repo_service.py`** — two new functions:
+
+  `_check_single_repo(user, repo) → None` (internal):
+  - Calls `get_repo_metadata(access_token, owner, name)` from existing `github_client.py`
+  - On **404** → `update_repo_health({repo_status: "deleted", last_health_check_at: now})`; return
+  - On **401/403** → `update_repo_health({repo_status: "inaccessible", last_health_check_at: now})`; return
+  - On **200**:
+    - If `metadata["archived"] == True` → `repo_status = "archived"`
+    - Else → `repo_status = "connected"`
+    - If `metadata["full_name"] != repo["full_name"]` → call `update_repo_full_name()` with new name
+    - Call `list_commits(access_token, owner, name, per_page=1)` (already exists in github_client.py) to get latest commit
+    - Call `update_repo_health({repo_status, last_health_check_at, latest_commit_sha, latest_commit_message (first line, max 200 chars), latest_commit_at, latest_commit_author})`
+  - Swallows all unexpected exceptions — one bad repo must not abort the batch
+
+  `run_repo_health_check(user_id: UUID) → None` (public, called as background task):
+  - Fetches user record (needs `access_token`)
+  - Fetches all repos for user via `repo_repo.get_repos_by_user(user_id)`
+  - Runs `asyncio.gather(*[_check_single_repo(user, r) for r in repos], return_exceptions=True)`
+  - Emits WS event: `manager.send_to_user(str(user_id), {"type": "repos_health_updated", "payload": {"checked": len(repos)}})`
+
+- **`app/api/routers/repos.py`** — two changes:
+
+  `GET /repos` modified — fire background check when stale:
+  ```python
+  threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+  stale = any(
+      not r.get("last_health_check_at") or r["last_health_check_at"] < threshold
+      for r in repos
+  )
+  if stale:
+      asyncio.create_task(repo_service.run_repo_health_check(current_user["id"]))
+  ```
+  Returns repos immediately without waiting (current stored state is returned; WS event triggers refresh when check completes).
+
+  `POST /repos/health-check` — new endpoint (manual refresh):
+  ```python
+  asyncio.create_task(repo_service.run_repo_health_check(current_user["id"]))
+  return {"status": "checking"}
+  ```
+
+- **`web/src/components/HealthBadge.tsx`** — extend status colours and labels:
+  - `deleted: '#475569'` (dark slate, muted)
+  - `archived: '#6366F1'` (indigo, inactive)
+  - `inaccessible: '#F97316'` (orange, warning)
+  - Add a `STATUS_LABEL` map: `{deleted: "Deleted on GitHub", archived: "Archived", inaccessible: "Access lost"}`
+  - Badge renders the label text alongside the colour dot for non-standard statuses
+
+- **`web/src/components/RepoCard.tsx`** — three additions:
+
+  Extend `Repo` interface:
+  ```typescript
+  repo_status: string;
+  latest_commit_sha: string | null;
+  latest_commit_message: string | null;
+  latest_commit_at: string | null;
+  latest_commit_author: string | null;
+  last_health_check_at: string | null;
+  ```
+
+  **Default commit line** (always visible below repo name, when `latest_commit_sha` is non-null):
+  ```
+  a3f9c12  Fix null pointer in auth middleware  · 2h ago
+  ```
+  Format: monospace `sha[:7]` + space + `message[:60]` + ` · ` + relative time (e.g. "2h ago", "3d ago").
+
+  **Expandable section** (shown when card is clicked/expanded — add `useState(false)` for expanded):
+  - "Last audited: {relative time from last_audit_at}" or "No audits yet"
+  - If `latest_commit_at > last_audit_at` → amber line: "⚡ New commits since last audit"
+  - Toggle via a small chevron icon at the bottom of the card
+
+  **Deleted repo state** (when `repo_status === "deleted"`):
+  - Repo name rendered with `opacity: 0.5` and `text-decoration: line-through`
+  - HealthBadge shows `deleted` colour + "Deleted on GitHub" label
+  - Commit line replaced with italic muted text: "This repository no longer exists on GitHub"
+  - Disconnect button always visible (not hover-only)
+  - All Scout / Build action buttons hidden
+
+  **Archived repo state** (when `repo_status === "archived"`):
+  - Small `Archived` chip rendered inline next to repo name (indigo border, indigo text)
+  - HealthBadge shows `archived` colour
+  - All other functionality preserved
+
+- **`web/src/pages/Dashboard.tsx`**:
+  - Handle `repos_health_updated` WS event → call `fetchRepos()` to refresh list
+  - Add `isRefreshing` state (set true on click, cleared on `repos_health_updated`)
+  - Add "↻ Refresh" icon button in the repos section header:
+    ```typescript
+    onClick: POST /repos/health-check → set isRefreshing=true
+    ```
+  - Show subtle spinner animation on the button while `isRefreshing`
+
+- **`web/src/pages/Scout.tsx`**:
+  - Same `repos_health_updated` WS handler → refetch repos
+  - Same "↻ Refresh" button in the repo list header
+  - For `deleted` repos: render greyed card with "Deleted on GitHub" badge; disable Quick Scan and Deep Scan buttons; show Disconnect button
+
+- **Tests:**
+  - `_check_single_repo` marks repo `deleted` when GitHub returns 404
+  - `_check_single_repo` marks repo `inaccessible` when GitHub returns 403
+  - `_check_single_repo` marks repo `archived` when `metadata["archived"] == True`
+  - `_check_single_repo` calls `update_repo_full_name()` when `metadata["full_name"]` differs
+  - `_check_single_repo` stores `latest_commit_sha`, `latest_commit_message`, `latest_commit_at`
+  - `_check_single_repo` swallows exceptions — one failure does not abort batch
+  - `run_repo_health_check` runs all repos concurrently and emits `repos_health_updated` WS event
+  - `GET /repos` fires background task when any repo has `last_health_check_at` older than 1 hour
+  - `GET /repos` fires background task when any repo has `last_health_check_at = null`
+  - `GET /repos` does NOT fire task when all repos checked within the last hour
+  - `POST /repos/health-check` returns 200 and fires the background task
+
+**Schema coverage:**
+
+| Table | Change |
+|-------|--------|
+| `repos` | Add `repo_status VARCHAR(30) DEFAULT 'connected'`, `last_health_check_at TIMESTAMPTZ`, `latest_commit_sha VARCHAR(40)`, `latest_commit_message TEXT`, `latest_commit_at TIMESTAMPTZ`, `latest_commit_author VARCHAR(255)` |
+
+**Exit criteria:**
+- A GitHub-deleted repo shows "Deleted on GitHub" (dark slate badge, strikethrough name, Disconnect button) on the Dashboard and Scout pages
+- A GitHub-archived repo shows an "Archived" chip and indigo badge colour
+- Every connected repo card shows latest commit SHA (7 chars), message (60 chars), and relative age when health data is present
+- Clicking a repo card reveals "Last audited" timestamp + amber "New commits since last audit" indicator when applicable
+- On Dashboard/Scout page load: if any repo health is stale (>1 hour), a background check fires silently; the page displays existing data immediately and refreshes when the WS event arrives
+- A "↻ Refresh" button on both Dashboard and Scout triggers an immediate background health check
+- All 11 backend tests pass
+- Existing repo tests unchanged and passing
+- No extra GitHub API calls are made on page load if all repos were checked within the last hour (staleness guard works)

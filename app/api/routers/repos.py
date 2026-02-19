@@ -1,6 +1,8 @@
 """Repos router -- connect, disconnect, list repos, and audit results."""
 
+import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -15,6 +17,7 @@ from app.services.repo_service import (
     list_all_user_repos,
     list_available_repos,
     list_connected_repos,
+    run_repo_health_check,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,9 +69,30 @@ async def list_repos(
     offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """List connected repos for the authenticated user."""
+    """List connected repos for the authenticated user.
+
+    Fires a background health check if any repo's last check is older than 1 hour
+    or has never been checked.
+    """
     items = await list_connected_repos(current_user["id"])
+    threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+    needs_check = any(
+        not r.get("last_health_check_at")
+        or datetime.fromisoformat(r["last_health_check_at"]) < threshold
+        for r in items
+    )
+    if needs_check:
+        asyncio.create_task(run_repo_health_check(current_user["id"]))
     return {"items": items[offset : offset + limit], "total": len(items)}
+
+
+@router.post("/health-check")
+async def trigger_health_check(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Manually trigger a health check for all connected repos."""
+    asyncio.create_task(run_repo_health_check(current_user["id"]))
+    return {"status": "checking"}
 
 
 @router.get("/available")

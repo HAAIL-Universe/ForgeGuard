@@ -195,6 +195,7 @@ async def run_agent(
         )
 
         # ── Call Claude ───────────────────────────────────────────
+        llm_start = time.perf_counter()
         try:
             response = await chat_anthropic(
                 api_key=config.api_key,
@@ -205,6 +206,7 @@ async def run_agent(
                 tools=tools,
             )
         except Exception as exc:
+            logger.error("[agent:llm] turn=%d model=%s  LLM API error: %s", turn, config.model, exc)
             event = ErrorEvent(
                 turn=turn,
                 elapsed_ms=_elapsed_ms(loop_start),
@@ -217,6 +219,15 @@ async def run_agent(
         usage.add(response.get("usage", {}))
         stop_reason = response.get("stop_reason", "end_turn")
         content_blocks = response.get("content", [])
+        llm_ms = int((time.perf_counter() - llm_start) * 1000)
+        resp_usage = response.get("usage", {})
+        logger.info(
+            "[agent:llm] turn=%d model=%s  stop=%s  in=%d out=%d (%dms)",
+            turn, config.model, stop_reason,
+            resp_usage.get("input_tokens", 0),
+            resp_usage.get("output_tokens", 0),
+            llm_ms,
+        )
 
         # ── Append assistant message to conversation ──────────────
         messages.append({"role": "assistant", "content": content_blocks})
@@ -236,6 +247,11 @@ async def run_agent(
                 ))
             elif block.get("type") == "tool_use":
                 tool_uses.append(block)
+                logger.info(
+                    "[agent:tool_call] turn=%d  %s  input=%s",
+                    turn, block["name"],
+                    json.dumps(block["input"], default=str)[:200],
+                )
                 await _emit(on_event, ToolCallEvent(
                     turn=turn,
                     elapsed_ms=_elapsed_ms(loop_start),
@@ -257,6 +273,11 @@ async def run_agent(
                 total_input_tokens=usage.input_tokens,
                 total_output_tokens=usage.output_tokens,
                 tool_calls_made=usage.tool_calls,
+            )
+            logger.info(
+                "[agent:done] turns=%d  tools=%d  in=%d out=%d (%dms)  model=%s",
+                turn, usage.tool_calls, usage.input_tokens,
+                usage.output_tokens, done.elapsed_ms, config.model,
             )
             await _emit(on_event, done)
             return done
@@ -284,6 +305,11 @@ async def run_agent(
                     tool_use_id=tool_id,
                     response=result,
                 ))
+                status = "OK" if result.success else "FAIL"
+                logger.info(
+                    "[agent:tool_result] turn=%d  %s  %s (%dms)",
+                    turn, tool_name, status, result.duration_ms,
+                )
 
                 # Format result for the API
                 result_text = _format_tool_result(result, config.redact_secrets)
@@ -304,6 +330,11 @@ async def run_agent(
         total_input_tokens=usage.input_tokens,
         total_output_tokens=usage.output_tokens,
         tool_calls_made=usage.tool_calls,
+    )
+    logger.warning(
+        "[agent:done] MAX TURNS EXHAUSTED  turns=%d  tools=%d  in=%d out=%d (%dms)  model=%s",
+        config.max_turns, usage.tool_calls, usage.input_tokens,
+        usage.output_tokens, done.elapsed_ms, config.model,
     )
     await _emit(on_event, done)
     return done
@@ -439,6 +470,7 @@ def make_ws_event_bridge(
                     "tool_name": event.tool_name,
                     "input_summary": json.dumps(event.tool_input, default=str)[:200],
                     "turn": event.turn,
+                    "elapsed_ms": event.elapsed_ms,
                 },
             })
         elif isinstance(event, ToolResultEvent):
@@ -455,6 +487,7 @@ def make_ws_event_bridge(
                     "message": f"Tool {event.tool_name}: {status} — {summary}",
                     "source": "tool",
                     "level": "info" if event.response.success else "warning",
+                    "duration_ms": event.response.duration_ms,
                 },
             })
         elif isinstance(event, TextEvent):
@@ -487,10 +520,16 @@ def make_ws_event_bridge(
                     "message": (
                         f"Agent completed in {event.turn} turns, "
                         f"{event.tool_calls_made} tool calls, "
-                        f"{event.total_input_tokens + event.total_output_tokens} tokens"
+                        f"{event.total_input_tokens}in + "
+                        f"{event.total_output_tokens}out tokens "
+                        f"({event.elapsed_ms}ms)"
                     ),
                     "source": "system",
                     "level": "info",
+                    "total_input_tokens": event.total_input_tokens,
+                    "total_output_tokens": event.total_output_tokens,
+                    "tool_calls_made": event.tool_calls_made,
+                    "elapsed_ms": event.elapsed_ms,
                 },
             })
         elif isinstance(event, ErrorEvent):
@@ -909,9 +948,17 @@ CORE WORKFLOW — Read → Reason → Act → Verify
 
 4. VERIFY EVERY CHANGE
    - After writing or patching a file, ALWAYS run check_syntax.
-   - After all modifications, run_tests to verify correctness.
-   - If tests fail: read the failure output, diagnose, fix, and re-run.
-   - Do NOT sign off until syntax passes and tests pass.
+   - After each logical unit of changes, run TARGETED tests — not the
+     full suite.  Scope tests to files that cover your recent changes:
+       Python:  pytest tests/test_<module>.py -x -v
+       JS/TS:   npx vitest src/<Module>.test.tsx --run
+     If you are unsure which test file exists, use list_directory or
+     search_code to discover them first.
+   - Run the FULL test suite only ONCE at the end of the phase (final
+     verification before sign-off).
+   - If tests fail: read the failure output, diagnose, fix, and re-run
+     only the failing tests — not the entire suite.
+   - Do NOT sign off until syntax passes and full-suite tests pass.
 
 ═══════════════════════════════════════════════════════════════════
 ERROR RECOVERY
@@ -921,7 +968,8 @@ When something fails, follow this escalation:
 
 1. SYNTAX ERROR after write → Read the file, find the error, fix it.
 2. TEST FAILURE → Read the test output, understand the assertion,
-   read the relevant source, fix the root cause, re-run tests.
+   read the relevant source, fix the root cause, re-run ONLY the
+   failing test file — not the entire suite.
 3. PATCH CONFLICT → The file has changed since you last read it.
    Read the file again to see current content, then retry the patch.
 4. TOOL ERROR → Read the error message. If it's a transient issue,

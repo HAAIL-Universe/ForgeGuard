@@ -2104,3 +2104,584 @@ project goes through it) so validate on Scout first.
    Need a rubric: completeness, accuracy against scout data, structural
    depth, absence of placeholder text, alignment with renovation plan.
 
+---
+
+---
+
+# Phase J — Builder Clarification Tool (`forge_ask_clarification`)
+
+> **Status**: Planned — Not yet implemented.
+> **Scope**: All build flows (greenfield + renovation/Scout).
+>
+> **Why**: During autonomous builds the LLM sometimes encounters genuine
+> implementation ambiguity — choices that significantly affect architecture
+> but cannot be resolved from contracts alone (e.g. "JWT vs session auth?",
+> "REST vs GraphQL?", "overwrite this file or merge?").  Currently the
+> builder makes silent assumptions.  This feature adds a
+> `forge_ask_clarification` tool that surfaces a structured question to the
+> user, pauses the build loop, and resumes with the user's answer injected
+> as the tool result.
+
+---
+
+## 31. Problem Statement
+
+The builder is autonomous, but autonomy has limits.  When the user's intent
+is genuinely ambiguous and the contracts don't specify a preference, the
+builder must guess.  Silent guesses cause:
+
+- Wasted build time (wrong direction → audit failures → full-phase retries)
+- User frustration (final output doesn't match their mental model)
+- Excess token cost (re-running phases after human course-correction)
+
+Existing mitigation mechanisms are too blunt:
+- `forge_scratchpad` — records decisions but doesn't surface them to the user
+- Build pause (audit failure) — pauses after damage is done, not before
+- `/interject` command — user-initiated only; builder can't request input
+
+A lightweight question→answer loop at the tool level is the right granularity.
+
+---
+
+## 32. Design
+
+### 32.1 Flow
+
+```
+Builder calls forge_ask_clarification(question, context?, options?)
+  │
+  ▼
+build_service.py intercepts BEFORE execute_tool_async (line ~2550)
+  │
+  ├─ check question count vs MAX_CLARIFICATIONS_PER_BUILD
+  ├─ emit build_clarification_request WS event to IDE
+  ├─ register asyncio.Event in _state._clarification_events[build_id]
+  └─ await event with CLARIFICATION_TIMEOUT_MINUTES timeout
+
+User sees question card in ForgeIDEModal (amber border, auto-focus)
+  │
+  ├─ clicks option chip  OR  types free-text answer
+  └─ POST /projects/{project_id}/build/clarify  { question_id, answer }
+
+build_service.resume_clarification()
+  │
+  ├─ store answer in _state._clarification_answers[build_id]
+  ├─ set _clarification_events[build_id]  (unblocks build loop)
+  └─ emit build_clarification_resolved WS event
+
+Build loop wakes up → tool result = answer string → builder continues
+```
+
+### 32.2 Tool Definition
+
+Added to `FORGE_TOOLS` in `app/services/tool_executor.py`:
+
+```python
+{
+    "name": "forge_ask_clarification",
+    "description": (
+        "Ask the user a clarifying question when you encounter genuine ambiguity "
+        "that cannot be resolved from the available contracts, scout data, or "
+        "renovation plan.  The build pauses until the user answers. "
+        "Use SPARINGLY — only when the implementation direction depends on a "
+        "user preference that cannot be inferred.  Do NOT ask about obvious "
+        "choices or things already specified in contracts.  Max 10 per build."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The question to ask (max 200 characters, concise).",
+            },
+            "context": {
+                "type": "string",
+                "description": (
+                    "Brief explanation of WHY you need to know (max 300 chars). "
+                    "e.g. 'Implementing the login endpoint — choosing auth strategy.'"
+                ),
+            },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional 2–4 suggested answers shown as chips in the IDE. "
+                    "Always include a 'Let AI decide' option if providing choices."
+                ),
+            },
+        },
+        "required": ["question"],
+    },
+},
+```
+
+### 32.3 New Build State (`app/services/build/_state.py`)
+
+Three new dicts added to the shared state block (after `_build_cost_user`):
+
+```python
+# Clarification (forge_ask_clarification) state
+_clarification_events:  dict[str, asyncio.Event] = {}  # build_id → Event
+_clarification_answers: dict[str, str]           = {}  # build_id → answer
+_clarification_counts:  dict[str, int]           = {}  # build_id → # asked
+```
+
+Five new helper functions:
+
+```python
+def register_clarification(build_id: str) -> asyncio.Event
+def resolve_clarification(build_id: str, answer: str) -> bool
+def pop_clarification_answer(build_id: str) -> str | None
+def increment_clarification_count(build_id: str) -> int   # returns new count
+def cleanup_clarification(build_id: str) -> None           # called on build end
+```
+
+`_fail_build()` must call `cleanup_clarification(str(build_id))` after the
+existing `_cancel_flags.discard` calls.
+
+### 32.4 Tool Handler in `app/services/build_service.py`
+
+**`_handle_clarification(build_id, user_id, tool_input) → str`** (new async helper):
+
+```python
+async def _handle_clarification(build_id, user_id, tool_input) -> str:
+    count = increment_clarification_count(str(build_id))
+    if count > settings.MAX_CLARIFICATIONS_PER_BUILD:
+        return "Max clarification limit reached. Make your best decision and continue."
+
+    question_id = str(uuid.uuid4())
+    question = str(tool_input.get("question", ""))[:200]
+    context  = str(tool_input.get("context", ""))[:300]
+    options  = tool_input.get("options", [])
+
+    await _broadcast_build_event(user_id, build_id, "build_clarification_request", {
+        "build_id": str(build_id), "question_id": question_id,
+        "question": question, "context": context, "options": options,
+    })
+    await build_repo.append_build_log(build_id, f"Awaiting clarification: {question}",
+                                      source="builder", level="info")
+
+    event = register_clarification(str(build_id))
+    try:
+        await asyncio.wait_for(event.wait(),
+                               timeout=settings.CLARIFICATION_TIMEOUT_MINUTES * 60)
+    except asyncio.TimeoutError:
+        pop_clarification_answer(str(build_id))
+        await _broadcast_build_event(user_id, build_id, "build_clarification_resolved", {
+            "build_id": str(build_id), "question_id": question_id,
+            "answer": "(timed out — AI will decide)",
+        })
+        return ("No answer received within the timeout. "
+                "Make your best decision based on contracts and continue.")
+
+    answer = pop_clarification_answer(str(build_id)) or "(no answer)"
+    await build_repo.append_build_log(build_id, f"User answered: {answer}",
+                                      source="user", level="info")
+    await _broadcast_build_event(user_id, build_id, "build_clarification_resolved", {
+        "build_id": str(build_id), "question_id": question_id, "answer": answer,
+    })
+    return answer
+```
+
+**Tool dispatch intercept** (line ~2550 in `build_service.py`):
+
+```python
+# Before:
+tool_result = await execute_tool_async(item.name, item.input, working_dir or "")
+
+# After:
+if item.name == "forge_ask_clarification":
+    tool_result = await _handle_clarification(build_id, user_id, item.input)
+else:
+    tool_result = await execute_tool_async(item.name, item.input, working_dir or "")
+```
+
+**`resume_clarification(project_id, user_id, question_id, answer) → dict`** (new service function, near `resume_build`):
+
+```python
+async def resume_clarification(project_id, user_id, question_id, answer) -> dict:
+    build = await build_repo.get_active_build(project_id)
+    if not build or str(build.get("user_id")) != str(user_id):
+        raise ValueError("No active build found for this project")
+    resolved = resolve_clarification(str(build["id"]), answer)
+    if not resolved:
+        raise ValueError("No pending clarification for this build")
+    return {"ok": True, "build_id": str(build["id"])}
+```
+
+### 32.5 Sub-Agent Role Allowlists (`app/services/build/subagent.py`)
+
+```python
+SubAgentRole.SCOUT: frozenset({
+    ...,
+    "forge_ask_clarification",   # ← add
+}),
+SubAgentRole.CODER: frozenset({
+    ...,
+    "forge_ask_clarification",   # ← add
+}),
+# AUDITOR and FIXER: do NOT add (bounded, specific tasks — no ambiguity expected)
+```
+
+Also intercept `forge_ask_clarification` in the sub-agent tool dispatch loop inside
+`run_sub_agent` (before calling `execute_tool_async`), using `handoff.build_id`
+and `handoff.user_id`.
+
+### 32.6 API Endpoint (`app/api/routers/builds.py`)
+
+```python
+class ClarifyRequest(BaseModel):
+    question_id: str
+    answer: str = Field(..., min_length=1, max_length=1000)
+
+@router.post("/{project_id}/build/clarify")
+async def clarify_build(
+    project_id: UUID,
+    body: ClarifyRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Submit the user's answer to a builder clarification question."""
+    try:
+        return await build_service.resume_clarification(
+            project_id, user["id"], body.question_id, body.answer
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+```
+
+### 32.7 Config Settings (`app/config.py`)
+
+Add after `BUILD_PAUSE_TIMEOUT_MINUTES`:
+
+```python
+CLARIFICATION_TIMEOUT_MINUTES: int = 10   # wait before auto-skip
+MAX_CLARIFICATIONS_PER_BUILD:   int = 10   # abuse guard
+```
+
+---
+
+## 33. Frontend Changes (`web/src/components/ForgeIDEModal.tsx`)
+
+### 33.1 New State
+
+```typescript
+const [pendingClarification, setPendingClarification] = useState<{
+  questionId: string;
+  question: string;
+  context?: string;
+  options?: string[];
+} | null>(null);
+```
+
+### 33.2 New WS Event Handlers
+
+```typescript
+case 'build_clarification_request': {
+  const { question_id, question, context, options } = p;
+  setPendingClarification({ questionId: question_id, question, context, options });
+  setStatus('awaiting_input');
+  setTimeout(() => cmdInputRef.current?.focus(), 100);
+  break;
+}
+
+case 'build_clarification_resolved': {
+  setPendingClarification(null);
+  setStatus('running');
+  setLogs((prev) => [...prev, {
+    timestamp: new Date().toISOString(),
+    source: 'user', level: 'info',
+    message: `↳ You answered: ${p.answer}`,
+  }]);
+  break;
+}
+```
+
+### 33.3 Question Card UI
+
+Rendered just above the command input bar when `pendingClarification !== null`.
+Compact amber card (not a modal — stays in the IDE activity area):
+
+```
+┌─────────────────────────────────────────────────────────┐  amber border
+│ Should authentication use JWT or server-side sessions?  │  bold, amber
+│ Implementing login endpoint — no strategy in contracts. │  muted, smaller
+│  [JWT (stateless)]  [Sessions (Redis)]  [Let AI decide] │  chip buttons
+└─────────────────────────────────────────────────────────┘
+```
+
+If no `options` provided: the card shows only the question + context + the existing
+free-text command input (which submits via `submitClarification(cmdInput)`).
+
+### 33.4 `submitClarification(answer)` Function
+
+```typescript
+const submitClarification = async (answer: string) => {
+  if (!pendingClarification) return;
+  await fetch(`${API_BASE}/projects/${projectId}/build/clarify`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question_id: pendingClarification.questionId,
+      answer: answer.trim(),
+    }),
+  });
+  // WS event build_clarification_resolved will update state
+};
+```
+
+Hook the existing command input `onKeyDown` handler: if `pendingClarification` is
+active and user presses Enter, call `submitClarification(cmdInput)` instead of
+the slash-command path.
+
+Update `placeholder` when `pendingClarification` is active:
+```
+"Type your answer or choose an option above…"
+```
+
+Update command input border/background: same amber style as existing `pendingPrompt`
+state (lines 1862–1864) — reuse that visual language.
+
+---
+
+## 34. Implementation Steps (Phase J)
+
+| # | Task | File(s) | Depends |
+|---|------|---------|---------|
+| J1 | Add `CLARIFICATION_TIMEOUT_MINUTES` and `MAX_CLARIFICATIONS_PER_BUILD` to config | `app/config.py` | — |
+| J2 | Add `_clarification_events/answers/counts` dicts to `_state.py` | `app/services/build/_state.py` | J1 |
+| J3 | Add 5 helper functions (`register/resolve/pop/increment/cleanup`) to `_state.py` | `app/services/build/_state.py` | J2 |
+| J4 | Call `cleanup_clarification()` in `_fail_build()` | `app/services/build/_state.py` | J3 |
+| J5 | Add `forge_ask_clarification` tool definition to `FORGE_TOOLS` | `app/services/tool_executor.py` | — |
+| J6 | Add `"forge_ask_clarification"` to SCOUT and CODER allowlists | `app/services/build/subagent.py` | J5 |
+| J7 | Intercept `forge_ask_clarification` in sub-agent tool dispatch | `app/services/build/subagent.py` | J3 |
+| J8 | Add `_handle_clarification()` helper | `app/services/build_service.py` | J3 |
+| J9 | Intercept `forge_ask_clarification` in main build loop tool dispatch | `app/services/build_service.py` | J8 |
+| J10 | Add `resume_clarification()` service function | `app/services/build_service.py` | J3 |
+| J11 | Add `ClarifyRequest` model + `POST /build/clarify` endpoint | `app/api/routers/builds.py` | J10 |
+| J12 | Add `pendingClarification` state + 2 WS event handlers | `web/src/components/ForgeIDEModal.tsx` | — |
+| J13 | Add question card UI component | `web/src/components/ForgeIDEModal.tsx` | J12 |
+| J14 | Add `submitClarification()` + hook command input | `web/src/components/ForgeIDEModal.tsx` | J12 |
+| J15 | Tests: state helpers unit tests | `tests/test_build_clarification.py` (new) | J3 |
+| J16 | Tests: `_handle_clarification` happy path + timeout + limit | `tests/test_build_clarification.py` | J8 |
+| J17 | Tests: `resume_clarification` service + API endpoint | `tests/test_build_clarification.py` + `tests/test_builds_router.py` | J10–J11 |
+
+---
+
+## 35. New WebSocket Events (Phase J)
+
+| Event | Direction | Trigger | Key Payload Fields |
+|-------|-----------|---------|-------------------|
+| `build_clarification_request` | Server → Client | Builder calls `forge_ask_clarification` | `build_id`, `question_id`, `question`, `context?`, `options?[]` |
+| `build_clarification_resolved` | Server → Client | User answers OR timeout fires | `build_id`, `question_id`, `answer` |
+
+---
+
+## 36. Safeguards
+
+| Guard | Mechanism |
+|-------|-----------|
+| Max 10 questions per build | `increment_clarification_count()` → early return if exceeded |
+| 10-minute answer timeout | `asyncio.wait_for(timeout=CLARIFICATION_TIMEOUT_MINUTES*60)` |
+| Auto-continue on timeout | Returns "Make your best decision" fallback string as tool result |
+| Answer length cap | `ClarifyRequest.answer = Field(max_length=1000)` |
+| AUDITOR/FIXER excluded | Not in their `_ROLE_TOOL_NAMES` allowlists |
+| Build cleanup | `cleanup_clarification()` in `_fail_build()` and normal build end |
+| Build ownership validated | `resume_clarification` checks `build.user_id == requesting_user_id` |
+
+---
+
+## 37. Open Questions (Phase J)
+
+1. **Should the question card support multi-select options?**
+   For "which features to include" type questions, multi-select chip lists
+   would be more expressive.  Start with single-select for simplicity.
+
+2. **Should clarifications be persisted to the build log in the DB?**
+   Currently `append_build_log` is called for both the question and the
+   answer.  This means the Q&A pair appears in the build log, which is
+   useful for audit trails.  Should it also be stored in a separate
+   `build_clarifications` table for structured retrieval?
+
+3. **Should the builder be told it has a question budget?**
+   Adding "You have 10 clarification questions available per build" to the
+   system prompt would help the builder ration its questions.  Without this,
+   the LLM may not know it's being metered.
+
+4. **What happens if the user closes the IDE before answering?**
+   The build blocks for 10 minutes then auto-continues.  Should there be
+   a reconnection mechanism that re-shows unanswered questions when the
+   user reopens the build IDE?  The `build_clarification_request` payload
+   could be re-emitted on WebSocket reconnect if a pending clarification
+   event exists.
+
+5. **Should the "Let AI decide" option always be injected even if no options
+   are provided?**  A dedicated ghost/secondary button (not a chip) in the
+   card footer saying "Skip — let AI decide" would always be available,
+   avoiding the ambiguity of the user submitting an empty answer.
+
+
+---
+
+## 38. Errors Tab — Build Error Aggregation & Resolution Tracking
+
+> **Goal**: Surface all build errors in a dedicated **Errors** tab inside the
+> ForgeIDEModal console, with deduplication, LLM-authored resolution notes, and
+> persistent storage in Neon so errors survive page refreshes and are available
+> for post-build review.
+
+### 38a. Motivation
+
+Currently, errors are interleaved in the Activity log stream, easy to miss among
+hundreds of info-level messages. Non-technical users need a single place that
+answers: "What went wrong? Was it fixed?"
+
+### 38b. Data Model — `build_errors` Table (Neon)
+
+```sql
+CREATE TABLE IF NOT EXISTS build_errors (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    build_id        UUID NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+    fingerprint     TEXT NOT NULL,
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    phase           VARCHAR(100),
+    file_path       TEXT,
+    source          VARCHAR(50) NOT NULL DEFAULT 'build_log',
+    severity        VARCHAR(20) NOT NULL DEFAULT 'error',
+    message         TEXT NOT NULL,
+    resolved        BOOLEAN NOT NULL DEFAULT false,
+    resolved_at     TIMESTAMPTZ,
+    resolution_method VARCHAR(30),
+    resolution_summary TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_build_errors_build_id
+    ON build_errors(build_id);
+CREATE INDEX IF NOT EXISTS idx_build_errors_build_id_resolved
+    ON build_errors(build_id, resolved);
+CREATE INDEX IF NOT EXISTS idx_build_errors_fingerprint
+    ON build_errors(build_id, fingerprint);
+```
+
+**Key fields:**
+
+| Field | Purpose |
+|-------|---------|
+| `fingerprint` | Hash of `(source, severity, message_normalized)` — deduplication key |
+| `occurrence_count` | Incremented on duplicates (iOS badge-style count in UI) |
+| `first_seen` / `last_seen` | Time range the error was active |
+| `phase` | Build phase when the error occurred, e.g. "Phase 2: API Routes" |
+| `file_path` | Extracted file path from the error message (if parseable) |
+| `severity` | `'error'` for normal errors, `'fatal'` for `build_failed` events |
+| `resolved` | Flipped true by auto-fix, phase completion, or user dismiss |
+| `resolution_method` | `'auto-fix'`, `'phase-complete'`, or `'dismissed'` |
+| `resolution_summary` | LLM-authored note explaining what fixed it (not user-editable) |
+
+### 38c. Deduplication Strategy
+
+Errors are fingerprinted using a normalized hash:
+
+```python
+import hashlib
+
+def _error_fingerprint(source: str, severity: str, message: str) -> str:
+    """Stable fingerprint for deduplication.
+
+    Strips line numbers, memory addresses, and UUIDs from the message
+    before hashing so repeated identical errors collapse.
+    """
+    normalized = re.sub(r'line \d+', 'line N', message)
+    normalized = re.sub(r'0x[0-9a-fA-F]+', '0xADDR', normalized)
+    normalized = re.sub(
+        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+        'UUID', normalized,
+    )
+    raw = f"{source}:{severity}:{normalized}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+```
+
+On duplicate: `UPDATE build_errors SET occurrence_count = occurrence_count + 1, last_seen = now() WHERE build_id = $1 AND fingerprint = $2`
+
+### 38d. Resolution Tracking
+
+| Trigger | Method | Summary Source |
+|---------|--------|---------------|
+| `fix_attempt_result` with `passed: true` | `'auto-fix'` | LLM provides fix summary in event payload |
+| `phase_complete` event | `'phase-complete'` | "Phase N completed — errors cleared" |
+| User clicks ✕ Dismiss | `'dismissed'` | NULL (no note needed) |
+
+Resolution summaries are authored by the LLM during the build — the build
+service will include a `fix_summary` field in `fix_attempt_result` events when a
+fix succeeds. Non-technical users cannot write resolution notes.
+
+### 38e. Backend Changes
+
+1. **Migration `023_build_errors.sql`** — creates the table + indices above
+2. **`app/repos/build_repo.py`** — new functions:
+   - `upsert_build_error(build_id, fingerprint, …)` — INSERT or increment count
+   - `resolve_build_error(error_id, method, summary)` — mark resolved
+   - `resolve_errors_for_phase(build_id, phase)` — bulk resolve on phase completion
+   - `get_build_errors(build_id)` — fetch all errors for a build (unresolved first)
+3. **`app/services/build_service.py`** — inside the `_log()` closure, when level == "error":
+   call `upsert_build_error`. On `fix_attempt_result(passed=True)`: call
+   `resolve_build_error`. On `phase_complete`: call `resolve_errors_for_phase`.
+4. **New WS events**:
+   - `build_error_tracked` — sent after upsert, payload includes the error record
+   - `build_error_resolved` — sent after resolution, includes error_id + method + summary
+
+### 38f. Frontend — `ErrorsPanel.tsx`
+
+New component (~180 lines) rendering:
+
+```
+┌── ERRORS (3) ─────────────────────────────────────────────┐
+│                                                           │
+│  🔴  Phase 2 · api/routes.py              ×3   14:32:05  │
+│  ┃   ImportError: cannot import 'Router' from 'fastapi'   │
+│  ┃                                                        │
+│  ┃   ✅ Auto-fix: Changed import to 'APIRouter'           │
+│  ├────────────────────────────────────────────────────────│
+│  🔴  Phase 3 · services/auth.py           ×1   14:35:12  │
+│  ┃   TypeError: 'NoneType' has no attribute 'encode'      │
+│  ┃                                                        │
+│  ┃   [✕ Dismiss]                                          │
+│  ┃                                                        │
+│  ─── Resolved (1) ───────────────────────────────────────│
+│  ✅  Phase 2 · api/routes.py  (collapsed)                 │
+└───────────────────────────────────────────────────────────┘
+```
+
+- Badge count (×N) for deduplicated occurrences — iOS notification style
+- Unresolved errors at the top, resolved collapsed at the bottom
+- Resolution note shown inline when present (LLM-authored)
+- ✕ Dismiss button for user to clear non-fatal errors they don't care about
+- Tab label shows unresolved count: `Errors (3)`
+
+### 38g. ForgeIDEModal Integration
+
+- `activeTab` union expands: `'activity' | 'changes' | 'errors'`
+- New state: `errors: BuildError[]`
+- WS handlers for `build_error_tracked` → upsert into `errors` array
+- WS handlers for `build_error_resolved` → update matching error in array
+- Tab renders `<ErrorsPanel errors={errors} onDismiss={…} />`
+
+### 38h. Implementation Steps
+
+| # | Task | Scope |
+|---|------|-------|
+| 1 | Create migration `023_build_errors.sql` | DB |
+| 2 | Add repo functions to `build_repo.py` | Backend |
+| 3 | Hook into `build_service.py` — error tracking + WS events | Backend |
+| 4 | Create `ErrorsPanel.tsx` component | Frontend |
+| 5 | Integrate tab + state into `ForgeIDEModal.tsx` | Frontend |
+| 6 | Test persistence and UI | Integration |
+
+### 38i. What We're NOT Doing (Scoped Out)
+
+- ❌ User-authored resolution notes (non-technical users)
+- ❌ Click-to-scroll in Activity log (over-engineering for target users)
+- ❌ Audio cues or notifications
+- ❌ Export / copy-all-errors (data lives in Neon, accessed within the app)
+

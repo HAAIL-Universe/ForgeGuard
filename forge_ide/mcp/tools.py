@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from .artifact_store import (
     clear_artifacts,
@@ -370,15 +374,42 @@ TOOL_DEFINITIONS = [
 
 async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Route tool calls — artifact store, project-scoped, then local/remote."""
+    start = time.perf_counter()
+    logger.info("[mcp:call]   %s  args=%s", name, _summarise(arguments))
     # Artifact store tools are always served in-process regardless of LOCAL_MODE
     if name in _ARTIFACT_TOOLS:
-        return _dispatch_artifact(name, arguments)
+        result = _dispatch_artifact(name, arguments)
+        _log_result(name, result, start)
+        return result
     # Project-scoped tools always proxy to ForgeGuard API
     if name in _PROJECT_TOOLS:
-        return await _dispatch_project(name, arguments)
+        result = await _dispatch_project(name, arguments)
+        _log_result(name, result, start)
+        return result
     if LOCAL_MODE:
-        return _dispatch_local(name, arguments)
-    return await _dispatch_remote(name, arguments)
+        result = _dispatch_local(name, arguments)
+        _log_result(name, result, start)
+        return result
+    result = await _dispatch_remote(name, arguments)
+    _log_result(name, result, start)
+    return result
+
+
+def _summarise(args: dict[str, Any], max_len: int = 200) -> str:
+    """One-line summary of MCP tool arguments."""
+    try:
+        raw = ", ".join(f"{k}={v!r}" for k, v in args.items())
+    except Exception:
+        raw = str(args)
+    return raw[:max_len] + ("…" if len(raw) > max_len else "")
+
+
+def _log_result(name: str, result: dict[str, Any], start: float) -> None:
+    elapsed = int((time.perf_counter() - start) * 1000)
+    if "error" in result:
+        logger.warning("[mcp:result] %s  ERROR (%dms): %s", name, elapsed, result["error"])
+    else:
+        logger.info("[mcp:result] %s  OK (%dms)", name, elapsed)
 
 
 def _dispatch_artifact(name: str, arguments: dict[str, Any]) -> dict[str, Any]:

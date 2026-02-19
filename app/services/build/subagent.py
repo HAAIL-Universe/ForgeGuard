@@ -85,6 +85,7 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_list_contracts",
         "forge_get_summary",
         "forge_scratchpad",
+        "forge_ask_clarification",
     }),
     # Coder — write new files + syntax check.  No tests, no run_command
     # (auto-install is handled by the tool_executor post-write hook).
@@ -101,6 +102,7 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_list_contracts",
         "forge_get_summary",
         "forge_scratchpad",
+        "forge_ask_clarification",
     }),
     # Auditor — read-only structural review, same surface as scout
     SubAgentRole.AUDITOR: frozenset({
@@ -644,12 +646,20 @@ async def run_sub_agent(
                         })
                         continue
 
-                    # Execute the allowed tool
+                    # Execute the allowed tool (clarification is intercepted first)
                     try:
-                        tool_result = await execute_tool_async(
-                            event.name, event.input, working_dir,
-                            build_id=str(handoff.build_id),
-                        )
+                        if event.name == "forge_ask_clarification":
+                            from app.services.build_service import _handle_clarification
+                            tool_result = await _handle_clarification(
+                                build_id=handoff.build_id,
+                                user_id=handoff.user_id,
+                                tool_input=event.input,
+                            )
+                        else:
+                            tool_result = await execute_tool_async(
+                                event.name, event.input, working_dir,
+                                build_id=str(handoff.build_id),
+                            )
                     except Exception as te:
                         tool_result = f"Tool error: {te}"
 

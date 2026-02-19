@@ -1,11 +1,16 @@
 """Repo service -- orchestrates repo connection, disconnection, and listing."""
 
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from app.clients.github_client import (
     create_github_repo,
     create_webhook,
     delete_webhook,
+    get_repo_health,
+    list_commits,
     list_user_repos,
 )
 from app.config import settings
@@ -16,8 +21,13 @@ from app.repos.repo_repo import (
     get_repo_by_id,
     get_repos_by_user,
     get_repos_with_health,
+    update_repo_full_name,
+    update_repo_health,
 )
 from app.repos.user_repo import get_user_by_id
+from app.ws_manager import manager
+
+logger = logging.getLogger(__name__)
 
 
 async def create_and_connect_repo(
@@ -153,6 +163,9 @@ async def list_connected_repos(user_id: UUID) -> list[dict]:
 
         last_audit = repo.get("last_audit_at")
 
+        last_health = repo.get("last_health_check_at")
+        commit_at = repo.get("latest_commit_at")
+
         result.append({
             "id": str(repo["id"]),
             "full_name": repo["full_name"],
@@ -161,8 +174,105 @@ async def list_connected_repos(user_id: UUID) -> list[dict]:
             "health_score": health,
             "last_audit_at": last_audit.isoformat() if last_audit else None,
             "recent_pass_rate": rate,
+            # Health check fields
+            "repo_status": repo.get("repo_status", "connected"),
+            "last_health_check_at": last_health.isoformat() if last_health else None,
+            "latest_commit_sha": repo.get("latest_commit_sha"),
+            "latest_commit_message": repo.get("latest_commit_message"),
+            "latest_commit_at": commit_at.isoformat() if commit_at else None,
+            "latest_commit_author": repo.get("latest_commit_author"),
         })
     return result
+
+
+async def _check_single_repo(user: dict, repo: dict) -> None:
+    """Run a health check for one repo against GitHub and persist the result.
+
+    Silently swallows unexpected exceptions so a single failure doesn't abort
+    the batch.
+    """
+    access_token = user["access_token"]
+    owner_name = repo["full_name"]  # "owner/name"
+    repo_id = repo["id"]
+    now = datetime.now(timezone.utc)
+
+    repo_status = "connected"
+    commit_sha = None
+    commit_message = None
+    commit_at = None
+    commit_author = None
+
+    try:
+        status_code, gh_data = await get_repo_health(access_token, owner_name)
+
+        if status_code == 404:
+            await update_repo_health(repo_id, {
+                "repo_status": "deleted",
+                "last_health_check_at": now,
+            })
+            return
+        if status_code in (401, 403):
+            await update_repo_health(repo_id, {
+                "repo_status": "inaccessible",
+                "last_health_check_at": now,
+            })
+            return
+        if status_code != 200 or gh_data is None:
+            logger.warning("Health check for %s returned %s — skipping", owner_name, status_code)
+            return
+
+        if gh_data.get("archived"):
+            repo_status = "archived"
+        elif gh_data.get("full_name") and gh_data["full_name"] != owner_name:
+            repo_status = "connected"
+            await update_repo_full_name(repo_id, gh_data["full_name"])
+        else:
+            repo_status = "connected"
+
+        # Fetch latest commit
+        try:
+            commits = await list_commits(access_token, owner_name, per_page=1, max_pages=1)
+            if commits:
+                c = commits[0]
+                commit_sha = c["sha"]
+                commit_message = (c.get("message") or "").split("\n")[0][:500]
+                commit_author = c.get("author", "")
+                raw_date = c.get("date", "")
+                if raw_date:
+                    try:
+                        commit_at = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                    except ValueError:
+                        commit_at = None
+        except Exception as exc:
+            logger.debug("Could not fetch commits for %s: %s", owner_name, exc)
+
+        await update_repo_health(repo_id, {
+            "repo_status": repo_status,
+            "last_health_check_at": now,
+            "latest_commit_sha": commit_sha,
+            "latest_commit_message": commit_message,
+            "latest_commit_at": commit_at,
+            "latest_commit_author": commit_author,
+        })
+
+    except Exception as exc:
+        logger.warning("Unexpected error in health check for %s: %s", owner_name, exc)
+
+
+async def run_repo_health_check(user_id: UUID) -> None:
+    """Background task: check all repos for a user and emit WS update on completion."""
+    user = await get_user_by_id(user_id)
+    if not user:
+        return
+    repos = await get_repos_by_user(user_id)
+    await asyncio.gather(
+        *[_check_single_repo(user, r) for r in repos],
+        return_exceptions=True,
+    )
+    await manager.send_to_user(str(user_id), {
+        "type": "repos_health_updated",
+        "payload": {"checked": len(repos)},
+    })
 
 
 async def list_available_repos(user_id: UUID) -> list[dict]:

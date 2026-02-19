@@ -1,11 +1,31 @@
-"""Build repository -- database reads and writes for builds, build_logs, and build_costs tables."""
+"""Build repository -- database reads and writes for builds, build_logs, build_costs, and build_errors tables."""
 
+import hashlib
 import json
+import re
 from decimal import Decimal
 from datetime import datetime, timezone
 from uuid import UUID
 
 from app.repos.db import get_pool
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+# Common file-extension patterns for extracting paths from error messages
+_FILE_RE = re.compile(
+    r"""(?:File\s+["']|in\s+|at\s+|from\s+)"""             # prefix
+    r"""([\w./\\-]+\.(?:tsx|jsx|yaml|json|toml|yml|py|ts|js|sql|md))""",  # path (longest-first)
+    re.IGNORECASE,
+)
+
+
+def _extract_file_path(message: str) -> str | None:
+    """Best-effort file path extraction from an error message."""
+    m = _FILE_RE.search(message)
+    return m.group(1) if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -242,8 +262,14 @@ async def append_build_log(
     message: str,
     source: str = "builder",
     level: str = "info",
+    *,
+    phase: str | None = None,
 ) -> dict:
-    """Append a log entry to a build."""
+    """Append a log entry to a build.
+
+    When *level* is ``"error"``, also upserts a row in ``build_errors``
+    so the Errors-tab UI can aggregate them with deduplication.
+    """
     pool = await get_pool()
     row = await pool.fetchrow(
         """
@@ -256,6 +282,21 @@ async def append_build_log(
         level,
         message,
     )
+
+    # Auto-track errors in the build_errors table
+    if level == "error":
+        try:
+            await upsert_build_error(
+                build_id,
+                message,
+                source=source,
+                severity="error",
+                phase=phase,
+                file_path=_extract_file_path(message),
+            )
+        except Exception:
+            pass  # Never let error tracking break log persistence
+
     return dict(row)
 
 
@@ -461,3 +502,180 @@ async def get_build_file_logs(build_id: UUID) -> list[dict]:
         except (ValueError, KeyError):
             continue
     return files
+
+
+# ---------------------------------------------------------------------------
+# build_errors
+# ---------------------------------------------------------------------------
+
+
+def _error_fingerprint(source: str, severity: str, message: str) -> str:
+    """Stable fingerprint for deduplication.
+
+    Strips line numbers, memory addresses, and UUIDs so repeated identical
+    errors collapse into a single row with an incremented occurrence_count.
+    """
+    normalized = re.sub(r"line \d+", "line N", message)
+    normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", normalized)
+    normalized = re.sub(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        "UUID",
+        normalized,
+    )
+    raw = f"{source}:{severity}:{normalized}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+async def upsert_build_error(
+    build_id: UUID,
+    message: str,
+    *,
+    source: str = "build_log",
+    severity: str = "error",
+    phase: str | None = None,
+    file_path: str | None = None,
+) -> dict:
+    """Insert a new build error or increment occurrence_count if fingerprint matches.
+
+    Returns the full error record (inserted or updated).
+    """
+    pool = await get_pool()
+    fp = _error_fingerprint(source, severity, message)
+
+    # Try to bump an existing duplicate first
+    existing = await pool.fetchrow(
+        """
+        UPDATE build_errors
+        SET occurrence_count = occurrence_count + 1,
+            last_seen = now()
+        WHERE build_id = $1 AND fingerprint = $2
+        RETURNING id, build_id, fingerprint, first_seen, last_seen,
+                  occurrence_count, phase, file_path, source, severity,
+                  message, resolved, resolved_at, resolution_method,
+                  resolution_summary, created_at
+        """,
+        build_id,
+        fp,
+    )
+    if existing:
+        return dict(existing)
+
+    # No duplicate — insert fresh
+    row = await pool.fetchrow(
+        """
+        INSERT INTO build_errors
+            (build_id, fingerprint, phase, file_path, source, severity, message)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, build_id, fingerprint, first_seen, last_seen,
+                  occurrence_count, phase, file_path, source, severity,
+                  message, resolved, resolved_at, resolution_method,
+                  resolution_summary, created_at
+        """,
+        build_id,
+        fp,
+        phase,
+        file_path,
+        source,
+        severity,
+        message,
+    )
+    return dict(row)
+
+
+async def resolve_build_error(
+    error_id: UUID,
+    method: str,
+    summary: str | None = None,
+) -> dict | None:
+    """Mark a single build error as resolved.
+
+    method must be one of: 'auto-fix', 'phase-complete', 'dismissed'.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE build_errors
+        SET resolved = true,
+            resolved_at = now(),
+            resolution_method = $2,
+            resolution_summary = $3
+        WHERE id = $1
+        RETURNING id, build_id, fingerprint, first_seen, last_seen,
+                  occurrence_count, phase, file_path, source, severity,
+                  message, resolved, resolved_at, resolution_method,
+                  resolution_summary, created_at
+        """,
+        error_id,
+        method,
+        summary,
+    )
+    return dict(row) if row else None
+
+
+async def resolve_errors_for_phase(
+    build_id: UUID,
+    phase: str,
+    *,
+    method: str = "phase-complete",
+    summary: str | None = None,
+) -> list[dict]:
+    """Bulk-resolve all unresolved errors for a given phase.
+
+    Returns the list of resolved error records.
+    """
+    pool = await get_pool()
+    if summary is None:
+        summary = f"{phase} completed — errors cleared"
+    rows = await pool.fetch(
+        """
+        UPDATE build_errors
+        SET resolved = true,
+            resolved_at = now(),
+            resolution_method = $3,
+            resolution_summary = $4
+        WHERE build_id = $1 AND phase = $2 AND resolved = false
+        RETURNING id, build_id, fingerprint, first_seen, last_seen,
+                  occurrence_count, phase, file_path, source, severity,
+                  message, resolved, resolved_at, resolution_method,
+                  resolution_summary, created_at
+        """,
+        build_id,
+        phase,
+        method,
+        summary,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_build_errors(
+    build_id: UUID,
+    *,
+    resolved_filter: bool | None = None,
+) -> list[dict]:
+    """Fetch build errors — unresolved first, then resolved.
+
+    If resolved_filter is specified, only return errors matching that status.
+    """
+    pool = await get_pool()
+    where = "build_id = $1"
+    params: list = [build_id]
+    idx = 2
+
+    if resolved_filter is not None:
+        where += f" AND resolved = ${idx}"
+        params.append(resolved_filter)
+        idx += 1
+
+    rows = await pool.fetch(
+        f"""
+        SELECT id, build_id, fingerprint, first_seen, last_seen,
+               occurrence_count, phase, file_path, source, severity,
+               message, resolved, resolved_at, resolution_method,
+               resolution_summary, created_at
+        FROM build_errors
+        WHERE {where}
+        ORDER BY resolved ASC, first_seen DESC
+        """,
+        *params,
+    )
+    return [dict(r) for r in rows]

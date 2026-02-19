@@ -284,7 +284,20 @@ When a reliable, maintained component exists (auth, storage, ingestion, UI widge
   - Use dependency overrides / fakes / mocks for external dependencies.
 - A phase must not be marked COMPLETE until relevant tests pass.
 
-### 9.2 Test Runner Script Gate (mandatory)
+### 9.2 Test Execution Strategy
+
+**Mid-phase (targeted tests):**
+
+- After each logical unit of changes, run **only the tests that cover the
+  changed modules** — do not run the entire suite on every edit.
+  - Python: `pytest tests/test_<module>.py -x -v`
+  - JS/TS: `npx vitest src/<Module>.test.tsx --run`
+- If unsure which test file covers a module, search `tests/` for the module
+  name before falling back to the full suite.
+- On test failure, re-run only the *failing* test file after fixing — not the
+  whole suite.
+
+**End-of-phase (full suite via runner script):**
 
 - Maintain the test runner at: `Forge/scripts/run_tests.ps1`.
 - The test runner reads `forge.json` for stack-specific configuration.

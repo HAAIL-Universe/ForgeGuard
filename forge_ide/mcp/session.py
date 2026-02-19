@@ -19,8 +19,11 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,6 +60,10 @@ def set_session(
     _session.project_id = project_id
     _session.build_id = build_id
     _session.user_id = user_id
+    logger.info(
+        "[mcp:session] SET  project=%s  build=%s  user=%s",
+        project_id, build_id, user_id,
+    )
     return {
         "ok": True,
         **_session.as_dict(),
@@ -70,6 +77,7 @@ def get_session() -> MCPSession:
 
 def clear_session() -> dict[str, Any]:
     """Reset session to blank.  Returns confirmation."""
+    logger.info("[mcp:session] CLEAR")
     _session.clear()
     return {"ok": True, "cleared": True}
 

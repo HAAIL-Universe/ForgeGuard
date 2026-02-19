@@ -11,10 +11,13 @@ Session defaults (project_id, build_id) are resolved automatically via
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .remote import api_get
 from .session import resolve_build_id, resolve_project_id
+
+logger = logging.getLogger(__name__)
 
 
 async def get_project_context(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -25,6 +28,7 @@ async def get_project_context(arguments: dict[str, Any]) -> dict[str, Any]:
     project_id = resolve_project_id(arguments)
     if not project_id:
         return {"error": "Missing required parameter: project_id (not in arguments or session)"}
+    logger.info("[mcp:project] get_project_context  project=%s", project_id)
     return await api_get(f"/api/mcp/context/{project_id}")
 
 
@@ -58,6 +62,7 @@ async def get_project_contract(arguments: dict[str, Any]) -> dict[str, Any]:
         return {"error": "Missing required parameter: project_id (not in arguments or session)"}
     if not contract_type:
         return {"error": "Missing required parameter: contract_type"}
+    logger.info("[mcp:project] get_project_contract  project=%s  type=%s", project_id, contract_type)
     return await api_get(f"/api/mcp/context/{project_id}/{contract_type}")
 
 
@@ -69,4 +74,5 @@ async def get_build_contracts(arguments: dict[str, Any]) -> dict[str, Any]:
     build_id = resolve_build_id(arguments)
     if not build_id:
         return {"error": "Missing required parameter: build_id (not in arguments or session)"}
+    logger.info("[mcp:project] get_build_contracts  build=%s", build_id)
     return await api_get(f"/api/mcp/build/{build_id}/contracts")

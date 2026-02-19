@@ -597,6 +597,11 @@ async def generate_contract_with_tools(
 
     total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
 
+    logger.info(
+        "[contract:loop] START  type=%s  model=%s  provider=%s  max_turns=%d",
+        contract_type, model, provider, max_turns,
+    )
+
     for _turn in range(max_turns):
         response = await llm_chat(
             api_key=api_key,
@@ -617,6 +622,12 @@ async def generate_contract_with_tools(
         stop_reason = response.get("stop_reason")
         content_blocks = response.get("content", [])
 
+        logger.info(
+            "[contract:loop] turn=%d/%d  type=%s  model=%s  stop=%s  in=%d out=%d",
+            _turn + 1, max_turns, contract_type, model, stop_reason,
+            usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+        )
+
         # Append assistant turn to message history
         messages.append({"role": "assistant", "content": content_blocks})
 
@@ -628,12 +639,20 @@ async def generate_contract_with_tools(
             ):
                 submitted = block.get("input", {}).get("content", "")
                 if submitted:
+                    logger.info(
+                        "[contract:loop] SUBMIT  type=%s  turn=%d  total_in=%d total_out=%d",
+                        contract_type, _turn + 1,
+                        total_usage["input_tokens"], total_usage["output_tokens"],
+                    )
                     return strip_code_fences(submitted), total_usage
-
-        # ── end_turn with no submit → extract text fallback ─────
         if stop_reason == "end_turn":
             fallback = extract_text_from_blocks(content_blocks)
             if fallback:
+                logger.info(
+                    "[contract:loop] TEXT FALLBACK  type=%s  turn=%d  total_in=%d total_out=%d",
+                    contract_type, _turn + 1,
+                    total_usage["input_tokens"], total_usage["output_tokens"],
+                )
                 return strip_code_fences(fallback), total_usage
             raise ValueError(
                 f"LLM ended turn for {contract_type} without submitting "
@@ -657,6 +676,11 @@ async def generate_contract_with_tools(
                         return strip_code_fences(submitted), total_usage
 
                 result_content = tool_executor(tool_name, tool_input_data)
+                logger.info(
+                    "[contract:tool] type=%s  turn=%d  tool=%s  input=%s",
+                    contract_type, _turn + 1, tool_name,
+                    json.dumps(tool_input_data, default=str)[:150],
+                )
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_id,
@@ -668,8 +692,17 @@ async def generate_contract_with_tools(
             continue
 
         # Unexpected stop_reason — break
+        logger.warning(
+            "[contract:loop] UNEXPECTED stop_reason=%s  type=%s  turn=%d",
+            stop_reason, contract_type, _turn + 1,
+        )
         break
 
+    logger.error(
+        "[contract:loop] EXHAUSTED  type=%s  max_turns=%d  total_in=%d total_out=%d",
+        contract_type, max_turns,
+        total_usage["input_tokens"], total_usage["output_tokens"],
+    )
     raise ValueError(
         f"Tool-use loop for {contract_type} exceeded {max_turns} turns "
         "without producing a contract."

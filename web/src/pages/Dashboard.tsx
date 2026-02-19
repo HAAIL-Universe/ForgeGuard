@@ -27,6 +27,7 @@ function Dashboard() {
   const [showPicker, setShowPicker] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<Repo | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchRepos = useCallback(async () => {
     try {
@@ -64,11 +65,29 @@ function Dashboard() {
     fetchProjects();
   }, [fetchRepos, fetchProjects]);
 
-  // Real-time: refresh repos when an audit completes, refresh projects on build events
+  // Real-time: refresh repos when an audit completes or health check finishes;
+  // refresh projects on build events
   useWebSocket(useCallback((data) => {
     if (data.type === 'audit_update') fetchRepos();
+    if (data.type === 'repos_health_updated') {
+      setIsRefreshing(false);
+      fetchRepos();
+    }
     if (data.type === 'build_complete' || data.type === 'build_error' || data.type === 'build_started') fetchProjects();
   }, [fetchRepos, fetchProjects]));
+
+  const triggerHealthCheck = async () => {
+    setIsRefreshing(true);
+    try {
+      await fetch(`${API_BASE}/repos/health-check`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      setIsRefreshing(false);
+    }
+    // isRefreshing cleared when repos_health_updated WS event arrives
+  };
 
   const handleProjectClick = (project: Project) => {
     navigate(`/projects/${project.id}`);
@@ -106,20 +125,43 @@ function Dashboard() {
           }}
         >
           <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Connected Repos</h2>
-          <button
-            onClick={() => setShowPicker(true)}
-            style={{
-              background: '#2563EB',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '6px',
-              padding: '8px 16px',
-              cursor: 'pointer',
-              fontSize: '0.875rem',
-            }}
-          >
-            Connect a Repo
-          </button>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              onClick={triggerHealthCheck}
+              disabled={isRefreshing}
+              title="Refresh repo health"
+              style={{
+                background: 'transparent',
+                color: isRefreshing ? '#64748B' : '#94A3B8',
+                border: '1px solid #334155',
+                borderRadius: '6px',
+                padding: '6px 10px',
+                cursor: isRefreshing ? 'wait' : 'pointer',
+                fontSize: '0.8rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              {isRefreshing ? (
+                <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>↻</span>
+              ) : '↻'}
+            </button>
+            <button
+              onClick={() => setShowPicker(true)}
+              style={{
+                background: '#2563EB',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '8px 16px',
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+              }}
+            >
+              Connect a Repo
+            </button>
+          </div>
         </div>
 
         {loading ? (

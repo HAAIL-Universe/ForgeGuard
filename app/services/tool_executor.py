@@ -1230,6 +1230,42 @@ FORGE_TOOLS = [
             "required": ["operation"],
         },
     },
+    {
+        "name": "forge_ask_clarification",
+        "description": (
+            "Ask the user a clarifying question when you encounter genuine ambiguity "
+            "that cannot be resolved from the available contracts, scout data, or "
+            "renovation plan. The build pauses until the user answers. "
+            "Use SPARINGLY — only when the implementation direction depends on a "
+            "user preference that cannot be inferred. Do NOT ask about obvious "
+            "choices or things already specified in contracts. Max 10 per build."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask (max 200 characters, concise).",
+                },
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Brief explanation of WHY you need to know (max 300 chars). "
+                        "e.g. 'Implementing the login endpoint — choosing auth strategy.'"
+                    ),
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional 2–4 suggested answers as chips for the user. "
+                        "Always include a 'Let AI decide' option if providing choices."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
 ]
 
 BUILDER_TOOLS = BUILDER_TOOLS + FORGE_TOOLS

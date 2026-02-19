@@ -1,5 +1,6 @@
 """Repo repository -- database reads and writes for the repos table."""
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from app.repos.db import get_pool
@@ -101,6 +102,9 @@ async def get_repos_with_health(user_id: UUID) -> list[dict]:
             r.id, r.user_id, r.github_repo_id, r.full_name,
             r.default_branch, r.webhook_id, r.webhook_active,
             r.created_at, r.updated_at,
+            r.repo_status, r.last_health_check_at,
+            r.latest_commit_sha, r.latest_commit_message,
+            r.latest_commit_at, r.latest_commit_author,
             h.last_audit_at,
             h.pass_count,
             h.total_count
@@ -141,4 +145,44 @@ async def update_webhook(
         repo_id,
         webhook_id,
         webhook_active,
+    )
+
+
+async def update_repo_health(repo_id: UUID, fields: dict) -> None:
+    """Update health-check fields on a repo row.
+
+    Accepted keys in *fields*: repo_status, last_health_check_at,
+    latest_commit_sha, latest_commit_message, latest_commit_at,
+    latest_commit_author.
+    """
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE repos
+        SET repo_status          = $2,
+            last_health_check_at = $3,
+            latest_commit_sha    = $4,
+            latest_commit_message= $5,
+            latest_commit_at     = $6,
+            latest_commit_author = $7,
+            updated_at           = now()
+        WHERE id = $1
+        """,
+        repo_id,
+        fields.get("repo_status", "connected"),
+        fields.get("last_health_check_at", datetime.now(timezone.utc)),
+        fields.get("latest_commit_sha"),
+        fields.get("latest_commit_message"),
+        fields.get("latest_commit_at"),
+        fields.get("latest_commit_author"),
+    )
+
+
+async def update_repo_full_name(repo_id: UUID, new_full_name: str) -> None:
+    """Update full_name when GitHub reports a rename."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE repos SET full_name = $2, updated_at = now() WHERE id = $1",
+        repo_id,
+        new_full_name,
     )

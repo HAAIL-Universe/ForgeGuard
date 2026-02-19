@@ -103,6 +103,11 @@ _HEARTBEAT_INTERVAL = 45     # seconds between health-check messages
 _STALL_WARN_THRESHOLD = 300  # 5 min — emit warning
 _STALL_FAIL_THRESHOLD = 900  # 15 min — force-fail the build
 
+# Clarification (forge_ask_clarification tool) state
+_clarification_events:  dict[str, asyncio.Event] = {}  # build_id → Event
+_clarification_answers: dict[str, str] = {}            # build_id → answer
+_clarification_counts:  dict[str, int] = {}            # build_id → # asked so far
+
 
 # ---------------------------------------------------------------------------
 # Tiny helpers used by many sub-modules
@@ -122,6 +127,49 @@ async def _broadcast_build_event(
         "type": event_type,
         "payload": payload,
     })
+
+
+def register_clarification(build_id: str) -> asyncio.Event:
+    """Create and register a clarification wait event for a build."""
+    event = asyncio.Event()
+    _clarification_events[str(build_id)] = event
+    return event
+
+
+def resolve_clarification(build_id: str, answer: str) -> bool:
+    """Store answer and signal the waiting build loop.
+
+    Returns False if no pending clarification exists for *build_id*.
+    """
+    bid = str(build_id)
+    event = _clarification_events.get(bid)
+    if not event:
+        return False
+    _clarification_answers[bid] = answer
+    event.set()
+    return True
+
+
+def pop_clarification_answer(build_id: str) -> str | None:
+    """Consume the stored answer and clear event state."""
+    bid = str(build_id)
+    _clarification_events.pop(bid, None)
+    return _clarification_answers.pop(bid, None)
+
+
+def increment_clarification_count(build_id: str) -> int:
+    """Increment and return the number of clarifications asked for this build."""
+    bid = str(build_id)
+    _clarification_counts[bid] = _clarification_counts.get(bid, 0) + 1
+    return _clarification_counts[bid]
+
+
+def cleanup_clarification(build_id: str) -> None:
+    """Remove all clarification state for a build (call on build end/fail)."""
+    bid = str(build_id)
+    _clarification_events.pop(bid, None)
+    _clarification_answers.pop(bid, None)
+    _clarification_counts.pop(bid, None)
 
 
 async def _set_build_activity(
@@ -144,6 +192,7 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     _compact_flags.discard(bid)
     _current_generating.pop(bid, None)
     _build_activity_status.pop(bid, None)
+    cleanup_clarification(bid)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail

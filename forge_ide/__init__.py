@@ -264,8 +264,13 @@ from forge_ide.journal import (
 from forge_ide.runner import RunResult
 from forge_ide.runner import run as ide_run
 from forge_ide.runner import validate_command
+from forge_ide.test_scope import (
+    filter_existing,
+    format_scoped_command,
+    infer_test_candidates,
+    scope_tests_for_changes,
+)
 from forge_ide.sanitiser import (
-    normalise_path,
     normalise_paths,
     sanitise_output,
     sort_diagnostics,
@@ -464,4 +469,9 @@ __all__ = [
     "BUILTIN_DEFAULTS",
     # Adapters
     "register_builtin_tools",
+    # Test scoping
+    "infer_test_candidates",
+    "filter_existing",
+    "format_scoped_command",
+    "scope_tests_for_changes",
 ]

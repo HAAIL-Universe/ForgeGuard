@@ -13,8 +13,21 @@
 import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../hooks/useWebSocket';
+import ErrorsPanel, { type BuildError } from './ErrorsPanel';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
+
+/* ---------- Error fingerprinting (mirrors backend logic) ---------- */
+
+function errorFingerprint(source: string, severity: string, message: string): string {
+  let normalized = message.replace(/line \d+/g, 'line N');
+  normalized = normalized.replace(/0x[0-9a-fA-F]+/g, '0xADDR');
+  normalized = normalized.replace(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+    'UUID',
+  );
+  return `${source}:${severity}:${normalized}`;
+}
 
 /* ---------- Types ---------- */
 
@@ -428,7 +441,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [totalTasks, setTotalTasks] = useState(0);
   const [completedTasks, setCompletedTasks] = useState(0);
   const [expandedDiff, setExpandedDiff] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'activity' | 'changes'>('activity');
+  const [activeTab, setActiveTab] = useState<'activity' | 'changes' | 'errors'>('activity');
+  const [buildErrors, setBuildErrors] = useState<BuildError[]>([]);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKENS });
   const [narratorEnabled, setNarratorEnabled] = useState(false);
   const [narrations, setNarrations] = useState<{ text: string; timestamp: string }[]>([]);
@@ -439,6 +453,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
+  const [pendingClarification, setPendingClarification] = useState<{
+    questionId: string;
+    question: string;
+    context?: string;
+    options?: string[];
+  } | null>(null);
   const [fixProgress, setFixProgress] = useState<{ tier: number; attempt: number; max: number } | null>(null);
   const [fileChecklist, setFileChecklist] = useState<ChecklistItem[]>([]);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
@@ -605,6 +625,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           }
         } catch { /* silent */ }
 
+        // 5. Load persisted build errors
+        try {
+          const errRes = await fetch(`${API_BASE}/projects/${projectId}/build/errors`, { headers: hdr });
+          if (errRes.ok) {
+            const errData: BuildError[] = await errRes.json();
+            if (errData.length > 0) setBuildErrors(errData);
+          }
+        } catch { /* silent */ }
+
         setCmdInput('/start');
       };
       prepareBuild();
@@ -689,13 +718,42 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             case 'build_log': {
               const msg = (p.message ?? p.msg ?? '') as string;
               if (!msg) break;
+              const logLevel = (p.level || 'info') as string;
               setLogs((prev) => [...prev, {
                 timestamp: p.timestamp || new Date().toISOString(),
                 source: p.source || 'system',
-                level: p.level || 'info',
+                level: logLevel,
                 message: msg,
                 worker: classifyWorker(msg),
               }]);
+              // Track errors in the errors panel
+              if (logLevel === 'error') {
+                const fp = errorFingerprint(p.source || 'system', 'error', msg);
+                setBuildErrors((prev) => {
+                  const existing = prev.find((e) => e.fingerprint === fp && !e.resolved);
+                  if (existing) {
+                    return prev.map((e) =>
+                      e.id === existing.id
+                        ? { ...e, occurrence_count: e.occurrence_count + 1, last_seen: new Date().toISOString() }
+                        : e,
+                    );
+                  }
+                  const newErr: BuildError = {
+                    id: `fe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    fingerprint: fp,
+                    first_seen: p.timestamp || new Date().toISOString(),
+                    last_seen: p.timestamp || new Date().toISOString(),
+                    occurrence_count: 1,
+                    phase: undefined,
+                    file_path: undefined,
+                    source: p.source || 'system',
+                    severity: 'error',
+                    message: msg,
+                    resolved: false,
+                  };
+                  return [...prev, newErr];
+                });
+              }
               break;
             }
 
@@ -840,14 +898,57 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             case 'build_failed':
               setStatus('error');
               if (p.error_detail || p.error) {
+                const errMsg = p.error_detail || p.error || 'Build failed';
                 setLogs((prev) => [...prev, {
                   timestamp: new Date().toISOString(),
                   source: 'system', level: 'error',
-                  message: p.error_detail || p.error || 'Build failed',
+                  message: errMsg,
                   worker: 'system',
                 }]);
+                // Track as fatal error
+                const fp = errorFingerprint('system', 'fatal', errMsg);
+                setBuildErrors((prev) => {
+                  const existing = prev.find((e) => e.fingerprint === fp && !e.resolved);
+                  if (existing) {
+                    return prev.map((e) =>
+                      e.id === existing.id
+                        ? { ...e, occurrence_count: e.occurrence_count + 1, last_seen: new Date().toISOString() }
+                        : e,
+                    );
+                  }
+                  return [...prev, {
+                    id: `fe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    fingerprint: fp,
+                    first_seen: new Date().toISOString(),
+                    last_seen: new Date().toISOString(),
+                    occurrence_count: 1,
+                    source: 'system',
+                    severity: 'fatal' as const,
+                    message: errMsg,
+                    resolved: false,
+                  }];
+                });
               }
               break;
+
+            case 'build_error_resolved': {
+              // Backend resolved an error (phase-complete or auto-fix)
+              const resolvedId = p.error_id as string;
+              const resolvedFp = p.fingerprint as string | undefined;
+              setBuildErrors((prev) => prev.map((e) => {
+                if (e.id === resolvedId || (resolvedFp && e.fingerprint === resolvedFp && !e.resolved)) {
+                  return {
+                    ...e,
+                    resolved: true,
+                    resolved_at: new Date().toISOString(),
+                    resolution_method: (p.method || 'auto-fix') as BuildError['resolution_method'],
+                    resolution_summary: (p.summary || '') as string,
+                  };
+                }
+                return e;
+              }));
+              break;
+            }
 
             case 'build_cancelled':
               setStatus('stopped');
@@ -869,6 +970,29 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setStatus('running');
               setPendingPrompt(false);
               break;
+
+            case 'build_clarification_request': {
+              const { question_id, question, context, options } = p;
+              setPendingClarification({ questionId: question_id, question, context, options });
+              setStatus('awaiting_input' as any);
+              setTimeout(() => cmdInputRef.current?.focus(), 100);
+              break;
+            }
+
+            case 'build_clarification_resolved': {
+              setPendingClarification(null);
+              setStatus('running');
+              if (p.answer) {
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'user',
+                  level: 'info',
+                  message: `\u21B3 You answered: ${p.answer}`,
+                  worker: 'system' as const,
+                }]);
+              }
+              break;
+            }
 
             case 'audit_pass':
             case 'audit_fail': {
@@ -1176,6 +1300,20 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, runId, token]);
+
+  /* Submit a clarification answer */
+  const submitClarification = async (answer: string) => {
+    if (!pendingClarification) return;
+    try {
+      await fetch(`${API_BASE}/projects/${projectId}/build/clarify`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question_id: pendingClarification.questionId, answer }),
+      });
+    } catch { /* WS event confirms success */ }
+    // Optimistically clear — WS build_clarification_resolved will confirm
+    setPendingClarification(null);
+  };
 
   /* Send a slash command */
   const sendCmd = useCallback(async (cmd: string) => {
@@ -1772,7 +1910,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             >
               ⧉
             </button>
-            {(['activity', 'changes'] as const).map((tab) => (
+            {(['activity', 'changes', 'errors'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -1782,9 +1920,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   color: activeTab === tab ? '#F1F5F9' : '#64748B',
                   borderBottom: activeTab === tab ? '2px solid #3B82F6' : '2px solid transparent',
                   textTransform: 'uppercase', letterSpacing: '0.5px',
+                  position: 'relative',
                 }}
               >
-                {tab === 'activity' ? `Activity (${logs.length})` : `Changes (${fileDiffs.length})`}
+                {tab === 'activity'
+                  ? `Activity (${logs.length})`
+                  : tab === 'changes'
+                    ? `Changes (${fileDiffs.length})`
+                    : `Errors (${buildErrors.filter(e => !e.resolved).length})`}
+                {/* Red badge for unresolved errors */}
+                {tab === 'errors' && buildErrors.filter(e => !e.resolved).length > 0 && activeTab !== 'errors' && (
+                  <span style={{
+                    position: 'absolute', top: '2px', right: '2px',
+                    width: '7px', height: '7px', borderRadius: '50%',
+                    background: '#EF4444',
+                  }} />
+                )}
               </button>
             ))}
           </div>
@@ -1859,11 +2010,55 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           {activeTab === 'activity' && (
             <div style={{
               flexShrink: 0,
-              borderTop: pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : '1px solid #1E293B',
-              background: pendingPrompt ? '#1C1510' : '#0F172A', padding: '0', position: 'relative',
-              boxShadow: pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : 'none',
+              borderTop: pendingClarification ? '1px solid #FBBF2466' : pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : '1px solid #1E293B',
+              background: pendingClarification ? '#1C1A10' : pendingPrompt ? '#1C1510' : '#0F172A', padding: '0', position: 'relative',
+              boxShadow: pendingClarification ? '0 -2px 20px rgba(251,191,36,0.15)' : pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : 'none',
               transition: 'box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease',
             }}>
+              {/* Clarification card — shown when builder asks a question */}
+              {pendingClarification && (
+                <div style={{
+                  margin: '8px 12px',
+                  padding: '10px 14px',
+                  background: '#1C1A10',
+                  border: '1px solid #FBBF2466',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                }}>
+                  <div style={{ color: '#FBBF24', fontSize: '0.8rem', fontWeight: 700 }}>
+                    {pendingClarification.question}
+                  </div>
+                  {pendingClarification.context && (
+                    <div style={{ color: '#94A3B8', fontSize: '0.72rem' }}>
+                      {pendingClarification.context}
+                    </div>
+                  )}
+                  {pendingClarification.options && pendingClarification.options.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {pendingClarification.options.map((opt) => (
+                        <button
+                          key={opt}
+                          onClick={() => { submitClarification(opt); setCmdInput(''); }}
+                          style={{
+                            background: '#292114',
+                            border: '1px solid #FBBF2466',
+                            borderRadius: '4px',
+                            color: '#FBBF24',
+                            fontSize: '0.72rem',
+                            padding: '4px 10px',
+                            cursor: 'pointer',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {/* Autocomplete dropdown */}
               {cmdSuggestions.length > 0 && status !== 'ready' && (
                 <div style={{
@@ -1914,6 +2109,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
+                      // If a clarification is pending, treat input as the answer
+                      if (pendingClarification && cmdInput.trim()) {
+                        submitClarification(cmdInput.trim());
+                        setCmdInput('');
+                        return;
+                      }
                       // If suggestions visible and only 1, auto-pick it
                       if (cmdSuggestions.length === 1 && cmdInput.startsWith('/') && !cmdInput.includes(' ')) {
                         sendCmd(cmdSuggestions[0]);
@@ -1947,7 +2148,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       setCmdSuggestions([]);
                     }
                   }}
-                  placeholder={pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : status === 'ready' ? (isBuild ? 'Press Enter to start build…' : 'Press Enter to start upgrade…') : 'Type / for commands…'}
+                  placeholder={pendingClarification ? 'Type your answer or choose an option above…' : pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : status === 'ready' ? (isBuild ? 'Press Enter to start build…' : 'Press Enter to start upgrade…') : 'Type / for commands…'}
                   style={{
                     flex: 1, background: 'transparent', border: 'none', outline: 'none',
                     color: pendingPrompt ? '#FBBF24'
@@ -2153,6 +2354,32 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 })
               )}
             </div>
+          )}
+
+          {/* Errors tab */}
+          {activeTab === 'errors' && (
+            <ErrorsPanel
+              errors={buildErrors}
+              onDismiss={async (errorId) => {
+                // Optimistic UI update
+                setBuildErrors((prev) => prev.map((e) =>
+                  e.id === errorId ? { ...e, resolved: true, resolved_at: new Date().toISOString(), resolution_method: 'dismissed' } : e,
+                ));
+                // Persist to backend
+                try {
+                  await fetch(`${API_BASE}/projects/${projectId}/build/errors/dismiss`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ error_id: errorId }),
+                  });
+                } catch {
+                  // Revert on failure
+                  setBuildErrors((prev) => prev.map((e) =>
+                    e.id === errorId ? { ...e, resolved: false, resolved_at: undefined, resolution_method: undefined } : e,
+                  ));
+                }
+              }}
+            />
           )}
         </div>
       </div>

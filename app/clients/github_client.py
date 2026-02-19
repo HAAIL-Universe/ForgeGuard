@@ -321,6 +321,34 @@ async def get_repo_languages(
     return result
 
 
+async def get_repo_health(
+    access_token: str,
+    full_name: str,
+) -> tuple[int, dict | None]:
+    """Fetch current status of a repo for health checking (no cache, fresh data).
+
+    Returns (status_code, metadata_dict_or_None).
+    On HTTP error returns (status_code, None).
+    On network error returns (0, None).
+    Metadata dict contains: full_name, archived.
+    """
+    client = _get_client()
+    try:
+        response = await client.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}",
+            headers=_auth_headers(access_token),
+        )
+    except httpx.RequestError:
+        return 0, None
+    if response.status_code != 200:
+        return response.status_code, None
+    data = response.json()
+    return 200, {
+        "full_name": data.get("full_name", full_name),
+        "archived": data.get("archived", False),
+    }
+
+
 async def get_repo_metadata(
     access_token: str,
     full_name: str,
@@ -353,6 +381,8 @@ async def get_repo_metadata(
         "default_branch": data.get("default_branch", "main"),
         "description": data.get("description"),
         "private": data.get("private", False),
+        "archived": data.get("archived", False),
+        "full_name": data.get("full_name", full_name),
     }
     _repo_meta_cache[key] = result
     return result
