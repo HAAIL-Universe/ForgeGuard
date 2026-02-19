@@ -101,6 +101,23 @@ def test_render_json_structure(mock_settings):
 
 
 @patch("app.services.certificate_renderer.Settings")
+def test_render_json_forge_seal_has_integrity_hash(mock_settings):
+    mock_settings.JWT_SECRET = "test-secret"
+    result = render_json(_sample_scores())
+    seal = result["forge_seal"]
+    assert "integrity_hash" in seal
+    assert len(seal["integrity_hash"]) == 64
+    assert seal["integrity_hash"] == result["integrity"]["hash"]
+
+
+@patch("app.services.certificate_renderer.Settings")
+def test_render_json_forge_seal_has_generated_at(mock_settings):
+    mock_settings.JWT_SECRET = "test-secret"
+    result = render_json(_sample_scores())
+    assert result["forge_seal"]["generated_at"] == "2025-01-01T00:00:00+00:00"
+
+
+@patch("app.services.certificate_renderer.Settings")
 def test_render_json_certificate_content(mock_settings):
     mock_settings.JWT_SECRET = "test-secret"
     result = render_json(_sample_scores())

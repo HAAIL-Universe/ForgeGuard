@@ -41,6 +41,8 @@ def render_json(scores: dict) -> dict:
         "forge_seal": {
             "version": "1.0",
             "type": "forge-build-certificate",
+            "generated_at": scores.get("generated_at", ""),
+            "integrity_hash": integrity_hash,
         },
         "certificate": scores,
         "integrity": {

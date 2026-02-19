@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.reliability_scorer import compute_reliability_score
+from app.services.consistency_scorer import compute_consistency_score
+from app.services.architecture_baseline import compare_against_baseline
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -32,12 +36,15 @@ CertificateScores = dict[str, Any]
 
 # Dimension weights — must sum to 1.0
 _WEIGHTS = {
-    "build_integrity": 0.20,
-    "test_coverage": 0.20,
-    "audit_compliance": 0.20,
-    "governance": 0.15,
-    "security": 0.15,
-    "cost_efficiency": 0.10,
+    "build_integrity": 0.15,
+    "test_coverage": 0.15,
+    "audit_compliance": 0.10,
+    "governance": 0.10,
+    "security": 0.10,
+    "cost_efficiency": 0.05,
+    "reliability": 0.15,
+    "consistency": 0.10,
+    "architecture": 0.10,
 }
 
 
@@ -59,6 +66,10 @@ def compute_certificate_scores(data: dict) -> CertificateScores:
     """
     from datetime import datetime, timezone
 
+    reliability_result = compute_reliability_score(data)
+    consistency_result = compute_consistency_score(data)
+    architecture_result = compare_against_baseline(data.get("scout"))
+
     dimensions = {
         "build_integrity": _score_build_integrity(data),
         "test_coverage": _score_test_coverage(data),
@@ -66,6 +77,21 @@ def compute_certificate_scores(data: dict) -> CertificateScores:
         "governance": _score_governance(data),
         "security": _score_security(data),
         "cost_efficiency": _score_cost_efficiency(data),
+        "reliability": {
+            "score": reliability_result["score"],
+            "weight": _WEIGHTS["reliability"],
+            "details": reliability_result["details"],
+        },
+        "consistency": {
+            "score": consistency_result["score"],
+            "weight": _WEIGHTS["consistency"],
+            "details": consistency_result["details"],
+        },
+        "architecture": {
+            "score": architecture_result["score"],
+            "weight": _WEIGHTS["architecture"],
+            "details": architecture_result["details"],
+        },
     }
 
     # Weighted overall
