@@ -178,6 +178,9 @@ def check_secrets_scan(files: dict[str, str]) -> CheckResult:
             continue
         if filepath.endswith("-lock.json") or filepath.endswith(".lock.json"):
             continue
+        # Skip test files — fixture data with fake keys is not a real secret
+        if filepath.startswith("tests/") or filepath.startswith("test_"):
+            continue
 
         for pattern, description in _SECRET_PATTERNS:
             matches = re.findall(pattern, content)
