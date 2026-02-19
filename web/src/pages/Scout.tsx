@@ -891,7 +891,7 @@ function Scout() {
             </div>
             {view === 'deep_running' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
-                {['metadata', 'tree', 'stack', 'fetching', 'architecture', 'audit', 'dossier'].map((step) => {
+                {['metadata', 'tree', 'stack', 'fetching', 'architecture', 'audit', 'metrics', 'dossier'].map((step) => {
                   const label: Record<string, string> = {
                     metadata: 'Fetching repo metadata',
                     tree: 'Fetching file tree',
@@ -899,6 +899,7 @@ function Scout() {
                     fetching: 'Fetching key files',
                     architecture: 'Mapping architecture',
                     audit: 'Running compliance checks',
+                    metrics: 'Computing quality metrics',
                     dossier: 'Generating project dossier',
                   };
                   const done = step in deepSteps;
@@ -926,6 +927,42 @@ function Scout() {
                     </div>
                   );
                 })}
+
+                {/* Show "building report" state once dossier step fires but scan isn't complete yet */}
+                {'dossier' in deepSteps && deepScanning && (
+                  <div
+                    style={{
+                      marginTop: '8px',
+                      padding: '16px 20px',
+                      background: 'linear-gradient(135deg, #1E293B 0%, #0F172A 100%)',
+                      borderRadius: '8px',
+                      border: '1px solid #334155',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: '20px',
+                        height: '20px',
+                        border: '2px solid #334155',
+                        borderTopColor: '#3B82F6',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite',
+                      }}
+                    />
+                    <div>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>
+                        Building your report&hellip;
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '2px' }}>
+                        The AI is analysing your project. This usually takes 15&ndash;30 seconds.
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {view === 'running' && ALL_CHECKS.map((check) => {
