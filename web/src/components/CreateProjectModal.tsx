@@ -441,7 +441,6 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
               </div>
             )}
           </div>
-        </div>
 
         {/* ---- Error ---- */}
         {error && (

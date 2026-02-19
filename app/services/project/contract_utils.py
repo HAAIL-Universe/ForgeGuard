@@ -1,0 +1,676 @@
+"""Shared helpers for contract generation — used by both greenfield and Scout flows.
+
+De-duplicates utilities that were previously copy-pasted between
+``contract_generator.py`` and ``scout_contract_generator.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from app.clients.llm_client import chat as llm_chat
+from app.services.project.contract_generator import (
+    _CONTRACT_INSTRUCTIONS,
+    _load_generic_template,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Mini-build defaults — applied at contract generation time when the
+# questionnaire skipped sections.  These are NOT baked into the
+# questionnaire system prompt so the user can override them by simply
+# mentioning preferences during the intent / UI discussion.
+# ---------------------------------------------------------------------------
+
+MINI_DEFAULTS: dict[str, dict] = {
+    "tech_stack": {
+        "backend": "Python 3.12+ / FastAPI",
+        "frontend": "React + TypeScript",
+        "database": "PostgreSQL",
+        "package_manager": "pip / npm",
+    },
+    "database_schema": {
+        "note": "Minimal tables derived from product intent.",
+    },
+    "api_endpoints": {
+        "note": "Standard REST endpoints derived from product intent.",
+    },
+    "architectural_boundaries": {
+        "style": "Layered separation (routes / services / repos)",
+        "forbidden_imports": "Routes must not import repos directly",
+    },
+    "deployment_target": {
+        "runtime": "Docker-ready",
+        "local_dev": "docker-compose single-stack",
+    },
+}
+
+_AUTO_PLACEHOLDER_PREFIXES = ("completed by LLM", "inferred from conversation", "force-completed")
+
+
+def _is_placeholder(val: object) -> bool:
+    """Return True if *val* is a questionnaire auto-fill placeholder."""
+    if not isinstance(val, dict):
+        return False
+    auto = val.get("auto")
+    if not isinstance(auto, str):
+        return False
+    return any(auto.startswith(p) for p in _AUTO_PLACEHOLDER_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Text sanitisation
+# ---------------------------------------------------------------------------
+
+
+def strip_code_fences(text: str) -> str:
+    """Remove markdown code fences if the LLM wrapped its output.
+
+    Handles ````` and `````lang`` prefixes.
+    """
+    if not text.startswith("```"):
+        return text
+    lines = text.split("\n")
+    if lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def extract_text_from_blocks(content_blocks: list[dict]) -> str:
+    """Join all ``text`` blocks from an Anthropic response into a single string."""
+    return "\n".join(
+        b["text"] for b in content_blocks if b.get("type") == "text"
+    ).strip()
+
+
+# ---------------------------------------------------------------------------
+# Tool-use system prompt builder
+# ---------------------------------------------------------------------------
+
+_TOOL_USE_PREAMBLE = """\
+You are a Forge contract generator.  You produce detailed, production-quality
+project specification documents for the Forge autonomous build system.
+
+You are generating the **{contract_type}** contract for the repository
+"{repo_name}".
+
+{mode_section}
+
+INSTRUCTIONS:
+{instructions}
+
+RULES:
+- Output ONLY the contract content.  No preamble, no 'Here is...', no
+  commentary, no explanations.  The text passed to submit_contract must be
+  the FINAL contract and nothing else.
+- Be thorough and detailed.  Do NOT leave any section empty or with
+  placeholder text.  Match the structural depth and detail level of the
+  reference example below (if one is provided).
+
+WORKFLOW:
+1. Use the available tools to fetch the context you need for THIS specific
+   contract type.  Only call tools whose data is relevant — do not
+   fetch everything.
+2. Reason about what you have fetched.  If you need additional context
+   (e.g. a prior contract for consistency), fetch it.
+3. Once you have enough context, call submit_contract(content) with the
+   COMPLETE contract.  Do NOT stream partial content.  One call, final text.
+
+TOOL GUIDANCE:
+- get_prior_contract(type)        → fetch a single previously generated
+                                    contract for consistency.  Only available
+                                    for types generated before this one.
+- get_stack_profile()             → detected tech stack (backend, frontend,
+                                    testing, infrastructure).
+- get_renovation_priorities()     → executive brief: health grade, headline,
+                                    top priorities, risk summary.  This is
+                                    the primary statement of WHAT the build
+                                    must achieve.
+- get_migration_tasks()           → ordered task list from the renovation
+                                    plan (from_state → to_state, priority,
+                                    effort, automatable flag).
+- get_project_dossier()           → LLM-written executive summary, quality
+                                    assessment, risk areas, recommendations.
+- get_compliance_checks()         → pass/fail/warn compliance checks.
+- get_architecture_map()          → full detected architecture dict (may be
+                                    large — request only if architecture
+                                    structure matters for this contract).
+- submit_contract(content)        → submit the finished contract.  This
+                                    terminates the session.
+"""
+
+_GREENFIELD_PREAMBLE = """\
+You are a Forge contract generator.  You produce detailed, production-quality
+project specification documents for the Forge autonomous build system.
+
+You are generating the **{contract_type}** contract for the project
+"{project_name}".
+
+INSTRUCTIONS:
+{instructions}
+
+RULES:
+- Output ONLY the contract content.  No preamble, no 'Here is...', no
+  commentary, no explanations.  The text passed to submit_contract must be
+  the FINAL contract and nothing else.
+- Be thorough and detailed.  Do NOT leave any section empty or with
+  placeholder text.  Match the structural depth and detail level of the
+  reference example below (if one is provided).
+
+WORKFLOW:
+1. Use the available tools to fetch the context you need for THIS specific
+   contract type.  Only call tools whose data is relevant — do not
+   fetch everything.
+2. Reason about what you have fetched.  If you need additional context
+   (e.g. a prior contract for consistency), fetch it.
+3. Once you have enough context, call submit_contract(content) with the
+   COMPLETE contract.  Do NOT stream partial content.  One call, final text.
+
+TOOL GUIDANCE:
+- get_prior_contract(type)         → fetch a single previously generated
+                                     contract for consistency.
+- get_project_intent()             → core product intent, description, and
+                                     project goals from questionnaire.
+- get_technical_preferences()      → tech stack choices from questionnaire
+                                     (backend, frontend, DB, deployment).
+- get_user_requirements()          → feature requirements, user stories,
+                                     and UI preferences from questionnaire.
+- get_deployment_preferences()     → hosting, scale, and infrastructure
+                                     preferences from questionnaire.
+- submit_contract(content)         → submit the finished contract.  This
+                                     terminates the session.
+"""
+
+
+def build_tool_use_system_prompt(
+    contract_type: str,
+    *,
+    repo_name: str | None = None,
+    project_name: str | None = None,
+    mode: str = "scout",
+    mini: bool = False,
+) -> str:
+    """Build the system prompt for a tool-use contract generation session.
+
+    Parameters
+    ----------
+    contract_type : str
+        One of CONTRACT_TYPES (e.g. ``"stack"``, ``"builder_directive"``).
+    repo_name : str | None
+        Repository name (Scout flow).
+    project_name : str | None
+        Project name (greenfield flow).
+    mode : str
+        ``"scout"`` or ``"greenfield"``.
+    mini : bool
+        If True, use ``_mini`` instruction variants for applicable types.
+    """
+    instr_key = f"{contract_type}_mini" if mini else contract_type
+    instructions = _CONTRACT_INSTRUCTIONS.get(
+        instr_key,
+        _CONTRACT_INSTRUCTIONS.get(
+            contract_type, f"Generate a {contract_type} contract document."
+        ),
+    )
+
+    if mode == "scout":
+        mode_section = (
+            "IMPORTANT — EXISTING CODEBASE MODE:\n"
+            "This is an EXISTING codebase analysed by Scout.  Your contract must:\n"
+            "- Reflect the ACTUAL detected technology stack (do not invent technologies)\n"
+            "- Describe the project as it SHOULD be after remediation\n"
+            "- For builder_directive: instruct the AI builder to UPDATE/FIX existing\n"
+            "  code, not to build from scratch"
+        )
+        prompt = _TOOL_USE_PREAMBLE.format(
+            contract_type=contract_type,
+            repo_name=repo_name or "unknown",
+            mode_section=mode_section,
+            instructions=instructions,
+        )
+    else:
+        prompt = _GREENFIELD_PREAMBLE.format(
+            contract_type=contract_type,
+            project_name=project_name or "unknown",
+            instructions=instructions,
+        )
+
+    example = _load_generic_template(contract_type)
+    if example:
+        prompt += (
+            "\n--- STRUCTURAL REFERENCE (match this level of detail and format) ---\n"
+            f"{example}\n"
+            "--- END REFERENCE ---\n"
+        )
+
+    return prompt
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions — Scout context tools
+# ---------------------------------------------------------------------------
+
+CONTEXT_TOOLS_SCOUT: list[dict[str, Any]] = [
+    {
+        "name": "get_stack_profile",
+        "description": (
+            "Get the detected technology stack for this repository. "
+            "Returns backend, frontend, testing, and infrastructure sections."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_renovation_priorities",
+        "description": (
+            "Get the executive brief from the renovation plan: health grade, "
+            "headline, top priorities, risk summary, and forge automation note. "
+            "This is the primary statement of WHAT the build should achieve."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_migration_tasks",
+        "description": (
+            "Get the ordered migration task list from the renovation plan. "
+            "Each task has from_state, to_state, priority, effort, and "
+            "forge_automatable flag. Use this to understand what the builder "
+            "must accomplish."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_project_dossier",
+        "description": (
+            "Get the LLM dossier from the Scout deep-scan: executive summary, "
+            "intent, quality assessment (strengths/weaknesses), risk areas, "
+            "and recommendations."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_compliance_checks",
+        "description": (
+            "Get the compliance check results from the Scout scan. "
+            "Returns check codes, names, results (pass/fail/warn), and details."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_architecture_map",
+        "description": (
+            "Get the full architecture map detected by Scout. Returns the "
+            "complete architecture dict (NOT truncated). Use this when the "
+            "architecture structure matters for the contract you're generating."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_prior_contract",
+        "description": (
+            "Fetch a previously generated contract by type. Use this to "
+            "ensure consistency with contracts already generated in this run. "
+            "Available types: manifesto, blueprint, stack, schema, physics, "
+            "boundaries, ui, phases (only those generated before this one)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "description": (
+                        "Contract type to fetch: manifesto | blueprint | stack | "
+                        "schema | physics | boundaries | ui | phases"
+                    ),
+                },
+            },
+            "required": ["contract_type"],
+        },
+    },
+    {
+        "name": "submit_contract",
+        "description": (
+            "Submit the completed contract content.  Call this ONLY when you "
+            "have the complete, final contract ready.  This terminates the "
+            "generation session.  The content must be the full contract — "
+            "no preamble, no explanation, no code fences."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The complete contract content to submit.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions — Greenfield context tools
+# ---------------------------------------------------------------------------
+
+CONTEXT_TOOLS_GREENFIELD: list[dict[str, Any]] = [
+    {
+        "name": "get_project_intent",
+        "description": (
+            "Get the core product intent from the questionnaire: what the "
+            "project does, who it's for, and the high-level goals."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_technical_preferences",
+        "description": (
+            "Get the technology preferences from the questionnaire: "
+            "chosen backend, frontend, database, and deployment targets."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_user_requirements",
+        "description": (
+            "Get the feature requirements and user stories from the "
+            "questionnaire: what the app should do, key screens, and "
+            "UI preferences."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_deployment_preferences",
+        "description": (
+            "Get the deployment and infrastructure preferences: hosting "
+            "platform, expected scale, and environment setup."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_prior_contract",
+        "description": (
+            "Fetch a previously generated contract by type.  Use this to "
+            "ensure consistency with contracts already generated in this run."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "description": "Contract type to fetch.",
+                },
+            },
+            "required": ["contract_type"],
+        },
+    },
+    {
+        "name": "submit_contract",
+        "description": (
+            "Submit the completed contract content.  Call this ONLY when you "
+            "have the complete, final contract ready.  This terminates the "
+            "generation session."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The complete contract content to submit.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool executor — Scout flow
+# ---------------------------------------------------------------------------
+
+
+def execute_scout_tool(
+    name: str,
+    tool_input: dict,
+    context_data: dict,
+    prior_contracts: dict[str, str],
+) -> str:
+    """Execute a Scout context tool and return a JSON-string result.
+
+    Pure function (no I/O) — context_data is pre-extracted from scout results.
+    """
+    match name:
+        case "get_stack_profile":
+            return json.dumps(context_data.get("stack_profile") or {})
+        case "get_renovation_priorities":
+            return json.dumps(context_data.get("executive_brief") or {})
+        case "get_migration_tasks":
+            return json.dumps(context_data.get("migration_tasks") or [])
+        case "get_project_dossier":
+            return json.dumps(context_data.get("dossier") or {})
+        case "get_compliance_checks":
+            return json.dumps(context_data.get("checks") or [])
+        case "get_architecture_map":
+            return json.dumps(context_data.get("architecture") or {})
+        case "get_prior_contract":
+            ctype = tool_input.get("contract_type", "")
+            content = prior_contracts.get(ctype)
+            if not content:
+                return json.dumps({"error": f"Contract '{ctype}' not yet generated."})
+            return content
+        case "submit_contract":
+            # submit_contract is handled by the loop, not here
+            return json.dumps({"error": "submit_contract should not be executed directly"})
+        case _:
+            return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+# ---------------------------------------------------------------------------
+# Tool executor — Greenfield flow
+# ---------------------------------------------------------------------------
+
+
+def execute_greenfield_tool(
+    name: str,
+    tool_input: dict,
+    answers_data: dict,
+    prior_contracts: dict[str, str],
+) -> str:
+    """Execute a Greenfield context tool and return a JSON-string result.
+
+    Pure function — answers_data is pre-extracted from questionnaire answers
+    and project metadata.
+
+    Expected keys in answers_data:
+      product_intent, tech_stack, ui_requirements, api_endpoints,
+      database_schema, architectural_boundaries, deployment_target,
+      project_name, project_description
+    """
+    match name:
+        case "get_project_intent":
+            intent = {}
+            for key in ("product_intent", "project_name", "project_description"):
+                val = answers_data.get(key)
+                if val and not _is_placeholder(val):
+                    intent[key] = val
+            return json.dumps(intent)
+        case "get_technical_preferences":
+            prefs = {}
+            for key in ("tech_stack", "architectural_boundaries"):
+                val = answers_data.get(key)
+                if val and not _is_placeholder(val):
+                    prefs[key] = val
+                elif _is_placeholder(val) and key in MINI_DEFAULTS:
+                    prefs[key] = MINI_DEFAULTS[key]
+            return json.dumps(prefs)
+        case "get_user_requirements":
+            req = {}
+            for key in ("ui_requirements", "api_endpoints", "database_schema"):
+                val = answers_data.get(key)
+                if val and not _is_placeholder(val):
+                    req[key] = val
+                elif _is_placeholder(val) and key in MINI_DEFAULTS:
+                    req[key] = MINI_DEFAULTS[key]
+            return json.dumps(req)
+        case "get_deployment_preferences":
+            raw = answers_data.get("deployment_target")
+            if _is_placeholder(raw):
+                raw = MINI_DEFAULTS.get("deployment_target", {})
+            return json.dumps(raw or {})
+        case "get_prior_contract":
+            ctype = tool_input.get("contract_type", "")
+            content = prior_contracts.get(ctype)
+            if not content:
+                return json.dumps({"error": f"Contract '{ctype}' not yet generated."})
+            return content
+        case "submit_contract":
+            return json.dumps({"error": "submit_contract should not be executed directly"})
+        case _:
+            return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn tool-use generation loop
+# ---------------------------------------------------------------------------
+
+
+async def generate_contract_with_tools(
+    contract_type: str,
+    system_prompt: str,
+    tools: list[dict],
+    tool_executor: Any,  # Callable[[str, dict], str]
+    *,
+    api_key: str,
+    model: str,
+    provider: str = "anthropic",
+    repo_name: str = "",
+    max_turns: int = 12,
+    enable_caching: bool = True,
+) -> tuple[str, dict]:
+    """Generate a single contract using a multi-turn tool-use loop.
+
+    The LLM decides which context tools to call, fetches what it needs,
+    then calls ``submit_contract(content)`` to produce the final contract.
+
+    Parameters
+    ----------
+    contract_type : str
+        Contract being generated (for error messages).
+    system_prompt : str
+        Built via ``build_tool_use_system_prompt()``.
+    tools : list[dict]
+        Tool definitions (CONTEXT_TOOLS_SCOUT or CONTEXT_TOOLS_GREENFIELD).
+    tool_executor : callable
+        ``(name: str, tool_input: dict) -> str`` — executes a tool, returns
+        the result as a string.
+    api_key / model / provider : str
+        LLM config.
+    repo_name : str
+        For the initial user message.
+    max_turns : int
+        Safety limit on tool-use turns.
+    enable_caching : bool
+        Pass through to ``chat(enable_caching=…)``.
+
+    Returns
+    -------
+    (content, total_usage) where content is the raw contract text.
+    """
+    messages: list[dict] = [
+        {
+            "role": "user",
+            "content": (
+                f"Generate the {contract_type} contract"
+                + (f" for repository '{repo_name}'" if repo_name else "")
+                + ".  Use the available tools to fetch exactly the context "
+                "you need, then call submit_contract with the complete "
+                "contract content."
+            ),
+        }
+    ]
+
+    total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+
+    for _turn in range(max_turns):
+        response = await llm_chat(
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            max_tokens=16384,
+            provider=provider,
+            tools=tools,
+            enable_caching=enable_caching,
+        )
+
+        # Accumulate token usage
+        usage = response.get("usage", {})
+        total_usage["input_tokens"] += usage.get("input_tokens", 0)
+        total_usage["output_tokens"] += usage.get("output_tokens", 0)
+
+        stop_reason = response.get("stop_reason")
+        content_blocks = response.get("content", [])
+
+        # Append assistant turn to message history
+        messages.append({"role": "assistant", "content": content_blocks})
+
+        # ── Check for submit_contract in tool_use blocks ────────
+        for block in content_blocks:
+            if (
+                block.get("type") == "tool_use"
+                and block.get("name") == "submit_contract"
+            ):
+                submitted = block.get("input", {}).get("content", "")
+                if submitted:
+                    return strip_code_fences(submitted), total_usage
+
+        # ── end_turn with no submit → extract text fallback ─────
+        if stop_reason == "end_turn":
+            fallback = extract_text_from_blocks(content_blocks)
+            if fallback:
+                return strip_code_fences(fallback), total_usage
+            raise ValueError(
+                f"LLM ended turn for {contract_type} without submitting "
+                "a contract or returning text."
+            )
+
+        # ── Execute tool calls and build tool_results turn ──────
+        if stop_reason == "tool_use":
+            tool_results: list[dict] = []
+            for block in content_blocks:
+                if block.get("type") != "tool_use":
+                    continue
+                tool_name = block.get("name", "")
+                tool_input_data = block.get("input", {})
+                tool_id = block.get("id", "")
+
+                # submit_contract detected inside a multi-tool response
+                if tool_name == "submit_contract":
+                    submitted = tool_input_data.get("content", "")
+                    if submitted:
+                        return strip_code_fences(submitted), total_usage
+
+                result_content = tool_executor(tool_name, tool_input_data)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": result_content,
+                })
+
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+            continue
+
+        # Unexpected stop_reason — break
+        break
+
+    raise ValueError(
+        f"Tool-use loop for {contract_type} exceeded {max_turns} turns "
+        "without producing a contract."
+    )

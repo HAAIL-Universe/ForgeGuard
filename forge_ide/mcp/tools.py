@@ -12,13 +12,32 @@ from .artifact_store import (
 )
 from .config import LOCAL_MODE
 from .local import get_invariants, get_summary, list_contracts, load_contract
+from .project import (
+    get_build_contracts,
+    get_project_contract,
+    get_project_context,
+    list_project_contracts,
+)
 from .remote import api_get
+from .session import clear_session, set_session
 
 # ── Tool catalogue ────────────────────────────────────────────────────────
 
 # Artifact store tools are always served in-process (not proxied to API)
 _ARTIFACT_TOOLS = frozenset(
     {"forge_store_artifact", "forge_get_artifact", "forge_list_artifacts", "forge_clear_artifacts"}
+)
+
+# Project-scoped tools always proxy to ForgeGuard API (DB contracts)
+_PROJECT_TOOLS = frozenset(
+    {
+        "forge_set_session",
+        "forge_clear_session",
+        "forge_get_project_context",
+        "forge_list_project_contracts",
+        "forge_get_project_contract",
+        "forge_get_build_contracts",
+    }
 )
 
 TOOL_DEFINITIONS = [
@@ -211,6 +230,138 @@ TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    # ── Project-scoped contract tools (Phase E) ──────────────────────────
+    {
+        "name": "forge_set_session",
+        "description": (
+            "Set session-level defaults for the MCP server instance. "
+            "Called once by the build orchestrator before spawning sub-agents. "
+            "Project-scoped tools auto-resolve project_id and build_id from "
+            "the session when the caller omits them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID)",
+                },
+                "build_id": {
+                    "type": "string",
+                    "description": "Build identifier (UUID) — optional",
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "User identifier (UUID) — optional",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "forge_clear_session",
+        "description": (
+            "Reset the MCP session to blank. Clears project_id, build_id, "
+            "and user_id defaults."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "forge_get_project_context",
+        "description": (
+            "Get a combined manifest for a project — project info, list of "
+            "available generated contracts (types, versions, sizes), build "
+            "count, and latest snapshot batch. Returns METADATA only, not "
+            "full contract content. Call this first to see what's available, "
+            "then fetch specific contracts with forge_get_project_contract."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project identifier. Optional if session is set "
+                        "via forge_set_session."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "forge_list_project_contracts",
+        "description": (
+            "List all generated contracts for the current project — contract "
+            "types, versions, and last updated timestamps. Lighter than "
+            "forge_get_project_context when you only need the contract list."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project identifier. Optional if session is set."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "forge_get_project_contract",
+        "description": (
+            "Fetch a single generated contract for the current project from "
+            "the database. Returns the full content, version, and source. "
+            "Use forge_list_project_contracts to see available types first. "
+            "Common types: manifesto, stack, physics, boundaries, blueprint, "
+            "builder_directive, schema, ui."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project identifier. Optional if session is set."
+                    ),
+                },
+                "contract_type": {
+                    "type": "string",
+                    "description": (
+                        "Contract type — e.g. manifesto, stack, physics, "
+                        "boundaries, blueprint, builder_directive, schema, "
+                        "ui, phases, system_prompt, remediation"
+                    ),
+                },
+            },
+            "required": ["contract_type"],
+        },
+    },
+    {
+        "name": "forge_get_build_contracts",
+        "description": (
+            "Fetch the pinned contract snapshot for a specific build. "
+            "Returns all contracts that were frozen when the build started. "
+            "These are immutable — mid-build edits don't affect them. "
+            "Used by the Fixer role to reference the exact contracts the "
+            "build was executed against."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "build_id": {
+                    "type": "string",
+                    "description": (
+                        "Build identifier. Optional if session is set "
+                        "via forge_set_session."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -218,10 +369,13 @@ TOOL_DEFINITIONS = [
 
 
 async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Route tool calls — artifact store (always in-process), then local disk or remote API."""
+    """Route tool calls — artifact store, project-scoped, then local/remote."""
     # Artifact store tools are always served in-process regardless of LOCAL_MODE
     if name in _ARTIFACT_TOOLS:
         return _dispatch_artifact(name, arguments)
+    # Project-scoped tools always proxy to ForgeGuard API
+    if name in _PROJECT_TOOLS:
+        return await _dispatch_project(name, arguments)
     if LOCAL_MODE:
         return _dispatch_local(name, arguments)
     return await _dispatch_remote(name, arguments)
@@ -259,6 +413,32 @@ def _dispatch_artifact(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
         case _:
             return {"error": f"Unknown artifact tool: {name}"}
+
+
+async def _dispatch_project(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Serve project-scoped tool calls via ForgeGuard API."""
+    match name:
+        case "forge_set_session":
+            pid = arguments.get("project_id")
+            if not pid:
+                return {"error": "Missing required parameter: project_id"}
+            return set_session(
+                project_id=pid,
+                build_id=arguments.get("build_id"),
+                user_id=arguments.get("user_id"),
+            )
+        case "forge_clear_session":
+            return clear_session()
+        case "forge_get_project_context":
+            return await get_project_context(arguments)
+        case "forge_list_project_contracts":
+            return await list_project_contracts(arguments)
+        case "forge_get_project_contract":
+            return await get_project_contract(arguments)
+        case "forge_get_build_contracts":
+            return await get_build_contracts(arguments)
+        case _:
+            return {"error": f"Unknown project tool: {name}"}
 
 
 def _dispatch_local(name: str, arguments: dict[str, Any]) -> dict[str, Any]:

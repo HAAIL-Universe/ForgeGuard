@@ -12,9 +12,11 @@ from app.api.routers.auth import router as auth_router
 from app.api.routers.builds import router as builds_router
 from app.api.routers.forge import router as forge_router
 from app.api.routers.health import router as health_router
+from app.api.routers.mcp import router as mcp_router
 from app.api.routers.projects import router as projects_router
 from app.api.routers.repos import router as repos_router
 from app.api.routers.scout import router as scout_router
+from app.api.routers.transcribe import router as transcribe_router
 from app.api.routers.webhooks import router as webhooks_router
 from app.api.routers.ws import router as ws_router
 from app.clients import github_client, llm_client
@@ -87,6 +89,8 @@ def create_app() -> FastAPI:
     application.include_router(audit_router)
     application.include_router(scout_router)
     application.include_router(forge_router)
+    application.include_router(mcp_router)
+    application.include_router(transcribe_router)
     return application
 
 

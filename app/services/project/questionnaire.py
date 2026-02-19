@@ -75,16 +75,9 @@ _MINI_ADDENDUM = """
 --- MINI BUILD MODE ---
 This project is a Mini Build (quick proof-of-concept scaffold).
 Only ask about these sections: product_intent, ui_requirements.
-The remaining sections (tech_stack, database_schema, api_endpoints,
-architectural_boundaries, deployment_target) will be auto-filled with
-sensible defaults — do NOT ask the user about them at all.
-
-Defaults for skipped sections:
-- tech_stack: Python 3.12+ / FastAPI backend, React + TypeScript frontend
-- database_schema: PostgreSQL with minimal tables derived from product intent
-- api_endpoints: Standard REST patterns derived from the product intent
-- architectural_boundaries: Standard layered separation (routes/services/repos)
-- deployment_target: Docker-ready, single-compose local dev
+Do NOT ask the user about tech_stack, database_schema, api_endpoints,
+architectural_boundaries, or deployment_target — those will be resolved
+automatically during contract generation based on the product intent.
 
 When both product_intent and ui_requirements are done, set section to "complete".
 """

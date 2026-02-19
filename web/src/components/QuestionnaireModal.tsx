@@ -2,11 +2,12 @@
  * QuestionnaireModal -- voice-first chat modal for the Forge intake questionnaire.
  *
  * Walks the user through 8 sections to collect all information needed
- * to generate Forge contract files. Supports both voice (Web Speech API)
- * and text input.
+ * to generate Forge contract files. Supports both voice (MediaRecorder +
+ * server-side Whisper transcription) and text input.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import ContractProgress from './ContractProgress';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
@@ -152,189 +153,6 @@ const btnGhost: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: '0.8rem',
 };
-
-/* ------------------------------------------------------------------ */
-/*  Speech helpers                                                    */
-/* ------------------------------------------------------------------ */
-
-const SpeechRecognition =
-  typeof window !== 'undefined'
-    ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    : null;
-
-function useSpeechRecognition(onResult: (text: string) => void) {
-  const [listening, setListening] = useState(false);
-  const listeningRef = useRef(false);
-  const recRef = useRef<any>(null);
-  const onResultRef = useRef(onResult);
-  onResultRef.current = onResult;
-  /* Generation counter — bumped on every stop/start so stale restarts are ignored */
-  const genRef = useRef(0);
-  /* Restart timer — ensures only ONE pending restart at a time */
-  const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /* Consecutive network-error counter — give up after too many */
-  const netErrCount = useRef(0);
-
-  /* Tear down the current instance completely */
-  const killRec = useCallback(() => {
-    const old = recRef.current;
-    recRef.current = null;
-    if (old) {
-      old.onresult = null;
-      old.onerror = null;
-      old.onend = null;
-      old.onaudiostart = null;
-      old.onaudioend = null;
-      try { old.abort(); } catch { /* ignore */ }
-    }
-  }, []);
-
-  /* Cancel any pending restart */
-  const cancelRestart = useCallback(() => {
-    if (restartTimer.current) {
-      clearTimeout(restartTimer.current);
-      restartTimer.current = null;
-    }
-  }, []);
-
-  /* Build a fresh SpeechRecognition (never reused) */
-  const makeRec = useCallback(() => {
-    if (!SpeechRecognition) return null;
-    const r = new SpeechRecognition();
-    r.continuous = true;
-    r.interimResults = true;
-    r.lang = 'en-US';
-    return r;
-  }, []);
-
-  const stop = useCallback(() => {
-    console.debug('[mic] stop()');
-    genRef.current++;
-    listeningRef.current = false;
-    setListening(false);
-    cancelRestart();
-    killRec();
-  }, [killRec, cancelRestart]);
-
-  const start = useCallback(() => {
-    if (!SpeechRecognition) return;
-    console.debug('[mic] start()');
-
-    /* Tear down any previous instance */
-    cancelRestart();
-    killRec();
-    netErrCount.current = 0;
-
-    const gen = ++genRef.current;
-
-    /**
-     * Schedule a (re)start with a fresh SpeechRecognition instance.
-     * Uses a delay to let Chrome fully release the network connection
-     * from the previous instance.  Only ONE restart can be pending.
-     */
-    const scheduleStart = (delay: number) => {
-      cancelRestart();
-      restartTimer.current = setTimeout(() => {
-        restartTimer.current = null;
-        if (!listeningRef.current || genRef.current !== gen) return;
-
-        killRec();                        // ensure nothing lingering
-        const r = makeRec();
-        if (!r) return;
-        recRef.current = r;
-
-        r.onresult = (e: any) => {
-          netErrCount.current = 0;        // got results — connection is healthy
-          let finalText = '';
-          for (let i = e.resultIndex; i < e.results.length; i++) {
-            if (e.results[i].isFinal) {
-              finalText += e.results[i][0].transcript;
-            }
-          }
-          if (finalText) {
-            console.debug('[mic] transcript:', finalText.slice(0, 60));
-            onResultRef.current(finalText);
-          }
-        };
-
-        r.onerror = (e: any) => {
-          console.debug('[mic] error:', e.error);
-          if (e.error === 'not-allowed') {
-            genRef.current++;
-            listeningRef.current = false;
-            setListening(false);
-            cancelRestart();
-            killRec();
-            return;
-          }
-          if (e.error === 'network') {
-            netErrCount.current++;
-            if (netErrCount.current > 3) {
-              console.debug('[mic] too many network errors, giving up');
-              genRef.current++;
-              listeningRef.current = false;
-              setListening(false);
-              cancelRestart();
-              killRec();
-              return;
-            }
-          }
-          /* Do NOT restart here — onend always fires after onerror
-             and will handle the restart.  Restarting from both causes
-             two competing instances → more network errors. */
-        };
-
-        r.onend = () => {
-          console.debug('[mic] onend, listening=', listeningRef.current, 'gen=', genRef.current === gen);
-          if (listeningRef.current && genRef.current === gen) {
-            /* Delay restart so Chrome fully tears down the connection.
-               Longer delay after network errors to let things settle. */
-            const d = netErrCount.current > 0 ? 800 : 300;
-            console.debug('[mic] scheduling restart in', d, 'ms');
-            scheduleStart(d);
-          }
-        };
-
-        try {
-          r.start();
-          console.debug('[mic] started OK');
-        } catch (e) {
-          console.debug('[mic] start threw:', e);
-          listeningRef.current = false;
-          setListening(false);
-          cancelRestart();
-          killRec();
-        }
-      }, delay);
-    };
-
-    listeningRef.current = true;
-    setListening(true);
-    scheduleStart(50);                     // tiny initial delay
-  }, [killRec, makeRec, cancelRestart]);
-
-  const toggle = useCallback(() => {
-    if (listening) {
-      stop();
-    } else {
-      start();
-    }
-  }, [listening, start, stop]);
-
-  /* Cleanup on unmount */
-  useEffect(() => {
-    return () => {
-      genRef.current++;
-      listeningRef.current = false;
-      cancelRestart();
-      killRec();
-    };
-  }, [killRec]);
-
-  return { listening, toggle, supported: !!SpeechRecognition };
-}
-
-
 
 /* ------------------------------------------------------------------ */
 /*  Progress bar                                                      */
@@ -563,13 +381,28 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
     }
   }, [messages]);
 
-  /* voice recognition */
+  /* voice recording — MediaRecorder + Whisper transcription */
   const handleVoiceResult = useCallback((text: string) => {
     setInput((prev) => (prev ? `${prev} ${text}` : text));
     textareaRef.current?.focus();
   }, []);
 
-  const { listening, toggle: toggleMic, supported: micSupported } = useSpeechRecognition(handleVoiceResult);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  const {
+    recording: listening,
+    transcribing,
+    toggle: toggleMic,
+    supported: micSupported,
+  } = useVoiceRecorder({
+    apiBase: API_BASE,
+    token: token ?? '',
+    onTranscript: handleVoiceResult,
+    onError: (err) => {
+      setVoiceError(err);
+      setTimeout(() => setVoiceError(null), 4000);
+    },
+  });
 
   /* ---- Load existing state on mount ---- */
   useEffect(() => {
@@ -915,27 +748,35 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
           {micSupported && (
             <button
               onClick={toggleMic}
-              title={listening ? 'Stop listening' : 'Start voice input'}
+              title={transcribing ? 'Transcribing...' : listening ? 'Stop recording' : 'Start voice input'}
               data-testid="mic-btn"
+              disabled={transcribing}
               style={{
                 width: '44px',
                 height: '44px',
                 borderRadius: '50%',
                 border: 'none',
-                background: listening ? '#EF4444' : '#334155',
+                background: transcribing ? '#F59E0B' : listening ? '#EF4444' : '#334155',
                 color: '#fff',
                 fontSize: '1.1rem',
-                cursor: 'pointer',
+                cursor: transcribing ? 'wait' : 'pointer',
                 flexShrink: 0,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 transition: 'background 0.2s',
-                animation: listening ? 'pulse 1.5s infinite' : 'none',
+                animation: listening ? 'pulse 1.5s infinite'
+                  : transcribing ? 'pulse-amber 1.5s infinite' : 'none',
+                opacity: transcribing ? 0.8 : 1,
               }}
             >
-              🎙️
+              {transcribing ? '⏳' : '🎙️'}
             </button>
+          )}
+          {voiceError && (
+            <span style={{ color: '#EF4444', fontSize: '0.75rem', position: 'absolute', bottom: '-18px', left: '56px' }}>
+              {voiceError}
+            </span>
           )}
 
           <textarea
@@ -946,7 +787,7 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
               autoGrow(e.target);
             }}
             onKeyDown={handleKeyDown}
-            placeholder={listening ? 'Listening...' : 'Type or tap the mic to speak...'}
+            placeholder={transcribing ? 'Transcribing...' : listening ? 'Recording...' : 'Type or tap the mic to speak...'}
             rows={1}
             disabled={sending}
             data-testid="questionnaire-input"
@@ -978,6 +819,11 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
           0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
           70% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
           100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+        }
+        @keyframes pulse-amber {
+          0% { box-shadow: 0 0 0 0 rgba(245,158,11,0.5); }
+          70% { box-shadow: 0 0 0 10px rgba(245,158,11,0); }
+          100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); }
         }
       `}</style>
     </div>

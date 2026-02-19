@@ -46,7 +46,8 @@ ignore_missing_imports = true
 # ── Pytest ───────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "Forge/IDE/tests"]
 markers = [
     "integration: tests requiring external services (database, cache, etc.)",
+    "ide_mcp: tests for forge_ide / MCP layer (run with -m ide_mcp)",
 ]

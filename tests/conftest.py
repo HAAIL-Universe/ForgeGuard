@@ -22,17 +22,63 @@ from app.main import app
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# IDE / MCP test-file classification (auto-applied markers)
+# ---------------------------------------------------------------------------
+
+_IDE_MCP_FILES: frozenset[str] = frozenset({
+    "test_agent.py",
+    "test_contract_gitlock.py",
+    "test_forge_mcp.py",
+    "test_invariant_gates.py",
+    "test_mcp_api.py",
+    "test_mcp_artifact_store.py",
+    "test_mcp_project_tools.py",
+    "test_patch_retarget.py",
+    "test_session_journal.py",
+    "test_subagent.py",
+    "test_task_dag.py",
+    "test_tool_executor.py",
+    "test_workspace_snapshot.py",
+})
+
+
 def pytest_configure(config):
     """Register custom markers.
 
     Tests that need real external services (database, Redis, etc.) should be
     decorated with ``@pytest.mark.integration``.  In CI / sandbox environments
     run pytest with ``-m 'not integration'`` to skip them automatically.
+
+    The ``ide_mcp`` marker is auto-applied to test files that exercise the
+    ``forge_ide`` package or MCP layer.  Use ``-m ide_mcp`` to run only
+    those tests, or ``-m 'not ide_mcp'`` for the app-only bulk.
     """
     config.addinivalue_line(
         "markers",
         "integration: tests requiring external services (database, cache, etc.)",
     )
+    config.addinivalue_line(
+        "markers",
+        "ide_mcp: tests for forge_ide / MCP layer (run with -m ide_mcp)",
+    )
+
+
+def pytest_collection_modifyitems(items):
+    """Auto-apply ``ide_mcp`` marker based on filename.
+
+    Every test item whose containing file is listed in ``_IDE_MCP_FILES``
+    (or lives under ``Forge/IDE/tests``) gets the marker automatically.
+    """
+    ide_mcp_mark = pytest.mark.ide_mcp
+    for item in items:
+        fname = item.path.name  # e.g. "test_agent.py"
+        # Explicit list from tests/
+        if fname in _IDE_MCP_FILES:
+            item.add_marker(ide_mcp_mark)
+        # Everything under Forge/IDE/tests is also IDE
+        elif "Forge" in str(item.path) and "IDE" in str(item.path):
+            item.add_marker(ide_mcp_mark)
 
 
 @pytest.fixture(scope="session")

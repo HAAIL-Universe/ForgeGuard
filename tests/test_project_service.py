@@ -209,7 +209,7 @@ async def test_process_questionnaire_already_complete(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator._generate_greenfield_contract_with_tools", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.manager.send_to_user", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
@@ -296,7 +296,7 @@ async def test_cancel_contract_generation_success(mock_project):
 
 
 @pytest.mark.asyncio
-@patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
+@patch("app.services.project.contract_generator._generate_greenfield_contract_with_tools", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.manager.send_to_user", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)

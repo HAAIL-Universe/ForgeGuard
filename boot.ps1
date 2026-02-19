@@ -139,6 +139,7 @@ if ($migrationFiles.Count -gt 0) {
   if ($match) { $dbUrl = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'") }
 
   if ($dbUrl -and $psqlCmd) {
+    # ── Preferred: run via psql ──
     $failCount = 0
     foreach ($mf in $migrationFiles) {
       & psql $dbUrl -f $mf.FullName 2>&1 | Out-Null
@@ -146,9 +147,41 @@ if ($migrationFiles.Count -gt 0) {
     }
     if ($failCount -eq 0) { Ok "All $($migrationFiles.Count) migrations applied." }
     else { Warn "$failCount migration(s) may have already been applied." }
+  } elseif ($dbUrl) {
+    # ── Fallback: run via Python + asyncpg ──
+    Info "psql not found — running migrations via Python..."
+    $pyMigrate = Join-Path $root "_migrate.py"
+    if (Test-Path $pyMigrate) {
+      & $pip_python $pyMigrate $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
+      if ($LASTEXITCODE -eq 0) { Ok "All migrations applied via Python." }
+      else { Warn "Some migrations may have failed — check output above." }
+    } else {
+      # Inline one-shot: read each .sql and execute via asyncpg
+      $migScript = @"
+import sys, asyncio, asyncpg
+async def main():
+    url = sys.argv[1]
+    files = sys.argv[2:]
+    conn = await asyncpg.connect(url)
+    fail = 0
+    for f in files:
+        try:
+            sql = open(f, encoding='utf-8').read()
+            await conn.execute(sql)
+        except Exception as e:
+            print(f'  [warn] {f}: {e}')
+            fail += 1
+    await conn.close()
+    if fail: print(f'{fail} migration(s) may have already been applied.')
+    else: print(f'All {len(files)} migrations applied.')
+asyncio.run(main())
+"@
+      & $pip_python -c $migScript $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
+      if ($LASTEXITCODE -eq 0) { Ok "Migrations applied via Python/asyncpg." }
+      else { Warn "Some migrations may have failed — check output above." }
+    }
   } else {
-    Warn "Cannot run migrations automatically."
-    Warn "Run: psql `$DATABASE_URL -f db/migrations/<file>.sql for each migration"
+    Warn "Cannot run migrations — DATABASE_URL not found in .env"
   }
 } else {
   Warn "No migration files found in db/migrations/"

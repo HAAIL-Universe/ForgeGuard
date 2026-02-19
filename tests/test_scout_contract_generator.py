@@ -9,8 +9,10 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.services.project.scout_contract_generator import (
+    _extract_context_data,
     _format_scout_context_for_prompt,
     _generate_scout_contract_content,
+    _generate_scout_contract_with_tools,
     generate_contracts_from_scout,
 )
 from app.services.project.contract_generator import (
@@ -110,6 +112,7 @@ _BASE_SCOUT_RESULTS = {
     "warnings": [],
     "tree_size": 42,
     "files_analysed": 15,
+    "renovation_plan": _SAMPLE_RENOVATION,
 }
 
 _PROJECT = {
@@ -453,6 +456,50 @@ async def test_duplicate_generation_guard():
         _active_generations.pop(str(PROJECT_ID), None)
 
 
+@pytest.mark.asyncio
+async def test_no_renovation_plan_raises():
+    """Renovation plan is mandatory — missing plan should raise ValueError."""
+    _active_generations.pop(str(PROJECT_ID), None)
+    results_no_reno = {k: v for k, v in _BASE_SCOUT_RESULTS.items() if k != "renovation_plan"}
+    run = {**_SCOUT_RUN, "results": results_no_reno}
+    with (
+        patch(
+            "app.services.project.scout_contract_generator.get_project_by_id",
+            new_callable=AsyncMock,
+            return_value=_PROJECT,
+        ),
+        patch(
+            "app.services.project.scout_contract_generator.get_scout_run",
+            new_callable=AsyncMock,
+            return_value=run,
+        ),
+    ):
+        with pytest.raises(ValueError, match="renovation plan"):
+            await generate_contracts_from_scout(USER_ID, PROJECT_ID, RUN_ID)
+
+
+@pytest.mark.asyncio
+async def test_empty_renovation_plan_raises():
+    """Empty renovation plan dict should also raise ValueError."""
+    _active_generations.pop(str(PROJECT_ID), None)
+    results_empty_reno = {**_BASE_SCOUT_RESULTS, "renovation_plan": {}}
+    run = {**_SCOUT_RUN, "results": results_empty_reno}
+    with (
+        patch(
+            "app.services.project.scout_contract_generator.get_project_by_id",
+            new_callable=AsyncMock,
+            return_value=_PROJECT,
+        ),
+        patch(
+            "app.services.project.scout_contract_generator.get_scout_run",
+            new_callable=AsyncMock,
+            return_value=run,
+        ),
+    ):
+        with pytest.raises(ValueError, match="renovation plan"):
+            await generate_contracts_from_scout(USER_ID, PROJECT_ID, RUN_ID)
+
+
 # ---------------------------------------------------------------------------
 # generate_contracts_from_scout — happy path
 # ---------------------------------------------------------------------------
@@ -463,6 +510,11 @@ def _mock_llm_response(ct: str) -> dict:
         "text": f"# {ct} generated from scout",
         "usage": {"input_tokens": 50, "output_tokens": 100},
     }
+
+
+def _mock_tool_use_response(ct: str):
+    """Return (content, usage) matching _generate_scout_contract_with_tools signature."""
+    return (f"# {ct} generated from scout", {"input_tokens": 50, "output_tokens": 100})
 
 
 @pytest.mark.asyncio
@@ -511,11 +563,9 @@ async def test_happy_path_generates_all_nine_contracts():
             "app.services.project.scout_contract_generator.store_artifact",
         ) as mock_store,
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            side_effect=lambda **kw: _mock_llm_response(
-                kw.get("messages", [{}])[0].get("content", "unknown")[:20]
-            ),
+            side_effect=lambda **kw: _mock_tool_use_response(kw.get("contract_type", "?")),
         ),
         patch(
             "app.services.project.scout_contract_generator.settings",
@@ -581,12 +631,9 @@ async def test_ws_progress_events_sent():
         ),
         patch("app.services.project.scout_contract_generator.store_artifact"),
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            return_value={
-                "text": "content",
-                "usage": {"input_tokens": 10, "output_tokens": 20},
-            },
+            return_value=("content", {"input_tokens": 10, "output_tokens": 20}),
         ),
         patch(
             "app.services.project.scout_contract_generator.settings",
@@ -658,12 +705,9 @@ async def test_resume_skips_existing_contracts():
         ),
         patch("app.services.project.scout_contract_generator.store_artifact"),
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            return_value={
-                "text": "new content",
-                "usage": {"input_tokens": 10, "output_tokens": 20},
-            },
+            return_value=("new content", {"input_tokens": 10, "output_tokens": 20}),
         ) as mock_llm,
         patch(
             "app.services.project.scout_contract_generator.settings",
@@ -737,12 +781,9 @@ async def test_mcp_store_called_with_correct_args():
             side_effect=capture_store,
         ),
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            return_value={
-                "text": "content",
-                "usage": {"input_tokens": 10, "output_tokens": 20},
-            },
+            return_value=("content", {"input_tokens": 10, "output_tokens": 20}),
         ),
         patch(
             "app.services.project.scout_contract_generator.settings",
@@ -805,12 +846,9 @@ async def test_update_project_status_called():
         ),
         patch("app.services.project.scout_contract_generator.store_artifact"),
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            return_value={
-                "text": "content",
-                "usage": {"input_tokens": 10, "output_tokens": 20},
-            },
+            return_value=("content", {"input_tokens": 10, "output_tokens": 20}),
         ),
         patch(
             "app.services.project.scout_contract_generator.settings",
@@ -871,12 +909,9 @@ async def test_results_as_json_string():
         ),
         patch("app.services.project.scout_contract_generator.store_artifact"),
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            return_value={
-                "text": "content",
-                "usage": {"input_tokens": 10, "output_tokens": 20},
-            },
+            return_value=("content", {"input_tokens": 10, "output_tokens": 20}),
         ),
         patch(
             "app.services.project.scout_contract_generator.settings",
@@ -934,12 +969,9 @@ async def test_active_generation_cleaned_up_on_success():
         ),
         patch("app.services.project.scout_contract_generator.store_artifact"),
         patch(
-            "app.services.project.scout_contract_generator.llm_chat_streaming",
+            "app.services.project.scout_contract_generator._generate_scout_contract_with_tools",
             new_callable=AsyncMock,
-            return_value={
-                "text": "content",
-                "usage": {"input_tokens": 10, "output_tokens": 20},
-            },
+            return_value=("content", {"input_tokens": 10, "output_tokens": 20}),
         ),
         patch(
             "app.services.project.scout_contract_generator.settings",

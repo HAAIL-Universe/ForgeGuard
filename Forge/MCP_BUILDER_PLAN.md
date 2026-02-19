@@ -807,3 +807,1300 @@ Builder calls: forge_scratchpad("read", "known_issues")
    Should we create a `builder_contract_slim.md` (~3KB) with the essential
    rules, available via `forge_get_contract("builder_contract")`? Or keep
    the full 38KB version as a reference the builder can optionally fetch?
+
+
+---
+
+# Phase E-H: MCP as Governed Context Broker
+
+> **Status**: Planning -- all prior phases (0-D) are **complete** and gated
+> behind `USE_MCP_CONTRACTS = False`.
+
+## 12. Problem Statement
+
+Three systems hold contract data and **don't talk to each other**:
+
+| System | What it holds | Scope | Lifetime |
+|--------|--------------|-------|----------|
+| MCP governance tools (`forge_ide/mcp/local.py`) | Static `.md` / `.json` / `.yaml` files from `Forge/Contracts/` | Global -- same for every user/project | Permanent (filesystem) |
+| PostgreSQL (`project_contracts`, `contract_snapshots`) | Per-project generated contracts with version history | Per-user, per-project | Persistent (DB) |
+| Artifact store (`forge_ide/mcp/artifact_store.py`) | Process-local KV store keyed by `project:{id}:...` | Per-project (in key) | In-memory (24h TTL) + disk |
+
+**The result**: sub-agents get static filesystem contracts that are identical
+for every project, while the *actual* project-specific generated contracts sit
+in the database untouched during builds.  The artifact store has a project-id
+concept but is disconnected from the DB.
+
+### What we want
+
+MCP becomes the **single gateway** for all contract data.  Any agent
+(IDE, build sub-agent, audit engine) calls MCP to get the right contracts
+for the right project -- **on demand, not upfront**.  Per-user, per-project,
+per-build scoping.  Principle of least privilege extended from tools (Layer 1)
+to **context** (Layer 2).
+
+```
++----------+   forge_get_project_contract(project_id, "stack")
+| Sub-Agent | -----------------------------------------------------> +-----------+
+| (Scout)   |<----------------------------------------------------- | MCP Server|
++----------+   { content: "...", version: 3, source: "db" }        |           |
+                                                                     |  dispatch |
++----------+   forge_get_project_contract(project_id, "physics")    |     |     |
+| Sub-Agent | -----------------------------------------------------> |     v     |
+| (Coder)   |<----------------------------------------------------- |  HTTP to  |
++----------+   { content: "...", version: 3, source: "db" }        | ForgeGuard|
+                                                                     |   API     |
++----------+   forge_get_build_contracts(build_id)                  |     |     |
+| Sub-Agent | -----------------------------------------------------> |     v     |
+| (Fixer)   |<----------------------------------------------------- | PostgreSQL|
++----------+   { contracts: [...], batch: 7, pinned: true }        +-----------+
+```
+
+### Token savings
+
+| Scenario | Current (push) | Proposed (pull) | Savings |
+|----------|---------------|-----------------|---------|
+| Scout turn | ~27K tokens (all contracts in system prompt) | ~4K (manifesto + summary, lazy-load 1-2 more) | **~85%** |
+| Coder turn | ~27K tokens | ~6K (stack + physics + boundaries on demand) | **~78%** |
+| Auditor turn | ~27K tokens | ~5K (boundaries + physics) | **~81%** |
+| Fixer turn | ~27K tokens | ~2K (only audit findings, contracts cited) | **~93%** |
+
+---
+
+## 13. Architecture
+
+### 13.1 Data flow
+
+```
+                    +----------------------------------------------+
+                    |            ForgeGuard API (FastAPI)           |
+                    |                                               |
+                    |  GET /api/projects/{pid}/contracts            |  <-- already exists
+                    |  GET /api/projects/{pid}/contracts/{type}     |  <-- already exists
+                    |  GET /api/projects/{pid}/contracts/history/N  |  <-- already exists
+                    |  ------------------------------------------- |
+                    |  GET /api/mcp/context/{pid}        (NEW)     |  <-- combined context
+                    |  GET /api/mcp/context/{pid}/{type}  (NEW)    |  <-- single contract
+                    |  GET /api/mcp/build/{bid}/contracts  (NEW)   |  <-- pinned snapshot
+                    +----------------------+-----------------------+
+                                           |
+                                    PostgreSQL
+                              +------------+------------+
+                              |                         |
+                       project_contracts         contract_snapshots
+                       (live, versioned)         (pinned per build)
+```
+
+### 13.2 MCP dispatch routing (updated)
+
+Current routing:
+
+```python
+# tools.py dispatch()
+if name in _ARTIFACT_TOOLS:   # -> in-process artifact_store
+elif LOCAL_MODE:               # -> local disk (Forge/Contracts/)
+else:                          # -> remote API (ForgeGuard /forge/*)
+```
+
+New routing adds a **project-scoped** tier:
+
+```python
+# tools.py dispatch() -- Phase E
+if name in _ARTIFACT_TOOLS:        # -> in-process artifact_store
+elif name in _PROJECT_TOOLS:       # -> ForgeGuard API /api/mcp/* (NEW)
+elif LOCAL_MODE:                   # -> local disk (Forge/Contracts/)
+else:                              # -> remote API (ForgeGuard /forge/*)
+```
+
+**Key design decision**: project-scoped tools **always** go to the
+ForgeGuard API, never to local disk.  This is because project contracts
+only exist in the database -- there is no local-disk equivalent.
+
+### 13.3 Auth context
+
+The MCP server needs to authenticate against ForgeGuard when fetching
+project-scoped data.  Two mechanisms:
+
+1. **API key** (already exists): `FORGEGUARD_API_KEY` env var -> `Authorization: Bearer {key}`.
+   ForgeGuard already has forge-key management at `/auth/forge-keys`.
+   The MCP server is treated as an internal service with a service-scoped key.
+
+2. **Session context** (new): The build orchestrator passes `project_id` and
+   `build_id` when spawning the MCP server / configuring the session.
+   These are injected as **session-level defaults** so sub-agents don't need
+   to pass them explicitly on every call (but can override).
+
+```python
+# New: forge_ide/mcp/session.py
+@dataclass
+class MCPSession:
+    project_id: str | None = None
+    build_id: str | None = None
+    user_id: str | None = None
+
+_session = MCPSession()
+
+def set_session(project_id: str, build_id: str | None = None, user_id: str | None = None):
+    _session.project_id = project_id
+    _session.build_id = build_id
+    _session.user_id = user_id
+
+def get_session() -> MCPSession:
+    return _session
+```
+
+---
+
+## 14. New MCP Tools
+
+### 14.1 Project-scoped contract tools
+
+| Tool | Description | Input | Output |
+|------|-------------|-------|--------|
+| `forge_get_project_contract` | Fetch a single generated contract for the current project | `project_id` (optional if session set), `contract_type` | `{ content, version, contract_type, source: "db" }` |
+| `forge_list_project_contracts` | List all generated contracts for the current project | `project_id` (optional) | `{ items: [{ contract_type, version, updated_at }] }` |
+| `forge_get_project_context` | Combined manifest: project info + list of available contracts + key metrics | `project_id` (optional) | `{ project: {...}, contracts: [...], build_count, latest_batch }` |
+| `forge_get_build_contracts` | Fetch the pinned contract snapshot for a specific build | `build_id` | `{ items: [{ contract_type, content }], batch, pinned_at }` |
+
+### 14.2 Session management tool
+
+| Tool | Description | Input | Output |
+|------|-------------|-------|--------|
+| `forge_set_session` | Set session-level defaults (called once by build orchestrator) | `project_id`, `build_id?`, `user_id?` | `{ ok: true, project_id, build_id }` |
+
+### 14.3 Relationship to existing tools
+
+| Existing tool | Serves | Keep / Replace |
+|---------------|--------|----------------|
+| `forge_get_contract(name)` | Static `Forge/Contracts/` files | **Keep** -- these are the generic governance templates (reference architecture) |
+| `forge_get_project_contract(type)` | Per-project DB contracts | **New** -- these are the project-specific generated versions |
+| `forge_get_artifact(...)` | Process-local temp store | **Keep** -- for ephemeral build artifacts (scout dossiers, phase outputs) |
+
+**Contract resolution order** for sub-agents:
+1. If `project_id` is set -> fetch from DB via `forge_get_project_contract`
+2. Fallback -> generic template via `forge_get_contract`
+3. For ephemeral build data -> artifact store via `forge_get_artifact`
+
+This gives us a three-tier hierarchy:
+- **Generic templates** (`Forge/Contracts/`) -- the reference architecture, same for everyone
+- **Project contracts** (PostgreSQL) -- generated per-project from questionnaire, versioned
+- **Build artifacts** (artifact store) -- ephemeral per-build outputs, TTL'd
+
+---
+
+## 15. ForgeGuard API Endpoints (New)
+
+Three new endpoints under `/api/mcp/` -- thin wrappers around existing
+`project_repo` functions with forge-key auth.
+
+### 15.1 `GET /api/mcp/context/{project_id}`
+
+Returns combined project context manifest:
+
+```json
+{
+  "project": {
+    "id": "uuid",
+    "name": "MyProject",
+    "status": "contracts_generated"
+  },
+  "contracts": [
+    { "contract_type": "manifesto", "version": 3, "size_chars": 2400, "updated_at": "..." },
+    { "contract_type": "stack", "version": 2, "size_chars": 1800, "updated_at": "..." }
+  ],
+  "latest_batch": 7,
+  "build_count": 3
+}
+```
+
+Note: returns **metadata only**, not full content.  Sub-agents decide which
+contracts to fetch based on this manifest.
+
+### 15.2 `GET /api/mcp/context/{project_id}/{contract_type}`
+
+Returns full contract content:
+
+```json
+{
+  "contract_type": "stack",
+  "content": "# Technology Stack\n...",
+  "version": 2,
+  "project_id": "uuid",
+  "source": "project_db"
+}
+```
+
+### 15.3 `GET /api/mcp/build/{build_id}/contracts`
+
+Returns the pinned contract snapshot for a build:
+
+```json
+{
+  "build_id": "uuid",
+  "batch": 7,
+  "pinned_at": "2025-01-15T10:30:00Z",
+  "contracts": [
+    { "contract_type": "manifesto", "content": "..." },
+    { "contract_type": "stack", "content": "..." }
+  ]
+}
+```
+
+**Immutability guarantee**: once a build starts and pins a batch, the
+snapshot is frozen.  Mid-build contract edits don't affect running builds.
+
+### 15.4 Auth
+
+All `/api/mcp/*` endpoints require a valid forge-key (`Authorization: Bearer {key}`).
+The forge-key is already scoped to a user in the `forge_keys` table.
+The endpoint validates that the user owning the key has access to the
+requested project.
+
+---
+
+## 16. Sub-Agent Integration
+
+### 16.1 Per-role contract access patterns
+
+Building on the existing `_ROLE_TOOL_NAMES` in `subagent.py`, each role gets
+access to different project-scoped tools:
+
+```python
+_ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
+    SubAgentRole.SCOUT: frozenset({
+        "read_file", "list_directory", "search_code",
+        # Static governance
+        "forge_get_contract", "forge_list_contracts", "forge_get_summary",
+        # Project-scoped (NEW)
+        "forge_get_project_contract",     # full read of any project contract
+        "forge_list_project_contracts",   # see what's available
+        "forge_get_project_context",      # combined manifest
+        # Existing
+        "forge_get_phase_window", "forge_scratchpad",
+    }),
+    SubAgentRole.CODER: frozenset({
+        "read_file", "list_directory", "search_code",
+        "write_file", "edit_file", "check_syntax", "run_command",
+        # Project-scoped (NEW) -- focused on implementation contracts
+        "forge_get_project_contract",     # stack, physics, boundaries
+        "forge_list_project_contracts",
+        # Existing
+        "forge_get_contract", "forge_get_phase_window",
+        "forge_list_contracts", "forge_get_summary", "forge_scratchpad",
+    }),
+    SubAgentRole.AUDITOR: frozenset({
+        "read_file", "list_directory", "search_code",
+        # Project-scoped (NEW) -- compliance verification
+        "forge_get_project_contract",     # boundaries, physics for checks
+        "forge_list_project_contracts",
+        # Existing
+        "forge_get_contract", "forge_list_contracts",
+        "forge_get_summary", "forge_scratchpad",
+    }),
+    SubAgentRole.FIXER: frozenset({
+        "read_file", "list_directory", "search_code",
+        "edit_file", "check_syntax",
+        # Project-scoped (NEW) -- pinned build snapshot only
+        "forge_get_build_contracts",      # immutable reference
+        # Existing
+        "forge_scratchpad",
+    }),
+}
+```
+
+### 16.2 Context injection strategy per role
+
+Instead of stuffing all contracts into the system prompt, each sub-agent gets
+a **minimal brief** with instructions to pull what it needs:
+
+**Scout prompt template:**
+```
+You are a Scout for project {project_id}.
+Available contracts: {contract_list_from_manifest}
+START by calling forge_get_project_contract("manifesto") and
+forge_get_project_contract("stack") to understand the project.
+Fetch additional contracts as needed for your analysis.
+```
+
+**Coder prompt template:**
+```
+You are a Coder for project {project_id}, build {build_id}.
+Phase: {phase_number} -- {phase_name}
+Before writing code, fetch the relevant contracts:
+- forge_get_project_contract("stack") for tech requirements
+- forge_get_project_contract("physics") for API spec
+- forge_get_project_contract("boundaries") for architecture rules
+Only fetch what you need for this phase's deliverables.
+```
+
+**Auditor prompt template:**
+```
+You are an Auditor for project {project_id}, build {build_id}.
+Verify code against these contracts (fetch as needed):
+- forge_get_project_contract("boundaries") -- architecture rules
+- forge_get_project_contract("physics") -- API compliance
+Report violations with contract references.
+```
+
+**Fixer prompt template:**
+```
+You are a Fixer for build {build_id}.
+Audit findings: {findings_summary}
+The build's pinned contracts are available via forge_get_build_contracts("{build_id}").
+Fix ONLY the cited violations. Do not refactor.
+```
+
+### 16.3 Build loop integration
+
+The build orchestrator (`build_service.py`) changes:
+
+```python
+# Before spawning sub-agents:
+# 1. Snapshot contracts for this build
+batch = await snapshot_contracts(project_id)
+await set_build_contract_batch(build_id, batch)
+
+# 2. Set MCP session context
+await mcp_dispatch("forge_set_session", {
+    "project_id": str(project_id),
+    "build_id": str(build_id),
+    "user_id": str(user_id),
+})
+
+# 3. Spawn sub-agents -- they inherit session context
+#    and pull contracts on-demand via forge_get_project_contract
+scout_result = await run_sub_agent(
+    SubAgentHandoff(role=SubAgentRole.SCOUT, ...),
+    ...
+)
+```
+
+---
+
+## 17. Implementation Steps
+
+### Phase E: MCP Project Tools + ForgeGuard Endpoints
+
+**Goal**: MCP can serve project-scoped contracts from the database.
+
+| # | Task | File(s) | Depends |
+|---|------|---------|---------|
+| E1 | Create `forge_ide/mcp/session.py` -- session dataclass + get/set | `session.py` | -- |
+| E2 | Create `forge_ide/mcp/project.py` -- project-scoped tool handlers that call ForgeGuard API | `project.py` | E1 |
+| E3 | Add 5 new tool definitions to `forge_ide/mcp/tools.py` | `tools.py` | E2 |
+| E4 | Update `dispatch()` routing -- add `_PROJECT_TOOLS` set | `tools.py` | E3 |
+| E5 | Add `GET /api/mcp/context/{pid}` endpoint | `app/api/routers/mcp.py` (new) | -- |
+| E6 | Add `GET /api/mcp/context/{pid}/{type}` endpoint | `app/api/routers/mcp.py` | E5 |
+| E7 | Add `GET /api/mcp/build/{bid}/contracts` endpoint | `app/api/routers/mcp.py` | E5 |
+| E8 | Forge-key auth middleware for `/api/mcp/*` routes | `app/api/routers/mcp.py` | E5 |
+| E9 | Tests: MCP project tools unit tests | `tests/test_mcp_project_tools.py` | E1-E4 |
+| E10 | Tests: MCP API endpoint integration tests | `tests/test_mcp_api.py` | E5-E8 |
+
+### Phase F: Sub-Agent Prompt Redesign
+
+**Goal**: Sub-agents use pull model instead of push.  System prompts shrink
+from ~27K tokens to ~2-6K.
+
+| # | Task | File(s) | Depends |
+|---|------|---------|---------|
+| F1 | Add project-scoped tools to `_ROLE_TOOL_NAMES` in `subagent.py` | `subagent.py` | E3 |
+| F2 | Create per-role prompt templates with pull instructions | `subagent.py` or `app/templates/` | E3 |
+| F3 | Update `build_context_pack()` to include project manifest (metadata only) | `subagent.py` | E2 |
+| F4 | Add `forge_get_project_contract` + `forge_get_build_contracts` to `tool_executor.py` | `tool_executor.py` | E2 |
+| F5 | Tests: sub-agent prompt token measurement (assert < 6K per role) | `tests/test_subagent.py` | F1-F3 |
+
+### Phase G: Build Loop Integration
+
+**Goal**: Build orchestrator snapshots contracts, sets MCP session,
+sub-agents pull from DB throughout the build.
+
+| # | Task | File(s) | Depends |
+|---|------|---------|---------|
+| G1 | Call `snapshot_contracts()` at build start in `build_service.py` | `build_service.py` | -- |
+| G2 | Call `forge_set_session()` before spawning sub-agents | `build_service.py` | E1 |
+| G3 | Pass `build_id` to fixer sub-agents for pinned snapshot access | `build_service.py`, `subagent.py` | E3, G1 |
+| G4 | Contract cache in MCP remote client (avoid re-fetching same contract per build) | `forge_ide/mcp/remote.py` | E2 |
+| G5 | Add build-level contract usage telemetry (which contracts each role fetched) | `subagent.py` | F1 |
+| G6 | Tests: end-to-end build with pull model (mock DB) | `tests/test_build_pull_model.py` | G1-G3 |
+
+### Phase H: Flip the Switch + IDE Integration
+
+**Goal**: Enable the full MCP pull model and connect IDE MCP tools
+to project-scoped contracts.
+
+| # | Task | File(s) | Depends |
+|---|------|---------|---------|
+| H1 | Set `USE_MCP_CONTRACTS = True` as default | `app/config.py` | G6 |
+| H2 | Update IDE MCP tool definitions for project-scoped access | `forge_ide/mcp/tools.py` | E3 |
+| H3 | IDE session init: set project_id when user opens project | `forge_ide/agent.py` | E1 |
+| H4 | Remove legacy "dump all contracts in system prompt" code path | `build_service.py` | H1 |
+| H5 | Documentation update | `README.md`, `Forge/MCP_BUILDER_PLAN.md` | H1-H4 |
+| H6 | Token usage comparison: before/after metrics | -- | H1 |
+
+---
+
+## 18. Migration Path (E-H)
+
+### Step 1: Shadow mode (Phase E-F complete)
+
+Project-scoped tools are available but optional.  The build orchestrator
+continues to push contracts into prompts (existing behaviour) AND sets
+the MCP session.  Sub-agents may call project tools but don't rely on them.
+
+This lets us verify:
+- MCP -> ForgeGuard API -> DB round-trip works
+- Contract content matches what was previously pushed
+- No auth/permission issues
+
+### Step 2: Dual mode (Phase G complete)
+
+`USE_MCP_CONTRACTS = True` enables the pull model.  Builds use the new
+slim prompts.  A telemetry flag compares token usage between old and new
+paths.  Rollback: set `USE_MCP_CONTRACTS = False`.
+
+### Step 3: Pull-only (Phase H complete)
+
+Legacy push code removed.  All sub-agents operate in pull mode.
+IDE agents also use project-scoped tools.
+
+---
+
+## 19. Contract Resolution Hierarchy
+
+When a sub-agent needs a contract, the resolution follows this priority:
+
+```
+1. Build-pinned snapshot   (forge_get_build_contracts)
+   +-- Immutable.  Used by Fixer role.  Guarantees contract
+       consistency throughout a build's lifetime.
+
+2. Project DB contract     (forge_get_project_contract)
+   +-- Versioned.  Used by Scout/Coder/Auditor.  Always the
+       latest generated version for the project.
+
+3. Generic template        (forge_get_contract)
+   +-- Static reference.  Used when no project-specific
+       contract exists, or for cross-cutting governance
+       (builder_directive, auditor_prompt, etc.).
+
+4. Artifact store          (forge_get_artifact)
+   +-- Ephemeral build outputs.  Scout dossiers, phase
+       summaries, diff logs.  Not contracts -- supporting data.
+```
+
+---
+
+## 20. Risk Analysis (E-H)
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| MCP -> API latency adds ~100ms per tool call | Low | Cache in MCP remote client; contracts rarely change mid-build |
+| Sub-agent forgets to fetch contracts | Medium | "Must-read" gate: if turn 1 has no `forge_get_project_contract` calls, inject reminder (same pattern as Open Question #3) |
+| Contract version drift during long builds | Low | Snapshot pinning already solves this -- build gets batch N, edits to batch N+1 don't affect it |
+| Forge-key compromise gives access to all user contracts | Medium | Forge-keys are user-scoped; endpoint validates key-owner matches project-owner |
+| Process-local artifact store doesn't survive MCP restart | Low | Disk persistence already handles this; DB contracts are authoritative anyway |
+| Token savings less than projected | Low | Even pulling 4 of 9 contracts is 55% savings vs pushing all 9; floor is still significant |
+
+---
+
+## 21. Expected Token Flow (Per-Role)
+
+### Scout (reconnaissance)
+
+```
+Turn 0 (system)  : ~800 tokens  -- role brief + pull instructions
+Turn 1 (auto)    : forge_get_project_context(pid)         -> ~200 tokens (manifest)
+Turn 2 (auto)    : forge_get_project_contract("manifesto") -> ~600 tokens
+Turn 3 (auto)    : forge_get_project_contract("stack")     -> ~450 tokens
+Turn 4+          : reads files, runs search_code, writes dossier
+                   May lazy-load "blueprint" or "boundaries" if needed
+Total contract tokens: ~1,250 (vs ~27,000 in push model)
+```
+
+### Coder (implementation)
+
+```
+Turn 0 (system)  : ~600 tokens  -- role brief + phase deliverables
+Turn 1 (auto)    : forge_get_project_contract("stack")      -> ~450 tokens
+Turn 2 (auto)    : forge_get_project_contract("physics")    -> ~800 tokens
+Turn 3 (if needed): forge_get_project_contract("boundaries") -> ~500 tokens
+Turn 4+          : writes code, checks syntax
+Total contract tokens: ~1,750 (vs ~27,000)
+```
+
+### Auditor (verification)
+
+```
+Turn 0 (system)  : ~500 tokens  -- role brief + what to verify
+Turn 1 (auto)    : forge_get_project_contract("boundaries") -> ~500 tokens
+Turn 2 (auto)    : forge_get_project_contract("physics")    -> ~800 tokens
+Turn 3+          : read_file on generated code, report findings
+Total contract tokens: ~1,300 (vs ~27,000)
+```
+
+### Fixer (surgical repair)
+
+```
+Turn 0 (system)  : ~400 tokens  -- findings + fix instructions
+Turn 1 (if needed): forge_get_build_contracts(bid) -> specific cited contracts
+Turn 2+          : edit_file on violations
+Total contract tokens: ~0-800 (vs ~27,000)
+```
+
+---
+
+## 22. File Change Summary (Phase E-H)
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `forge_ide/mcp/session.py` | MCP session context (project_id, build_id, user_id) |
+| `forge_ide/mcp/project.py` | Project-scoped tool handlers -> ForgeGuard API calls |
+| `app/api/routers/mcp.py` | ForgeGuard API endpoints for MCP contract serving |
+| `tests/test_mcp_project_tools.py` | Unit tests for new MCP tools |
+| `tests/test_mcp_api.py` | Integration tests for new API endpoints |
+| `tests/test_build_pull_model.py` | End-to-end build with pull model |
+
+### Modified files
+
+| File | Changes |
+|------|---------|
+| `forge_ide/mcp/tools.py` | Add 5 tool definitions, `_PROJECT_TOOLS` set, updated `dispatch()` |
+| `forge_ide/mcp/remote.py` | Add `api_get_project_contract()`, `api_get_build_contracts()` |
+| `app/services/build/subagent.py` | Add project tools to `_ROLE_TOOL_NAMES`, new prompt templates |
+| `app/services/build/tool_executor.py` | Route new forge tools to MCP dispatch |
+| `app/services/build/build_service.py` | Snapshot + session init before sub-agents, slim prompts |
+| `app/config.py` | (Phase H) Flip `USE_MCP_CONTRACTS = True` |
+| `app/main.py` | Register `/api/mcp` router |
+
+---
+
+## 23. Open Questions (Phase E-H)
+
+1. **Should `forge_set_session` be a tool or an init parameter?**
+   As a tool, the orchestrator calls it as the first action.  As an init
+   param, it's passed when the MCP server subprocess is spawned.  Init param
+   is cleaner but requires changes to MCP server startup.
+
+2. **Should we add a `forge_get_project_contract` fallback to generic templates?**
+   If a project doesn't have a "boundaries" contract yet (e.g., contracts not
+   generated), should MCP automatically fall back to the generic
+   `Forge/Contracts/boundaries.json`?  Pro: never fails.  Con: may confuse
+   the agent into thinking project-specific contracts exist.
+
+3. **Cache invalidation**: If a user edits a contract mid-build (via UI),
+   the MCP cache should NOT update (build uses pinned snapshot).  But the
+   next build should see the edit.  The snapshot mechanism already handles
+   this -- just need to ensure the MCP cache TTL aligns.
+
+4. **Should the Fixer have access to `forge_get_project_contract` or only
+   `forge_get_build_contracts`?**  Current design restricts Fixer to pinned
+   snapshot only (immutability guarantee).  But this means the Fixer can't
+   see post-build contract edits, which is intentional.
+
+5. **Rate limiting on `/api/mcp/*` endpoints**: Sub-agents might call
+   `forge_get_project_contract` many times.  Should we add per-build rate
+   limits?  The cache should prevent actual DB hits, but we need telemetry
+   to confirm.
+
+6. **IDE session lifecycle**: When a user switches projects in the IDE,
+   should the MCP session auto-switch?  Or require explicit
+   `forge_set_session` call?  Auto-switch is more ergonomic.
+
+---
+
+---
+
+# Phase I — Tool-Use Contract Generation
+
+> **Status**: Planned — Not yet implemented.
+> **Supersedes**: Current snowball text-injection pattern in both
+> `contract_generator.py` (questionnaire flow) and
+> `scout_contract_generator.py` (Scout flow).
+>
+> **Why now**: Having built the Scout→Contract bridge and the MCP artifact
+> store, the remaining weakness in contract quality is the generation
+> mechanism itself.  Contracts are produced by sequential one-shot LLM
+> calls with raw text injection — not by agents that reason about what
+> context they actually need.
+
+---
+
+## 24. Current Contract Generation Architecture — The Problem
+
+### 24.1 The Snowball Text-Injection Pattern
+
+Both `contract_generator.py` (questionnaire / greenfield flow) and
+`scout_contract_generator.py` (Scout / existing-repo flow) use the same
+generation pattern:
+
+```
+for contract_type in CONTRACT_TYPES:          # 9 contracts, in order
+    user_message = (
+        intent_block                           # questionnaire answers OR scout context
+        + snowball_chain                       # ALL prior contracts, raw text
+    )
+    content = await llm_chat_streaming(
+        system_prompt=instructions[contract_type],
+        messages=[{"role": "user", "content": user_message}],
+    )
+    prior_contracts[contract_type] = content  # grows with each iteration
+```
+
+By the time `builder_directive` (contract #9) is generated, `user_message`
+contains up to **24,000 characters** of raw contract text injected as a
+single monolithic block — regardless of which parts of those contracts
+are actually relevant to a builder directive.
+
+### 24.2 The Token Cost
+
+| Contract | Prior contracts injected | Approx injected tokens |
+|----------|--------------------------|------------------------|
+| manifesto | none | 0 |
+| blueprint | manifesto | ~400 |
+| stack | manifesto + blueprint | ~850 |
+| schema | + stack | ~1,350 |
+| physics | + schema | ~2,150 |
+| boundaries | + physics | ~3,200 |
+| ui | + boundaries | ~4,600 |
+| phases | + ui | ~6,200 |
+| builder_directive | ALL 8 prior | **~8,500** (cap: 24K chars) |
+
+Each contract generation is a separate LLM call.  Across all 9 calls the
+system injects roughly **28–35K tokens** of prior-contract context that
+the LLM must re-read each time, even though most of it is irrelevant to
+the specific contract being generated.
+
+The `per_cap = 12_000` (chars per contract) and `total_budget = 24_000`
+(chars total injected per call) caps prevent catastrophic overflow, but
+they force early truncation — `builder_directive` may see truncated
+versions of `phases` and `ui` because the budget is exhausted before
+reaching them.
+
+### 24.3 The Selective Context Problem
+
+Contracts need different context.  What `boundaries` needs from prior
+contracts is fundamentally different from what `ui` needs:
+
+| Contract | What it actually needs from prior work |
+|----------|----------------------------------------|
+| **stack** | manifesto (philosophy) + blueprint (what to build) |
+| **schema** | blueprint (entities) + stack (ORM / DB choice) |
+| **physics** | schema (data shape) + stack (framework/router) |
+| **boundaries** | stack (layers) + physics (what endpoints exist) |
+| **ui** | blueprint (screens) + physics (API calls available) + stack (frontend tech) |
+| **phases** | ALL contracts — it must plan implementation of everything |
+| **builder_directive** | boundaries + phases + stack (what rules the builder must follow) |
+
+The snowball chain treats all prior contracts as equally valuable to all
+subsequent contracts.  An LLM generating `ui` receives the full `schema`
+(database tables) even though the UI contract cares only about the API
+endpoints in `physics`, not the underlying tables.
+
+### 24.4 The One-Shot Generation Problem
+
+Each contract is generated in a **single LLM call**.  The LLM cannot:
+- Ask for clarification on ambiguous scout data
+- Request the full architecture map when the truncated version is insufficient
+- Fetch a specific prior contract section without receiving the entire block
+- Iteratively refine based on what it discovers it needs
+
+The result is contracts that are internally consistent (because they see
+all prior contracts) but may miss depth and accuracy because the LLM had
+to reason about everything in a single pass without the ability to
+selectively investigate.
+
+---
+
+## 25. User Intent Equivalence Principle
+
+Before designing the tool-use architecture, it is critical to understand
+the conceptual equivalence between the two contract generation flows:
+
+```
+Greenfield (new project)          Scout (existing repo)
+─────────────────────────         ─────────────────────────
+User fills questionnaire          User triggers Scout deep-scan
+         ↓                                   ↓
+Questionnaire answers             Scout results + Renovation plan
+         ↓                                   ↓
+"What does the user want          "What does this repo need?
+ this project to become?"          What should it become?"
+         ↓                                   ↓
+Contract generator reads          Contract generator reads
+answers_text (formatted           scout_context (formatted
+questionnaire sections)           stack + arch + dossier)
+                                  + renovation_plan (REQUIRED)
+```
+
+### 25.1 The Renovation Plan Is Non-Negotiable for Scout Contracts
+
+In the greenfield flow, questionnaire answers ARE the user intent.  Without
+them, the generator has no product direction to work from.
+
+In the Scout flow, the **renovation plan** is the equivalent of questionnaire
+answers.  It contains:
+- `executive_brief.top_priorities` — what problems to solve first
+- `executive_brief.health_grade` — current state of the codebase
+- `executive_brief.forge_automation_note` — what Forge can automate
+- `migration_recommendations` — the ordered task list (from_state → to_state)
+- `version_report.outdated` — dependency upgrade targets
+- `executive_brief.risk_summary` — what risks the builder must navigate
+
+Without the renovation plan, the Scout contract generator is producing
+contracts for an existing codebase with **no target state defined**.  The
+contracts would describe "what the repo is" rather than "what it should
+become after the build" — which is the entire purpose of the builder_directive
+contract in particular.
+
+**Current state (BUG)**: `renovation_plan` is extracted as optional:
+```python
+# scout_contract_generator.py line 409
+renovation_plan: dict | None = raw_results.get("renovation_plan")
+```
+If `None`, the generator proceeds silently.  The renovation plan section
+is simply omitted from the scout context.
+
+**Required fix (Phase I1)**: Enforce renovation plan as a hard prerequisite:
+```python
+renovation_plan = raw_results.get("renovation_plan")
+if not renovation_plan:
+    raise ValueError(
+        "No renovation plan found for this scout run. "
+        "Generate a renovation plan first via POST /scout/runs/{run_id}/upgrade-plan "
+        "before generating contracts."
+    )
+```
+
+This mirrors the validation already applied for `scan_type == "deep"` and
+`status == "completed"` — the renovation plan is simply another completeness
+gate before contract generation can proceed.
+
+---
+
+## 26. Tool-Use Contract Generation Design
+
+### 26.1 Core Concept
+
+Instead of injecting a static block of context into the user message, each
+contract is generated by an **agent that calls tools to fetch exactly what
+it needs**, then calls `submit_contract(content)` when done.
+
+```
+System prompt  : "You are generating the {contract_type} contract.
+                  Use the tools to fetch the context you need.
+                  Call submit_contract(content) when you have the
+                  complete contract."
+
+Agent tools    : get_stack_profile()          → detected tech stack
+                 get_renovation_priorities()   → executive brief + top priorities
+                 get_migration_tasks()         → ordered migration task list
+                 get_project_dossier()         → executive summary, risks, recs
+                 get_compliance_checks()       → compliance check results
+                 get_architecture_map()        → full architecture dict (uncapped)
+                 get_prior_contract(type)      → specific prior-generated contract
+                 submit_contract(content)      → terminates the tool loop
+
+Tool-use loop  : multi-turn until stop_reason == "end_turn"
+                 OR submit_contract tool is called
+```
+
+The agent reasons about what context it needs for **this specific contract**,
+fetches only that, and produces a more focused and accurate output.
+
+For `boundaries`, it will typically call `get_stack_profile()`,
+`get_prior_contract("physics")`, and `get_prior_contract("stack")`.
+It will NOT request the architecture map unless the detected stack suggests
+it's relevant.
+
+For `builder_directive`, it will call `get_renovation_priorities()`,
+`get_migration_tasks()`, `get_prior_contract("boundaries")`, and
+`get_prior_contract("phases")` — exactly the context a builder directive
+needs.  It will not waste tokens reading the schema or UI contracts.
+
+### 26.2 Tool Definitions
+
+```python
+CONTEXT_TOOLS_SCOUT = [
+    {
+        "name": "get_stack_profile",
+        "description": (
+            "Get the detected technology stack for this repository. "
+            "Returns backend, frontend, testing, and infrastructure sections."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_renovation_priorities",
+        "description": (
+            "Get the executive brief from the renovation plan: health grade, "
+            "headline, top priorities, risk summary, and forge automation note. "
+            "This is the primary statement of WHAT the build should achieve."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_migration_tasks",
+        "description": (
+            "Get the ordered migration task list from the renovation plan. "
+            "Each task has from_state, to_state, priority, effort, and "
+            "forge_automatable flag. Use this to understand what the builder "
+            "must accomplish."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_project_dossier",
+        "description": (
+            "Get the LLM dossier from the Scout deep-scan: executive summary, "
+            "intent, quality assessment (strengths/weaknesses), risk areas, "
+            "and recommendations."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_compliance_checks",
+        "description": (
+            "Get the compliance check results from the Scout scan. "
+            "Returns check codes, names, results (pass/fail/warn), and details."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_architecture_map",
+        "description": (
+            "Get the full architecture map detected by Scout. Returns the "
+            "complete architecture dict (NOT truncated). Use this when the "
+            "architecture structure matters for the contract you're generating."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_prior_contract",
+        "description": (
+            "Fetch a previously generated contract by type. Use this to "
+            "ensure consistency with contracts already generated in this run. "
+            "Available types: manifesto, blueprint, stack, schema, physics, "
+            "boundaries, ui, phases (only those generated before this one)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "description": (
+                        "Contract type to fetch: manifesto | blueprint | stack | "
+                        "schema | physics | boundaries | ui | phases"
+                    ),
+                },
+            },
+            "required": ["contract_type"],
+        },
+    },
+    {
+        "name": "submit_contract",
+        "description": (
+            "Submit the completed contract content. Call this ONLY when you "
+            "have the complete, final contract ready. This terminates the "
+            "generation session. The content must be the full contract — "
+            "no preamble, no explanation, no code fences."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The complete contract content to submit.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+]
+```
+
+For the **greenfield / questionnaire flow**, the tool set is similar but
+replaces the Scout-specific context tools with questionnaire-oriented ones:
+
+```python
+CONTEXT_TOOLS_GREENFIELD = [
+    # get_project_intent()       → formatted questionnaire answers
+    # get_technical_preferences()→ tech stack section of questionnaire
+    # get_user_stories()         → features/requirements section
+    # get_prior_contract(type)   → same as Scout version
+    # submit_contract(content)   → same as Scout version
+]
+```
+
+The `submit_contract` tool is identical in both flows — it's the termination
+signal for the tool-use loop regardless of context source.
+
+### 26.3 The Tool-Use Execution Loop
+
+The `chat_anthropic` function in `app/clients/llm_client.py` already supports
+tool-use via its `tools` parameter (line 141).  When `tools` is provided, the
+function returns the **full raw API response** instead of the simplified
+`{"text": ..., "usage": ...}` dict.  The caller inspects `stop_reason` and
+`content` blocks to detect tool_use.
+
+```python
+async def _generate_contract_with_tools(
+    contract_type: str,
+    repo_name: str,
+    scout_data: dict,                  # raw extracted sections
+    renovation_plan: dict,
+    api_key: str,
+    model: str,
+    prior_contracts: dict[str, str],
+) -> tuple[str, dict]:
+    """Generate a single contract using Anthropic tool-use."""
+
+    # ── Build tool context data (closed over by executor) ──────────────
+    context_data = {
+        "stack_profile":      scout_data.get("stack_profile") or {},
+        "architecture":       scout_data.get("architecture") or {},
+        "dossier":            scout_data.get("dossier") or {},
+        "checks":             scout_data.get("checks") or [],
+        "executive_brief":    renovation_plan.get("executive_brief") or {},
+        "migration_tasks":    renovation_plan.get("migration_recommendations") or [],
+        "version_report":     renovation_plan.get("version_report") or {},
+    }
+
+    def _execute_tool(name: str, tool_input: dict) -> str:
+        """Execute a context tool and return JSON string result."""
+        match name:
+            case "get_stack_profile":
+                return json.dumps(context_data["stack_profile"])
+            case "get_renovation_priorities":
+                return json.dumps(context_data["executive_brief"])
+            case "get_migration_tasks":
+                return json.dumps(context_data["migration_tasks"])
+            case "get_project_dossier":
+                return json.dumps(context_data["dossier"])
+            case "get_compliance_checks":
+                return json.dumps(context_data["checks"])
+            case "get_architecture_map":
+                return json.dumps(context_data["architecture"])
+            case "get_prior_contract":
+                ctype = tool_input.get("contract_type", "")
+                content = prior_contracts.get(ctype)
+                if not content:
+                    return f"Contract '{ctype}' not yet generated."
+                return content
+            case _:
+                return f"Unknown tool: {name}"
+
+    example = _load_generic_template(contract_type)
+    instructions = _CONTRACT_INSTRUCTIONS.get(contract_type, "")
+    system_prompt = _build_tool_use_system_prompt(
+        contract_type, repo_name, instructions, example
+    )
+
+    messages: list[dict] = [
+        {
+            "role": "user",
+            "content": (
+                f"Generate the {contract_type} contract for repository '{repo_name}'. "
+                f"Use the available tools to fetch exactly the context you need, "
+                f"then call submit_contract with the complete contract content."
+            ),
+        }
+    ]
+
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    max_turns = 12   # prevent infinite loops
+
+    for _turn in range(max_turns):
+        response = await chat_anthropic(
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            max_tokens=16384,
+            tools=CONTEXT_TOOLS_SCOUT,
+        )
+
+        # Accumulate token usage across all turns
+        usage = response.get("usage", {})
+        total_usage["input_tokens"] += usage.get("input_tokens", 0)
+        total_usage["output_tokens"] += usage.get("output_tokens", 0)
+
+        stop_reason = response.get("stop_reason")
+        content_blocks = response.get("content", [])
+
+        # ── Append assistant turn to message history ────────────────
+        messages.append({"role": "assistant", "content": content_blocks})
+
+        # ── Check for submit_contract in tool_use blocks ────────────
+        for block in content_blocks:
+            if block.get("type") == "tool_use" and block.get("name") == "submit_contract":
+                submitted_content = block.get("input", {}).get("content", "")
+                if submitted_content:
+                    # Strip code fences if LLM wrapped the output
+                    submitted_content = _strip_code_fences(submitted_content)
+                    return submitted_content, total_usage
+
+        # ── If stop_reason is end_turn with no submit, extract text ─
+        if stop_reason == "end_turn":
+            text_parts = [
+                b["text"] for b in content_blocks if b.get("type") == "text"
+            ]
+            fallback = "\n".join(text_parts).strip()
+            if fallback:
+                return _strip_code_fences(fallback), total_usage
+            # No text either — something went wrong
+            raise ValueError(
+                f"LLM ended turn for {contract_type} without "
+                "submitting a contract or returning text."
+            )
+
+        # ── Execute tool calls and build tool_results turn ──────────
+        if stop_reason == "tool_use":
+            tool_results = []
+            for block in content_blocks:
+                if block.get("type") != "tool_use":
+                    continue
+                tool_name = block.get("name", "")
+                tool_input = block.get("input", {})
+                tool_id = block.get("id", "")
+                result_content = _execute_tool(tool_name, tool_input)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": result_content,
+                })
+            messages.append({"role": "user", "content": tool_results})
+            continue
+
+        # Unexpected stop_reason
+        break
+
+    # Fallback: max turns exceeded
+    raise ValueError(
+        f"Tool-use loop for {contract_type} exceeded {max_turns} turns "
+        "without producing a contract."
+    )
+```
+
+### 26.4 Why chat_anthropic Already Supports This
+
+From `app/clients/llm_client.py` (lines 141–229):
+
+```python
+async def chat_anthropic(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    messages: list[dict],
+    max_tokens: int = 2048,
+    tools: list[dict] | None = None,        # ← tool-use entry point
+    thinking_budget: int = 0,
+    enable_caching: bool = False,
+) -> dict:
+    ...
+    # If tools were provided, return the full response so the caller
+    # can process tool_use blocks and the stop_reason.
+    if tools:
+        return data                          # ← raw API dict
+
+    # Without tools: return simplified {"text": ..., "usage": ...}
+    ...
+```
+
+This means:
+- **No changes to `llm_client.py`** are required for tool-use contract generation
+- The tool-use loop in `_generate_contract_with_tools()` calls `chat_anthropic`
+  directly (not `chat_streaming`) — streaming is incompatible with tool-use
+  because the LLM may emit multiple tool calls in a single response
+- The `enable_caching=True` flag can be passed to cache the system prompt and
+  tool definitions, reducing input token costs by up to 90% on cache hits for
+  repeated contract generation
+
+### 26.5 Token Efficiency Comparison
+
+```
+Current (snowball text injection):
+  Contract 9 (builder_directive):
+    system_prompt    ~2,500 tokens  (instructions + structural reference)
+    user_message     ~8,500 tokens  (all 8 prior contracts injected)
+    TOTAL input      ~11,000 tokens per contract #9 call
+    Cumulative total across all 9 calls: ~30,000 tokens input
+
+Tool-use approach (same contract, estimated):
+  Turn 1: user asks LLM to generate              ~200 tokens
+  Turn 1: LLM calls get_prior_contract("phases") ~100 tokens
+  Turn 2: tool result (phases contract)          ~1,200 tokens
+  Turn 2: LLM calls get_prior_contract("bounds") ~100 tokens
+  Turn 3: tool result (boundaries contract)      ~600 tokens
+  Turn 3: LLM calls get_renovation_priorities()  ~100 tokens
+  Turn 4: tool result (executive brief)          ~300 tokens
+  Turn 4: LLM calls submit_contract              ~100 tokens
+  ----------------------------------------------------------
+  TOTAL input across 4 turns                   ~2,700 tokens
+  (vs 11,000 for snowball — ~75% reduction)
+
+  + Tool definition tokens (amortised via caching): ~800 tokens
+  + Net: ~3,500 tokens vs 11,000 — still ~68% reduction
+```
+
+The tool-use approach is especially beneficial for early contracts
+(manifesto, blueprint, stack) which currently have no prior-contract
+injection but still receive a large structural reference in the system
+prompt.  With tool-use, they can request the reference only if needed.
+
+### 26.6 Connection to MCP Artifact Store
+
+The tool-use loop executes in-process within the contract generator service.
+Tools are implemented as local Python functions (not actual MCP tool calls).
+
+However, after generation, contracts are still stored in the MCP artifact
+store (`forge_ide.mcp.artifact_store.store_artifact`) as before.  This
+means the generated contracts remain available to build sub-agents via
+`forge_get_artifact` — there is no change to the downstream pipeline.
+
+The tool-use change is isolated to the **generation phase** only.
+Everything downstream (DB persistence, MCP artifact store, WS progress
+events, snapshot mechanism) is unchanged.
+
+---
+
+## 27. Phase I Implementation Steps
+
+### Phase I1: Enforce Renovation Plan (Quick Fix — Do First)
+
+**Goal**: Make renovation plan a hard prerequisite for Scout contract
+generation.  One-line change, zero risk.
+
+| # | Task | File | Notes |
+|---|------|------|-------|
+| I1-1 | Replace `renovation_plan: dict \| None = raw_results.get(...)` with validation guard | `app/services/project/scout_contract_generator.py` (line ~409) | Raise `ValueError` with helpful message pointing to `/upgrade-plan` endpoint |
+| I1-2 | Update `generate_contracts_from_scout` docstring | same file | Document that renovation plan is required |
+| I1-3 | Add test: `test_no_renovation_plan_raises_value_error` | `tests/test_scout_contract_generator.py` | Mock run with no `renovation_plan` in results |
+| I1-4 | Update API docs string on the `generate-contracts` endpoint | `app/api/routers/scout.py` | Note that upgrade-plan must be run first |
+
+### Phase I2: Tool-Use Contract Generation — Scout Flow
+
+**Goal**: Replace `_generate_scout_contract_content` (snowball text
+injection) with `_generate_contract_with_tools` (multi-turn tool-use loop).
+
+| # | Task | File | Notes |
+|---|------|------|-------|
+| I2-1 | Define `CONTEXT_TOOLS_SCOUT` list | `app/services/project/scout_contract_generator.py` | 8 tools as per section 26.2 |
+| I2-2 | Implement `_execute_scout_tool(name, input, context_data, prior_contracts)` | same file | Pure function, no async, returns JSON string |
+| I2-3 | Implement `_strip_code_fences(text)` helper | `app/services/project/contract_utils.py` (new shared module) | Extract from both generators to avoid duplication |
+| I2-4 | Implement `_build_tool_use_system_prompt(contract_type, repo_name, instructions, example)` | same file | System prompt that tells LLM to use tools + submit_contract |
+| I2-5 | Implement `_generate_contract_with_tools(...)` | same file | Multi-turn loop as per section 26.3 |
+| I2-6 | Update `generate_contracts_from_scout` to call `_generate_contract_with_tools` instead of `_generate_scout_contract_content` | same file | Pass `scout_data` dict + `renovation_plan` dict separately (not pre-formatted context string) |
+| I2-7 | Remove `_format_scout_context_for_prompt` (no longer needed) | same file | It existed only for text injection; tool-use fetches data on demand |
+| I2-8 | Tests: tool-use loop happy path | `tests/test_scout_contract_generator.py` | Mock `chat_anthropic` to return tool_use then end_turn |
+| I2-9 | Tests: tool-use each context tool returns correct data | same | One test per tool: stack_profile, priorities, tasks, dossier, checks, arch map, prior_contract |
+| I2-10 | Tests: submit_contract terminates loop | same | Assert contract returned after submit_contract call |
+| I2-11 | Tests: end_turn fallback (LLM returns text without submit_contract) | same | Should still succeed with extracted text |
+| I2-12 | Tests: max_turns exceeded raises ValueError | same | Mock LLM to always return tool_use without ever submitting |
+| I2-13 | Tests: token accumulation across turns | same | Assert total_usage sums all turns correctly |
+| I2-14 | Integration: run Scout contract generation against real LLM in staging | manual | Verify 9 contracts generated, token count < snowball baseline |
+
+### Phase I3: Tool-Use Contract Generation — Greenfield Flow
+
+**Goal**: Apply the same pattern to `contract_generator.py`
+(questionnaire-based generation).
+
+| # | Task | File | Notes |
+|---|------|------|-------|
+| I3-1 | Define `CONTEXT_TOOLS_GREENFIELD` list | `app/services/project/contract_generator.py` | Questionnaire-oriented tools: get_project_intent, get_technical_preferences, get_user_stories, get_prior_contract, submit_contract |
+| I3-2 | Implement `_execute_greenfield_tool(name, input, answers_data, prior_contracts)` | same file | Maps questionnaire sections to tool results |
+| I3-3 | Refactor `_generate_contract_content` to use tool-use loop | same file | Replace snowball injection with `_generate_contract_with_tools_greenfield` |
+| I3-4 | Tests: greenfield tool-use each tool returns correct questionnaire section | `tests/test_contract_generator.py` | |
+| I3-5 | Tests: end-to-end greenfield generation with mock LLM | same | 9 contracts, verify each calls the expected tool subset |
+
+---
+
+## 28. File Changes Summary (Phase I)
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `app/services/project/contract_utils.py` | Shared helpers: `_strip_code_fences`, `_build_tool_use_system_prompt`, `_extract_text_from_blocks` |
+
+### Modified files
+
+| File | Changes |
+|------|---------|
+| `app/services/project/scout_contract_generator.py` | Remove `_format_scout_context_for_prompt`, remove `_generate_scout_contract_content`, add `CONTEXT_TOOLS_SCOUT`, add `_execute_scout_tool`, add `_generate_contract_with_tools`, update `generate_contracts_from_scout` to enforce renovation plan + use tool-use |
+| `app/services/project/contract_generator.py` | (Phase I3) Replace `_generate_contract_content` snowball injection with tool-use loop |
+| `app/api/routers/scout.py` | Update docstring on `generate-contracts` endpoint |
+| `tests/test_scout_contract_generator.py` | Add tool-use tests (I2-8 through I2-13) + renovation plan enforcement test (I1-3) |
+| `tests/test_contract_generator.py` | (Phase I3) Add greenfield tool-use tests |
+
+---
+
+## 29. Migration Path — Phase I
+
+### Step I-A: Enforce renovation plan (Phase I1)
+
+No functional changes to generation logic.  Any attempt to call
+`generate_contracts_from_scout` on a run without a renovation plan will now
+return HTTP 400 with a clear message.
+
+Frontend must handle this: the "Generate Contracts" button on the Scout
+results page should be disabled until a renovation plan exists (the plan
+badge/status is already shown in the UI).
+
+### Step I-B: Shadow-test tool-use on a single contract type (Phase I2 partial)
+
+Before replacing all 9 generators, implement tool-use for `manifesto` only
+and compare output quality and token count against the snowball-generated
+version on real projects.
+
+The `manifest` contract has no snowball chain (it's contract #1) so the
+comparison is purely about output quality, not token savings.
+
+### Step I-C: Roll out tool-use to all 9 scout contracts (Phase I2 complete)
+
+Replace `_generate_scout_contract_content` with `_generate_contract_with_tools`
+for all 9 contract types.  Monitor via `contract_progress` WebSocket events —
+token counts will drop sharply if the tool-use approach is working correctly.
+
+### Step I-D: Apply to greenfield flow (Phase I3)
+
+Once the Scout flow is validated and stable, apply the same pattern to
+`contract_generator.py`.  The greenfield flow is higher-traffic (every new
+project goes through it) so validate on Scout first.
+
+---
+
+## 30. Open Questions (Phase I)
+
+1. **Max turns for tool-use loop**: `max_turns = 12` is conservative.
+   In practice, `builder_directive` might need 5–6 tool calls (3 prior
+   contracts + renovation priorities + migration tasks + submit).  Should
+   `max_turns` be per-contract-type rather than a global constant?
+
+2. **Streaming progress during tool-use**: The current snowball generator
+   uses `chat_streaming` which emits token counts via `on_token_progress`
+   callback, allowing the frontend to show a streaming indicator.
+   `chat_anthropic` with tools does not support streaming.  The frontend
+   will see no token-count updates during tool-use generation — only the
+   final `done` event.  Is this acceptable UX, or should we implement a
+   periodic "still generating..." ping?
+
+3. **Should `get_prior_contract` check the MCP artifact store?**
+   If a previous generation session already stored contracts in the
+   artifact store (via `store_artifact`), `get_prior_contract` could fetch
+   from there instead of the in-memory `prior_contracts` dict.  This would
+   enable resuming a tool-use generation session across a crash.  Not
+   strictly needed for v1 but worth noting.
+
+4. **Tool-use for OpenAI provider**: `chat_anthropic` supports tools.
+   `chat_openai` does not currently include a `tools` parameter.  If the
+   platform is configured with `LLM_PROVIDER=openai`, tool-use generation
+   would fail.  Options: (a) fall back to snowball for OpenAI, (b) implement
+   OpenAI function-calling support, (c) require Anthropic for tool-use.
+
+5. **Contract quality regression testing**: How do we measure whether
+   tool-use-generated contracts are better than snowball-generated ones?
+   Need a rubric: completeness, accuracy against scout data, structural
+   depth, absence of placeholder text, alignment with renovation plan.
+

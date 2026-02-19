@@ -23,6 +23,17 @@ from .questionnaire import QUESTIONNAIRE_SECTIONS, MINI_QUESTIONNAIRE_SECTIONS, 
 logger = logging.getLogger(__name__)
 
 
+# Late imports to avoid circular dependency (contract_utils imports from us)
+def _get_tool_use_helpers():
+    from .contract_utils import (
+        CONTEXT_TOOLS_GREENFIELD,
+        build_tool_use_system_prompt,
+        execute_greenfield_tool,
+        generate_contract_with_tools,
+    )
+    return CONTEXT_TOOLS_GREENFIELD, build_tool_use_system_prompt, execute_greenfield_tool, generate_contract_with_tools
+
+
 class ContractCancelled(Exception):
     """Raised when contract generation is cancelled by the user."""
 
@@ -469,27 +480,18 @@ async def generate_contracts(
 
             # Race the LLM call against the cancel event so cancellation
             # takes effect immediately, even mid-generation.
-            async def _on_token_progress(in_tok: int, out_tok: int) -> None:
-                """Send live token streaming updates via WS."""
-                await manager.send_to_user(str(user_id), {
-                    "type": "contract_progress",
-                    "payload": {
-                        "project_id": pid,
-                        "contract_type": contract_type,
-                        "status": "streaming",
-                        "index": idx,
-                        "total": total,
-                        "input_tokens": in_tok,
-                        "output_tokens": out_tok,
-                    },
-                })
+            answers_data = _extract_answers_data(project, answers)
 
             llm_task = asyncio.ensure_future(
-                _generate_contract_content(
-                    contract_type, project, answers_text, llm_api_key, llm_model, provider,
-                    build_mode=build_mode,
+                _generate_greenfield_contract_with_tools(
+                    contract_type=contract_type,
+                    project=project,
+                    answers_data=answers_data,
+                    api_key=llm_api_key,
+                    model=llm_model,
+                    provider=provider,
                     prior_contracts=prior_contracts,
-                    on_token_progress=_on_token_progress,
+                    build_mode=build_mode,
                 )
             )
             cancel_task = asyncio.ensure_future(cancel_event.wait())
@@ -680,6 +682,79 @@ async def push_contracts_to_git(
         raise ValueError(f"Failed to push contracts: {exc}")
     finally:
         shutil.rmtree(working_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Tool-use generation — greenfield variant
+# ---------------------------------------------------------------------------
+
+
+def _extract_answers_data(project: dict, answers: dict) -> dict:
+    """Extract structured data from questionnaire answers for tool dispatch.
+
+    Returns a dict whose keys map to greenfield tool names.
+    """
+    data: dict = {}
+    for key in (
+        "product_intent",
+        "tech_stack",
+        "database_schema",
+        "api_endpoints",
+        "ui_requirements",
+        "architectural_boundaries",
+        "deployment_target",
+    ):
+        val = answers.get(key)
+        if val:
+            data[key] = val
+    data["project_name"] = project.get("name", "")
+    data["project_description"] = project.get("description", "")
+    return data
+
+
+async def _generate_greenfield_contract_with_tools(
+    contract_type: str,
+    project: dict,
+    answers_data: dict,
+    api_key: str,
+    model: str,
+    provider: str,
+    prior_contracts: dict[str, str],
+    build_mode: str = "full",
+) -> tuple[str, dict]:
+    """Generate a single greenfield contract using the multi-turn tool-use loop.
+
+    Returns (content, usage) matching the signature of
+    ``_generate_contract_content``.
+    """
+    (
+        CONTEXT_TOOLS_GREENFIELD,
+        build_tool_use_system_prompt,
+        execute_greenfield_tool,
+        generate_contract_with_tools,
+    ) = _get_tool_use_helpers()
+
+    is_mini = build_mode == "mini"
+    system_prompt = build_tool_use_system_prompt(
+        contract_type,
+        project_name=project.get("name", ""),
+        mode="greenfield",
+        mini=is_mini,
+    )
+
+    def _executor(name: str, tool_input: dict) -> str:
+        return execute_greenfield_tool(name, tool_input, answers_data, prior_contracts)
+
+    return await generate_contract_with_tools(
+        contract_type=contract_type,
+        system_prompt=system_prompt,
+        tools=CONTEXT_TOOLS_GREENFIELD,
+        tool_executor=_executor,
+        api_key=api_key,
+        model=model,
+        provider=provider,
+        repo_name=project.get("name", ""),
+    )
 
 
 # Snowball chain: each contract receives ALL previously generated contracts

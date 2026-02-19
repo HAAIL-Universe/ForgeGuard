@@ -43,6 +43,12 @@ from .contract_generator import (
     _active_generations,
     _load_generic_template,
 )
+from .contract_utils import (
+    CONTEXT_TOOLS_SCOUT,
+    build_tool_use_system_prompt,
+    execute_scout_tool,
+    generate_contract_with_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +347,69 @@ async def _generate_scout_contract_content(
 
 
 # ---------------------------------------------------------------------------
+# Tool-use generation — replaces snowball text-injection
+# ---------------------------------------------------------------------------
+
+
+def _extract_context_data(raw_results: dict) -> dict:
+    """Extract structured context data from scout results for tool dispatch.
+
+    Returns a flat dict whose keys correspond to tool names in
+    ``CONTEXT_TOOLS_SCOUT``.  Each value is the raw data structure that will
+    be JSON-serialised when the LLM invokes the corresponding tool.
+    """
+    renovation_plan = raw_results.get("renovation_plan") or {}
+    return {
+        "stack_profile": raw_results.get("stack_profile") or {},
+        "executive_brief": renovation_plan.get("executive_brief") or {},
+        "migration_tasks": renovation_plan.get("migration_recommendations") or [],
+        "dossier": raw_results.get("dossier") or {},
+        "checks": (raw_results.get("checks") or [])
+        + (raw_results.get("warnings") or []),
+        "architecture": raw_results.get("architecture") or {},
+    }
+
+
+async def _generate_scout_contract_with_tools(
+    contract_type: str,
+    repo_name: str,
+    context_data: dict,
+    api_key: str,
+    model: str,
+    provider: str,
+    prior_contracts: dict[str, str],
+) -> tuple[str, dict]:
+    """Generate a single scout contract using the multi-turn tool-use loop.
+
+    The LLM decides which context tools to call (stack, dossier, renovation
+    plan, etc.), fetches exactly what it needs, then calls
+    ``submit_contract(content)`` to produce the final contract.
+
+    Returns (content, usage) matching the signature of the old
+    ``_generate_scout_contract_content``.
+    """
+    system_prompt = build_tool_use_system_prompt(
+        contract_type,
+        repo_name=repo_name,
+        mode="scout",
+    )
+
+    def _executor(name: str, tool_input: dict) -> str:
+        return execute_scout_tool(name, tool_input, context_data, prior_contracts)
+
+    return await generate_contract_with_tools(
+        contract_type=contract_type,
+        system_prompt=system_prompt,
+        tools=CONTEXT_TOOLS_SCOUT,
+        tool_executor=_executor,
+        api_key=api_key,
+        model=model,
+        provider=provider,
+        repo_name=repo_name,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -409,6 +478,18 @@ async def generate_contracts_from_scout(
     renovation_plan: dict | None = raw_results.get("renovation_plan")
     repo_name: str = run.get("repo_name") or str(scout_run_id)
 
+    # ── I1: Renovation plan is mandatory for contract generation ─
+    if not renovation_plan:
+        raise ValueError(
+            "Scout run does not contain a renovation plan. "
+            "The renovation plan is required for contract generation — "
+            "it provides the health grade, priorities, and migration tasks "
+            "that drive every contract. Re-run the deep-scan to generate one."
+        )
+
+    # ── Extract structured context for tool-use dispatch ─────────
+    context_data = _extract_context_data(raw_results)
+
     # ── LLM config ───────────────────────────────────────────────
     provider = (settings.LLM_PROVIDER or "").strip().lower()
     if not provider:
@@ -444,10 +525,7 @@ async def generate_contracts_from_scout(
             )
         existing_map = {}  # Regenerate from scratch
 
-    # ── Build scout context (replaces questionnaire answers) ─────
-    scout_context = _format_scout_context_for_prompt(
-        repo_name, scout_results, renovation_plan
-    )
+    # ── (Context is now fetched on-demand via tool-use loop) ────
 
     generated: list[dict] = []
     prior_contracts: dict[str, str] = {
@@ -517,35 +595,16 @@ async def generate_contracts_from_scout(
                 },
             })
 
-            # Capture loop vars for the closure
-            _contract_type = contract_type
-            _idx = idx
-
-            async def _on_token_progress(in_tok: int, out_tok: int) -> None:
-                await manager.send_to_user(str(user_id), {
-                    "type": "contract_progress",
-                    "payload": {
-                        "project_id": pid,
-                        "contract_type": _contract_type,
-                        "status": "streaming",
-                        "index": _idx,
-                        "total": total,
-                        "input_tokens": in_tok,
-                        "output_tokens": out_tok,
-                        "source": "scout",
-                    },
-                })
-
+            # ── Tool-use generation (replaces snowball text-injection) ─
             llm_task = asyncio.ensure_future(
-                _generate_scout_contract_content(
+                _generate_scout_contract_with_tools(
                     contract_type=contract_type,
                     repo_name=repo_name,
-                    scout_context=scout_context,
+                    context_data=context_data,
                     api_key=llm_api_key,
                     model=llm_model,
                     provider=provider,
                     prior_contracts=prior_contracts,
-                    on_token_progress=_on_token_progress,
                 )
             )
             cancel_task = asyncio.ensure_future(cancel_event.wait())
@@ -576,7 +635,7 @@ async def generate_contracts_from_scout(
             cancel_task.cancel()
             content, usage = llm_task.result()
 
-            # Accumulate for snowball chaining
+            # Accumulate for tool-use get_prior_contract lookups
             prior_contracts[contract_type] = content
 
             # Persist to DB
