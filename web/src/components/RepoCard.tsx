@@ -22,6 +22,7 @@ interface Repo {
 interface RepoCardProps {
   repo: Repo;
   onDisconnect: (repo: Repo) => void;
+  onUpdate: (repo: Repo) => void;
   onClick: (repo: Repo) => void;
 }
 
@@ -35,7 +36,7 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function RepoCard({ repo, onDisconnect, onClick }: RepoCardProps) {
+function RepoCard({ repo, onDisconnect, onUpdate, onClick }: RepoCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   const isDeleted = repo.repo_status === 'deleted';
@@ -170,23 +171,84 @@ function RepoCard({ repo, onDisconnect, onClick }: RepoCardProps) {
               {expanded ? '▾' : '▸'}
             </button>
           )}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDisconnect(repo);
-            }}
-            style={{
-              background: 'transparent',
-              color: '#94A3B8',
-              border: '1px solid #334155',
-              borderRadius: '6px',
-              padding: '6px 12px',
-              cursor: 'pointer',
-              fontSize: '0.75rem',
-            }}
-          >
-            Disconnect
-          </button>
+
+          {/* Primary action: context-dependent */}
+          {isDeleted ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDisconnect(repo);
+              }}
+              style={{
+                background: 'transparent',
+                color: '#EF4444',
+                border: '1px solid #7F1D1D',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+              }}
+            >
+              Clear
+            </button>
+          ) : hasNewCommits ? (
+            <>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUpdate(repo);
+                }}
+                style={{
+                  background: '#1D4ED8',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                }}
+              >
+                Update
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDisconnect(repo);
+                }}
+                title="Disconnect repo"
+                style={{
+                  background: 'transparent',
+                  color: '#64748B',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '6px 8px',
+                  cursor: 'pointer',
+                  fontSize: '0.7rem',
+                }}
+              >
+                ···
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDisconnect(repo);
+              }}
+              style={{
+                background: 'transparent',
+                color: '#94A3B8',
+                border: '1px solid #334155',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+              }}
+            >
+              Disconnect
+            </button>
+          )}
         </div>
       </div>
 

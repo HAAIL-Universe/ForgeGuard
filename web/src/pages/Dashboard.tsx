@@ -28,6 +28,7 @@ function Dashboard() {
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<Repo | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [updatingRepoId, setUpdatingRepoId] = useState<string | null>(null);
 
   const fetchRepos = useCallback(async () => {
     try {
@@ -113,6 +114,27 @@ function Dashboard() {
     navigate(`/repos/${repo.id}`);
   };
 
+  const handleUpdate = async (repo: Repo) => {
+    setUpdatingRepoId(repo.id);
+    try {
+      const res = await fetch(`${API_BASE}/repos/${repo.id}/sync`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        addToast(`Syncing ${repo.full_name}...`);
+        fetchRepos();
+      } else {
+        const err = await res.json().catch(() => ({ detail: 'Sync failed' }));
+        addToast(err.detail ?? 'Failed to sync repo');
+      }
+    } catch {
+      addToast('Network error syncing repo');
+    } finally {
+      setUpdatingRepoId(null);
+    }
+  };
+
   return (
     <AppShell sidebarRepos={repos} onReposChange={fetchRepos}>
       <div style={{ padding: '24px', maxWidth: '960px', margin: '0 auto' }}>
@@ -183,6 +205,7 @@ function Dashboard() {
                 key={repo.id}
                 repo={repo}
                 onDisconnect={setDisconnectTarget}
+                onUpdate={handleUpdate}
                 onClick={handleRepoClick}
               />
             ))}
@@ -257,9 +280,13 @@ function Dashboard() {
 
       {disconnectTarget && (
         <ConfirmDialog
-          title="Disconnect Repo"
-          message={`Remove ${disconnectTarget.full_name} from ForgeGuard? This will delete all audit history for this repo.`}
-          confirmLabel="Disconnect"
+          title={disconnectTarget.repo_status === 'deleted' ? 'Clear Repo' : 'Disconnect Repo'}
+          message={
+            disconnectTarget.repo_status === 'deleted'
+              ? `Clear ${disconnectTarget.full_name} from ForgeGuard? This deleted repo will be removed along with its audit history.`
+              : `Remove ${disconnectTarget.full_name} from ForgeGuard? This will delete all audit history for this repo.`
+          }
+          confirmLabel={disconnectTarget.repo_status === 'deleted' ? 'Clear' : 'Disconnect'}
           onConfirm={handleDisconnect}
           onCancel={() => setDisconnectTarget(null)}
         />
