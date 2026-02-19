@@ -21,7 +21,7 @@ PHASES_CONTENT = """\
 
 **Deliverables:**
 - `/health` returns 200 (FastAPI)
-- `boot.ps1` installs deps and starts server
+- `boot.sh` / `boot.bat` / `boot.ps1` install deps and start server
 - `pytest` passes one health test
 
 **Exit criteria:**
@@ -123,7 +123,7 @@ def test_deliverables_content_preserved(tmp_path):
     result = _exec_forge_get_phase_window({"phase_number": 0}, wd)
 
     assert "GET /health" in result
-    assert "boot.ps1" in result
+    assert "boot.sh" in result
     assert "Exit criteria" in result
 
 

@@ -161,7 +161,10 @@ def _generate_deploy_instructions(
         lines.append("5. Install frontend: `cd web && npm install`")
     if has_postgres:
         lines.append("6. Run database migrations: `psql $DATABASE_URL -f db/migrations/*.sql`")
-    lines.append("7. Start the application: `pwsh -File boot.ps1`\n")
+    lines.append("7. Start the application (pick the script for your OS):\n"
+                 "   - **macOS/Linux:** `bash boot.sh`\n"
+                 "   - **Windows CMD:** `boot.bat`\n"
+                 "   - **Windows PowerShell:** `pwsh -File boot.ps1`\n")
 
     if has_render:
         lines.append("## Render Deployment\n")

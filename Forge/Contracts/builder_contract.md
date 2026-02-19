@@ -364,33 +364,44 @@ This prevents orphaned tables that exist in migrations but are never used by app
   7. **Key settings explained** — what tunable parameters do in plain language
   8. **Troubleshooting** — table of common errors and their fixes
 - The instructions must be written for a **non-developer end user** — no jargon without explanation.
+- When `boot_script: true` (§9.8), the **Run** section MUST list all three boot scripts with the exact command for each OS: `bash boot.sh` (macOS/Linux), `boot.bat` (Windows CMD), `pwsh -File boot.ps1` (Windows PowerShell).
 - The final phase's acceptance criteria MUST include: "`USER_INSTRUCTIONS.md` is complete and covers all sections."
 
 ### 9.8 Boot script gate (opt-in)
 
-When the directive includes `boot_script: true`, the builder MUST create a `boot.ps1` PowerShell script at the project root during the **final phase**. This is a one-click setup-and-run script for end users.
+When the directive includes `boot_script: true`, the builder MUST create **three** boot scripts at the project root during the **final phase**. Each implements the same 8-step setup-and-run logic in its shell syntax so any user can pick the right file for their OS:
 
-**boot.ps1 must perform these steps in order:**
+| File | Target | Shell |
+|------|--------|-------|
+| `boot.sh` | macOS / Linux | `#!/usr/bin/env bash` |
+| `boot.bat` | Windows (CMD) | `@echo off` |
+| `boot.ps1` | Windows (PowerShell Core or 5.1) | `#Requires -Version 5.1` |
+
+**All three scripts must perform these 8 steps in order:**
 
 1. **Check prerequisites** — Verify Python/Node/Go (per stack) is installed and meets minimum version. If missing, print a clear error and exit.
 2. **Create virtual environment** (if applicable) — `python -m venv .venv` or equivalent. Skip if already exists.
-3. **Activate environment** — `.venv\Scripts\Activate.ps1` or equivalent.
+3. **Activate environment** — platform-appropriate activation (e.g., `.venv/bin/activate` for bash, `.venv\Scripts\activate.bat` for CMD, `.venv\Scripts\Activate.ps1` for PowerShell).
 4. **Install dependencies** — `pip install -r requirements.txt` / `npm install` / `go mod download`.
-5. **Prompt for required credentials** — For each required `.env` variable that has no default: prompt the user interactively (`Read-Host`), explain what it is and where to get it. Pre-fill optional variables with defaults from `.env.example`.
+5. **Prompt for required credentials** — For each required `.env` variable that has no default: prompt the user interactively, explain what it is and where to get it. Pre-fill optional variables with defaults from `.env.example`.
 6. **Write `.env`** — Generate the `.env` file from the user's answers + defaults. Do NOT overwrite an existing `.env` — ask the user if they want to keep or replace it.
 7. **Run migrations** — Execute DB setup if applicable (`python -c "from app.repos.db import init_db; init_db('...')"` or equivalent).
 8. **Start the app** — Launch the application in the default mode (e.g., `python -m app.main` or `npm start`).
 
 **Error resilience:** Each step must check for errors before proceeding. If a step fails, print a clear message explaining what went wrong and how to fix it, then exit with a non-zero code.
 
-**Builder iteration loop:** After creating `boot.ps1`, the builder MUST:
+**Verification:** After creating all three scripts, the builder MUST test the platform-appropriate script for its runtime (whichever shell is available). The other two are generated but not run in CI.
 
-1. Run `pwsh -File boot.ps1` in a terminal (using non-interactive defaults or test values for credential prompts where possible).
+**Builder iteration loop:** After creating the scripts, the builder MUST:
+
+1. Run the platform-appropriate script in a terminal (using non-interactive defaults or test values for credential prompts where possible).
 2. If it fails: read the error output, fix the script, and re-run.
 3. Repeat until the app starts successfully (health endpoint responds, or main process is running).
 4. **Loop limit:** If 5 consecutive attempts fail, STOP with `ENVIRONMENT_LIMITATION` and report the blocking error.
 
-The boot script is NOT included in audit scope (A1–A9) — it is a convenience tool, not governed code. However, it MUST work by the time the builder halts.
+**`USER_INSTRUCTIONS.md` must list all three** with the exact command for each OS in its **Run** section (see §9.7).
+
+The boot scripts are NOT included in audit scope (A1–A9) — they are convenience tools, not governed code. However, the platform-appropriate script MUST work by the time the builder halts.
 
 When `boot_script: false` or not specified, the builder skips this entirely.
 

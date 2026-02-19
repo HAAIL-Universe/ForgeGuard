@@ -614,7 +614,7 @@ def _make_forge_contracts(tmp_path):
         "# Phases\n\n"
         "## Phase 0 — Genesis\n\n"
         "**Objective:** Skeleton project\n\n"
-        "**Deliverables:**\n- /health endpoint\n- boot.ps1\n\n"
+        "**Deliverables:**\n- /health endpoint\n- boot.sh / boot.bat / boot.ps1\n\n"
         "**Exit criteria:**\n- pytest passes\n\n---\n\n"
         "## Phase 1 — Auth\n\n"
         "**Objective:** Add authentication\n\n"
