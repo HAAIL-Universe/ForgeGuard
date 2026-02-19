@@ -26,6 +26,7 @@ def _project(**overrides):
         "user_id": _USER_ID,
         "name": "Test Project",
         "status": "contracts_ready",
+        "build_mode": "full",
     }
     defaults.update(overrides)
     return defaults
@@ -95,6 +96,7 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
     mock_build_repo.create_build = AsyncMock(return_value=_build())
@@ -169,6 +171,7 @@ async def test_start_build_with_snapshot_batch(mock_get_user, mock_build_repo, m
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_snapshot_contracts = AsyncMock(return_value=snapshot_contracts)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
     mock_build_repo.create_build = AsyncMock(return_value=_build())
@@ -1331,6 +1334,7 @@ async def test_run_build_multi_turn_plan_detected(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1383,6 +1387,7 @@ async def test_run_build_multi_turn_audit_feedback(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1433,6 +1438,7 @@ async def test_run_build_multi_turn_max_failures(
     mock_build_repo.pause_build = AsyncMock(return_value=True)
     mock_build_repo.resume_build = AsyncMock(return_value=True)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1498,6 +1504,7 @@ async def test_run_build_turn_event_broadcast(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1536,6 +1543,7 @@ async def test_run_build_task_done_broadcast(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1589,6 +1597,7 @@ async def test_run_build_context_compaction(
         "total_input_tokens": 160000, "total_output_tokens": 160000, "total_cost_usd": Decimal("0.50"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1642,6 +1651,7 @@ async def test_run_build_pauses_at_threshold(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1716,6 +1726,7 @@ async def test_run_build_pause_resume_retry(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1781,6 +1792,7 @@ async def test_run_build_pause_skip(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -1836,6 +1848,7 @@ async def test_run_build_interjection_injected(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2114,6 +2127,7 @@ async def test_plan_tasks_reset_between_phases(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2158,6 +2172,7 @@ async def test_build_overview_emitted(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
 
     # Provide a phases contract for build_overview
     mock_project_repo.get_contract_by_type = AsyncMock(return_value={
@@ -2329,6 +2344,7 @@ async def test_recovery_planner_fallback_on_error(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2376,6 +2392,7 @@ async def test_recovery_planner_injects_remediation(
         "total_input_tokens": 100, "total_output_tokens": 200, "total_cost_usd": Decimal("0.01"),
     })
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2453,6 +2470,7 @@ async def test_run_build_tool_call_execution(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2517,6 +2535,7 @@ async def test_run_build_write_file_tool_emits_file_created(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2577,6 +2596,7 @@ async def test_run_build_tool_result_in_messages(
     })
     mock_build_repo.increment_loop_count = AsyncMock(return_value=1)
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_manager.send_to_user = AsyncMock()
 
@@ -2671,6 +2691,7 @@ async def test_start_build_with_branch(mock_get_user, mock_build_repo, mock_proj
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
     mock_project_repo.update_project_status = AsyncMock()
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
     mock_build_repo.create_build = AsyncMock(return_value=_build())
@@ -3162,3 +3183,213 @@ async def test_audit_and_cache_skips_fix_when_pass(tmp_path):
     # Manifest cache should be "audited"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
     assert cached[0]["status"] == "audited"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Phase 56 — MCP System Prompt & Slim First Message
+# ---------------------------------------------------------------------------
+
+
+class TestMCPSystemPrompt:
+    """Tests for MCP_SYSTEM_PROMPT constant and conditional selection."""
+
+    def test_mcp_system_prompt_exists(self):
+        """MCP_SYSTEM_PROMPT is a non-empty string constant."""
+        assert isinstance(build_service.MCP_SYSTEM_PROMPT, str)
+        assert len(build_service.MCP_SYSTEM_PROMPT) > 100
+
+    def test_mcp_prompt_contains_forge_tools(self):
+        """MCP system prompt references all 5 forge tools."""
+        prompt = build_service.MCP_SYSTEM_PROMPT
+        assert "forge_get_summary" in prompt
+        assert "forge_list_contracts" in prompt
+        assert "forge_get_contract" in prompt
+        assert "forge_get_phase_window" in prompt
+        assert "forge_scratchpad" in prompt
+
+    def test_mcp_prompt_contains_project_tools(self):
+        """MCP system prompt references the 8 project tools."""
+        prompt = build_service.MCP_SYSTEM_PROMPT
+        for tool in ("read_file", "list_directory", "search_code", "write_file",
+                      "edit_file", "run_tests", "check_syntax", "run_command"):
+            assert tool in prompt, f"Missing tool: {tool}"
+
+    def test_mcp_prompt_has_aem_workflow(self):
+        """MCP prompt includes the AEM workflow steps."""
+        prompt = build_service.MCP_SYSTEM_PROMPT
+        assert "PLAN" in prompt
+        assert "PHASE SIGN-OFF" in prompt
+        assert "TASK DONE" in prompt
+        assert "forge_get_phase_window(0)" in prompt
+
+    def test_mcp_prompt_has_critical_rules(self):
+        """MCP prompt includes critical rules (boundary, exclusion, etc.)."""
+        prompt = build_service.MCP_SYSTEM_PROMPT
+        assert "Minimal Diff" in prompt
+        assert "Boundary Enforcement" in prompt
+        assert "Contract Exclusion" in prompt
+        assert "STOP Codes" in prompt
+        assert "README" in prompt
+
+    def test_mcp_prompt_has_first_turn_instructions(self):
+        """MCP prompt tells builder to call forge tools on first turn."""
+        prompt = build_service.MCP_SYSTEM_PROMPT
+        assert "forge_get_phase_window(0)" in prompt
+        assert 'forge_get_contract("blueprint")' in prompt
+        assert 'forge_get_contract("stack")' in prompt
+
+
+class TestMCPMiniSystemPrompt:
+    """Tests for MCP_MINI_SYSTEM_PROMPT constant (2-phase mini build)."""
+
+    def test_mini_prompt_exists(self):
+        """MCP_MINI_SYSTEM_PROMPT is a non-empty string constant."""
+        assert isinstance(build_service.MCP_MINI_SYSTEM_PROMPT, str)
+        assert len(build_service.MCP_MINI_SYSTEM_PROMPT) > 100
+
+    def test_mini_prompt_is_distinct_from_full(self):
+        """Mini prompt is different from the full MCP prompt."""
+        assert build_service.MCP_MINI_SYSTEM_PROMPT != build_service.MCP_SYSTEM_PROMPT
+
+    def test_mini_prompt_enforces_two_phases(self):
+        """Mini prompt explicitly constrains to 2 phases."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        assert "2 phases" in prompt.lower() or "two phases" in prompt.lower()
+        assert "Phase 0" in prompt
+        assert "Phase 1" in prompt
+        assert "Backend Scaffold" in prompt or "backend scaffold" in prompt.lower()
+        assert "Frontend" in prompt
+
+    def test_mini_prompt_says_mini_build(self):
+        """Mini prompt identifies itself as a Mini Build."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        assert "Mini Build" in prompt
+
+    def test_mini_prompt_contains_all_tools(self):
+        """Mini prompt references all 13 tools (same toolset as full)."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        for tool in ("read_file", "write_file", "edit_file", "run_tests",
+                      "check_syntax", "run_command", "list_directory", "search_code",
+                      "forge_get_summary", "forge_list_contracts",
+                      "forge_get_contract", "forge_get_phase_window", "forge_scratchpad"):
+            assert tool in prompt, f"Missing tool: {tool}"
+
+    def test_mini_prompt_has_aem_workflow(self):
+        """Mini prompt includes the AEM workflow steps."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        assert "PLAN" in prompt
+        assert "PHASE SIGN-OFF" in prompt
+        assert "TASK DONE" in prompt
+
+    def test_mini_prompt_has_first_turn_instructions(self):
+        """Mini prompt instructs first-turn tool calls."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        assert "forge_get_phase_window(0)" in prompt
+        assert 'forge_get_contract("blueprint")' in prompt
+        assert 'forge_get_contract("stack")' in prompt
+
+    def test_mini_prompt_includes_schema_first_turn(self):
+        """Mini prompt includes schema fetch in first turn (need data model for backend)."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        assert 'forge_get_contract("schema")' in prompt
+
+    def test_mini_prompt_forbids_extra_phases(self):
+        """Mini prompt forbids creating additional phases."""
+        prompt = build_service.MCP_MINI_SYSTEM_PROMPT
+        assert "do not" in prompt.lower() and "additional phase" in prompt.lower() or \
+               "do not" in prompt.lower() and "more than 2" in prompt.lower()
+
+
+class TestCompactConversationMCP:
+    """Tests for _compact_conversation with use_mcp_contracts flag."""
+
+    def test_mcp_compaction_tracks_fetched_contracts(self):
+        """Compacted summary includes fetched contract names when MCP is on."""
+        messages = [
+            {"role": "user", "content": "directive"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Fetching contracts..."},
+                {"type": "tool_use", "id": "t1", "name": "forge_get_contract", "input": {"name": "blueprint"}},
+                {"type": "tool_use", "id": "t2", "name": "forge_get_contract", "input": {"name": "stack"}},
+            ]},
+            {"role": "user", "content": "result 1"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t3", "name": "forge_get_phase_window", "input": {"phase_number": 0}},
+            ]},
+            {"role": "user", "content": "result 2"},
+            {"role": "assistant", "content": "response 3"},
+            {"role": "user", "content": "feedback 3"},
+            {"role": "assistant", "content": "response 4"},
+        ]
+        result = build_service._compact_conversation(
+            messages, files_written=[], current_phase="Phase 0",
+            use_mcp_contracts=True,
+        )
+        summary = result[1]["content"]
+        assert "blueprint" in summary
+        assert "stack" in summary
+        assert "phase_window(0)" in summary
+        assert "re-fetch" in summary.lower() or "Re-fetch" in summary
+
+    def test_mcp_compaction_no_contracts_adds_generic_hint(self):
+        """When MCP is on but no contracts were fetched, add a generic hint."""
+        messages = [
+            {"role": "user", "content": "directive"},
+            {"role": "assistant", "content": "text only"},
+            {"role": "user", "content": "feedback"},
+            {"role": "assistant", "content": "more text"},
+            {"role": "user", "content": "feedback 2"},
+            {"role": "assistant", "content": "response 3"},
+            {"role": "user", "content": "feedback 3"},
+            {"role": "assistant", "content": "response 4"},
+        ]
+        result = build_service._compact_conversation(
+            messages, files_written=[], current_phase="Phase 0",
+            use_mcp_contracts=True,
+        )
+        summary = result[1]["content"]
+        assert "compacted" in summary.lower()
+        assert "forge" in summary.lower()
+
+    def test_mcp_compaction_mentions_scratchpad(self):
+        """MCP compaction hints about forge_scratchpad for saved notes."""
+        messages = [
+            {"role": "user", "content": "directive"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "forge_get_contract", "input": {"name": "blueprint"}},
+            ]},
+            {"role": "user", "content": "result 1"},
+            {"role": "assistant", "content": "work"},
+            {"role": "user", "content": "feedback"},
+            {"role": "assistant", "content": "more work"},
+            {"role": "user", "content": "feedback 2"},
+            {"role": "assistant", "content": "response 3"},
+        ]
+        result = build_service._compact_conversation(
+            messages, files_written=[], current_phase="Phase 0",
+            use_mcp_contracts=True,
+        )
+        summary = result[1]["content"]
+        assert "scratchpad" in summary.lower()
+
+    def test_legacy_compaction_unchanged(self):
+        """Without use_mcp_contracts, compaction works as before."""
+        messages = [
+            {"role": "user", "content": "directive"},
+            {"role": "assistant", "content": "response 1"},
+            {"role": "user", "content": "feedback 1"},
+            {"role": "assistant", "content": "response 2"},
+            {"role": "user", "content": "feedback 2"},
+            {"role": "assistant", "content": "response 3"},
+            {"role": "user", "content": "feedback 3"},
+            {"role": "assistant", "content": "response 4"},
+        ]
+        result = build_service._compact_conversation(
+            messages, files_written=[], current_phase="Phase 0",
+            use_mcp_contracts=False,
+        )
+        summary = result[1]["content"]
+        # Should NOT have contract-fetch hints
+        assert "re-fetch" not in summary.lower()
+        assert "forge_get_contract" not in summary
+        assert "[Context compacted" in summary

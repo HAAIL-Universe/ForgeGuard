@@ -81,6 +81,7 @@ def _compact_conversation(
     files_written: list[dict] | None = None,
     current_phase: str = "",
     journal_summary: str = "",
+    use_mcp_contracts: bool = False,
 ) -> list[dict]:
     """Compact a conversation by summarizing older turns.
 
@@ -89,12 +90,31 @@ def _compact_conversation(
 
     If *journal_summary* is provided (from a SessionJournal), it replaces
     the lossy turn-by-turn summary with a dense, structured state document.
+
+    When *use_mcp_contracts* is True, the summary extracts which contracts
+    were fetched (from forge_get_contract tool calls) and adds a re-fetch
+    hint so the builder knows to call forge tools again.
     """
     if len(messages) <= 5:
         return list(messages)
 
     directive = messages[0]
     tail = messages[-4:]
+
+    # In MCP mode, track which contracts were fetched in compacted turns
+    fetched_contracts: set[str] = set()
+    if use_mcp_contracts:
+        for msg in messages[1:-4]:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        name = block.get("name", "")
+                        inp = block.get("input", {})
+                        if name == "forge_get_contract":
+                            fetched_contracts.add(inp.get("name", "?"))
+                        elif name == "forge_get_phase_window":
+                            fetched_contracts.add(f"phase_window({inp.get('phase_number', '?')})")
 
     if journal_summary:
         # Use journal-based summary — dense and accurate
@@ -137,6 +157,19 @@ def _compact_conversation(
             elif isinstance(content, str) and len(content) > 200:
                 content = content[:200] + "..."
                 summary_parts.append(f"[{role}]: {content}\n")
+
+    # MCP-aware: note fetched contracts and re-fetch hint
+    if use_mcp_contracts and fetched_contracts:
+        summary_parts.append(
+            f"\nContracts previously fetched: {', '.join(sorted(fetched_contracts))}\n"
+            "Contract data has been compacted away — re-fetch any contract you need "
+            "using `forge_get_contract(name)` or `forge_get_phase_window(N)`.\n"
+            "Use `forge_scratchpad(\"read\", key)` to retrieve your saved notes.\n"
+        )
+    elif use_mcp_contracts:
+        summary_parts.append(
+            "\nContract data has been compacted. Re-fetch as needed via forge tools.\n"
+        )
 
     summary_msg = {
         "role": "user",
@@ -193,6 +226,7 @@ _FORGE_GITIGNORE_RULES = [
     "Forge/",
     "*.forge-contract",
     ".forge/",
+    ".venv/",
 ]
 
 _FORGE_GITIGNORE_MARKER = "# Forge contracts (server-side only — do not push)"

@@ -1,0 +1,126 @@
+# TaskFlow — API Physics
+
+info:
+  title: TaskFlow API
+  version: "1.0"
+  description: Task management platform API
+
+paths:
+  # ── Auth ────────────────────────────────────────────────────
+  /auth/register:
+    post:
+      summary: Register a new user
+      auth: none
+      request:
+        email: string (required)
+        password: string (required, min 8 chars)
+        display_name: string (required)
+      response:
+        id: uuid
+        email: string
+        display_name: string
+        access_token: string
+        refresh_token: string
+
+  /auth/login:
+    post:
+      summary: Authenticate and receive tokens
+      auth: none
+      request:
+        email: string (required)
+        password: string (required)
+      response:
+        access_token: string
+        refresh_token: string
+        user: { id, email, display_name }
+
+  /auth/refresh:
+    post:
+      summary: Refresh access token
+      auth: none
+      request:
+        refresh_token: string (required)
+      response:
+        access_token: string
+
+  # ── Projects ────────────────────────────────────────────────
+  /projects:
+    get:
+      summary: List user's projects
+      auth: token
+      response:
+        projects: array of { id, name, description, role, task_count, created_at }
+
+    post:
+      summary: Create a new project
+      auth: token
+      request:
+        name: string (required)
+        description: string (optional)
+      response:
+        id: uuid
+        name: string
+        description: string
+
+  /projects/{project_id}:
+    get:
+      summary: Get project details with columns and tasks
+      auth: token
+      response:
+        id: uuid
+        name: string
+        columns: array of { id, name, position, tasks: [...] }
+
+  # ── Tasks ───────────────────────────────────────────────────
+  /projects/{project_id}/tasks:
+    post:
+      summary: Create a task
+      auth: token
+      request:
+        title: string (required)
+        column_id: uuid (required)
+        description: string (optional)
+        assignee_id: uuid (optional)
+        due_date: date (optional)
+      response:
+        id: uuid
+        title: string
+        column_id: uuid
+
+  /projects/{project_id}/tasks/{task_id}:
+    put:
+      summary: Update a task (move, edit, assign)
+      auth: token
+      request:
+        title: string (optional)
+        column_id: uuid (optional)
+        description: string (optional)
+        assignee_id: uuid (optional)
+        due_date: date (optional)
+      response:
+        id: uuid
+        title: string
+        column_id: uuid
+
+schemas:
+  User:
+    id: uuid
+    email: string
+    display_name: string
+    created_at: datetime
+
+  Project:
+    id: uuid
+    name: string
+    description: string
+    owner_id: uuid
+    created_at: datetime
+
+  Task:
+    id: uuid
+    title: string
+    description: string
+    column_id: uuid
+    assignee_id: uuid | null
+    due_date: date | null
+    position: integer

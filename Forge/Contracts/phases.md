@@ -4090,4 +4090,109 @@ When an invariant is violated:
 - The entire UX flow adapts to the selected mode
 - Mini builds have a clear "Continue to Full Build" call-to-action
 - Full build UX is completely unchanged
+
+---
+
+## Phase 54 — Contract Generation Decoupling
+
+**Objective:** Decouple contract generation from ForgeGuard's own governance documents. Replace ForgeGuard-specific structural references with generic builder templates. Reorder generation to manifesto-first with cumulative snowball chain context.
+
+**Deliverables:**
+
+- **Generic builder templates** — 9 files in `app/templates/builder_examples/` using a neutral fictional project ("TaskFlow"). Each ~1-2KB, showing structure and format only — zero ForgeGuard content:
+  - `manifesto_example.md` — values, non-negotiables, philosophy
+  - `blueprint_example.md` — project name, intent, features, architecture
+  - `stack_example.md` — backend, frontend, infra, dev tools sections
+  - `schema_example.md` — 2-3 entities with fields, relations, constraints
+  - `physics_example.yaml` — 4 CRUD endpoints showing YAML structure
+  - `boundaries_example.json` — layered architecture: routers, services, repos, clients
+  - `ui_example.md` — design system, pages, components
+  - `phases_example.md` — 4-phase generic plan (objective, deliverables, exit criteria)
+  - `builder_directive_example.md` — AEM settings, phase order, settings
+- **New generation order** — manifesto → blueprint → stack → schema → physics → boundaries → ui → phases → builder_directive
+- **Cumulative snowball chain** — each contract receives ALL previously generated contracts as context (replacing the selective `_CHAIN_CONTEXT` map). Cap: 24KB full / 12KB mini
+- **`_load_forge_example()` replaced** with `_load_generic_template()` reading from `app/templates/builder_examples/`
+- **Mini-build phases example** — 2-phase variant included in templates
+- **Tests:**
+  - Existing contract snapshot tests updated for new generation order
+  - Template files exist and are non-empty
+  - Snowball chain grows correctly (manifesto has 0 deps, builder_directive has 8)
+  - No ForgeGuard-specific content in generated contracts for a non-ForgeGuard project
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- `_load_forge_example()` is deleted — no reads from `Forge/Contracts/` for user project generation
+- All 9 generic templates exist and are used as structural references
+- Generation order is manifesto-first, builder_directive-last
+- Each contract receives all prior contracts as chain context
+- Mini builds generate exactly 2 phases
+- Existing tests pass + new template/chain tests pass
+- ForgeGuard's own `Forge/Contracts/` can evolve freely without affecting user project generation
+
+---
+
+## Phase 55 — MCP Builder: Forge Tools
+
+**Objective:** Add Forge governance tools to the builder's tool catalogue so it can fetch contracts on-demand via MCP tool calls instead of receiving a pre-loaded context dump.
+
+**Deliverables:**
+
+- **5 new tool handlers** in `app/services/tool_executor.py`:
+  - `forge_get_contract(name)` — reads contract from `Forge/Contracts/` in working dir. Blocks `phases` (too large — directs to `forge_get_phase_window`)
+  - `forge_get_phase_window(phase_number)` — extracts current + next phase from phases.md (~2K tokens instead of 230K)
+  - `forge_list_contracts()` — lists available contracts in the working dir
+  - `forge_get_summary()` — governance framework overview
+  - `forge_scratchpad(operation, key?, value?)` — persistent KV store per build (survives context compaction)
+- **5 tool definitions** appended to `BUILDER_TOOLS`
+- **`execute_tool_async` dispatch** updated for all 5 new tools
+- **Tests:**
+  - Each tool returns correct data for valid input
+  - `forge_get_contract("phases")` returns helpful error redirecting to phase_window
+  - `forge_get_phase_window` extracts correct window for edge cases (Phase 0, last phase, out of range)
+  - Scratchpad CRUD operations: read, write, append, list
+  - Scratchpad persists across calls, scoped to working_dir
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- All 5 forge tools are registered in BUILDER_TOOLS
+- Builder can call them during a build (tool dispatch works end-to-end)
+- Existing builder tools (read_file, write_file, etc.) are unaffected
+- All existing tests pass + ~20 new tool tests pass
+
+---
+
+## Phase 56 — MCP Builder: System Prompt & Slim First Message
+
+**Objective:** Replace the ~27K token contract dump in the first user message with a lean system prompt (~4.5K tokens) that instructs the builder to fetch contracts on-demand via forge tools. Feature-flagged via `USE_MCP_CONTRACTS`.
+
+**Deliverables:**
+
+- **New system prompt** (~4.5K tokens) containing:
+  - Identity + AEM 7-step workflow
+  - Distilled critical governance rules (from builder_contract.md §0-§12)
+  - Full tool catalogue (8 existing + 5 forge tools)
+  - Phase workflow: PLAN → code → test → SIGN-OFF
+  - First-turn instruction: "Call forge_get_phase_window(0), then forge_get_contract("blueprint") and ("stack")"
+- **Slim first message** (~1.5K tokens): project name + workspace file listing + "Begin Phase 0"
+- **Feature flag** `USE_MCP_CONTRACTS` in `app/config.py` (default False) — toggles between old dump and new MCP flow
+- **Phase advancement** — remove phase window injection; builder calls `forge_get_phase_window(N)` instead
+- **Context compaction** — update summary to note which contracts were fetched; add hint "re-fetch via forge tools"
+- **Must-read gate** — if turn 1 has zero `forge_get_*` tool calls, inject corrective user message
+- **Tests:**
+  - New system prompt is used when flag is True
+  - Old system prompt is used when flag is False
+  - First message contains no contract content when flag is True
+  - Phase advancement message instructs forge_get_phase_window call
+  - Must-read gate triggers when builder skips contract fetching
+
+**Schema coverage:** No new tables.
+
+**Exit criteria:**
+- With `USE_MCP_CONTRACTS=true`: builder receives lean system prompt + slim first message, fetches contracts via tools
+- With `USE_MCP_CONTRACTS=false`: existing dump flow unchanged (safe rollback)
+- Context window usage drops from ~32K to ~6K fixed overhead
+- Real build completes successfully with MCP flow
+- All existing tests pass + flag-aware tests pass
 - All existing tests pass + ~10 new tests for mode-aware frontend components

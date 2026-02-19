@@ -1,0 +1,38 @@
+{
+  "description": "Architectural layer boundary rules for TaskFlow. Each layer has forbidden import patterns that enforce separation of concerns.",
+  "layers": [
+    {
+      "name": "routers",
+      "glob": "app/api/routers/*.py",
+      "forbidden": [
+        { "pattern": "import asyncpg|from asyncpg", "reason": "Routers must not access the database directly — use services" },
+        { "pattern": "from app\\.repos", "reason": "Routers must not import repos — use services as the intermediary" }
+      ]
+    },
+    {
+      "name": "services",
+      "glob": "app/services/**/*.py",
+      "forbidden": [
+        { "pattern": "from fastapi", "reason": "Services must not depend on HTTP framework — they receive plain data" },
+        { "pattern": "Request|Response|HTTPException", "reason": "Services must not use HTTP concepts — raise domain errors instead" }
+      ]
+    },
+    {
+      "name": "repos",
+      "glob": "app/repos/*.py",
+      "forbidden": [
+        { "pattern": "from app\\.services", "reason": "Repos must not import services — repos are called BY services" },
+        { "pattern": "from fastapi", "reason": "Repos must not depend on HTTP framework" }
+      ]
+    },
+    {
+      "name": "clients",
+      "glob": "app/clients/*.py",
+      "forbidden": [
+        { "pattern": "from app\\.repos", "reason": "Clients must not access repos — they handle external APIs only" },
+        { "pattern": "from app\\.services", "reason": "Clients must not import services — clients are called BY services" }
+      ]
+    }
+  ],
+  "known_violations": []
+}

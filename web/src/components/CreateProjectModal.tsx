@@ -13,7 +13,7 @@ function extractError(body: Record<string, unknown>, fallback: string): string {
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
-type SourceType = 'github' | 'local';
+type SourceType = 'github';
 type GitHubMode = 'create' | 'select';
 
 interface GitHubRepo {
@@ -108,7 +108,6 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
   const [source, setSource] = useState<SourceType>('github');
   const [ghMode, setGhMode] = useState<GitHubMode>('create');
   const [isPrivate, setIsPrivate] = useState(false);
-  const [localPath, setLocalPath] = useState('');
 
   /* repo picker state (for "select existing") */
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
@@ -157,10 +156,6 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
     const trimmedName = name.trim();
     if (!trimmedName) {
       setError('Project name is required');
-      return;
-    }
-    if (source === 'local' && !localPath.trim()) {
-      setError('Project path is required for local projects');
       return;
     }
     if (source === 'github' && ghMode === 'select' && !selectedRepo) {
@@ -239,7 +234,6 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
           name: trimmedName,
           description: description.trim() || undefined,
           repo_id: repoId ?? undefined,
-          local_path: source === 'local' ? localPath.trim() : undefined,
           build_mode: buildMode,
         }),
       });
@@ -350,24 +344,8 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
           </span>
         </div>
 
-        {/* ---- Source toggle ---- */}
-        <div style={{ marginBottom: '14px' }}>
-          <span style={{ display: 'block', color: '#94A3B8', fontSize: '0.8rem', marginBottom: '6px' }}>
-            Source
-          </span>
-          <div style={{ display: 'flex' }}>
-            <Pill active={source === 'github'} onClick={() => setSource('github')} leftRadius testId="source-github">
-              GitHub
-            </Pill>
-            <Pill active={source === 'local'} onClick={() => setSource('local')} rightRadius testId="source-local">
-              Local
-            </Pill>
-          </div>
-        </div>
-
         {/* ---- GitHub options ---- */}
-        {source === 'github' && (
-          <div style={{ marginBottom: '14px' }}>
+        <div style={{ marginBottom: '14px' }}>
             <div style={{ display: 'flex', marginBottom: '10px' }}>
               <Pill active={ghMode === 'create'} onClick={() => { setGhMode('create'); setSelectedRepo(null); }} leftRadius testId="gh-create">
                 Create New
@@ -463,24 +441,7 @@ function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
               </div>
             )}
           </div>
-        )}
-
-        {/* ---- Local path ---- */}
-        {source === 'local' && (
-          <label style={{ display: 'block', marginBottom: '14px' }}>
-            <span style={{ display: 'block', color: '#94A3B8', fontSize: '0.8rem', marginBottom: '4px' }}>
-              Project path *
-            </span>
-            <input
-              type="text"
-              value={localPath}
-              onChange={(e) => setLocalPath(e.target.value)}
-              placeholder="C:\Users\me\projects\my-app"
-              data-testid="local-path-input"
-              style={inputStyle}
-            />
-          </label>
-        )}
+        </div>
 
         {/* ---- Error ---- */}
         {error && (

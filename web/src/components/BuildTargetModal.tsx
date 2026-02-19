@@ -1,10 +1,9 @@
 /**
  * BuildTargetModal -- lets user choose where the build writes files.
  *
- * Three target types:
+ * Two target types:
  *   - github_new     — create a new GitHub repo and push generated code
  *   - github_existing — clone an existing repo, add generated code, push
- *   - local_path     — write files to a local directory
  *
  * Passes { target_type, target_ref } back to the caller.
  */
@@ -21,7 +20,7 @@ interface BuildTargetModalProps {
   starting?: boolean;
 }
 
-type TargetOption = 'github_new' | 'github_existing' | 'local_path';
+type TargetOption = 'github_new' | 'github_existing';
 
 const TARGET_OPTIONS: { value: TargetOption; label: string; description: string; placeholder: string }[] = [
   {
@@ -35,12 +34,6 @@ const TARGET_OPTIONS: { value: TargetOption; label: string; description: string;
     label: 'Existing GitHub Repo',
     description: 'Clone an existing repo, add generated files, and push.',
     placeholder: 'owner/repo-name',
-  },
-  {
-    value: 'local_path',
-    label: 'Local Directory',
-    description: 'Write generated files to a directory on the server.',
-    placeholder: 'C:\\Projects\\my-app  or  /home/user/projects/my-app',
   },
 ];
 

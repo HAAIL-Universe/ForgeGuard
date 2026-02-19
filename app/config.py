@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     LLM_FIX_MAX_TIER2: int = 3       # Sonnet-with-thinking → Opus code attempts
     LLM_THINKING_BUDGET: int = 10000  # token budget for extended thinking
 
+    # MCP-driven builder: when True, the builder gets a lean system prompt
+    # and fetches contracts on-demand via forge_* tools instead of receiving
+    # a ~27K token contract dump in the first message.  (Phase 56)
+    USE_MCP_CONTRACTS: bool = False
+
 
 settings = Settings()
 

@@ -31,19 +31,19 @@ class ContractCancelled(Exception):
 _active_generations: dict[str, asyncio.Event] = {}
 
 CONTRACT_TYPES = [
-    "blueprint",
     "manifesto",
+    "blueprint",
     "stack",
     "schema",
     "physics",
     "boundaries",
-    "phases",
     "ui",
+    "phases",
     "builder_directive",
 ]
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "contracts"
-FORGE_CONTRACTS_DIR = Path(__file__).resolve().parent.parent.parent / "Forge" / "Contracts"
+BUILDER_EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "templates" / "builder_examples"
 
 
 # ---------------------------------------------------------------------------
@@ -79,14 +79,19 @@ def _format_answers_for_prompt(project: dict, answers: dict) -> str:
     return "\n".join(lines)
 
 
-def _load_forge_example(contract_type: str) -> str | None:
-    """Load the Forge example contract as a structural reference, if it exists."""
+def _load_generic_template(contract_type: str) -> str | None:
+    """Load a generic builder example as a structural reference.
+
+    Templates live in app/templates/builder_examples/ and are fully
+    fictional (TaskFlow app) so they never leak ForgeGuard's own docs
+    into user project generation.
+    """
     ext_map = {
-        "physics": "physics.yaml",
-        "boundaries": "boundaries.json",
+        "physics": ".yaml",
+        "boundaries": ".json",
     }
-    filename = ext_map.get(contract_type, f"{contract_type}.md")
-    path = FORGE_CONTRACTS_DIR / filename
+    ext = ext_map.get(contract_type, ".md")
+    path = BUILDER_EXAMPLES_DIR / f"{contract_type}_example{ext}"
     if path.exists():
         try:
             return path.read_text(encoding="utf-8")
@@ -677,19 +682,10 @@ async def push_contracts_to_git(
         shutil.rmtree(working_dir, ignore_errors=True)
 
 
-# Which previously-generated contracts to feed as context for each type.
-# Key = contract being generated, value = list of prior contract types to include.
-_CHAIN_CONTEXT: dict[str, list[str]] = {
-    "blueprint":          [],
-    "manifesto":          ["blueprint"],
-    "stack":              ["blueprint"],
-    "schema":             ["blueprint", "stack"],
-    "physics":            ["blueprint", "schema"],
-    "boundaries":         ["blueprint", "stack"],
-    "phases":             ["blueprint", "stack", "schema", "physics"],
-    "ui":                 ["blueprint", "physics", "schema"],
-    "builder_directive":  ["blueprint", "phases", "stack"],
-}
+# Snowball chain: each contract receives ALL previously generated contracts
+# as context.  Generation order (manifesto → blueprint → stack → schema →
+# physics → boundaries → ui → phases → builder_directive) means later
+# contracts see more context.  Caps keep total injection under budget.
 
 
 async def _generate_contract_content(
@@ -714,18 +710,9 @@ async def _generate_contract_content(
     """
     is_mini = build_mode == "mini"
 
-    # Load the Forge example as a structural reference (if available)
-    # For mini builds: skip the example for phases (230KB, 13+ phases
-    # overwhelms the 2-phase instruction) and cap other examples to
-    # keep token budget reasonable.
-    example = None
-    if is_mini and contract_type == "phases":
-        example = None  # never show the full phases example for mini
-    else:
-        example = _load_forge_example(contract_type)
-        if is_mini and example and len(example) > 8000:
-            # Truncate large examples for mini builds to save tokens
-            example = example[:8000] + "\n\n[... truncated for mini build — match the FORMAT above, not the length ...]\n"
+    # Load a generic builder example as structural reference.
+    # Templates are small (~1-2 KB each) so no truncation needed.
+    example = _load_generic_template(contract_type)
 
     # Pick instructions: prefer mini-specific variant when available
     if is_mini:
@@ -779,23 +766,32 @@ async def _generate_contract_content(
         f"--- END PROJECT INFORMATION ---"
     ]
 
-    # Inject prior contracts for cross-contract consistency (chaining)
+    # Snowball chain: inject ALL previously generated contracts for
+    # cross-contract consistency.  Per-contract cap keeps each snippet
+    # reasonable; total budget caps the entire injection block.
     if prior_contracts:
-        deps = _CHAIN_CONTEXT.get(contract_type, [])
-        chain_parts = []
-        for dep_type in deps:
+        total_budget = 12_000 if is_mini else 24_000
+        per_cap = 6_000 if is_mini else 12_000
+        chain_parts: list[str] = []
+        used = 0
+        for dep_type in CONTRACT_TYPES:
+            if dep_type == contract_type:
+                break  # only include contracts generated *before* this one
             dep_content = prior_contracts.get(dep_type)
-            if dep_content:
-                # Cap each prior contract to avoid blowing up the context
-                cap = 6000 if is_mini else 12000
-                snippet = dep_content[:cap]
-                if len(dep_content) > cap:
-                    snippet += "\n[... truncated ...]"
-                chain_parts.append(
-                    f"--- PREVIOUSLY GENERATED: {dep_type} ---\n"
-                    f"{snippet}\n"
-                    f"--- END {dep_type} ---"
-                )
+            if not dep_content:
+                continue
+            snippet = dep_content[:per_cap]
+            if len(dep_content) > per_cap:
+                snippet += "\n[... truncated ...]"
+            part = (
+                f"--- PREVIOUSLY GENERATED: {dep_type} ---\n"
+                f"{snippet}\n"
+                f"--- END {dep_type} ---"
+            )
+            if used + len(part) > total_budget:
+                break  # stop adding once we hit the total budget
+            chain_parts.append(part)
+            used += len(part)
         if chain_parts:
             user_parts.append(
                 "\n\nUse these previously-generated contracts for consistency:\n"

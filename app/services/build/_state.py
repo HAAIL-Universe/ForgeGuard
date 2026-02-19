@@ -47,7 +47,7 @@ FILE_START_PATTERN = re.compile(r"^=== FILE:\s*(.+?)\s*===$", re.MULTILINE)
 FILE_END_PATTERN = re.compile(r"^=== END FILE ===$", re.MULTILINE)
 
 # Valid build target types
-VALID_TARGET_TYPES = {"github_new", "github_existing", "local_path"}
+VALID_TARGET_TYPES = {"github_new", "github_existing"}
 
 # Language detection by file extension
 _EXT_TO_LANG: dict[str, str] = {

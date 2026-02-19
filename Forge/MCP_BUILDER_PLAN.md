@@ -1,14 +1,31 @@
 # MCP-Driven Builder Architecture — Detailed Implementation Plan
 
-> **Goal**: Replace the 30-60K token contract dump in the first user message with
-> on-demand MCP tool calls. The builder fetches exactly what it needs, when it
-> needs it, governed by a lean system prompt that encodes the AEM workflow.
+> **Goal**: Two fundamental changes to the builder:
+> 1. **Decouple ForgeGuard's own docs from user project generation** — replace
+>    ForgeGuard contract examples with generic structural templates
+> 2. **Replace the 30-60K token contract dump with MCP tool calls** — the builder
+>    fetches exactly what it needs, when it needs it, via on-demand tools
 
 ---
 
 ## 0. Current Architecture (What We're Replacing)
 
-### The Problem
+### Problem 1: ForgeGuard Contamination
+
+`_load_forge_example()` in `contract_generator.py` reads ForgeGuard's actual
+contract files from `Forge/Contracts/` and injects them as "STRUCTURAL REFERENCE"
+when generating contracts for **user projects**. The LLM sees ForgeGuard's
+blueprint (GitHub OAuth, webhooks, audit engine), schema (users, repos tables),
+physics (ForgeGuard API endpoints), etc. — and inevitably absorbs ForgeGuard's
+architecture into user projects.
+
+**What leaks**: Every contract type. ForgeGuard's product features, database
+schema, API endpoints, and architecture patterns bleed into new projects.
+
+**Root cause**: ForgeGuard's own governance docs serve double-duty as both
+(a) ForgeGuard's living documentation and (b) templates for the contract generator.
+
+### Problem 2: Contract Context Dump
 
 | Component | Tokens | Where | Persists? |
 |-----------|-------:|-------|-----------|
@@ -25,10 +42,7 @@
 | System prompt | ~1.5K | System block | ✅ All turns |
 | **Total** | **~27K** | | |
 
-These ~27K tokens sit in the context window for *every single turn* of
-potentially 50+ turns. They're Anthropic-cached (cheaper on reads), but still
-consume the 200K context window. After compaction, `messages[0]` (the contract
-dump) is **always preserved** — it's the one message that never gets trimmed.
+~27K tokens persist across all 50+ turns, never compacted.
 
 ### The Flow Today
 
@@ -43,7 +57,98 @@ dump) is **always preserved** — it's the one message that never gets trimmed.
 
 ---
 
-## 1. New Architecture Overview
+## 1. Contract Generation — Decouple from ForgeGuard
+
+### 1a. New Generation Order
+
+**Current**: blueprint → manifesto → stack → schema → physics → boundaries →
+phases → ui → builder_directive
+
+**New**: manifesto FIRST (values/philosophy drive everything), phases SECOND-TO-LAST
+(needs full project picture to plan timeline), builder_directive LAST (AEM activation):
+
+| # | Contract | Reads (all prior) | Rationale |
+|---|----------|-------------------|-----------|
+| 1 | **manifesto** | — | Values & philosophy first — everything else flows from this |
+| 2 | **blueprint** | manifesto | What to build, informed by project values |
+| 3 | **stack** | manifesto, blueprint | Tech choices driven by what we're building |
+| 4 | **schema** | manifesto, blueprint, stack | Data model needs product + tech context |
+| 5 | **physics** | all above | API spec needs schema + stack + product knowledge |
+| 6 | **boundaries** | all above | Architecture rules need the full tech picture |
+| 7 | **ui** | all above | Design needs schema, physics (APIs), and stack |
+| 8 | **phases** | ALL above | Timeline/execution plan — needs EVERYTHING to plan properly |
+| 9 | **builder_directive** | ALL above | AEM activation — the document that turns Claude into the autonomous builder |
+
+**Key change**: Each contract reads ALL previously generated contracts (snowball
+chain), not just a selective subset. The current `_CHAIN_CONTEXT` map cherry-picks
+2-4 deps per contract — the new approach gives every contract full project context.
+
+### 1b. Replace ForgeGuard Examples with Generic Templates
+
+**Current**: `_load_forge_example()` reads ForgeGuard's actual files from
+`Forge/Contracts/` — leaking ForgeGuard's architecture into user projects.
+
+**New**: Generic structural templates in `app/templates/builder_examples/` —
+same format and depth, but using a neutral fictional project ("TaskFlow" — a
+simple task management app). Each template is ~1-2KB, showing ONLY the structure
+and section format the LLM should follow.
+
+| Template | Content | Size |
+|----------|---------|-----:|
+| `manifesto_example.md` | Generic principles: user-first, test-driven, simplicity | ~0.8KB |
+| `blueprint_example.md` | Generic SaaS: project name, intent, features, architecture | ~1.2KB |
+| `stack_example.md` | Placeholder sections: backend, frontend, infra, dev tools | ~0.8KB |
+| `schema_example.md` | 2-3 simple entities (users, tasks, comments) with format | ~1.0KB |
+| `physics_example.yaml` | 4 CRUD endpoints showing YAML structure | ~1.2KB |
+| `boundaries_example.json` | Generic layered arch: routers, services, repos, clients | ~0.8KB |
+| `ui_example.md` | Generic dashboard: design system, pages, components | ~1.0KB |
+| `phases_example.md` | 4-phase generic plan showing format (objective, deliverables, criteria) | ~1.5KB |
+| `builder_directive_example.md` | AEM config, phase order, settings | ~0.6KB |
+
+**Mini-build**: Same templates, but phases example is 2-phase variant (~0.8KB).
+The `_mini` instruction variants already say "EXACTLY 2 phases" — now the
+structural reference also shows 2 phases instead of ForgeGuard's 7+.
+
+### 1c. Snowball Chain Context
+
+Instead of the current selective `_CHAIN_CONTEXT` map, the generator passes
+**all previously generated contracts** to each subsequent generation call:
+
+```python
+# New approach — cumulative chain
+generated_so_far: dict[str, str] = {}
+for contract_type in CONTRACT_TYPES:       # new order: manifesto → ... → builder_directive
+    prior_context = "\n\n---\n\n".join(
+        f"## {ctype} (already generated)\n{content}"
+        for ctype, content in generated_so_far.items()
+    )
+    # Cap total prior context: 24KB full / 12KB mini
+    result = await _generate_contract_content(
+        contract_type, answers, prior_context, example_template, ...
+    )
+    generated_so_far[contract_type] = result
+```
+
+This means:
+- `manifesto` generates with no prior context (pure questionnaire answers)
+- `blueprint` sees the manifesto it just generated
+- `stack` sees manifesto + blueprint
+- `schema` sees manifesto + blueprint + stack
+- ...
+- `phases` sees ALL 7 contracts above — full project picture
+- `builder_directive` sees everything including phases
+
+### 1d. Implementation Changes
+
+| File | Change |
+|------|--------|
+| `app/services/project/contract_generator.py` | New `CONTRACT_TYPES` order, replace `_load_forge_example()` with template loader, replace `_CHAIN_CONTEXT` with cumulative snowball, cap prior context |
+| `app/templates/builder_examples/` | 9 new generic template files (~9KB total) |
+| `app/templates/contracts/phases.md` | Delete or reduce — no longer needed as ForgeGuard's 4093-line file |
+
+---
+
+## 2. MCP-Driven Builder Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -100,9 +205,9 @@ and the builder can re-fetch via tools if needed.
 
 ---
 
-## 2. New MCP Tools for the Builder
+## 3. New MCP Tools for the Builder
 
-### 2a. `forge_get_contract` (EXISTING — reuse as-is)
+### 3a. `forge_get_contract` (EXISTING — reuse as-is)
 
 Already in `forge_ide/mcp/tools.py`. Takes `{name: string}`, returns full
 contract content. Handles all 15 contract types including `builder_contract`,
@@ -119,7 +224,7 @@ we provide `forge_get_phase_window` (below). If the builder calls
 *"Use forge_get_phase_window(phase_number) instead — the full phases contract
 is too large for context."*
 
-### 2b. `forge_get_phase_window` (NEW)
+### 3b. `forge_get_phase_window` (NEW)
 
 ```json
 {
@@ -142,17 +247,17 @@ is too large for context."*
 Reads `phases.md` from `Forge/Contracts/` in the working directory, splits
 by `## Phase`, returns the window. ~1-3K tokens per call vs 230K for full file.
 
-### 2c. `forge_list_contracts` (EXISTING — reuse as-is)
+### 3c. `forge_list_contracts` (EXISTING — reuse as-is)
 
 Already exists. Returns names + filenames + formats of all available contracts.
 The builder calls this if it needs to discover what contracts exist.
 
-### 2d. `forge_get_summary` (EXISTING — reuse as-is)
+### 3d. `forge_get_summary` (EXISTING — reuse as-is)
 
 Returns a compact overview of the governance framework. Good for the builder's
 first call to orient itself without fetching every contract.
 
-### 2e. `forge_scratchpad` (NEW)
+### 3e. `forge_scratchpad` (NEW)
 
 ```json
 {
@@ -192,7 +297,7 @@ Entries survive context compaction because they're stored outside the conversati
 
 ---
 
-## 3. New System Prompt Design
+## 4. New System Prompt Design
 
 The system prompt becomes the single governance document. It replaces both the
 current 70-line system prompt AND the 27K contract dump. Target: ~4-5K tokens.
@@ -310,7 +415,7 @@ On your VERY FIRST response:
 
 ---
 
-## 4. First Message Redesign
+## 5. First Message Redesign
 
 ### Current (27K+ tokens)
 
@@ -341,9 +446,29 @@ everything via tool calls on its first turn.
 
 ---
 
-## 5. Implementation Steps (Ordered)
+## 6. Implementation Steps (Ordered)
 
-### Step 1: Add Forge Tools to `tool_executor.py`
+### Step 1: Create Generic Builder Templates
+
+**File**: `app/templates/builder_examples/`
+
+Create 9 generic template files (~1-2KB each) using a neutral "TaskFlow" project.
+These show ONLY the structure/format the LLM should follow — no ForgeGuard content.
+
+**Effort**: Medium. ~9KB of carefully crafted template content.
+
+### Step 2: Rewire Contract Generator
+
+**File**: `app/services/project/contract_generator.py`
+
+- Change `CONTRACT_TYPES` order: manifesto → blueprint → stack → schema → physics → boundaries → ui → phases → builder_directive
+- Replace `_load_forge_example()` with `_load_generic_template()` reading from `app/templates/builder_examples/`
+- Replace `_CHAIN_CONTEXT` selective map with cumulative snowball (all prior contracts)
+- Cap cumulative prior context: 24KB full / 12KB mini
+
+**Effort**: Medium. ~80 lines changed in existing code.
+
+### Step 3: Add Forge Tools to `tool_executor.py`
 
 **File**: `app/services/tool_executor.py`
 
@@ -401,7 +526,7 @@ def _exec_forge_scratchpad(tool_input: dict, working_dir: str) -> str:
 **Effort**: Medium. ~150 lines of new code + 5 tool definitions appended to
 `BUILDER_TOOLS`.
 
-### Step 2: Write New System Prompt
+### Step 4: Write New System Prompt
 
 **File**: `app/services/build_service.py` (or extract to `app/services/build/prompts.py`)
 
@@ -411,7 +536,7 @@ maintainability.
 
 **Effort**: Small. ~100 lines of prompt text replacing ~60 lines.
 
-### Step 3: Slim First Message Assembly
+### Step 5: Slim First Message Assembly
 
 **File**: `app/services/build_service.py`
 
@@ -435,7 +560,7 @@ first_message = (
 
 **Effort**: Small. Remove `_build_directive()` call, simplify assembly.
 
-### Step 4: Update Phase Advancement
+### Step 6: Update Phase Advancement
 
 **File**: `app/services/build_service.py` (lines 2460-2530)
 
@@ -457,7 +582,7 @@ advance_parts.append(
 
 **Effort**: Small. Remove 2 lines, adjust 1 line.
 
-### Step 5: Update Context Compaction
+### Step 7: Update Context Compaction
 
 **File**: `app/services/build/context.py`
 
@@ -476,7 +601,7 @@ messages. With the new architecture:
 
 **Effort**: Small. ~10-15 lines changed.
 
-### Step 6: Update `_write_contracts_to_workdir()`
+### Step 8: Update `_write_contracts_to_workdir()`
 
 **File**: `app/services/build/context.py`
 
@@ -484,7 +609,7 @@ This function already writes contracts to `Forge/Contracts/` in the working
 directory. It must continue to work so `forge_get_contract` can read from disk.
 **No changes needed** — it's already correct.
 
-### Step 7: Tests
+### Step 9: Tests
 
 **New tests needed**:
 - `test_forge_tools_in_builder.py`: Verify all 5 forge tools execute correctly
@@ -499,9 +624,18 @@ directory. It must continue to work so `forge_get_contract` can read from disk.
 
 ---
 
-## 6. Migration Path
+## 7. Migration Path
 
-### Phase A: Add Tools (Non-Breaking)
+### Phase 0: Decouple Contract Generation (Non-Breaking)
+
+Create generic builder templates. Rewire `contract_generator.py` to use them
+instead of ForgeGuard's `Forge/Contracts/`. Change generation order to
+manifesto-first. Implement cumulative snowball chain context.
+
+**This is independent of the MCP builder work** — it fixes contract generation
+quality immediately, regardless of how the builder consumes them later.
+
+### Phase A: Add Forge Tools to Builder (Non-Breaking)
 
 Add forge tools to `BUILDER_TOOLS` and `execute_tool_async`. The builder gains
 new tools but the current contract-dump flow is unchanged. Tests pass.
@@ -538,7 +672,7 @@ and remove the feature flag. Delete `_build_directive()` function.
 
 ---
 
-## 7. Risks & Mitigations
+## 8. Risks & Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
@@ -547,10 +681,12 @@ and remove the feature flag. Delete `_build_directive()` function.
 | Re-fetching after compaction | Extra tokens in later turns | Tool results are ~2-4K each, vs 27K permanent. Net positive even with 5+ refetches. Scratchpad stores key decisions so contracts needn't be re-read in full. |
 | System prompt too large | Eats context overhead | Target 4.5K tokens. Current system + contracts = 28.5K. Still a massive reduction. |
 | Phases contract too large for tool | 230K phases.md via forge_get_contract | Block `phases` from `forge_get_contract`. Builder MUST use `forge_get_phase_window`. |
+| Generic templates too vague | LLM generates shallow contracts | Templates show structure AND depth (section names, expected detail level, field types). The LLM fills in project-specific content from questionnaire answers + prior contracts. |
+| Snowball chain too large | Later contracts hit token limit with cumulative context | Cap prior context: 24KB full / 12KB mini. Truncate oldest contracts first if needed. |
 
 ---
 
-## 8. Builder Behaviour — Expected Flow (Full Build)
+## 9. Builder Behaviour — Expected Flow (Full Build)
 
 ### Turn 1 (Phase 0 Start)
 
@@ -623,10 +759,15 @@ Builder calls: forge_scratchpad("read", "known_issues")
 
 ---
 
-## 9. File Change Summary
+## 10. File Change Summary
 
 | File | Change | Lines |
 |------|--------|------:|
+| **Phase 0: Contract Generation Decoupling** | | |
+| `app/templates/builder_examples/*.md/.yaml/.json` | 9 new generic template files | +~80 |
+| `app/services/project/contract_generator.py` | New order, generic templates, snowball chain | ~±120 |
+| `tests/test_contract_snapshots.py` | Update snapshots for new generation order | ~±30 |
+| **Phase A–D: MCP Builder** | | |
 | `app/services/tool_executor.py` | Add 5 forge tool handlers + BUILDER_TOOLS entries | +200 |
 | `app/services/build_service.py` | New system prompt, slim first message, phase advance | ~±100 |
 | `app/services/build/context.py` | Update compaction for tool-aware summaries | ~±20 |
@@ -639,7 +780,7 @@ Builder calls: forge_scratchpad("read", "known_issues")
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
 1. **Should `forge_get_summary()` include a mini-brief of each contract?**
    Currently it returns layer names and invariant names. Adding 1-line

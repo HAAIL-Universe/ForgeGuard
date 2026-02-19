@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from decimal import Decimal
@@ -31,6 +32,214 @@ from app.services.tool_executor import BUILDER_TOOLS, execute_tool_async
 from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# MCP-driven system prompt (Phase 56) — used when USE_MCP_CONTRACTS=True
+# ---------------------------------------------------------------------------
+
+MCP_SYSTEM_PROMPT = """\
+You are an autonomous software builder operating under the Forge governance framework.
+You build projects phase-by-phase using the tools below.
+
+## Your Tools
+
+### Project Tools
+- **read_file**(path): Read a file from the project.
+- **list_directory**(path): List files/folders in a directory.
+- **search_code**(pattern, glob?): Search for patterns across files.
+- **write_file**(path, content): Write or overwrite a file.
+- **edit_file**(path, edits): Apply surgical edits to an existing file.
+- **run_tests**(command, timeout?): Run the test suite.
+- **check_syntax**(file_path): Check a file for syntax errors.
+- **run_command**(command, timeout?): Run safe shell commands.
+
+### Forge Contract Tools
+- **forge_get_summary**(): Overview of governance framework. Call FIRST to orient yourself.
+- **forge_list_contracts**(): List all available contracts.
+- **forge_get_contract**(name): Read a specific governance contract (blueprint, stack, schema, physics, boundaries, manifesto, ui, builder_directive, builder_contract).
+- **forge_get_phase_window**(phase_number): Get current + next phase deliverables.
+- **forge_scratchpad**(operation, key?, value?): Persistent notes across phases (survives context compaction).
+
+## AEM (Autonomous Execution Mode) — The Build Loop
+
+For EACH phase, follow these steps exactly:
+
+### Step 1: Fetch Phase Context
+Call `forge_get_phase_window(N)` where N is the current phase number.
+Read any contracts relevant to this phase's deliverables:
+- Always read: `blueprint` (what to build), `stack` (tech requirements)
+- If writing APIs: `physics` (endpoint spec), `boundaries` (layer rules)
+- If writing UI: `ui` (design contract)
+- If first phase: `manifesto` (project ethos), `schema` (data model)
+
+### Step 2: Plan
+Emit a structured plan for THIS phase only:
+=== PLAN ===
+1. First task for this phase
+2. Second task for this phase
+...
+=== END PLAN ===
+Do NOT plan future phases. Use `forge_scratchpad("write", ...)` to record
+any decisions you'll need later.
+
+### Step 3: Build
+Write code using `write_file` and `edit_file`. After each file:
+- Call `check_syntax` to catch errors immediately.
+- Do NOT explore the filesystem unnecessarily — the workspace listing
+  is in the first message, and you can `list_directory` if needed.
+
+### Step 4: Mark Progress
+After completing each plan task, emit: === TASK DONE: N ===
+
+### Step 5: Verify
+Run `run_tests` with the project's test command. If tests fail:
+- Read the error output carefully
+- Fix with `edit_file` or `write_file`
+- Re-run tests
+- Repeat until tests pass (max 3 attempts per issue)
+
+### Step 6: Phase Sign-Off
+When ALL tasks are done and tests pass, emit:
+=== PHASE SIGN-OFF: PASS ===
+Phase: {phase_name}
+Deliverables: {comma-separated list}
+Tests: PASS
+=== END PHASE SIGN-OFF ===
+
+### Step 7: Next Phase
+After sign-off, a new message will arrive with the next phase context.
+Start again from Step 1.
+
+## Critical Rules
+
+1. **Minimal Diff**: Only change what the phase requires. No renames,
+   no cleanup, no unrelated refactors.
+2. **Boundary Enforcement**: Routers → Services → Repos. No skipping layers.
+   Read `boundaries` contract if unsure.
+3. **Contract Exclusion**: NEVER include Forge contract content, references,
+   or metadata in committed source files, READMEs, or code comments.
+   The `Forge/` directory is server-side only.
+4. **Evidence**: Every change must be traceable to a phase deliverable.
+5. **STOP Codes**: If you encounter an unresolvable issue, emit one of:
+   EVIDENCE_MISSING, AMBIGUOUS_INTENT, CONTRACT_CONFLICT,
+   RISK_EXCEEDS_SCOPE, NON_DETERMINISTIC_BEHAVIOR, ENVIRONMENT_LIMITATION
+6. **README**: Before the final phase, write a comprehensive README.md that includes
+   project name, description, key features, tech stack, setup instructions,
+   environment variables, usage examples, API reference, and license placeholder.
+
+## First Turn
+
+On your VERY FIRST response:
+1. Call `forge_get_phase_window(0)` to get Phase 0 deliverables
+2. Call `forge_get_contract("blueprint")` and `forge_get_contract("stack")`
+3. Emit === PLAN === for Phase 0
+4. Start writing code immediately with `write_file`
+"""
+
+# ---------------------------------------------------------------------------
+# MCP Mini-build system prompt (Phase 56B) — 2-phase rapid scaffold
+# ---------------------------------------------------------------------------
+
+MCP_MINI_SYSTEM_PROMPT = """\
+You are an autonomous software builder operating under the Forge governance framework.
+You are running a **Mini Build** — a rapid 2-phase proof-of-concept scaffold.
+
+## Your Tools
+
+### Project Tools
+- **read_file**(path): Read a file from the project.
+- **list_directory**(path): List files/folders in a directory.
+- **search_code**(pattern, glob?): Search for patterns across files.
+- **write_file**(path, content): Write or overwrite a file.
+- **edit_file**(path, edits): Apply surgical edits to an existing file.
+- **run_tests**(command, timeout?): Run the test suite.
+- **check_syntax**(file_path): Check a file for syntax errors.
+- **run_command**(command, timeout?): Run safe shell commands.
+
+### Forge Contract Tools
+- **forge_get_summary**(): Overview of governance framework. Call FIRST to orient yourself.
+- **forge_list_contracts**(): List all available contracts.
+- **forge_get_contract**(name): Read a specific governance contract.
+- **forge_get_phase_window**(phase_number): Get current + next phase deliverables.
+- **forge_scratchpad**(operation, key?, value?): Persistent notes across phases.
+
+## Mini Build — 2 Phases Only
+
+This is a **Mini Build**. There are EXACTLY 2 phases:
+- **Phase 0 — Backend Scaffold**: Project structure, database, API endpoints, auth, tests
+- **Phase 1 — Frontend & Ship**: UI pages/components, API integration, styling, README
+
+Do NOT create additional phases. Do NOT split work into more than 2 phases.
+Every deliverable MUST fit into Phase 0 or Phase 1.
+
+## AEM (Autonomous Execution Mode) — The Build Loop
+
+For EACH phase, follow these steps exactly:
+
+### Step 1: Fetch Phase Context
+Call `forge_get_phase_window(N)` where N is the current phase number (0 or 1).
+Read contracts relevant to this phase:
+- Phase 0: `blueprint`, `stack`, `schema`, `physics`, `boundaries`, `manifesto`
+- Phase 1: `blueprint`, `ui`, `stack` (re-read if needed after compaction)
+
+### Step 2: Plan
+Emit a structured plan for THIS phase only:
+=== PLAN ===
+1. First task for this phase
+2. Second task for this phase
+...
+=== END PLAN ===
+
+### Step 3: Build
+Write code using `write_file` and `edit_file`. After each file:
+- Call `check_syntax` to catch errors immediately.
+- Do NOT explore the filesystem — the workspace listing is in the first message.
+
+### Step 4: Mark Progress
+After completing each plan task, emit: === TASK DONE: N ===
+
+### Step 5: Verify
+Run `run_tests` with the project's test command. If tests fail:
+- Read the error output carefully
+- Fix with `edit_file` or `write_file`
+- Re-run tests (max 3 attempts per issue)
+
+### Step 6: Phase Sign-Off
+When ALL tasks are done and tests pass, emit:
+=== PHASE SIGN-OFF: PASS ===
+Phase: {phase_name}
+Deliverables: {comma-separated list}
+Tests: PASS
+=== END PHASE SIGN-OFF ===
+
+### Step 7: Next Phase (Phase 0 only)
+After Phase 0 sign-off, a new message will arrive with Phase 1 context.
+Start again from Step 1.
+After Phase 1 sign-off, the build is COMPLETE.
+
+## Critical Rules
+
+1. **2 Phases Only**: Phase 0 (backend) and Phase 1 (frontend). Nothing else.
+2. **Minimal Diff**: Only change what the phase requires.
+3. **Boundary Enforcement**: Routers → Services → Repos. No skipping layers.
+4. **Contract Exclusion**: NEVER include Forge contract content in source files.
+   The `Forge/` directory is server-side only.
+5. **STOP Codes**: If you encounter an unresolvable issue, emit one of:
+   EVIDENCE_MISSING, AMBIGUOUS_INTENT, CONTRACT_CONFLICT,
+   RISK_EXCEEDS_SCOPE, NON_DETERMINISTIC_BEHAVIOR, ENVIRONMENT_LIMITATION
+6. **README**: In Phase 1, write a comprehensive README.md with project name,
+   description, features, tech stack, setup instructions, environment variables,
+   usage examples, API reference, and license placeholder.
+
+## First Turn
+
+On your VERY FIRST response:
+1. Call `forge_get_phase_window(0)` to get Phase 0 deliverables
+2. Call `forge_get_contract("blueprint")` and `forge_get_contract("stack")`
+3. Call `forge_get_contract("schema")` — you need the data model for backend
+4. Emit === PLAN === for Phase 0
+5. Start writing code immediately with `write_file`
+"""
 
 # ---------------------------------------------------------------------------
 # Sub-module imports (R7 decomposition)
@@ -127,6 +336,54 @@ from app.services.build.verification import (  # noqa: E402
     _verify_phase_output,
     _run_governance_checks,
 )
+
+
+# ---------------------------------------------------------------------------
+# Project venv helper
+# ---------------------------------------------------------------------------
+
+
+async def _create_project_venv(
+    working_dir: str,
+    build_id: UUID | None = None,
+) -> str | None:
+    """Create a ``.venv`` inside *working_dir* if one doesn't already exist.
+
+    Returns the absolute path to the venv directory, or ``None`` on failure.
+    The venv is created with ``python -m venv .venv --without-pip`` first
+    (fast, no network), then ``pip`` is bootstrapped via ``ensurepip``.
+    """
+    import subprocess as _sp
+
+    venv_dir = Path(working_dir) / ".venv"
+    if venv_dir.exists():
+        logger.info("Project venv already exists: %s", venv_dir)
+        return str(venv_dir)
+
+    def _sync() -> str | None:
+        try:
+            _sp.run(
+                [sys.executable, "-m", "venv", str(venv_dir)],
+                capture_output=True, text=True, timeout=120,
+            )
+            if not venv_dir.exists():
+                logger.warning("venv dir not created at %s", venv_dir)
+                return None
+            logger.info("Created project venv: %s", venv_dir)
+            return str(venv_dir)
+        except Exception as exc:
+            logger.warning("venv creation failed: %s", exc)
+            return None
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _sync)
+
+    if result and build_id:
+        await build_repo.append_build_log(
+            build_id, "Created project virtual environment (.venv)",
+            source="system", level="info",
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +515,6 @@ async def start_build(
     if not target_type and project.get("repo_full_name"):
         target_type = "github_existing"
         target_ref = project["repo_full_name"]
-    elif not target_type and project.get("local_path"):
-        target_type = "local_path"
-        target_ref = project["local_path"]
 
     # Validate target
     if target_type and target_type not in VALID_TARGET_TYPES:
@@ -273,10 +527,6 @@ async def start_build(
     if working_dir_override:
         # /continue — reuse previous build's working directory
         working_dir = working_dir_override
-    elif target_type == "local_path":
-        working_dir = str(Path(target_ref).resolve()) if target_ref else None
-        if working_dir:
-            Path(working_dir).mkdir(parents=True, exist_ok=True)
     elif target_type in ("github_new", "github_existing"):
         # Use a temp directory; clone/init happens in _run_build
         working_dir = tempfile.mkdtemp(prefix="forgeguard_build_")
@@ -1681,8 +1931,11 @@ async def _run_build_conversation(
         if str(build_id) not in _interjection_queues:
             _interjection_queues[str(build_id)] = asyncio.Queue()
 
-        # Build the directive from contracts
-        directive = _build_directive(contracts)
+        # Build the directive from contracts (only needed in legacy mode)
+        if settings.USE_MCP_CONTRACTS:
+            directive = ""  # MCP mode — builder fetches contracts via tools
+        else:
+            directive = _build_directive(contracts)
 
         # Set up working directory for file writing
         if target_type == "github_new" and target_ref and working_dir:
@@ -1730,21 +1983,6 @@ async def _run_build_conversation(
                 logger.exception("Clone failed for %s -> %s (workdir=%s)", target_type, target_ref, working_dir)
                 await _fail_build(build_id, user_id, f"Failed to clone repo: {type(exc).__name__}: {exc}")
                 return
-        elif target_type == "local_path" and working_dir:
-            try:
-                Path(working_dir).mkdir(parents=True, exist_ok=True)
-                # Initialize git repo if not already one
-                git_dir = Path(working_dir) / ".git"
-                if not git_dir.exists():
-                    await git_client.init_repo(working_dir)
-                await build_repo.append_build_log(
-                    build_id,
-                    f"Using local path: {working_dir}",
-                    source="system", level="info",
-                )
-            except Exception as exc:
-                await _fail_build(build_id, user_id, f"Failed to initialize local path: {exc}")
-                return
 
         # Create/checkout branch if not main
         if working_dir and branch and branch != "main":
@@ -1769,6 +2007,13 @@ async def _run_build_conversation(
                 except Exception as exc2:
                     await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
                     return
+
+        # Create project-local virtual environment
+        if working_dir:
+            try:
+                await _create_project_venv(working_dir, build_id)
+            except Exception as exc:
+                logger.warning("Failed to create project venv (non-fatal): %s", exc)
 
         # Track files written during this build
         files_written: list[dict] = []
@@ -1859,19 +2104,56 @@ async def _run_build_conversation(
 
         # Extract Phase 0 + Phase 1 window for the first message
         current_phase_num = 0
-        phase_window = _extract_phase_window(contracts, current_phase_num)
+        if not settings.USE_MCP_CONTRACTS:
+            phase_window = _extract_phase_window(contracts, current_phase_num)
+        else:
+            phase_window = ""  # MCP mode — builder fetches via forge_get_phase_window
 
-        # Assemble first user message:
-        # governance + per-project contracts + workspace listing + phase window
-        first_message = (
-            "## ⚠ IMPORTANT — DO NOT EXPLORE\n"
-            "Everything you need is in this message. Do NOT call list_directory, "
-            "read_file, or any exploratory tool before starting Phase 0.\n"
-            "The workspace file listing is below. Start coding IMMEDIATELY.\n\n"
-            + directive
-            + workspace_info
-            + ("\n\n" + phase_window if phase_window else "")
-        )
+        # Assemble first user message — mode-dependent
+        if settings.USE_MCP_CONTRACTS:
+            # MCP mode: slim first message (~1.5K tokens)
+            # Extract project name from blueprint contract
+            _project_name = ""
+            _project_desc = ""
+            for c in contracts:
+                if c["contract_type"] == "blueprint":
+                    _lines = c["content"].splitlines()
+                    for _line in _lines:
+                        _stripped = _line.strip().lstrip("#").strip()
+                        if _stripped:
+                            _project_name = _stripped
+                            break
+                    # Second non-empty line as description
+                    _found_name = False
+                    for _line in _lines:
+                        _stripped = _line.strip().lstrip("#").strip()
+                        if _stripped and not _found_name:
+                            _found_name = True
+                            continue
+                        if _stripped and _found_name:
+                            _project_desc = _stripped
+                            break
+                    break
+            first_message = (
+                f"# Project: {_project_name}\n\n"
+                + (f"{_project_desc}\n\n" if _project_desc else "")
+                + ("**Mini Build** — 2 phases: backend scaffold → frontend & ship.\n\n"
+                   if _build_mode == "mini" else "")
+                + workspace_info
+                + "\n\nBegin Phase 0. Use your forge tools to fetch the contracts "
+                "you need, then emit your === PLAN === and start building.\n"
+            )
+        else:
+            # Legacy mode: full contract dump (~27K tokens)
+            first_message = (
+                "## ⚠ IMPORTANT — DO NOT EXPLORE\n"
+                "Everything you need is in this message. Do NOT call list_directory, "
+                "read_file, or any exploratory tool before starting Phase 0.\n"
+                "The workspace file listing is below. Start coding IMMEDIATELY.\n\n"
+                + directive
+                + workspace_info
+                + ("\n\n" + phase_window if phase_window else "")
+            )
 
         # Use content-block format with cache_control so Anthropic caches
         # the contracts across turns (prefix caching — 10% cost on turns 2+).
@@ -1905,68 +2187,78 @@ async def _run_build_conversation(
         recorded_input_baseline = 0
         recorded_output_baseline = 0
 
-        system_prompt = (
-            "You are an autonomous software builder operating under the Forge governance framework.\n\n"
-            "## CRITICAL — Read This First\n"
-            "1. Your contracts and build instructions are ALREADY provided in the first user message below.\n"
-            "2. Do NOT search the filesystem for contracts, README, config files, or any existing files.\n"
-            "3. Do NOT read_file or list_directory before starting Phase 0.\n"
-            "4. The working directory listing (if any) is already provided below — you have it.\n"
-            "5. Start Phase 0 (Genesis) IMMEDIATELY by emitting your plan, then writing code.\n\n"
-            "## Phase Workflow\n"
-            "Your **current phase + next phase** are shown in the Phase Window section.\n"
-            "When you finish a phase, a new message will provide the next phase window\n"
-            "and a diff summary of what was built.  Contracts are also saved in\n"
-            "`Forge/Contracts/` if you need to re-read one after context compaction.\n\n"
-            "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
-            "=== PLAN ===\n"
-            "1. First task for this phase\n"
-            "2. Second task for this phase\n"
-            "...\n"
-            "=== END PLAN ===\n\n"
-            "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
-            "As you complete each task, emit: === TASK DONE: N ===\n"
-            "where N is the task number from your current phase plan.\n\n"
-            "## Tools\n"
-            "You have access to the following tools for interacting with the project:\n"
-            "- **read_file**: Read a file to check existing code or verify your work.\n"
-            "- **list_directory**: List files/folders to understand project structure.\n"
-            "- **search_code**: Search for patterns across files to find implementations or imports.\n"
-            "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n"
-            "- **run_tests**: Run the test suite to verify your code works.\n"
-            "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
-            "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
-            "Guidelines for tool use:\n"
-            "1. Do NOT explore the filesystem at the start — the workspace listing is already above.\n"
-            "2. Start writing code immediately in Phase 0. Use read_file only when modifying existing files.\n"
-            "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
-            "4. Use search_code to find existing patterns, imports, or implementations.\n"
-            "5. After writing files, use check_syntax to catch syntax errors immediately.\n"
-            "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
-            "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
-            "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
-            "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
-            "## First Turn\n"
-            "On your VERY FIRST response, you MUST:\n"
-            "1. Emit === PLAN === for Phase 0\n"
-            "2. Start writing code with write_file\n"
-            "Do NOT call list_directory or read_file on your first turn.\n\n"
-            "## README\n"
-            "Before the final phase sign-off, generate a comprehensive README.md that includes:\n"
-            "- Project name and description\n"
-            "- Key features\n"
-            "- Tech stack\n"
-            "- Setup / installation instructions\n"
-            "- Environment variables\n"
-            "- Usage examples\n"
-            "- API reference (if applicable)\n"
-            "- License placeholder\n"
-            "\n"
-            "## Contract Exclusion\n"
-            "NEVER include Forge contract file contents, contract references, or\n"
-            "contract metadata in any committed source files, READMEs, or code comments.\n"
-            "The `Forge/` directory is on the server only and excluded from git pushes.\n"
-        )
+        # Resolve project build_mode (mini vs full) for prompt selection
+        _project_rec = await project_repo.get_project_by_id(project_id)
+        _build_mode = (_project_rec or {}).get("build_mode", "full")
+
+        if settings.USE_MCP_CONTRACTS:
+            if _build_mode == "mini":
+                system_prompt = MCP_MINI_SYSTEM_PROMPT
+            else:
+                system_prompt = MCP_SYSTEM_PROMPT
+        else:
+            system_prompt = (
+                "You are an autonomous software builder operating under the Forge governance framework.\n\n"
+                "## CRITICAL — Read This First\n"
+                "1. Your contracts and build instructions are ALREADY provided in the first user message below.\n"
+                "2. Do NOT search the filesystem for contracts, README, config files, or any existing files.\n"
+                "3. Do NOT read_file or list_directory before starting Phase 0.\n"
+                "4. The working directory listing (if any) is already provided below — you have it.\n"
+                "5. Start Phase 0 (Genesis) IMMEDIATELY by emitting your plan, then writing code.\n\n"
+                "## Phase Workflow\n"
+                "Your **current phase + next phase** are shown in the Phase Window section.\n"
+                "When you finish a phase, a new message will provide the next phase window\n"
+                "and a diff summary of what was built.  Contracts are also saved in\n"
+                "`Forge/Contracts/` if you need to re-read one after context compaction.\n\n"
+                "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
+                "=== PLAN ===\n"
+                "1. First task for this phase\n"
+                "2. Second task for this phase\n"
+                "...\n"
+                "=== END PLAN ===\n\n"
+                "Do NOT plan ahead to future phases. Each phase gets its own fresh plan.\n\n"
+                "As you complete each task, emit: === TASK DONE: N ===\n"
+                "where N is the task number from your current phase plan.\n\n"
+                "## Tools\n"
+                "You have access to the following tools for interacting with the project:\n"
+                "- **read_file**: Read a file to check existing code or verify your work.\n"
+                "- **list_directory**: List files/folders to understand project structure.\n"
+                "- **search_code**: Search for patterns across files to find implementations or imports.\n"
+                "- **write_file**: Write or overwrite a file. Preferred over === FILE: ... === blocks.\n"
+                "- **run_tests**: Run the test suite to verify your code works.\n"
+                "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
+                "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
+                "Guidelines for tool use:\n"
+                "1. Do NOT explore the filesystem at the start — the workspace listing is already above.\n"
+                "2. Start writing code immediately in Phase 0. Use read_file only when modifying existing files.\n"
+                "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
+                "4. Use search_code to find existing patterns, imports, or implementations.\n"
+                "5. After writing files, use check_syntax to catch syntax errors immediately.\n"
+                "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
+                "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
+                "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
+                "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
+                "## First Turn\n"
+                "On your VERY FIRST response, you MUST:\n"
+                "1. Emit === PLAN === for Phase 0\n"
+                "2. Start writing code with write_file\n"
+                "Do NOT call list_directory or read_file on your first turn.\n\n"
+                "## README\n"
+                "Before the final phase sign-off, generate a comprehensive README.md that includes:\n"
+                "- Project name and description\n"
+                "- Key features\n"
+                "- Tech stack\n"
+                "- Setup / installation instructions\n"
+                "- Environment variables\n"
+                "- Usage examples\n"
+                "- API reference (if applicable)\n"
+                "- License placeholder\n"
+                "\n"
+                "## Contract Exclusion\n"
+                "NEVER include Forge contract file contents, contract references, or\n"
+                "contract metadata in any committed source files, READMEs, or code comments.\n"
+                "The `Forge/` directory is on the server only and excluded from git pushes.\n"
+            )
 
         # Emit build overview (high-level phase list) at build start
         try:
@@ -2041,6 +2333,7 @@ async def _run_build_conversation(
                     messages,
                     files_written=files_written,
                     current_phase=current_phase,
+                    use_mcp_contracts=settings.USE_MCP_CONTRACTS,
                 )
                 compacted = True
                 await build_repo.append_build_log(
@@ -2346,6 +2639,32 @@ async def _run_build_conversation(
                             }
                         )
 
+            # --- Must-read gate (MCP mode, turn 1 only) ---
+            # If the builder's first turn contained zero forge_get_* calls
+            # it ignored the "fetch before coding" instruction.  Inject a
+            # corrective user message so the next turn fetches contracts.
+            if (
+                settings.USE_MCP_CONTRACTS
+                and turn_count == 1
+                and not any(
+                    tc["name"].startswith("forge_get_")
+                    for tc in tool_calls_this_turn
+                )
+            ):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You MUST fetch governance context before writing any code.\n"
+                        "Call forge_get_phase_window(0) and forge_get_contract('blueprint') now.\n"
+                        "Do NOT proceed until you have read the project contracts."
+                    ),
+                })
+                await build_repo.append_build_log(
+                    build_id,
+                    "Must-read gate triggered: builder skipped forge_get_* on turn 1",
+                    source="system", level="warn",
+                )
+
             # --- Common code for ALL turns (tool and text) ---
 
             # Update total token count (baseline + current window usage)
@@ -2485,7 +2804,10 @@ async def _run_build_conversation(
                             pass
 
                     # Extract the next phase window (current + next)
-                    next_window = _extract_phase_window(contracts, current_phase_num)
+                    if settings.USE_MCP_CONTRACTS:
+                        next_window = ""  # MCP mode — builder fetches via tool
+                    else:
+                        next_window = _extract_phase_window(contracts, current_phase_num)
 
                     # Inject phase-advance context as a new user message
                     advance_parts = [
@@ -2501,10 +2823,16 @@ async def _run_build_conversation(
                         advance_parts.append(refreshed_listing)
                     if next_window:
                         advance_parts.append(f"\n{next_window}\n")
-                    advance_parts.append(
-                        "\nRead any contracts you need from `Forge/Contracts/` "
-                        "for this phase, then emit your === PLAN === and start building."
-                    )
+                    if settings.USE_MCP_CONTRACTS:
+                        advance_parts.append(
+                            f"\nCall `forge_get_phase_window({current_phase_num})` to get "
+                            "this phase's deliverables, then emit your === PLAN === and start building."
+                        )
+                    else:
+                        advance_parts.append(
+                            "\nRead any contracts you need from `Forge/Contracts/` "
+                            "for this phase, then emit your === PLAN === and start building."
+                        )
                     messages.append({
                         "role": "user",
                         "content": "\n".join(advance_parts),
@@ -3141,16 +3469,6 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 await _fail_build(build_id, user_id, f"Failed to clone repo: {exc}")
                 return
-        elif target_type == "local_path":
-            try:
-                Path(working_dir).mkdir(parents=True, exist_ok=True)
-                git_dir = Path(working_dir) / ".git"
-                if not git_dir.exists():
-                    await git_client.init_repo(working_dir)
-            except Exception as exc:
-                await _fail_build(build_id, user_id, f"Failed to initialize local path: {exc}")
-                return
-
         # Create/checkout branch if not main
         if branch and branch != "main":
             try:
@@ -3161,6 +3479,12 @@ async def _run_build_plan_execute(
                 except Exception as exc2:
                     await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
                     return
+
+        # Create project-local virtual environment
+        try:
+            await _create_project_venv(working_dir, build_id)
+        except Exception as exc:
+            logger.warning("Failed to create project venv (non-fatal): %s", exc)
 
         # Write contracts to working directory
         try:

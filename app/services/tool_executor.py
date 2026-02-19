@@ -6,11 +6,14 @@ All handlers catch exceptions and return error strings rather than raising.
 
 Phase 18 tools: read_file, list_directory, search_code, write_file (sync)
 Phase 19 tools: run_tests, check_syntax, run_command (async -- subprocess)
+Phase 55 tools: forge_get_contract, forge_get_phase_window,
+                forge_list_contracts, forge_get_summary, forge_scratchpad (sync)
 """
 
 import asyncio
 import ast
 import fnmatch
+import json
 import os
 import re
 from pathlib import Path
@@ -114,6 +117,12 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
         "search_code": _exec_search_code,
         "write_file": _exec_write_file,
         "edit_file": _exec_edit_file,
+        # Forge governance tools (Phase 55)
+        "forge_get_contract": _exec_forge_get_contract,
+        "forge_get_phase_window": _exec_forge_get_phase_window,
+        "forge_list_contracts": _exec_forge_list_contracts,
+        "forge_get_summary": _exec_forge_get_summary,
+        "forge_scratchpad": _exec_forge_scratchpad,
     }
     handler = sync_handlers.get(tool_name)
     if handler is None:
@@ -145,6 +154,12 @@ async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str)
         "search_code": _exec_search_code,
         "write_file": _exec_write_file,
         "edit_file": _exec_edit_file,
+        # Forge governance tools (Phase 55)
+        "forge_get_contract": _exec_forge_get_contract,
+        "forge_get_phase_window": _exec_forge_get_phase_window,
+        "forge_list_contracts": _exec_forge_list_contracts,
+        "forge_get_summary": _exec_forge_get_summary,
+        "forge_scratchpad": _exec_forge_scratchpad,
     }
     async_handlers = {
         "run_tests": _exec_run_tests,
@@ -434,15 +449,32 @@ async def _run_subprocess(
     Uses subprocess.run in a thread to avoid asyncio event-loop limitations
     on Windows (ProactorEventLoop requirement for create_subprocess_shell).
 
+    If *working_dir* contains a ``.venv`` directory, the subprocess
+    environment is configured to use that project-local virtual environment
+    (``VIRTUAL_ENV`` set, venv ``Scripts/`` or ``bin/`` prepended to ``PATH``).
+
     Returns (exit_code, stdout, stderr).
     """
     # Restricted environment: only PATH
     env = {"PATH": os.environ.get("PATH", "")}
     # Add minimal env vars needed for Python/Node
-    for key in ("SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE", "VIRTUAL_ENV"):
+    for key in ("SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"):
         val = os.environ.get(key)
         if val:
             env[key] = val
+
+    # Use project-local .venv if it exists; otherwise fall back to host VIRTUAL_ENV
+    venv_dir = Path(working_dir) / ".venv" if working_dir else None
+    if venv_dir and venv_dir.is_dir():
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        # Windows uses Scripts/, POSIX uses bin/
+        bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    else:
+        # Propagate host VIRTUAL_ENV as before
+        host_venv = os.environ.get("VIRTUAL_ENV")
+        if host_venv:
+            env["VIRTUAL_ENV"] = host_venv
 
     import subprocess as _sp
 
@@ -567,6 +599,239 @@ async def _exec_run_command(inp: dict, working_dir: str) -> str:
         parts.append(f"--- stderr ---\n{stderr}")
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Forge governance tool handlers (Phase 55)
+# ---------------------------------------------------------------------------
+
+# In-memory scratchpad store: keyed by working_dir (one per build)
+_scratchpads: dict[str, dict[str, str]] = {}
+
+
+def _exec_forge_get_contract(inp: dict, working_dir: str) -> str:
+    """Read a governance contract from the build's working directory.
+
+    Input: { "name": "blueprint" }
+    Blocks "phases" (too large) -- directs to forge_get_phase_window.
+    """
+    name = (inp.get("name") or "").strip()
+    if not name:
+        return "Error: 'name' is required (e.g. 'blueprint', 'stack', 'schema')"
+
+    if name == "phases":
+        return (
+            "Error: The full phases contract is too large for context. "
+            "Use forge_get_phase_window(phase_number) to get the current + "
+            "next phase deliverables instead."
+        )
+
+    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
+    if not contracts_dir.is_dir():
+        return f"Error: Forge/Contracts/ directory not found in working directory"
+
+    # Extension map — same as forge_ide/mcp/config.py CONTRACT_MAP
+    ext_map: dict[str, str] = {
+        "boundaries": "boundaries.json",
+        "physics": "physics.yaml",
+    }
+    filename = ext_map.get(name, f"{name}.md")
+    path = contracts_dir / filename
+
+    if not path.exists():
+        # List available files to help the builder
+        available = [f.stem for f in contracts_dir.iterdir() if f.is_file()]
+        return f"Error: Contract '{name}' not found. Available: {', '.join(sorted(available))}"
+
+    try:
+        content = path.read_text(encoding="utf-8")
+        # Cap at 50KB to avoid blowing up context
+        if len(content) > 50_000:
+            content = content[:50_000] + "\n\n[... truncated at 50KB ...]"
+        return content
+    except Exception as exc:
+        return f"Error reading contract '{name}': {exc}"
+
+
+def _exec_forge_get_phase_window(inp: dict, working_dir: str) -> str:
+    """Extract current + next phase from phases.md in the working directory.
+
+    Input: { "phase_number": 0 }
+    Returns ~1-3K tokens of phase deliverables instead of the full 230K phases file.
+    """
+    phase_num = int(inp.get("phase_number", 0))
+
+    phases_path = Path(working_dir) / "Forge" / "Contracts" / "phases.md"
+    if not phases_path.exists():
+        return "Error: Forge/Contracts/phases.md not found in working directory"
+
+    try:
+        content = phases_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        return f"Error reading phases.md: {exc}"
+
+    # Split on ## Phase headers and extract current + next
+    phase_blocks = re.split(r"(?=^## Phase )", content, flags=re.MULTILINE)
+    target_nums = {phase_num, phase_num + 1}
+    selected: list[str] = []
+    max_phase = -1
+
+    for block in phase_blocks:
+        header = re.match(
+            r"^## Phase\s+(\d+)\s*[-—–]+\s*(.+)", block, re.MULTILINE,
+        )
+        if header:
+            pnum = int(header.group(1))
+            max_phase = max(max_phase, pnum)
+            if pnum in target_nums:
+                selected.append(block.strip())
+
+    if not selected:
+        if max_phase >= 0:
+            return f"Error: Phase {phase_num} not found. Phases range from 0 to {max_phase}."
+        return "Error: No phases found in phases.md"
+
+    return (
+        f"## Phase Window (Phase {phase_num}"
+        + (f" + {phase_num + 1})" if phase_num + 1 <= max_phase else " — final phase)")
+        + "\n\n"
+        + "\n\n---\n\n".join(selected)
+    )
+
+
+def _exec_forge_list_contracts(inp: dict, working_dir: str) -> str:
+    """List available governance contracts in the working directory.
+
+    Input: {} (no parameters required)
+    Returns JSON array of contract names and filenames.
+    """
+    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
+    if not contracts_dir.is_dir():
+        return json.dumps({"error": "Forge/Contracts/ directory not found", "contracts": []})
+
+    items = []
+    for f in sorted(contracts_dir.iterdir()):
+        if not f.is_file():
+            continue
+        items.append({
+            "name": f.stem,
+            "filename": f.name,
+            "size_kb": round(f.stat().st_size / 1024, 1),
+        })
+
+    return json.dumps({"contracts": items, "total": len(items)}, indent=2)
+
+
+def _exec_forge_get_summary(inp: dict, working_dir: str) -> str:
+    """Return a compact governance framework overview.
+
+    Input: {} (no parameters required)
+    Summarises available contracts, architecture layers, and key rules
+    without loading any full contract content.
+    """
+    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
+    contract_names: list[str] = []
+    if contracts_dir.is_dir():
+        contract_names = sorted(
+            f.stem for f in contracts_dir.iterdir() if f.is_file()
+        )
+
+    # Try to extract layer names from boundaries.json
+    layers: list[str] = []
+    boundaries_path = contracts_dir / "boundaries.json" if contracts_dir.is_dir() else None
+    if boundaries_path and boundaries_path.exists():
+        try:
+            data = json.loads(boundaries_path.read_text(encoding="utf-8"))
+            layers = [layer.get("name", "") for layer in data.get("layers", [])]
+        except Exception:
+            pass
+
+    summary = {
+        "framework": "Forge Governance",
+        "description": (
+            "Governance-as-code framework for AI-driven software builds. "
+            "Enforces architectural boundaries, invariant gates, and "
+            "phased delivery with audit trails."
+        ),
+        "available_contracts": contract_names,
+        "architectural_layers": layers,
+        "key_tools": [
+            "forge_get_contract(name) — read a specific contract",
+            "forge_get_phase_window(phase_number) — current + next phase deliverables",
+            "forge_list_contracts() — list all contracts",
+            "forge_scratchpad(op, key?, value?) — persistent notes across phases",
+        ],
+        "critical_rules": [
+            "Build phases in strict order — no skipping",
+            "Routers → Services → Repos — no layer skipping",
+            "Never include Forge content in committed source files",
+            "Run tests after every code change",
+            "Emit === PHASE SIGN-OFF: PASS === when done",
+        ],
+    }
+    return json.dumps(summary, indent=2)
+
+
+def _exec_forge_scratchpad(inp: dict, working_dir: str) -> str:
+    """Persistent key-value scratchpad scoped to the build working directory.
+
+    Input: { "operation": "read|write|append|list", "key": "...", "value": "..." }
+    Persists to Forge/.scratchpad.json for durability across restarts.
+    """
+    op = (inp.get("operation") or "list").strip().lower()
+    key = (inp.get("key") or "").strip()
+    value = inp.get("value", "")
+
+    # Load from disk if not yet in memory
+    if working_dir not in _scratchpads:
+        scratchpad_path = Path(working_dir) / "Forge" / ".scratchpad.json"
+        if scratchpad_path.exists():
+            try:
+                _scratchpads[working_dir] = json.loads(
+                    scratchpad_path.read_text(encoding="utf-8")
+                )
+            except Exception:
+                _scratchpads[working_dir] = {}
+        else:
+            _scratchpads[working_dir] = {}
+
+    pad = _scratchpads[working_dir]
+
+    if op == "list":
+        return json.dumps({"keys": sorted(pad.keys()), "count": len(pad)})
+
+    if not key:
+        return "Error: 'key' is required for read/write/append operations"
+
+    if op == "read":
+        if key not in pad:
+            return f"Error: Key '{key}' not found. Use 'list' to see available keys."
+        return pad[key]
+
+    if op == "write":
+        pad[key] = str(value)
+        _persist_scratchpad(working_dir, pad)
+        return f"OK: Wrote key '{key}' ({len(str(value))} chars)"
+
+    if op == "append":
+        existing = pad.get(key, "")
+        pad[key] = existing + str(value)
+        _persist_scratchpad(working_dir, pad)
+        return f"OK: Appended to key '{key}' (now {len(pad[key])} chars)"
+
+    return f"Error: Unknown operation '{op}'. Use: read, write, append, list"
+
+
+def _persist_scratchpad(working_dir: str, pad: dict[str, str]) -> None:
+    """Write scratchpad to disk for durability."""
+    try:
+        scratchpad_path = Path(working_dir) / "Forge" / ".scratchpad.json"
+        scratchpad_path.parent.mkdir(parents=True, exist_ok=True)
+        scratchpad_path.write_text(
+            json.dumps(pad, indent=2), encoding="utf-8",
+        )
+    except Exception:
+        pass  # Best-effort — in-memory is the source of truth
 
 
 # ---------------------------------------------------------------------------
@@ -773,3 +1038,109 @@ BUILDER_TOOLS = [
         },
     },
 ]
+
+# Forge governance tools (Phase 55) — appended to BUILDER_TOOLS
+FORGE_TOOLS = [
+    {
+        "name": "forge_get_contract",
+        "description": (
+            "Read a specific governance contract from the Forge/Contracts/ directory. "
+            "Returns the full content of the requested contract. "
+            "Use this to fetch project specifications (blueprint, stack, schema, physics, "
+            "boundaries, manifesto, ui, builder_directive, builder_contract). "
+            "Note: 'phases' is blocked — use forge_get_phase_window instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Contract name (e.g. 'blueprint', 'stack', 'schema', 'physics', "
+                        "'boundaries', 'manifesto', 'ui', 'builder_directive')."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "forge_get_phase_window",
+        "description": (
+            "Get the deliverables for a specific build phase (current + next phase). "
+            "Call this at the START of each phase to understand what to build. "
+            "Returns ~1-3K tokens instead of the full phases contract."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phase_number": {
+                    "type": "integer",
+                    "description": (
+                        "The phase number to retrieve (0-based). "
+                        "Returns this phase + the next phase for context."
+                    ),
+                },
+            },
+            "required": ["phase_number"],
+        },
+    },
+    {
+        "name": "forge_list_contracts",
+        "description": (
+            "List all available governance contracts in the Forge/Contracts/ directory. "
+            "Returns names, filenames, and sizes. Use this to discover what contracts exist "
+            "before fetching specific ones."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "forge_get_summary",
+        "description": (
+            "Get a compact overview of the Forge governance framework. "
+            "Returns available contracts, architecture layers, key rules, and tool descriptions. "
+            "Call this FIRST to orient yourself before fetching specific contracts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "forge_scratchpad",
+        "description": (
+            "Persistent scratchpad for storing reasoning, decisions, and notes that "
+            "survive context compaction. Use this to record architectural decisions, "
+            "known issues, and progress notes across phases. "
+            "Operations: read (get value), write (set value), append (add to value), "
+            "list (show all keys)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["read", "write", "append", "list"],
+                    "description": "Operation to perform.",
+                },
+                "key": {
+                    "type": "string",
+                    "description": (
+                        "Key name (e.g. 'architecture_decisions', 'phase_2_issues'). "
+                        "Required for read/write/append."
+                    ),
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Value to write or append. Required for write/append.",
+                },
+            },
+            "required": ["operation"],
+        },
+    },
+]
+
+BUILDER_TOOLS = BUILDER_TOOLS + FORGE_TOOLS

@@ -1,5 +1,6 @@
 """Tests for app.services.tool_executor -- sandboxed tool execution."""
 
+import json
 import os
 import textwrap
 
@@ -357,14 +358,16 @@ class TestExecuteTool:
 class TestBuilderToolsSpec:
     """Verify the BUILDER_TOOLS constant is well-formed."""
 
-    def test_has_eight_tools(self):
-        assert len(BUILDER_TOOLS) == 8
+    def test_has_thirteen_tools(self):
+        assert len(BUILDER_TOOLS) == 13
 
     def test_tool_names(self):
         names = {t["name"] for t in BUILDER_TOOLS}
         assert names == {
             "read_file", "list_directory", "search_code", "write_file",
             "edit_file", "run_tests", "check_syntax", "run_command",
+            "forge_get_contract", "forge_get_phase_window",
+            "forge_list_contracts", "forge_get_summary", "forge_scratchpad",
         }
 
     def test_each_tool_has_required_fields(self):
@@ -375,7 +378,8 @@ class TestBuilderToolsSpec:
             schema = tool["input_schema"]
             assert schema.get("type") == "object"
             assert "properties" in schema
-            assert "required" in schema
+            # Some tools (forge_list_contracts, forge_get_summary) have no
+            # required params, so "required" key is optional in schema.
 
 
 # ---------------------------------------------------------------------------
@@ -583,3 +587,306 @@ class TestRunCommandValidation:
             "run_command", {"command": "git push origin main"}, str(tmp_path)
         )
         assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# Forge governance tools (Phase 55)
+# ---------------------------------------------------------------------------
+
+def _make_forge_contracts(tmp_path):
+    """Helper: create a Forge/Contracts/ directory with sample contract files."""
+    contracts_dir = tmp_path / "Forge" / "Contracts"
+    contracts_dir.mkdir(parents=True)
+    (contracts_dir / "blueprint.md").write_text("# Blueprint\nIntent: Build a task app", encoding="utf-8")
+    (contracts_dir / "stack.md").write_text("# Stack\nBackend: Python / FastAPI", encoding="utf-8")
+    (contracts_dir / "schema.md").write_text("# Schema\nCREATE TABLE users (...)", encoding="utf-8")
+    (contracts_dir / "manifesto.md").write_text("# Manifesto\nPrinciple 1: User-first", encoding="utf-8")
+    (contracts_dir / "physics.yaml").write_text("routes:\n  - path: /health\n    method: GET", encoding="utf-8")
+    (contracts_dir / "boundaries.json").write_text(
+        '{"layers": [{"name": "routers"}, {"name": "services"}]}', encoding="utf-8"
+    )
+    (contracts_dir / "ui.md").write_text("# UI\nApp shell: sidebar + main", encoding="utf-8")
+    (contracts_dir / "builder_directive.md").write_text("# Builder Directive\nAEM: active", encoding="utf-8")
+    (contracts_dir / "phases.md").write_text(
+        "# Phases\n\n"
+        "## Phase 0 — Genesis\n\n"
+        "**Objective:** Skeleton project\n\n"
+        "**Deliverables:**\n- /health endpoint\n- boot.ps1\n\n"
+        "**Exit criteria:**\n- pytest passes\n\n---\n\n"
+        "## Phase 1 — Auth\n\n"
+        "**Objective:** Add authentication\n\n"
+        "**Deliverables:**\n- JWT auth\n- Login endpoint\n\n"
+        "**Exit criteria:**\n- Auth tests pass\n\n---\n\n"
+        "## Phase 2 — Core\n\n"
+        "**Objective:** Core features\n\n"
+        "**Deliverables:**\n- CRUD endpoints\n\n"
+        "**Exit criteria:**\n- All tests pass\n",
+        encoding="utf-8",
+    )
+    return contracts_dir
+
+
+class TestForgeGetContract:
+    """Tests for forge_get_contract tool."""
+
+    def test_reads_markdown_contract(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_contract", {"name": "blueprint"}, str(tmp_path))
+        assert "# Blueprint" in result
+        assert "task app" in result
+
+    def test_reads_yaml_contract(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_contract", {"name": "physics"}, str(tmp_path))
+        assert "/health" in result
+
+    def test_reads_json_contract(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_contract", {"name": "boundaries"}, str(tmp_path))
+        assert "routers" in result
+
+    def test_blocks_phases(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_contract", {"name": "phases"}, str(tmp_path))
+        assert "Error" in result
+        assert "forge_get_phase_window" in result
+
+    def test_missing_contract(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_contract", {"name": "nonexistent"}, str(tmp_path))
+        assert "Error" in result
+        assert "not found" in result.lower()
+
+    def test_missing_name(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_contract", {}, str(tmp_path))
+        assert "Error" in result
+
+    def test_no_contracts_dir(self, tmp_path):
+        result = execute_tool("forge_get_contract", {"name": "blueprint"}, str(tmp_path))
+        assert "Error" in result
+
+
+class TestForgeGetPhaseWindow:
+    """Tests for forge_get_phase_window tool."""
+
+    def test_phase_zero_returns_current_and_next(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_phase_window", {"phase_number": 0}, str(tmp_path))
+        assert "Phase 0" in result
+        assert "Genesis" in result
+        assert "Phase 1" in result
+        assert "Auth" in result
+
+    def test_middle_phase(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_phase_window", {"phase_number": 1}, str(tmp_path))
+        assert "Phase 1" in result
+        assert "Phase 2" in result
+
+    def test_last_phase(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_phase_window", {"phase_number": 2}, str(tmp_path))
+        assert "Phase 2" in result
+        assert "final phase" in result.lower() or "Core" in result
+
+    def test_out_of_range(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_phase_window", {"phase_number": 99}, str(tmp_path))
+        assert "Error" in result
+
+    def test_missing_phases_file(self, tmp_path):
+        # Create contracts dir without phases.md
+        (tmp_path / "Forge" / "Contracts").mkdir(parents=True)
+        result = execute_tool("forge_get_phase_window", {"phase_number": 0}, str(tmp_path))
+        assert "Error" in result
+
+    def test_defaults_to_phase_zero(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_phase_window", {}, str(tmp_path))
+        assert "Phase 0" in result
+
+
+class TestForgeListContracts:
+    """Tests for forge_list_contracts tool."""
+
+    def test_lists_all_contracts(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_list_contracts", {}, str(tmp_path))
+        data = json.loads(result)
+        assert data["total"] >= 9
+        names = [c["name"] for c in data["contracts"]]
+        assert "blueprint" in names
+        assert "phases" in names
+
+    def test_includes_size(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_list_contracts", {}, str(tmp_path))
+        data = json.loads(result)
+        for contract in data["contracts"]:
+            assert "size_kb" in contract
+
+    def test_no_contracts_dir(self, tmp_path):
+        result = execute_tool("forge_list_contracts", {}, str(tmp_path))
+        data = json.loads(result)
+        assert data["contracts"] == []
+        assert "error" in data
+
+
+class TestForgeGetSummary:
+    """Tests for forge_get_summary tool."""
+
+    def test_returns_summary(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_summary", {}, str(tmp_path))
+        data = json.loads(result)
+        assert data["framework"] == "Forge Governance"
+        assert "blueprint" in data["available_contracts"]
+        assert len(data["critical_rules"]) > 0
+
+    def test_extracts_layers_from_boundaries(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = execute_tool("forge_get_summary", {}, str(tmp_path))
+        data = json.loads(result)
+        assert "routers" in data["architectural_layers"]
+        assert "services" in data["architectural_layers"]
+
+    def test_no_contracts_dir(self, tmp_path):
+        result = execute_tool("forge_get_summary", {}, str(tmp_path))
+        data = json.loads(result)
+        assert data["available_contracts"] == []
+
+
+class TestForgeScratchpad:
+    """Tests for forge_scratchpad tool."""
+
+    def test_write_and_read(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)  # clean slate
+
+        execute_tool("forge_scratchpad", {
+            "operation": "write", "key": "arch_decisions", "value": "Use FastAPI"
+        }, str(tmp_path))
+
+        result = execute_tool("forge_scratchpad", {
+            "operation": "read", "key": "arch_decisions"
+        }, str(tmp_path))
+        assert result == "Use FastAPI"
+
+    def test_append(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        execute_tool("forge_scratchpad", {
+            "operation": "write", "key": "notes", "value": "Phase 0 done. "
+        }, str(tmp_path))
+        execute_tool("forge_scratchpad", {
+            "operation": "append", "key": "notes", "value": "Phase 1 started."
+        }, str(tmp_path))
+
+        result = execute_tool("forge_scratchpad", {
+            "operation": "read", "key": "notes"
+        }, str(tmp_path))
+        assert result == "Phase 0 done. Phase 1 started."
+
+    def test_list(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        execute_tool("forge_scratchpad", {
+            "operation": "write", "key": "alpha", "value": "A"
+        }, str(tmp_path))
+        execute_tool("forge_scratchpad", {
+            "operation": "write", "key": "beta", "value": "B"
+        }, str(tmp_path))
+
+        result = execute_tool("forge_scratchpad", {"operation": "list"}, str(tmp_path))
+        data = json.loads(result)
+        assert "alpha" in data["keys"]
+        assert "beta" in data["keys"]
+        assert data["count"] == 2
+
+    def test_read_missing_key(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        result = execute_tool("forge_scratchpad", {
+            "operation": "read", "key": "nonexistent"
+        }, str(tmp_path))
+        assert "Error" in result
+
+    def test_persists_to_disk(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        # Create Forge/ dir (scratchpad persists there)
+        (tmp_path / "Forge").mkdir(parents=True, exist_ok=True)
+        execute_tool("forge_scratchpad", {
+            "operation": "write", "key": "persist_test", "value": "hello"
+        }, str(tmp_path))
+
+        # Verify file exists on disk
+        scratchpad_file = tmp_path / "Forge" / ".scratchpad.json"
+        assert scratchpad_file.exists()
+        data = json.loads(scratchpad_file.read_text(encoding="utf-8"))
+        assert data["persist_test"] == "hello"
+
+    def test_loads_from_disk_on_first_access(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        # Pre-populate disk file
+        forge_dir = tmp_path / "Forge"
+        forge_dir.mkdir(parents=True, exist_ok=True)
+        (forge_dir / ".scratchpad.json").write_text(
+            '{"preloaded": "from_disk"}', encoding="utf-8"
+        )
+
+        result = execute_tool("forge_scratchpad", {
+            "operation": "read", "key": "preloaded"
+        }, str(tmp_path))
+        assert result == "from_disk"
+
+    def test_key_required_for_read_write_append(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        for op in ["read", "write", "append"]:
+            result = execute_tool("forge_scratchpad", {"operation": op}, str(tmp_path))
+            assert "Error" in result
+
+
+class TestForgeToolsViaAsyncDispatch:
+    """Verify forge tools are accessible through execute_tool_async."""
+
+    @pytest.mark.asyncio
+    async def test_forge_get_contract_async(self, tmp_path):
+        _make_forge_contracts(tmp_path)
+        result = await execute_tool_async("forge_get_contract", {"name": "stack"}, str(tmp_path))
+        assert "FastAPI" in result
+
+    @pytest.mark.asyncio
+    async def test_forge_scratchpad_async(self, tmp_path):
+        from app.services.tool_executor import _scratchpads
+        _scratchpads.pop(str(tmp_path), None)
+
+        result = await execute_tool_async("forge_scratchpad", {
+            "operation": "write", "key": "async_test", "value": "works"
+        }, str(tmp_path))
+        assert "OK" in result
+
+
+class TestBuilderToolsIncludesForge:
+    """Verify BUILDER_TOOLS contains all forge tool definitions."""
+
+    def test_forge_tools_in_builder_tools(self):
+        tool_names = {t["name"] for t in BUILDER_TOOLS}
+        assert "forge_get_contract" in tool_names
+        assert "forge_get_phase_window" in tool_names
+        assert "forge_list_contracts" in tool_names
+        assert "forge_get_summary" in tool_names
+        assert "forge_scratchpad" in tool_names
+
+    def test_total_tool_count(self):
+        # 8 existing + 5 forge = 13
+        assert len(BUILDER_TOOLS) == 13
