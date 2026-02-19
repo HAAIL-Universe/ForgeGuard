@@ -95,7 +95,7 @@ function CommitTimeline() {
       });
       if (res.ok) {
         const data = await res.json();
-        addToast(`Synced ${data.synced} commit(s), ${data.skipped} already tracked`);
+        addToast(`Synced ${data.synced} commit(s), ${data.skipped} already tracked`, 'success');
         fetchAudits();
       } else {
         addToast('Failed to sync commits');
