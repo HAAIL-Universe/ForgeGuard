@@ -51,6 +51,10 @@ class UpgradeCommandRequest(BaseModel):
     command: str = Field(..., min_length=1, max_length=200)
 
 
+class ScoutContractRequest(BaseModel):
+    project_id: UUID
+
+
 @router.post("/{repo_id}/run")
 async def trigger_scout(
     repo_id: UUID,
@@ -153,6 +157,53 @@ async def scout_score_history(
     """Get computed score history for score-over-time charts."""
     history = await get_scout_score_history(current_user["id"], repo_id)
     return {"history": history}
+
+
+# ---------------------------------------------------------------------------
+# Scout contract generation — infer contracts from deep-scan
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/generate-contracts")
+async def generate_contracts_from_scout_run(
+    run_id: UUID,
+    body: ScoutContractRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Generate all 9 project contracts inferred from a completed deep-scan run.
+
+    Contracts are persisted to the project and stored in the MCP artifact
+    store for token-efficient sub-agent retrieval.  Sends
+    ``contract_progress`` WebSocket events (same as questionnaire-based
+    generation) with ``source: "scout"`` in each payload.
+    """
+    from app.services.project.scout_contract_generator import (
+        generate_contracts_from_scout,
+    )
+
+    try:
+        contracts = await generate_contracts_from_scout(
+            user_id=current_user["id"],
+            project_id=body.project_id,
+            scout_run_id=run_id,
+        )
+        return {
+            "contracts": contracts,
+            "total": len(contracts),
+            "source": "scout",
+        }
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except Exception:
+        logger.exception(
+            "Scout contract generation failed for run %s", run_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate contracts from scout run",
+        )
 
 
 # ---------------------------------------------------------------------------
