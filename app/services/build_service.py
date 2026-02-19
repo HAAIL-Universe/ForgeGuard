@@ -126,6 +126,14 @@ Start again from Step 1.
 6. **README**: Before the final phase, write a comprehensive README.md that includes
    project name, description, key features, tech stack, setup instructions,
    environment variables, usage examples, API reference, and license placeholder.
+7. **Environment Files**: Write a `.env.example` with all required environment
+   variables (placeholder values, commented descriptions). Also write a `.env`
+   with working local dev defaults. `.env` is gitignored; `.env.example` is
+   committed so users know what to configure.
+8. **Dependencies**: When you write `requirements.txt` or `package.json`,
+   dependencies are auto-installed into the project's virtual environment.
+   You do NOT need to call `run_command("pip install ...")` after creating
+   requirements.txt — it happens automatically.
 
 ## First Turn
 
@@ -230,6 +238,10 @@ After Phase 1 sign-off, the build is COMPLETE.
 6. **README**: In Phase 1, write a comprehensive README.md with project name,
    description, features, tech stack, setup instructions, environment variables,
    usage examples, API reference, and license placeholder.
+7. **Environment Files**: Write `.env.example` (committed — placeholder values)
+   and `.env` (gitignored — working local defaults) with all required env vars.
+8. **Dependencies**: Writing `requirements.txt` or `package.json` auto-triggers
+   installation. No need to manually `run_command("pip install ...")`.
 
 ## First Turn
 
@@ -339,54 +351,191 @@ from app.services.build.verification import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Project venv helper
+# Project environment setup
 # ---------------------------------------------------------------------------
 
 
-async def _create_project_venv(
+async def _setup_project_environment(
     working_dir: str,
     build_id: UUID | None = None,
+    user_id: UUID | None = None,
+    contracts: list[dict] | None = None,
 ) -> str | None:
-    """Create a ``.venv`` inside *working_dir* if one doesn't already exist.
+    """Create a project-local virtual environment and install base dependencies.
+
+    This runs at build start, **before the LLM agent begins**, and streams
+    every line of output to the build log so the user sees it in the IDE
+    console — just like a normal terminal.
+
+    Steps:
+        1. ``python -m venv .venv`` (creates the venv)
+        2. ``pip install --upgrade pip`` (ensure latest pip)
+        3. If the stack contract mentions Node: ``npm init -y`` (if no package.json)
+
+    For dependency installation triggered by write_file (requirements.txt,
+    package.json etc.), see ``_auto_install_deps`` in tool_executor.py.
 
     Returns the absolute path to the venv directory, or ``None`` on failure.
-    The venv is created with ``python -m venv .venv --without-pip`` first
-    (fast, no network), then ``pip`` is bootstrapped via ``ensurepip``.
     """
     import subprocess as _sp
 
     venv_dir = Path(working_dir) / ".venv"
+
+    async def _log(msg: str, level: str = "info") -> None:
+        """Persist + broadcast a build log line."""
+        if build_id:
+            await build_repo.append_build_log(
+                build_id, msg, source="setup", level=level,
+            )
+        if build_id and user_id:
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": msg, "source": "setup", "level": level,
+            })
+
+    async def _stream_command(
+        cmd: list[str], label: str, timeout: int = 120,
+    ) -> tuple[int, str]:
+        """Run a command and stream stdout/stderr lines to the build log.
+
+        Returns (exit_code, combined_output).
+        """
+        await _log(f"$ {' '.join(cmd)}")
+
+        def _sync() -> tuple[int, list[str]]:
+            lines: list[str] = []
+            try:
+                proc = _sp.Popen(
+                    cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                    text=True, cwd=working_dir,
+                    env=_venv_env(working_dir),
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    lines.append(line.rstrip())
+                proc.wait(timeout=timeout)
+                return proc.returncode, lines
+            except _sp.TimeoutExpired:
+                proc.kill()  # type: ignore[union-attr]
+                lines.append(f"[timeout after {timeout}s]")
+                return -1, lines
+            except Exception as exc:
+                lines.append(f"[error: {exc}]")
+                return -1, lines
+
+        loop = asyncio.get_running_loop()
+        exit_code, output_lines = await loop.run_in_executor(None, _sync)
+
+        # Stream each line to the build log
+        for line in output_lines:
+            if line.strip():
+                await _log(f"  {line}")
+
+        if exit_code == 0:
+            await _log(f"\u2714 {label} succeeded")
+        else:
+            await _log(f"\u2718 {label} failed (exit code {exit_code})", level="warn")
+
+        return exit_code, "\n".join(output_lines)
+
+    # ----- Step 1: Create venv -----
     if venv_dir.exists():
-        logger.info("Project venv already exists: %s", venv_dir)
+        await _log("Virtual environment already exists (.venv) \u2014 reusing")
         return str(venv_dir)
 
-    def _sync() -> str | None:
-        try:
-            _sp.run(
-                [sys.executable, "-m", "venv", str(venv_dir)],
-                capture_output=True, text=True, timeout=120,
+    await _log("\U0001f4e6 Creating virtual environment (.venv)...")
+    exit_code, _ = await _stream_command(
+        [sys.executable, "-m", "venv", str(venv_dir)],
+        label="venv creation",
+    )
+    if exit_code != 0 or not venv_dir.exists():
+        await _log("Failed to create virtual environment", level="error")
+        return None
+
+    # ----- Step 2: Upgrade pip -----
+    pip_exe = str(
+        venv_dir / ("Scripts" if os.name == "nt" else "bin") / "pip"
+    )
+    await _log("\u2b06 Upgrading pip...")
+    await _stream_command(
+        [pip_exe, "install", "--upgrade", "pip"],
+        label="pip upgrade",
+        timeout=60,
+    )
+
+    # ----- Step 3: Detect stack and set up Node if needed -----
+    stack_needs_node = False
+    if contracts:
+        for c in contracts:
+            if c.get("contract_type") == "stack":
+                content_lower = c.get("content", "").lower()
+                if any(kw in content_lower for kw in (
+                    "node", "react", "next", "vue", "angular", "typescript", "npm",
+                )):
+                    stack_needs_node = True
+                break
+
+    if stack_needs_node:
+        pkg_json = Path(working_dir) / "package.json"
+        if not pkg_json.exists():
+            await _log("\U0001f4e6 Initialising Node.js project (npm init)...")
+            await _stream_command(
+                ["npm", "init", "-y"],
+                label="npm init",
+                timeout=30,
             )
-            if not venv_dir.exists():
-                logger.warning("venv dir not created at %s", venv_dir)
-                return None
-            logger.info("Created project venv: %s", venv_dir)
-            return str(venv_dir)
-        except Exception as exc:
-            logger.warning("venv creation failed: %s", exc)
-            return None
 
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, _sync)
-
-    if result and build_id:
-        await build_repo.append_build_log(
-            build_id, "Created project virtual environment (.venv)",
-            source="system", level="info",
-        )
-    return result
+    await _log("\u2705 Project environment ready")
+    return str(venv_dir)
 
 
-# ---------------------------------------------------------------------------
+def _venv_env(working_dir: str) -> dict[str, str]:
+    """Build a subprocess environment dict that activates the project .venv.
+
+    Also loads variables from the project's ``.env`` file if it exists,
+    so that run_tests / run_command have access to the project's environment.
+    """
+    env: dict[str, str] = {"PATH": os.environ.get("PATH", "")}
+    # Propagate minimal OS vars
+    for key in ("SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE",
+                "APPDATA", "LOCALAPPDATA", "COMSPEC"):
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+
+    venv_dir = Path(working_dir) / ".venv"
+    if venv_dir.is_dir():
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+
+    # Load project .env if it exists
+    dotenv_path = Path(working_dir) / ".env"
+    if dotenv_path.is_file():
+        try:
+            for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k:
+                        env[k] = v
+        except Exception:
+            pass  # non-fatal
+
+    return env
+
+
+# Backward-compat alias
+async def _create_project_venv(
+    working_dir: str,
+    build_id: UUID | None = None,
+) -> str | None:
+    """Thin wrapper for backward compatibility."""
+    return await _setup_project_environment(working_dir, build_id)
+
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -2008,12 +2157,14 @@ async def _run_build_conversation(
                     await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
                     return
 
-        # Create project-local virtual environment
+        # Create project-local virtual environment & stream setup to IDE log
         if working_dir:
             try:
-                await _create_project_venv(working_dir, build_id)
+                await _setup_project_environment(
+                    working_dir, build_id, user_id, contracts,
+                )
             except Exception as exc:
-                logger.warning("Failed to create project venv (non-fatal): %s", exc)
+                logger.warning("Failed to set up project environment (non-fatal): %s", exc)
 
         # Track files written during this build
         files_written: list[dict] = []
@@ -2237,7 +2388,9 @@ async def _run_build_conversation(
                 "6. ALWAYS run tests with run_tests before emitting the phase sign-off signal.\n"
                 "7. If tests fail, read the error output, fix the code with write_file, and re-run.\n"
                 "8. Only emit === PHASE SIGN-OFF: PASS === when all tests pass.\n"
-                "9. Use run_command for setup tasks like 'pip install -r requirements.txt' when needed.\n\n"
+                "9. Dependencies are auto-installed when you write requirements.txt or package.json.\n"
+                "   You do NOT need to run 'pip install' manually after writing requirements.txt.\n"
+                "10. Write .env.example (committed) and .env (gitignored) for environment config.\n\n"
                 "## First Turn\n"
                 "On your VERY FIRST response, you MUST:\n"
                 "1. Emit === PLAN === for Phase 0\n"
@@ -3480,11 +3633,13 @@ async def _run_build_plan_execute(
                     await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
                     return
 
-        # Create project-local virtual environment
+        # Create project-local virtual environment & stream setup to IDE log
         try:
-            await _create_project_venv(working_dir, build_id)
+            await _setup_project_environment(
+                working_dir, build_id, user_id, contracts,
+            )
         except Exception as exc:
-            logger.warning("Failed to create project venv (non-fatal): %s", exc)
+            logger.warning("Failed to set up project environment (non-fatal): %s", exc)
 
         # Write contracts to working directory
         try:

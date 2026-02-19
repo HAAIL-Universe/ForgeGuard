@@ -1131,7 +1131,7 @@ async def test_start_build_target_type_without_ref(mock_get_user, mock_build_rep
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
 
-    with pytest.raises(ValueError, match="target_ref is required"):
+    with pytest.raises(ValueError, match="Invalid target_type"):
         await build_service.start_build(_PROJECT_ID, _USER_ID, target_type="local_path")
 
 

@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # a ~27K token contract dump in the first message.  (Phase 56)
     USE_MCP_CONTRACTS: bool = False
 
+    # Auto-install dependencies when the builder writes a manifest file
+    # (requirements.txt, package.json, etc.) into the project.
+    AUTO_INSTALL_DEPS: bool = True
+
 
 settings = Settings()
 

@@ -13,6 +13,9 @@ from app.services.tool_executor import (
     SKIP_DIRS,
     _resolve_sandboxed,
     _validate_command,
+    _build_project_env,
+    _auto_install_deps,
+    _DEPENDENCY_MANIFESTS,
     RUN_TESTS_PREFIXES,
     RUN_COMMAND_PREFIXES,
     execute_tool,
@@ -890,3 +893,187 @@ class TestBuilderToolsIncludesForge:
     def test_total_tool_count(self):
         # 8 existing + 5 forge = 13
         assert len(BUILDER_TOOLS) == 13
+
+
+# ---------------------------------------------------------------------------
+# _build_project_env — venv activation + .env loading
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProjectEnv:
+    """Tests for the _build_project_env helper that builds subprocess env dicts."""
+
+    def test_basic_path_propagated(self, tmp_path):
+        env = _build_project_env(str(tmp_path))
+        assert "PATH" in env
+
+    def test_activates_venv_when_present(self, tmp_path):
+        venv_dir = tmp_path / ".venv"
+        if os.name == "nt":
+            (venv_dir / "Scripts").mkdir(parents=True)
+        else:
+            (venv_dir / "bin").mkdir(parents=True)
+
+        env = _build_project_env(str(tmp_path))
+        assert env.get("VIRTUAL_ENV") == str(venv_dir)
+        assert str(venv_dir) in env["PATH"]
+
+    def test_loads_dotenv_variables(self, tmp_path):
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(
+            "DATABASE_URL=sqlite:///test.db\n"
+            "SECRET_KEY=mysecret\n"
+            "# Comment line\n"
+            "\n"
+            'QUOTED_VAR="hello world"\n',
+            encoding="utf-8",
+        )
+        env = _build_project_env(str(tmp_path))
+        assert env["DATABASE_URL"] == "sqlite:///test.db"
+        assert env["SECRET_KEY"] == "mysecret"
+        assert env["QUOTED_VAR"] == "hello world"
+
+    def test_no_dotenv_no_error(self, tmp_path):
+        """No .env file → no crash, just base env."""
+        env = _build_project_env(str(tmp_path))
+        assert "PATH" in env
+
+    def test_no_venv_falls_back(self, tmp_path):
+        """No .venv dir → falls back to host VIRTUAL_ENV if set."""
+        env = _build_project_env(str(tmp_path))
+        # Should not have VIRTUAL_ENV set to this project's path
+        venv_val = env.get("VIRTUAL_ENV", "")
+        assert str(tmp_path / ".venv") not in venv_val
+
+
+# ---------------------------------------------------------------------------
+# _auto_install_deps — post-write dependency auto-install
+# ---------------------------------------------------------------------------
+
+
+class TestAutoInstallDeps:
+    """Tests for the auto-install hook triggered by write_file."""
+
+    @pytest.mark.asyncio
+    async def test_non_manifest_file_no_install(self, tmp_path):
+        """Writing a regular file does not trigger auto-install."""
+        result = await _auto_install_deps("app/main.py", str(tmp_path))
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_requirements_txt_no_venv_skips(self, tmp_path):
+        """requirements.txt without .venv → skip message."""
+        (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+        result = await _auto_install_deps("requirements.txt", str(tmp_path))
+        assert "skipped" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_requirements_txt_with_venv_runs(self, tmp_path):
+        """requirements.txt with .venv → runs pip install."""
+        venv_dir = tmp_path / ".venv"
+        if os.name == "nt":
+            scripts = venv_dir / "Scripts"
+            scripts.mkdir(parents=True)
+            # Create a dummy pip that succeeds
+            (scripts / "pip.exe").write_text("", encoding="utf-8")
+        else:
+            bin_dir = venv_dir / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "pip").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+        (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+        result = await _auto_install_deps("requirements.txt", str(tmp_path))
+        # Should attempt the install (may fail since pip is a dummy, but it tried)
+        assert result != ""
+
+    @pytest.mark.asyncio
+    async def test_package_json_triggers_npm(self, tmp_path):
+        """package.json triggers npm install attempt."""
+        (tmp_path / "package.json").write_text(
+            '{"name":"test","version":"1.0.0"}', encoding="utf-8"
+        )
+        result = await _auto_install_deps("package.json", str(tmp_path))
+        # npm may not be installed, but the hook should still return a message
+        assert result != ""
+
+    @pytest.mark.asyncio
+    async def test_nested_path_uses_filename(self, tmp_path):
+        """A nested path like 'backend/requirements.txt' matches on filename."""
+        result = await _auto_install_deps("backend/requirements.txt", str(tmp_path))
+        # No .venv → skip
+        assert "skipped" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_disabled_via_config(self, tmp_path, monkeypatch):
+        """AUTO_INSTALL_DEPS=False disables the hook."""
+        from app.config import settings
+        monkeypatch.setattr(settings, "AUTO_INSTALL_DEPS", False)
+        result = await _auto_install_deps("requirements.txt", str(tmp_path))
+        assert result == ""
+
+    def test_dependency_manifests_dict(self):
+        """Ensure all expected manifests are registered."""
+        assert "requirements.txt" in _DEPENDENCY_MANIFESTS
+        assert "package.json" in _DEPENDENCY_MANIFESTS
+        assert "pyproject.toml" in _DEPENDENCY_MANIFESTS
+
+
+# ---------------------------------------------------------------------------
+# execute_tool_async — post-write hook integration
+# ---------------------------------------------------------------------------
+
+
+class TestWriteFileAutoInstallIntegration:
+    """Verify that write_file → auto-install hook fires via execute_tool_async."""
+
+    @pytest.mark.asyncio
+    async def test_write_regular_file_no_install_msg(self, tmp_path):
+        """Writing a normal file doesn't append install messages."""
+        result = await execute_tool_async(
+            "write_file",
+            {"path": "app/main.py", "content": "print('hi')"},
+            str(tmp_path),
+        )
+        assert result.startswith("OK:")
+        assert "Auto-install" not in result
+
+    @pytest.mark.asyncio
+    async def test_write_requirements_txt_triggers_hook(self, tmp_path):
+        """Writing requirements.txt appends an install status message."""
+        result = await execute_tool_async(
+            "write_file",
+            {"path": "requirements.txt", "content": "flask\nrequests\n"},
+            str(tmp_path),
+        )
+        assert result.startswith("OK:")
+        # Should have the auto-install message appended (skip since no .venv)
+        assert "skipped" in result.lower() or "auto-install" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Expanded .gitignore rules
+# ---------------------------------------------------------------------------
+
+
+class TestExpandedGitignoreRules:
+    """Verify the expanded gitignore rules include env/build artifact entries."""
+
+    def test_venv_in_rules(self):
+        from app.services.build.context import _FORGE_GITIGNORE_RULES
+        joined = "\n".join(_FORGE_GITIGNORE_RULES)
+        assert ".venv/" in joined
+
+    def test_env_in_rules(self):
+        from app.services.build.context import _FORGE_GITIGNORE_RULES
+        joined = "\n".join(_FORGE_GITIGNORE_RULES)
+        assert ".env" in joined
+
+    def test_node_modules_in_rules(self):
+        from app.services.build.context import _FORGE_GITIGNORE_RULES
+        joined = "\n".join(_FORGE_GITIGNORE_RULES)
+        assert "node_modules/" in joined
+
+    def test_pycache_in_rules(self):
+        from app.services.build.context import _FORGE_GITIGNORE_RULES
+        joined = "\n".join(_FORGE_GITIGNORE_RULES)
+        assert "__pycache__/" in joined

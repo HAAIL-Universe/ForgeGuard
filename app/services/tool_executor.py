@@ -31,6 +31,15 @@ DEFAULT_RUN_TESTS_TIMEOUT = 120  # seconds
 DEFAULT_CHECK_SYNTAX_TIMEOUT = 30
 DEFAULT_RUN_COMMAND_TIMEOUT = 60
 MAX_TEST_RUNS_WARNING = 5  # warn after this many test runs per phase
+
+# Dependency manifests that trigger auto-install when written
+_DEPENDENCY_MANIFESTS: dict[str, list[str]] = {
+    "requirements.txt": ["pip", "install", "-r", "requirements.txt"],
+    "requirements-dev.txt": ["pip", "install", "-r", "requirements-dev.txt"],
+    "pyproject.toml": ["pip", "install", "-e", "."],
+    "package.json": ["npm", "install"],
+}
+
 SKIP_DIRS = frozenset({
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".tox", "dist", "build", ".mypy_cache", ".pytest_cache",
@@ -169,9 +178,18 @@ async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str)
 
     if tool_name in sync_handlers:
         try:
-            return sync_handlers[tool_name](tool_input, working_dir)
+            result = sync_handlers[tool_name](tool_input, working_dir)
         except Exception as exc:
             return f"Error executing {tool_name}: {exc}"
+
+        # Post-write hook: auto-install dependencies when a manifest is written
+        if tool_name == "write_file" and result.startswith("OK:"):
+            rel_path = tool_input.get("path", "")
+            install_msg = await _auto_install_deps(rel_path, working_dir)
+            if install_msg:
+                result = f"{result}\n\n{install_msg}"
+
+        return result
 
     if tool_name in async_handlers:
         try:
@@ -441,6 +459,95 @@ def _truncate_output(text: str, max_bytes: int) -> str:
     return text[:max_bytes] + f"\n\n[... truncated at {max_bytes} bytes ...]"
 
 
+def _build_project_env(working_dir: str) -> dict[str, str]:
+    """Build subprocess env dict with venv activation + .env loading.
+
+    Shared by ``_run_subprocess`` and ``_auto_install_deps``.
+    """
+    env: dict[str, str] = {"PATH": os.environ.get("PATH", "")}
+    for key in ("SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE",
+                "APPDATA", "LOCALAPPDATA", "COMSPEC"):
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+
+    # Activate project .venv
+    venv_dir = Path(working_dir) / ".venv" if working_dir else None
+    if venv_dir and venv_dir.is_dir():
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    else:
+        host_venv = os.environ.get("VIRTUAL_ENV")
+        if host_venv:
+            env["VIRTUAL_ENV"] = host_venv
+
+    # Load project .env variables
+    dotenv_path = Path(working_dir) / ".env" if working_dir else None
+    if dotenv_path and dotenv_path.is_file():
+        try:
+            for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k:
+                        env[k] = v
+        except Exception:
+            pass  # non-fatal
+
+    return env
+
+
+async def _auto_install_deps(rel_path: str, working_dir: str) -> str:
+    """Auto-install dependencies when a known manifest file is written.
+
+    Called as a post-hook from ``execute_tool_async`` after ``write_file``
+    succeeds.  Only triggers for files in ``_DEPENDENCY_MANIFESTS``.
+
+    Returns an informational string to append to the write_file result,
+    or empty string if no install was needed.
+    """
+    from app.config import settings as _settings
+    if not getattr(_settings, "AUTO_INSTALL_DEPS", True):
+        return ""
+
+    filename = Path(rel_path).name
+    if filename not in _DEPENDENCY_MANIFESTS:
+        return ""
+
+    venv_dir = Path(working_dir) / ".venv"
+    if not venv_dir.is_dir() and filename in ("requirements.txt", "requirements-dev.txt", "pyproject.toml"):
+        return "(skipped auto-install: no .venv found — run_command to install manually)"
+
+    cmd_parts = _DEPENDENCY_MANIFESTS[filename]
+    # Resolve pip/npm to the venv binary
+    if cmd_parts[0] == "pip" and venv_dir.is_dir():
+        pip_exe = str(venv_dir / ("Scripts" if os.name == "nt" else "bin") / "pip")
+        cmd = f"{pip_exe} {' '.join(cmd_parts[1:])}"
+    else:
+        cmd = " ".join(cmd_parts)
+
+    try:
+        exit_code, stdout, stderr = await _run_subprocess(
+            cmd, working_dir, timeout=120,
+        )
+        if exit_code == 0:
+            # Summarise: count installed packages
+            installed_count = stdout.lower().count("successfully installed")
+            if installed_count:
+                return f"\u2714 Auto-installed dependencies ({filename})"
+            return f"\u2714 Auto-install ran for {filename} (exit 0)"
+        else:
+            short_err = (stderr or stdout or "")[:200]
+            return f"\u26a0 Auto-install for {filename} failed (exit {exit_code}): {short_err}"
+    except Exception as exc:
+        return f"\u26a0 Auto-install for {filename} error: {exc}"
+
+
 async def _run_subprocess(
     command: str, working_dir: str, timeout: int,
 ) -> tuple[int, str, str]:
@@ -452,29 +559,11 @@ async def _run_subprocess(
     If *working_dir* contains a ``.venv`` directory, the subprocess
     environment is configured to use that project-local virtual environment
     (``VIRTUAL_ENV`` set, venv ``Scripts/`` or ``bin/`` prepended to ``PATH``).
+    Also loads the project's ``.env`` file if present.
 
     Returns (exit_code, stdout, stderr).
     """
-    # Restricted environment: only PATH
-    env = {"PATH": os.environ.get("PATH", "")}
-    # Add minimal env vars needed for Python/Node
-    for key in ("SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"):
-        val = os.environ.get(key)
-        if val:
-            env[key] = val
-
-    # Use project-local .venv if it exists; otherwise fall back to host VIRTUAL_ENV
-    venv_dir = Path(working_dir) / ".venv" if working_dir else None
-    if venv_dir and venv_dir.is_dir():
-        env["VIRTUAL_ENV"] = str(venv_dir)
-        # Windows uses Scripts/, POSIX uses bin/
-        bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-    else:
-        # Propagate host VIRTUAL_ENV as before
-        host_venv = os.environ.get("VIRTUAL_ENV")
-        if host_venv:
-            env["VIRTUAL_ENV"] = host_venv
+    env = _build_project_env(working_dir)
 
     import subprocess as _sp
 

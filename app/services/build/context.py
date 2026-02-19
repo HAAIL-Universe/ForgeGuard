@@ -226,7 +226,19 @@ _FORGE_GITIGNORE_RULES = [
     "Forge/",
     "*.forge-contract",
     ".forge/",
+    "",
+    "# Environment & build artifacts",
     ".venv/",
+    ".env",
+    ".env.local",
+    "node_modules/",
+    "__pycache__/",
+    "*.pyc",
+    "*.pyo",
+    "dist/",
+    "build/",
+    ".pytest_cache/",
+    ".mypy_cache/",
 ]
 
 _FORGE_GITIGNORE_MARKER = "# Forge contracts (server-side only — do not push)"
