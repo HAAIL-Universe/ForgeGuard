@@ -146,10 +146,13 @@ async def process_push_event(payload: dict) -> dict | None:
         # Determine overall result
         has_fail = any(c["result"] == "FAIL" for c in check_results)
         has_error = any(c["result"] == "ERROR" for c in check_results)
+        has_warn = any(c["result"] == "WARN" for c in check_results)
         if has_error:
             overall = "ERROR"
         elif has_fail:
             overall = "FAIL"
+        elif has_warn:
+            overall = "WARN"
         else:
             overall = "PASS"
 
@@ -437,10 +440,13 @@ async def backfill_repo_commits(
 
         has_fail = any(c["result"] == "FAIL" for c in check_results)
         has_error = any(c["result"] == "ERROR" for c in check_results)
+        has_warn = any(c["result"] == "WARN" for c in check_results)
         if has_error:
             overall = "ERROR"
         elif has_fail:
             overall = "FAIL"
+        elif has_warn:
+            overall = "WARN"
         else:
             overall = "PASS"
 
