@@ -1,4 +1,4 @@
-# boot.ps1 -- ForgeGuard one-click setup and run script.
+﻿# boot.ps1 -- ForgeGuard one-click setup and run script.
 #
 # Brings up the full stack from a fresh clone:
 #   1. Validates prerequisites (Python 3.12+, Node 18+, psql)
@@ -35,7 +35,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 if (-not $root) { $root = Get-Location }
 Set-Location $root
 
-# ── 1. Check prerequisites ──────────────────────────────────────────────
+# -- 1. Check prerequisites ----------------------------------------------
 
 Info "Checking prerequisites..."
 
@@ -71,7 +71,7 @@ $psqlCmd = Get-Command "psql" -ErrorAction SilentlyContinue
 if ($psqlCmd) { Info "psql: found on PATH" }
 else { Warn "psql not on PATH -- you may need to run migrations manually." }
 
-# ── 2. Python virtual environment ────────────────────────────────────────
+# -- 2. Python virtual environment ----------------------------------------
 
 $venvDir = Join-Path $root ".venv"
 if (-not (Test-Path $venvDir)) {
@@ -87,14 +87,16 @@ $venvPython = Join-Path $venvDir "Scripts/python.exe"
 $venvPythonUnix = Join-Path $venvDir "bin/python"
 $activePython = if (Test-Path $venvPython) { $venvPython } elseif (Test-Path $venvPythonUnix) { $venvPythonUnix } else { $pythonCmd }
 
-# ── 3. Install backend dependencies ─────────────────────────────────────
+# -- 3. Install backend dependencies -------------------------------------
 
 Info "Installing Python dependencies..."
-& $activePython -m pip install -r (Join-Path $root "requirements.txt") --quiet
+$ErrorActionPreference = "Continue"
+& $activePython -m pip install -r (Join-Path $root "requirements.txt") --quiet 2>&1 | Out-Null
+$ErrorActionPreference = "Stop"
 if ($LASTEXITCODE -ne 0) { Err "pip install failed."; exit 1 }
 Ok "Backend dependencies installed."
 
-# ── 4. Validate .env ────────────────────────────────────────────────────
+# -- 4. Validate .env ----------------------------------------------------
 
 $envFile = Join-Path $root ".env"
 $envExample = Join-Path $root ".env.example"
@@ -127,10 +129,11 @@ if ($missingVars.Count -gt 0) {
 
 Ok ".env validated -- all required variables present."
 
-# ── 5. Database migration ───────────────────────────────────────────────
+# -- 5. Database migration -----------------------------------------------
 
 $migrationDir = Join-Path $root "db/migrations"
 $migrationFiles = Get-ChildItem -Path $migrationDir -Filter "*.sql" -ErrorAction SilentlyContinue | Sort-Object Name
+$pyMigrate = Join-Path $root "_migrate.py"
 
 if ($migrationFiles.Count -gt 0) {
   Info "Running database migrations ($($migrationFiles.Count) files)..."
@@ -139,7 +142,7 @@ if ($migrationFiles.Count -gt 0) {
   if ($match) { $dbUrl = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'") }
 
   if ($dbUrl -and $psqlCmd) {
-    # ── Preferred: run via psql ──
+    # -- Preferred: run via psql --
     $failCount = 0
     foreach ($mf in $migrationFiles) {
       & psql $dbUrl -f $mf.FullName 2>&1 | Out-Null
@@ -148,16 +151,15 @@ if ($migrationFiles.Count -gt 0) {
     if ($failCount -eq 0) { Ok "All $($migrationFiles.Count) migrations applied." }
     else { Warn "$failCount migration(s) may have already been applied." }
   } elseif ($dbUrl) {
-    # ── Fallback: run via Python + asyncpg ──
-    Info "psql not found — running migrations via Python..."
-    $pyMigrate = Join-Path $root "_migrate.py"
+    # -- Fallback: run via Python + asyncpg --
+    Info "psql not found -- running migrations via Python..."
     if (Test-Path $pyMigrate) {
       & $activePython $pyMigrate $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
       if ($LASTEXITCODE -eq 0) { Ok "All migrations applied via Python." }
-      else { Warn "Some migrations may have failed — check output above." }
+      else { Warn "Some migrations may have failed -- check output above." }
     } else {
       # Inline one-shot: read each .sql and execute via asyncpg
-      $migScript = @"
+      $migScript = @'
 import sys, asyncio, asyncpg
 async def main():
     url = sys.argv[1]
@@ -175,13 +177,13 @@ async def main():
     if fail: print(f'{fail} migration(s) may have already been applied.')
     else: print(f'All {len(files)} migrations applied.')
 asyncio.run(main())
-"@
-      & $pip_python -c $migScript $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
+'@
+      & $activePython -c $migScript $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
       if ($LASTEXITCODE -eq 0) { Ok "Migrations applied via Python/asyncpg." }
-      else { Warn "Some migrations may have failed — check output above." }
+      else { Warn "Some migrations may have failed -- check output above." }
     }
   } else {
-    Warn "Cannot run migrations — DATABASE_URL not found in .env"
+    Warn "Cannot run migrations -- DATABASE_URL not found in .env"
   }
 } else {
   Warn "No migration files found in db/migrations/"
@@ -192,7 +194,7 @@ if ($MigrateOnly) {
   exit 0
 }
 
-# ── 5b. -TestOnly: run pytest then exit ──────────────────────────────────
+# -- 5b. -TestOnly: run pytest then exit ----------------------------------
 
 if ($TestOnly) {
   Info "Running test suite..."
@@ -203,7 +205,7 @@ if ($TestOnly) {
   exit $code
 }
 
-# ── 5c. -Check: lint + type-check then exit ──────────────────────────────
+# -- 5c. -Check: lint + type-check then exit ------------------------------
 
 if ($Check) {
   $fail = $false
@@ -224,7 +226,7 @@ if ($Check) {
   exit 0
 }
 
-# ── 6. Frontend setup ───────────────────────────────────────────────────
+# -- 6. Frontend setup ---------------------------------------------------
 
 $webDir = Join-Path $root "web"
 
@@ -237,7 +239,7 @@ if (-not $SkipFrontend -and (Test-Path $webDir)) {
   Pop-Location
 }
 
-# ── 7. Start servers ────────────────────────────────────────────────────
+# -- 7. Start servers ----------------------------------------------------
 
 Info ""
 Info "Starting ForgeGuard..."
@@ -261,4 +263,5 @@ Start-Job -ScriptBlock {
   Start-Process "http://localhost:5174"
 } | Out-Null
 
+$ErrorActionPreference = "Continue"
 & $activePython -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
