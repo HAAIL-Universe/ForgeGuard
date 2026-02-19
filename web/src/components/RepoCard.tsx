@@ -19,11 +19,20 @@ interface Repo {
   last_health_check_at: string | null;
 }
 
+interface SyncProgress {
+  commits_done: number;
+  commits_total: number;
+  current_sha?: string;
+  status: string;
+}
+
 interface RepoCardProps {
   repo: Repo;
   onDisconnect: (repo: Repo) => void;
   onUpdate: (repo: Repo) => void;
   onClick: (repo: Repo) => void;
+  updatingId?: string | null;
+  syncProgress?: SyncProgress | null;
 }
 
 function relativeTime(iso: string): string {
@@ -36,8 +45,9 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function RepoCard({ repo, onDisconnect, onUpdate, onClick }: RepoCardProps) {
+function RepoCard({ repo, onDisconnect, onUpdate, onClick, updatingId, syncProgress }: RepoCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const isUpdating = updatingId === repo.id;
 
   const isDeleted = repo.repo_status === 'deleted';
   const isArchived = repo.repo_status === 'archived';
@@ -191,25 +201,32 @@ function RepoCard({ repo, onDisconnect, onUpdate, onClick }: RepoCardProps) {
             >
               Clear
             </button>
-          ) : hasNewCommits ? (
+          ) : hasNewCommits || isUpdating ? (
             <>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onUpdate(repo);
+                  if (!isUpdating) onUpdate(repo);
                 }}
+                disabled={isUpdating}
                 style={{
-                  background: '#1D4ED8',
+                  background: isUpdating ? '#1E3A5F' : '#1D4ED8',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '6px',
                   padding: '6px 12px',
-                  cursor: 'pointer',
+                  cursor: isUpdating ? 'not-allowed' : 'pointer',
                   fontSize: '0.75rem',
                   fontWeight: 600,
+                  opacity: isUpdating ? 0.8 : 1,
+                  minWidth: '90px',
                 }}
               >
-                Update
+                {isUpdating
+                  ? syncProgress && syncProgress.commits_total > 0
+                    ? `${syncProgress.commits_done}/${syncProgress.commits_total}`
+                    : 'Syncing...'
+                  : 'Update'}
               </button>
               <button
                 onClick={(e) => {
@@ -296,5 +313,5 @@ function RepoCard({ repo, onDisconnect, onUpdate, onClick }: RepoCardProps) {
   );
 }
 
-export type { Repo };
+export type { Repo, SyncProgress };
 export default RepoCard;

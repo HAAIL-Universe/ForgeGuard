@@ -8,7 +8,12 @@ from uuid import UUID
 
 from app.audit.engine import run_all_checks
 from app.audit.runner import AuditResult, run_audit
-from app.clients.github_client import get_commit_files, get_repo_file_content, list_commits
+from app.clients.github_client import (
+    compare_commits,
+    get_commit_files,
+    get_repo_file_content,
+    list_commits,
+)
 from app.repos.audit_repo import (
     create_audit_run,
     get_existing_commit_shas,
@@ -102,12 +107,22 @@ async def process_push_event(payload: dict) -> dict | None:
 
         # Fetch file contents
         files: dict[str, str] = {}
-        for path in changed_paths:
+        user_id_str = str(repo["user_id"])
+        total_files = len(changed_paths)
+        for idx, path in enumerate(changed_paths):
             content = await get_repo_file_content(
                 access_token, full_name, path, commit_sha
             )
             if content is not None:
                 files[path] = content
+            # Emit per-file progress
+            await ws_manager.broadcast_audit_progress(user_id_str, {
+                "audit_id": str(audit_run["id"]),
+                "repo_id": str(repo["id"]),
+                "file": path,
+                "files_done": idx + 1,
+                "files_total": total_files,
+            })
 
         # Try to load boundaries.json from the repo
         boundaries = None
@@ -144,7 +159,6 @@ async def process_push_event(payload: dict) -> dict | None:
         )
 
         # Broadcast real-time update via WebSocket
-        user_id_str = str(repo["user_id"])
         await ws_manager.broadcast_audit_update(user_id_str, {
             "id": str(audit_run["id"]),
             "repo_id": str(repo["id"]),
@@ -271,10 +285,12 @@ async def backfill_repo_commits(
     repo_id: UUID,
     user_id: UUID,
 ) -> dict:
-    """Fetch commits from GitHub that ForgeGuard missed while offline.
+    """Sync a repo by auditing only the latest commit on the default branch.
 
-    Compares the GitHub commit list against existing audit_runs and creates
-    new audit runs (with full audit checks) for any gaps.
+    Instead of auditing every intermediate commit individually, this uses
+    GitHub's Compare API to find all files that changed since the last
+    known commit and runs a single audit at HEAD.  This is dramatically
+    faster and uses far fewer API calls.
 
     Returns { "synced": int, "skipped": int }.
     """
@@ -295,101 +311,182 @@ async def backfill_repo_commits(
     if cleaned:
         logger.info("Cleaned %d stale audit runs for repo %s", cleaned, repo_id)
 
-    # Find the latest audit we already have so we only pull newer commits
+    # Find what we already know about
     existing_shas = await get_existing_commit_shas(repo_id)
 
-    # Fetch recent commits from GitHub
+    user_id_str = str(user_id)
+    repo_id_str = str(repo_id)
+
+    # Fetch the latest commits from GitHub to find what's new
     commits = await list_commits(
         access_token=access_token,
         full_name=full_name,
         branch=branch,
     )
 
-    synced = 0
-    skipped = 0
+    if not commits:
+        return {"synced": 0, "skipped": 0}
 
-    # Process oldest-first so timeline ordering is correct
-    for commit in reversed(commits):
-        sha = commit["sha"]
-        if sha in existing_shas:
-            skipped += 1
-            continue
+    head = commits[0]  # newest commit
+    head_sha = head["sha"]
 
-        # Create audit run + run checks for this commit
-        audit_run = await create_audit_run(
-            repo_id=repo_id,
-            commit_sha=sha,
-            commit_message=commit.get("message", ""),
-            commit_author=commit.get("author", ""),
-            branch=branch,
+    # If HEAD is already tracked, nothing to do
+    if head_sha in existing_shas:
+        return {"synced": 0, "skipped": len(commits)}
+
+    # Find the most recent commit we DO have (scanning newest-first)
+    last_known_sha = None
+    skipped_intermediate = 0
+    for c in commits:
+        if c["sha"] in existing_shas:
+            last_known_sha = c["sha"]
+            break
+        skipped_intermediate += 1
+
+    # Notify frontend that sync is starting
+    await ws_manager.broadcast_sync_progress(user_id_str, {
+        "repo_id": repo_id_str,
+        "commits_done": 0,
+        "commits_total": 1,
+        "status": "running",
+    })
+
+    # Get the list of changed files.  If we have a known base commit, use
+    # the Compare API to get the combined diff.  Otherwise (fresh repo),
+    # just look at HEAD's own changed files.
+    try:
+        if last_known_sha:
+            comparison = await compare_commits(
+                access_token, full_name, last_known_sha, head_sha,
+            )
+            changed_paths = comparison["files"]
+            logger.info(
+                "Compare %s..%s: %d files changed across %d commits",
+                last_known_sha[:7], head_sha[:7],
+                len(changed_paths), comparison["total_commits"],
+            )
+        else:
+            changed_paths = await get_commit_files(access_token, full_name, head_sha)
+            logger.info(
+                "Fresh sync for %s at %s: %d changed files",
+                full_name, head_sha[:7], len(changed_paths),
+            )
+    except Exception:
+        logger.exception("Failed to get changed files for sync")
+        await ws_manager.broadcast_sync_progress(user_id_str, {
+            "repo_id": repo_id_str,
+            "commits_done": 0,
+            "commits_total": 1,
+            "status": "error",
+        })
+        return {"synced": 0, "skipped": 0}
+
+    # Create a single audit run for HEAD
+    audit_run = await create_audit_run(
+        repo_id=repo_id,
+        commit_sha=head_sha,
+        commit_message=head.get("message", ""),
+        commit_author=head.get("author", ""),
+        branch=branch,
+    )
+
+    await update_audit_run(
+        audit_run_id=audit_run["id"],
+        status="running",
+        overall_result=None,
+        files_checked=0,
+    )
+
+    try:
+        # Fetch file contents at HEAD
+        files: dict[str, str] = {}
+        total_files = len(changed_paths)
+        for file_idx, path in enumerate(changed_paths):
+            content = await get_repo_file_content(
+                access_token, full_name, path, head_sha,
+            )
+            if content is not None:
+                files[path] = content
+            # Per-file progress
+            await ws_manager.broadcast_audit_progress(user_id_str, {
+                "audit_id": str(audit_run["id"]),
+                "repo_id": repo_id_str,
+                "file": path,
+                "files_done": file_idx + 1,
+                "files_total": total_files,
+            })
+
+        # Load boundaries.json if present
+        boundaries = None
+        boundaries_content = await get_repo_file_content(
+            access_token, full_name, "boundaries.json", head_sha,
         )
+        if boundaries_content:
+            try:
+                boundaries = json.loads(boundaries_content)
+            except json.JSONDecodeError:
+                boundaries = None
+
+        # Run audit checks
+        check_results = run_all_checks(files, boundaries)
+        await insert_audit_checks(audit_run["id"], check_results)
+
+        has_fail = any(c["result"] == "FAIL" for c in check_results)
+        has_error = any(c["result"] == "ERROR" for c in check_results)
+        if has_error:
+            overall = "ERROR"
+        elif has_fail:
+            overall = "FAIL"
+        else:
+            overall = "PASS"
 
         await update_audit_run(
             audit_run_id=audit_run["id"],
-            status="running",
-            overall_result=None,
+            status="completed",
+            overall_result=overall,
+            files_checked=len(files),
+        )
+
+        # Broadcast completion for this audit
+        await ws_manager.broadcast_audit_update(user_id_str, {
+            "id": str(audit_run["id"]),
+            "repo_id": repo_id_str,
+            "commit_sha": head_sha,
+            "commit_message": head.get("message", ""),
+            "commit_author": head.get("author", ""),
+            "branch": branch,
+            "status": "completed",
+            "overall_result": overall,
+            "started_at": audit_run["started_at"].isoformat() if audit_run.get("started_at") else None,
+            "completed_at": None,
+            "files_checked": len(files),
+        })
+
+    except asyncio.CancelledError:
+        logger.warning("Backfill cancelled for commit %s", head_sha)
+        await update_audit_run(
+            audit_run_id=audit_run["id"],
+            status="error",
+            overall_result="ERROR",
+            files_checked=0,
+        )
+        raise
+
+    except Exception:
+        logger.exception("Backfill audit failed for commit %s", head_sha)
+        await update_audit_run(
+            audit_run_id=audit_run["id"],
+            status="error",
+            overall_result="ERROR",
             files_checked=0,
         )
 
-        try:
-            changed_paths = await get_commit_files(access_token, full_name, sha)
+    # Broadcast sync completion
+    await ws_manager.broadcast_sync_progress(user_id_str, {
+        "repo_id": repo_id_str,
+        "commits_done": 1,
+        "commits_total": 1,
+        "status": "completed",
+    })
 
-            files: dict[str, str] = {}
-            for path in changed_paths:
-                content = await get_repo_file_content(
-                    access_token, full_name, path, sha
-                )
-                if content is not None:
-                    files[path] = content
-
-            boundaries = None
-            boundaries_content = await get_repo_file_content(
-                access_token, full_name, "boundaries.json", sha
-            )
-            if boundaries_content:
-                try:
-                    boundaries = json.loads(boundaries_content)
-                except json.JSONDecodeError:
-                    boundaries = None
-
-            check_results = run_all_checks(files, boundaries)
-            await insert_audit_checks(audit_run["id"], check_results)
-
-            has_fail = any(c["result"] == "FAIL" for c in check_results)
-            has_error = any(c["result"] == "ERROR" for c in check_results)
-            if has_error:
-                overall = "ERROR"
-            elif has_fail:
-                overall = "FAIL"
-            else:
-                overall = "PASS"
-
-            await update_audit_run(
-                audit_run_id=audit_run["id"],
-                status="completed",
-                overall_result=overall,
-                files_checked=len(files),
-            )
-            synced += 1
-
-        except asyncio.CancelledError:
-            logger.warning("Backfill cancelled for commit %s", sha)
-            await update_audit_run(
-                audit_run_id=audit_run["id"],
-                status="error",
-                overall_result="ERROR",
-                files_checked=0,
-            )
-            raise  # re-raise so the request terminates properly
-
-        except Exception:
-            logger.exception("Backfill failed for commit %s", sha)
-            await update_audit_run(
-                audit_run_id=audit_run["id"],
-                status="error",
-                overall_result="ERROR",
-                files_checked=0,
-            )
-            synced += 1  # still counts as processed
-
-    return {"synced": synced, "skipped": skipped}
+    return {"synced": 1, "skipped": len(existing_shas)}

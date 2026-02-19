@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { useWebSocket } from '../hooks/useWebSocket';
 import AppShell from '../components/AppShell';
 import ResultBadge from '../components/ResultBadge';
 import CheckResultCard from '../components/CheckResultCard';
@@ -32,27 +33,50 @@ function AuditDetailPage() {
 
   const [detail, setDetail] = useState<AuditDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scanFile, setScanFile] = useState<string | null>(null);
+  const [filesDone, setFilesDone] = useState(0);
+  const [filesTotal, setFilesTotal] = useState(0);
+
+  const fetchDetail = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/repos/${repoId}/audits/${auditId}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.ok) {
+        setDetail(await res.json());
+      } else {
+        addToast('Failed to load audit detail');
+      }
+    } catch {
+      addToast('Network error loading audit detail');
+    } finally {
+      setLoading(false);
+    }
+  }, [repoId, auditId, token, addToast]);
 
   useEffect(() => {
-    const fetchDetail = async () => {
-      try {
-        const res = await fetch(
-          `${API_BASE}/repos/${repoId}/audits/${auditId}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (res.ok) {
-          setDetail(await res.json());
-        } else {
-          addToast('Failed to load audit detail');
-        }
-      } catch {
-        addToast('Network error loading audit detail');
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchDetail();
-  }, [repoId, auditId, token, addToast]);
+  }, [fetchDetail]);
+
+  // Live progress: update scanning state + re-fetch when audit completes
+  useWebSocket(useCallback((data) => {
+    if (data.type === 'audit_progress') {
+      const p = data.payload as { audit_id?: string; file?: string; files_done?: number; files_total?: number };
+      if (p.audit_id === auditId) {
+        setScanFile(p.file ?? null);
+        setFilesDone(p.files_done ?? 0);
+        setFilesTotal(p.files_total ?? 0);
+      }
+    }
+    if (data.type === 'audit_update') {
+      const p = data.payload as { id?: string; repo_id?: string };
+      if (p.id === auditId || p.repo_id === repoId) {
+        setScanFile(null);
+        fetchDetail();
+      }
+    }
+  }, [auditId, repoId, fetchDetail]));
 
   if (loading) {
     return (
@@ -142,6 +166,28 @@ function AuditDetailPage() {
               {duration && <span> &middot; {duration}</span>}
             </span>
           </div>
+          {/* Live scanning indicator when audit is still running */}
+          {scanFile && (
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '8px 12px',
+                background: '#0F172A',
+                borderRadius: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.8rem',
+                color: '#94A3B8',
+              }}
+            >
+              <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>&#9696;</span>
+              <span>
+                Scanning {filesDone}/{filesTotal} &mdash;{' '}
+                <span style={{ color: '#CBD5E1', fontFamily: 'monospace' }}>{scanFile}</span>
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Check Results */}

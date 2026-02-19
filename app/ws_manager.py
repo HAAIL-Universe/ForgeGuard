@@ -121,6 +121,20 @@ class ConnectionManager:
         }
         await self.send_to_user(user_id, payload)
 
+    async def broadcast_audit_progress(self, user_id: str, progress: dict) -> None:
+        """Broadcast an audit_progress event (per-file scan progress)."""
+        await self.send_to_user(user_id, {
+            "type": "audit_progress",
+            "payload": progress,
+        })
+
+    async def broadcast_sync_progress(self, user_id: str, progress: dict) -> None:
+        """Broadcast a sync_progress event (overall backfill progress)."""
+        await self.send_to_user(user_id, {
+            "type": "sync_progress",
+            "payload": progress,
+        })
+
     # ── heartbeat ─────────────────────────────────────────────
 
     async def _heartbeat_loop(self) -> None:

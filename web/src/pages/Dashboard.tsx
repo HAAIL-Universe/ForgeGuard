@@ -5,7 +5,7 @@ import { useToast } from '../context/ToastContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import AppShell from '../components/AppShell';
 import RepoCard from '../components/RepoCard';
-import type { Repo } from '../components/RepoCard';
+import type { Repo, SyncProgress } from '../components/RepoCard';
 import RepoPickerModal from '../components/RepoPickerModal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ProjectCard from '../components/ProjectCard';
@@ -29,6 +29,7 @@ function Dashboard() {
   const [disconnectTarget, setDisconnectTarget] = useState<Repo | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [updatingRepoId, setUpdatingRepoId] = useState<string | null>(null);
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
 
   const fetchRepos = useCallback(async () => {
     try {
@@ -67,12 +68,22 @@ function Dashboard() {
   }, [fetchRepos, fetchProjects]);
 
   // Real-time: refresh repos when an audit completes or health check finishes;
-  // refresh projects on build events
+  // refresh projects on build events; track sync progress.
   useWebSocket(useCallback((data) => {
     if (data.type === 'audit_update') fetchRepos();
     if (data.type === 'repos_health_updated') {
       setIsRefreshing(false);
       fetchRepos();
+    }
+    if (data.type === 'sync_progress') {
+      const p = data.payload as SyncProgress & { repo_id: string };
+      setUpdatingRepoId(p.repo_id);
+      setSyncProgress({ commits_done: p.commits_done, commits_total: p.commits_total, current_sha: p.current_sha, status: p.status });
+      if (p.status === 'completed' || p.status === 'error') {
+        // Clear after a brief delay so the user sees the final count
+        setTimeout(() => { setUpdatingRepoId(null); setSyncProgress(null); }, 1200);
+        fetchRepos();
+      }
     }
     if (data.type === 'build_complete' || data.type === 'build_error' || data.type === 'build_started') fetchProjects();
   }, [fetchRepos, fetchProjects]));
@@ -131,7 +142,8 @@ function Dashboard() {
     } catch {
       addToast('Network error syncing repo');
     } finally {
-      setUpdatingRepoId(null);
+      // Don't clear here — sync_progress WS events will manage the state
+      // setUpdatingRepoId(null);
     }
   };
 
@@ -207,6 +219,8 @@ function Dashboard() {
                 onDisconnect={setDisconnectTarget}
                 onUpdate={handleUpdate}
                 onClick={handleRepoClick}
+                updatingId={updatingRepoId}
+                syncProgress={syncProgress}
               />
             ))}
           </div>

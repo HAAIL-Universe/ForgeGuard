@@ -264,6 +264,46 @@ async def get_commit_files(
     return [f["filename"] for f in data.get("files", [])]
 
 
+async def compare_commits(
+    access_token: str,
+    full_name: str,
+    base_sha: str,
+    head_sha: str,
+) -> dict:
+    """Compare two commits and return the diff summary.
+
+    Uses GitHub's Compare API: GET /repos/{owner}/{repo}/compare/{base}...{head}
+
+    Returns dict with keys:
+      - files: list of changed file paths (union of all intermediate changes)
+      - total_commits: number of commits between base and head
+      - head_sha: the resolved head SHA
+      - head_message: commit message of the head commit
+      - head_author: author name of the head commit
+    """
+    client = _get_client()
+    response = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}/compare/{base_sha}...{head_sha}",
+        headers=_auth_headers(access_token),
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    files = [f["filename"] for f in data.get("files", [])]
+    commits = data.get("commits", [])
+    head_commit_data = commits[-1] if commits else {}
+    commit_obj = head_commit_data.get("commit", {})
+    author_obj = commit_obj.get("author", {})
+
+    return {
+        "files": files,
+        "total_commits": len(commits),
+        "head_sha": head_commit_data.get("sha", head_sha),
+        "head_message": commit_obj.get("message", ""),
+        "head_author": author_obj.get("name", ""),
+    }
+
+
 async def get_repo_tree(
     access_token: str,
     full_name: str,

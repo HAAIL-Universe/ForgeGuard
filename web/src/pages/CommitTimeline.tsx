@@ -22,6 +22,9 @@ function CommitTimeline() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [scanningFile, setScanningFile] = useState<string | null>(null);
+  const [filesDone, setFilesDone] = useState(0);
+  const [filesTotal, setFilesTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -49,12 +52,32 @@ function CommitTimeline() {
     fetchAudits();
   }, [fetchAudits]);
 
-  // Real-time: refresh when audit for this repo completes
+  // Real-time: refresh when audit for this repo completes; track sync progress
   useWebSocket(useCallback((data) => {
     if (data.type === 'audit_update') {
       const payload = data.payload as { repo_id?: string };
       if (payload.repo_id === repoId) {
         fetchAudits();
+      }
+    }
+    if (data.type === 'sync_progress') {
+      const p = data.payload as { repo_id?: string; status?: string };
+      if (p.repo_id === repoId) {
+        if (p.status === 'running') {
+          setSyncing(true);
+        } else {
+          setSyncing(false);
+          setScanningFile(null);
+          fetchAudits();
+        }
+      }
+    }
+    if (data.type === 'audit_progress') {
+      const p = data.payload as { repo_id?: string; file?: string; files_done?: number; files_total?: number };
+      if (p.repo_id === repoId) {
+        setScanningFile(p.file ?? null);
+        setFilesDone(p.files_done ?? 0);
+        setFilesTotal(p.files_total ?? 0);
       }
     }
   }, [fetchAudits, repoId]));
@@ -135,6 +158,29 @@ function CommitTimeline() {
             {syncing ? 'Syncing...' : 'Sync Commits'}
           </button>
         </div>
+
+        {/* Live scanning indicator */}
+        {syncing && scanningFile && (
+          <div
+            style={{
+              marginBottom: '12px',
+              padding: '8px 14px',
+              background: '#1E293B',
+              borderRadius: '6px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '0.8rem',
+              color: '#94A3B8',
+            }}
+          >
+            <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>&#9696;</span>
+            <span>
+              Scanning {filesDone}/{filesTotal} &mdash;{' '}
+              <span style={{ color: '#CBD5E1', fontFamily: 'monospace' }}>{scanningFile}</span>
+            </span>
+          </div>
+        )}
 
         {loading ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
