@@ -142,17 +142,21 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
         return f"Error executing {tool_name}: {exc}"
 
 
-async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str) -> str:
+async def execute_tool_async(
+    tool_name: str, tool_input: dict, working_dir: str, **kwargs: object
+) -> str:
     """Dispatch a tool call -- supports both sync and async handlers.
 
     This is the main dispatcher used by the build loop. Sync tools (read_file,
     list_directory, search_code, write_file, edit_file) are called directly. Async tools
-    (run_tests, check_syntax, run_command) use subprocess execution.
+    (run_tests, check_syntax, run_command, project-scoped forge tools) use subprocess or
+    HTTP execution.
 
     Args:
         tool_name: Name of the tool to execute.
         tool_input: Input parameters for the tool.
         working_dir: Absolute path to the build working directory.
+        **kwargs: Extra keyword arguments (e.g. build_id) accepted but unused here.
 
     Returns:
         String result of the tool execution.
@@ -174,6 +178,11 @@ async def execute_tool_async(tool_name: str, tool_input: dict, working_dir: str)
         "run_tests": _exec_run_tests,
         "check_syntax": _exec_check_syntax,
         "run_command": _exec_run_command,
+        # Project-scoped forge tools (Phase F) — proxy to MCP dispatch → ForgeGuard API
+        "forge_get_project_context": _exec_forge_get_project_context,
+        "forge_list_project_contracts": _exec_forge_list_project_contracts,
+        "forge_get_project_contract": _exec_forge_get_project_contract,
+        "forge_get_build_contracts": _exec_forge_get_build_contracts,
     }
 
     if tool_name in sync_handlers:
@@ -924,6 +933,84 @@ def _persist_scratchpad(working_dir: str, pad: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Project-scoped forge tool handlers (Phase F)
+# These proxy to the MCP dispatch layer → ForgeGuard API → PostgreSQL.
+# They respect forge_ide.mcp.session so the build orchestrator only needs
+# to call forge_set_session() once before starting sub-agents.
+# ---------------------------------------------------------------------------
+
+
+async def _exec_forge_get_project_context(inp: dict, working_dir: str) -> str:
+    """Return combined project manifest — metadata only, no full contract content.
+
+    Input: { "project_id": "<uuid>" }  (optional if session is set)
+    Endpoint: GET /api/mcp/context/{project_id}
+    """
+    try:
+        from forge_ide.mcp.tools import dispatch as _mcp_dispatch
+        result = await _mcp_dispatch("forge_get_project_context", inp)
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return f"Error calling forge_get_project_context: {exc}"
+
+
+async def _exec_forge_list_project_contracts(inp: dict, working_dir: str) -> str:
+    """List all generated contracts for the current project.
+
+    Input: { "project_id": "<uuid>" }  (optional if session is set)
+    Endpoint: GET /api/mcp/context/{project_id}  (returns contract listing)
+    """
+    try:
+        from forge_ide.mcp.tools import dispatch as _mcp_dispatch
+        result = await _mcp_dispatch("forge_list_project_contracts", inp)
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return f"Error calling forge_list_project_contracts: {exc}"
+
+
+async def _exec_forge_get_project_contract(inp: dict, working_dir: str) -> str:
+    """Fetch a single generated contract for the current project from the database.
+
+    Input: { "contract_type": "stack", "project_id": "<uuid>" }
+    project_id is optional if forge_set_session() was called.
+    Endpoint: GET /api/mcp/context/{project_id}/{contract_type}
+    """
+    try:
+        from forge_ide.mcp.tools import dispatch as _mcp_dispatch
+        result = await _mcp_dispatch("forge_get_project_contract", inp)
+        if "error" in result:
+            return f"Error: {result['error']}"
+        # Return just the content string for a cleaner builder experience
+        content = result.get("content", "")
+        if isinstance(content, str):
+            return content
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return f"Error calling forge_get_project_contract: {exc}"
+
+
+async def _exec_forge_get_build_contracts(inp: dict, working_dir: str) -> str:
+    """Fetch the pinned contract snapshot for a specific build.
+
+    Input: { "build_id": "<uuid>" }  (optional if session is set)
+    Returns all contracts frozen when the build started (immutable).
+    Endpoint: GET /api/mcp/build/{build_id}/contracts
+    """
+    try:
+        from forge_ide.mcp.tools import dispatch as _mcp_dispatch
+        result = await _mcp_dispatch("forge_get_build_contracts", inp)
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return f"Error calling forge_get_build_contracts: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # Tool Specifications (Anthropic format)
 # ---------------------------------------------------------------------------
 
@@ -1228,6 +1315,92 @@ FORGE_TOOLS = [
                 },
             },
             "required": ["operation"],
+        },
+    },
+    # ── Project-scoped contract tools (Phase F) ──────────────────────────────
+    {
+        "name": "forge_get_project_context",
+        "description": (
+            "Get a combined manifest for the current project — project info, "
+            "list of available generated contracts (types, versions, sizes), "
+            "build count, and latest snapshot batch. Returns METADATA only, "
+            "not full contract content. Call this first to see what contracts "
+            "are available, then fetch specific ones with forge_get_project_contract."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID). Optional if session is set.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "forge_list_project_contracts",
+        "description": (
+            "List all generated contracts for the current project — contract "
+            "types, versions, and last updated timestamps. Lighter than "
+            "forge_get_project_context when you only need the contract list."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID). Optional if session is set.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "forge_get_project_contract",
+        "description": (
+            "Fetch a single generated contract for the current project from "
+            "the database. Returns the full content, version, and source. "
+            "Use forge_list_project_contracts to see available types first. "
+            "Common types: manifesto, stack, physics, boundaries, blueprint, "
+            "builder_directive, schema, ui."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "description": (
+                        "Contract type — e.g. manifesto, stack, physics, "
+                        "boundaries, blueprint, builder_directive, schema, ui."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID). Optional if session is set.",
+                },
+            },
+            "required": ["contract_type"],
+        },
+    },
+    {
+        "name": "forge_get_build_contracts",
+        "description": (
+            "Fetch the pinned contract snapshot for a specific build. "
+            "Returns all contracts that were frozen when the build started. "
+            "These are immutable — mid-build edits don't affect them. "
+            "Used by the Fixer role to reference the exact contracts the "
+            "build was executed against."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "build_id": {
+                    "type": "string",
+                    "description": "Build identifier (UUID). Optional if session is set.",
+                },
+            },
+            "required": [],
         },
     },
     {

@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
+from app.repos import certificate_repo
 from app.services.certificate_aggregator import aggregate_certificate_data
 from app.services.certificate_renderer import render_certificate
 from app.services.certificate_scorer import compute_certificate_scores
@@ -315,7 +316,10 @@ async def get_certificate(
     project_id: UUID,
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """Generate a Forge Seal build certificate (JSON)."""
+    """Return the stored Forge Seal build certificate (JSON). Falls back to live recompute for pre-migration builds."""
+    stored = await certificate_repo.get_latest_certificate(project_id)
+    if stored:
+        return render_certificate(stored["scores_json"], "json")
     data = await aggregate_certificate_data(project_id, current_user["id"])
     scores = compute_certificate_scores(data)
     return render_certificate(scores, "json")
@@ -326,7 +330,10 @@ async def get_certificate_html(
     project_id: UUID,
     current_user: dict = Depends(get_current_user),
 ) -> HTMLResponse:
-    """Generate a Forge Seal build certificate (styled HTML)."""
+    """Return the stored Forge Seal build certificate (styled HTML). Falls back to live recompute for pre-migration builds."""
+    stored = await certificate_repo.get_latest_certificate(project_id)
+    if stored and stored.get("certificate_html"):
+        return HTMLResponse(content=stored["certificate_html"])
     data = await aggregate_certificate_data(project_id, current_user["id"])
     scores = compute_certificate_scores(data)
     html = render_certificate(scores, "html")
@@ -338,8 +345,42 @@ async def get_certificate_text(
     project_id: UUID,
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """Generate a Forge Seal build certificate (plain text)."""
+    """Return the stored Forge Seal build certificate (plain text). Falls back to live recompute for pre-migration builds."""
+    stored = await certificate_repo.get_latest_certificate(project_id)
+    if stored:
+        text = render_certificate(stored["scores_json"], "text")
+        return {"format": "text", "certificate": text}
     data = await aggregate_certificate_data(project_id, current_user["id"])
     scores = compute_certificate_scores(data)
     text = render_certificate(scores, "text")
     return {"format": "text", "certificate": text}
+
+
+# ---------------------------------------------------------------------------
+# Phase 58: Build Cycle endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/build-cycle")
+async def get_active_build_cycle(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Return the active build cycle for a project, or null."""
+    from app.services.build_cycle_service import get_current_cycle
+
+    cycle = await get_current_cycle(str(project_id))
+    if cycle is None:
+        return {"cycle": None}
+    return {"cycle": cycle}
+
+
+@router.get("/{project_id}/build-cycles")
+async def list_build_cycles(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """List all build cycles for a project."""
+    from app.services.build_cycle_service import list_project_cycles
+
+    cycles = await list_project_cycles(str(project_id))
+    return {"items": cycles}

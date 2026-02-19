@@ -110,6 +110,30 @@ def compute_certificate_scores(data: dict) -> CertificateScores:
     else:
         verdict = "FLAGGED"
 
+    # ── Phase 58: Dossier baseline delta ──────────────────────────
+    dossier_baseline = data.get("dossier_baseline")
+    baseline_score = None
+    delta_json = None
+    if dossier_baseline and isinstance(dossier_baseline, dict):
+        baseline_score = dossier_baseline.get("computed_score")
+        baseline_dims = dossier_baseline.get("dimensions", {})
+        delta_json = {}
+        for dim_key, dim_data in dimensions.items():
+            b_dim = baseline_dims.get(dim_key, {})
+            b_score = b_dim.get("score") if isinstance(b_dim, dict) else None
+            if b_score is not None:
+                delta_json[dim_key] = {
+                    "baseline": b_score,
+                    "final": dim_data["score"],
+                    "delta": round(dim_data["score"] - b_score, 1),
+                }
+            else:
+                delta_json[dim_key] = {
+                    "baseline": None,
+                    "final": dim_data["score"],
+                    "delta": None,
+                }
+
     # Build summary for certificate
     build = data.get("build")
     build_summary = None
@@ -136,6 +160,8 @@ def compute_certificate_scores(data: dict) -> CertificateScores:
         "build_summary": build_summary,
         "builds_total": data.get("builds_total", 0),
         "contracts_count": data.get("contracts", {}).get("count", 0),
+        "baseline_score": baseline_score,
+        "delta": delta_json,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

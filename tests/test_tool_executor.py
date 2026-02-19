@@ -361,16 +361,23 @@ class TestExecuteTool:
 class TestBuilderToolsSpec:
     """Verify the BUILDER_TOOLS constant is well-formed."""
 
-    def test_has_thirteen_tools(self):
-        assert len(BUILDER_TOOLS) == 13
+    def test_has_eighteen_tools(self):
+        # 8 base + 5 forge governance + 4 project-scoped (Phase F) + 1 forge_ask_clarification
+        assert len(BUILDER_TOOLS) == 18
 
     def test_tool_names(self):
         names = {t["name"] for t in BUILDER_TOOLS}
         assert names == {
+            # Base tools
             "read_file", "list_directory", "search_code", "write_file",
             "edit_file", "run_tests", "check_syntax", "run_command",
+            # Forge governance tools (Phase 55)
             "forge_get_contract", "forge_get_phase_window",
             "forge_list_contracts", "forge_get_summary", "forge_scratchpad",
+            "forge_ask_clarification",
+            # Project-scoped contract tools (Phase F)
+            "forge_get_project_context", "forge_list_project_contracts",
+            "forge_get_project_contract", "forge_get_build_contracts",
         }
 
     def test_each_tool_has_required_fields(self):
@@ -891,8 +898,8 @@ class TestBuilderToolsIncludesForge:
         assert "forge_scratchpad" in tool_names
 
     def test_total_tool_count(self):
-        # 8 existing + 5 forge = 13
-        assert len(BUILDER_TOOLS) == 13
+        # 8 base + 5 forge governance + 1 forge_ask_clarification + 4 project-scoped = 18
+        assert len(BUILDER_TOOLS) == 18
 
 
 # ---------------------------------------------------------------------------

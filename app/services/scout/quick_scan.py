@@ -103,16 +103,18 @@ async def _execute_scout(
             if content is not None:
                 files[path] = content
 
-        # Load boundaries.json if present
+        # Load boundaries.json if present (check common locations)
         boundaries = None
-        boundaries_content = await get_repo_file_content(
-            access_token, full_name, "boundaries.json", head_sha
-        )
-        if boundaries_content:
-            try:
-                boundaries = json.loads(boundaries_content)
-            except json.JSONDecodeError:
-                pass
+        for _bpath in ("boundaries.json", "Forge/Contracts/boundaries.json"):
+            boundaries_content = await get_repo_file_content(
+                access_token, full_name, _bpath, head_sha
+            )
+            if boundaries_content:
+                try:
+                    boundaries = json.loads(boundaries_content)
+                except json.JSONDecodeError:
+                    pass
+                break
 
         # Run the engine checks (A4, A9, secrets)
         engine_results = run_all_checks(files, boundaries)

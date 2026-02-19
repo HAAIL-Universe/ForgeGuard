@@ -2094,6 +2094,18 @@ async def _run_build(
     watchdog = asyncio.create_task(_build_watchdog(build_id, user_id))
     _build_heartbeat_tasks[bid] = watchdog
 
+    # Scope MCP project-scoped tool calls to this build (Phase G)
+    try:
+        from forge_ide.mcp.session import set_session as _mcp_set_session
+        _mcp_set_session(
+            project_id=str(project_id),
+            build_id=str(build_id),
+            user_id=str(user_id),
+        )
+        logger.debug("[mcp:session] scoped to project=%s build=%s", project_id, build_id)
+    except Exception as _exc:
+        logger.warning("[mcp:session] set_session failed (non-fatal): %s", _exc)
+
     try:
         if mode == "plan_execute" and working_dir:
             await _run_build_plan_execute(
@@ -3402,6 +3414,23 @@ async def _run_build_conversation(
                         "message": f"Git push failed: {exc}",
                         "source": "system", "level": "error",
                     })
+
+        # ── Persist forge seal ──────────────────────────────────────────
+        try:
+            from app.services.certificate_aggregator import aggregate_certificate_data
+            from app.services.certificate_scorer import compute_certificate_scores
+            from app.services.certificate_renderer import render_certificate
+            from app.repos import certificate_repo
+            cert_data = await aggregate_certificate_data(project_id, user_id)
+            scores    = compute_certificate_scores(cert_data)
+            html      = render_certificate(scores, "html")
+            await certificate_repo.create_certificate(
+                project_id=project_id, build_id=build_id,
+                user_id=user_id, scores=scores, certificate_html=html,
+            )
+            logger.info("Forge seal persisted for build %s", build_id)
+        except Exception as _exc:
+            logger.warning("Forge seal persistence failed (non-fatal): %s", _exc)
 
         # Gather total cost summary for the final event
         cost_summary = await build_repo.get_build_cost_summary(build_id)
@@ -5288,3 +5317,20 @@ async def _run_build_plan_execute(
         "total_output_tokens": cost_summary["total_output_tokens"],
         "total_cost_usd": float(cost_summary["total_cost_usd"]),
     })
+
+    # ── Persist forge seal ──────────────────────────────────────────
+    try:
+        from app.services.certificate_aggregator import aggregate_certificate_data
+        from app.services.certificate_scorer import compute_certificate_scores
+        from app.services.certificate_renderer import render_certificate
+        from app.repos import certificate_repo
+        cert_data = await aggregate_certificate_data(project_id, user_id)
+        scores    = compute_certificate_scores(cert_data)
+        html      = render_certificate(scores, "html")
+        await certificate_repo.create_certificate(
+            project_id=project_id, build_id=build_id,
+            user_id=user_id, scores=scores, certificate_html=html,
+        )
+        logger.info("Forge seal persisted for build %s", build_id)
+    except Exception as _exc:
+        logger.warning("Forge seal persistence failed (non-fatal): %s", _exc)

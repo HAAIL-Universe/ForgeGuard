@@ -158,3 +158,61 @@ async def get_score_history(
         limit,
     )
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Phase 58 — Dossier lock mechanism
+# ---------------------------------------------------------------------------
+
+
+async def lock_dossier(run_id: UUID) -> dict:
+    """Lock a dossier so it becomes immutable.
+
+    Sets ``dossier_locked_at`` to now().  Raises ``ValueError`` if the
+    run does not exist or is already locked.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE scout_runs
+        SET dossier_locked_at = now()
+        WHERE id = $1
+          AND dossier_locked_at IS NULL
+        RETURNING id, dossier_locked_at
+        """,
+        run_id,
+    )
+    if row is None:
+        # Either the run doesn't exist or it's already locked
+        existing = await pool.fetchrow(
+            "SELECT id, dossier_locked_at FROM scout_runs WHERE id = $1",
+            run_id,
+        )
+        if existing is None:
+            raise ValueError(f"Scout run {run_id} not found")
+        raise ValueError(f"Dossier {run_id} is already locked")
+    return dict(row)
+
+
+async def is_dossier_locked(run_id: UUID) -> bool:
+    """Check whether a dossier is locked."""
+    pool = await get_pool()
+    locked_at = await pool.fetchval(
+        "SELECT dossier_locked_at FROM scout_runs WHERE id = $1",
+        run_id,
+    )
+    return locked_at is not None
+
+
+async def link_dossier_to_cycle(run_id: UUID, cycle_id: UUID) -> None:
+    """Link a dossier run to its build cycle."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE scout_runs
+        SET dossier_build_cycle_id = $2
+        WHERE id = $1
+        """,
+        run_id,
+        cycle_id,
+    )

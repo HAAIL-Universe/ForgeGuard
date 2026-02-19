@@ -4350,3 +4350,169 @@ The `repos` table stores `full_name`, `default_branch`, `webhook_active`, and au
 - All 11 backend tests pass
 - Existing repo tests unchanged and passing
 - No extra GitHub API calls are made on page load if all repos were checked within the last hour (staleness guard works)
+
+---
+
+## Phase 58 — Immutable Dossier & Build Cycle Lifecycle
+
+**Objective:** Redesign the Scout dossier from a disposable report into an immutable baseline snapshot that anchors the ForgeGuard build lifecycle. The dossier becomes the single source of truth for a project's state at a point in time. Everything downstream — contracts, builds, and the Forge Seal — reads from it. The dossier is never manually regenerated; each build cycle creates exactly one.
+
+**Background — why the current dossier is inadequate:**
+
+The existing dossier scores projects using 5 coarse dimensions (test ratio, doc coverage, dependency health, code organisation, security posture), each scored 0-20 with bracket-based thresholds. This produces clustering — most repos score 57, 83, or 23 because there are only ~10 realistic score combinations. Meanwhile the Forge Seal (Phase 38) independently computes 9 richer dimensions because the dossier does not provide enough data. The two systems are disconnected and partially redundant.
+
+The dossier was intended to be a comprehensive intelligence layer that contracts, builds, and the Seal all query. Instead it was built as a quick report card. The Seal had to build its own intelligence because the dossier did not provide what it needed.
+
+**Depends on:** Phase 38 (Forge Seal), Phase 39 (Metric Hardening)
+
+### 58.1 — Dossier Data Model & Lock Mechanism
+
+- **`db/migrations/`** — add `dossier_locked_at TIMESTAMPTZ`, `dossier_build_cycle_id UUID` to the `scout_runs` table. When `dossier_locked_at` is non-null the dossier is immutable.
+- **`app/repos/scout_repo.py`** — `lock_dossier(run_id)` sets `dossier_locked_at = now()`. Reject any update attempts on a locked dossier.
+- **`app/services/scout/deep_scan.py`** — after successful dossier generation, call `lock_dossier()` automatically. The dossier is locked the moment it is created.
+- **`app/api/routers/scout.py`** — remove the ability to regenerate a dossier for a locked run. Return 409 if attempted. Add `GET /scout/runs/{id}/dossier/locked` endpoint returning lock status.
+
+### 58.2 — Rich Dossier Content (Seal-Aligned Metrics)
+
+Replace the 5 shallow `compute_repo_metrics()` dimensions with the Seal's 9-dimensional scoring framework, computed once and stored in the dossier.
+
+- **`app/services/scout_metrics.py`** — rewrite `compute_repo_metrics()` to produce:
+  1. **Build Integrity** (from build history if available, else 0/baseline)
+  2. **Test Coverage** (real module-level analysis, not just file count ratio)
+  3. **Audit Compliance** (governance check pass rates from scout checks)
+  4. **Governance** (per-check A1-A9, W1-W3 breakdown with penalties)
+  5. **Security** (W1 scan + detected smells + auth pattern analysis)
+  6. **Cost Efficiency** (from build data if available, else neutral)
+  7. **Reliability** (from audit trend if available, else neutral)
+  8. **Consistency** (lint cleanliness, structure regularity, code quality signals)
+  9. **Architecture** (9-rule baseline comparison — already exists in `architecture_baseline.py`)
+
+  Each dimension scored 0-100 with the same weights as the Seal (15/15/10/10/10/5/15/10/10).
+
+  For data that does not yet exist (no builds, no audit history), dimensions score "neutral" (50) rather than 0, with a note "insufficient data". This prevents unfair penalisation of new repos.
+
+- **`app/services/scout/dossier_builder.py`** — update the LLM prompt to narrate 9 dimensions instead of 5. The prompt already forbids the LLM from changing the score; it just needs the richer input data.
+
+- **Dossier stored payload** (in `scout_runs.results`) gains:
+  ```json
+  {
+    "dossier_version": 2,
+    "baseline_sha": "<head SHA at scan time>",
+    "baseline_at": "<ISO timestamp>",
+    "metrics": {
+      "dimensions": { "build_integrity": {...}, "test_coverage": {...}, ... },
+      "computed_score": 0-100,
+      "file_stats": {...},
+      "smells": [...]
+    },
+    "architecture": {...},
+    "stack_profile": {...},
+    "governance_state": { "checks": [...], "pass_rate": 0.0-1.0 },
+    "dossier": { "executive_summary": ..., "quality_assessment": ..., ... }
+  }
+  ```
+
+### 58.3 — Dossier-Seal Integration
+
+- **`app/services/certificate_scorer.py`** — when computing the Seal, check if a linked dossier exists for the build cycle. If so, read the baseline metrics from the dossier rather than re-aggregating. The Seal scores the delta (dossier baseline → current state), not the absolute state.
+- **`app/services/certificate_aggregator.py`** — add `dossier_id` to `CertificateData`. Pull baseline snapshot from the dossier when available. Compute delta metrics: `current_score - baseline_score` per dimension.
+- **Seal verdict context** — the rendered certificate now includes:
+  - `baseline_score` (from dossier)
+  - `final_score` (at seal time)
+  - `delta` per dimension (how much the autonomous work improved/degraded each area)
+
+### 58.4 — Build Cycle Entity
+
+- **`db/migrations/`** — new `build_cycles` table:
+  ```
+  id              UUID PRIMARY KEY
+  project_id      UUID REFERENCES projects(id)
+  repo_id         UUID REFERENCES repos(id)
+  user_id         UUID REFERENCES users(id)
+  dossier_run_id  UUID REFERENCES scout_runs(id)  -- the locked dossier
+  branch_name     VARCHAR(255)                      -- forge/build-{id}
+  baseline_sha    VARCHAR(40)                        -- SHA at dossier creation
+  seal_id         UUID REFERENCES certificates(id)  -- nullable until sealed
+  status          VARCHAR(30) DEFAULT 'active'       -- active | sealed | abandoned
+  created_at      TIMESTAMPTZ DEFAULT now()
+  sealed_at       TIMESTAMPTZ
+  ```
+- **`app/repos/build_cycle_repo.py`** — CRUD for build cycles: `create_build_cycle()`, `get_active_cycle(project_id)`, `seal_cycle(cycle_id, seal_id)`, `abandon_cycle(cycle_id)`.
+- **`app/services/build_cycle_service.py`** — orchestration: `start_cycle(project_id)` creates dossier → locks it → creates branch → returns cycle. `finish_cycle(cycle_id)` runs Seal on branch → seals cycle.
+
+### 58.5 — Remove Hypothesis Field from Scout UI
+
+- **`web/src/pages/Scout.tsx`** — remove the hypothesis input field from the deep scan trigger area. The hypothesis concept moves to the IDE (see MCP plan §39).
+- **`app/api/routers/scout.py`** — keep `hypothesis` as an optional parameter in the API (backward compat) but the UI no longer exposes it.
+
+### 58.6 — README Lifecycle (Greenfield)
+
+- **`app/services/readme_generator.py`** (new) — two generation functions:
+  - `generate_contract_readme(project)` — README v2: generated from contract knowledge (stack, architecture, purpose, phase outline). Called after contracts are finalised. Pushed to the build branch alongside contract files.
+  - `generate_project_readme(project, build_cycle)` — README v3: full project README generated from actual build output (real deps, actual routes/API surface, file structure, setup instructions, usage examples). Called after build completes, before Seal.
+- **LLM prompts** for both functions receive structured project context (not free-form).
+- Non-greenfield repos: README generation is **skipped** — do not overwrite an existing README. Greenfield detection: check if the dossier baseline has 0 source files or only boilerplate.
+
+### 58.7 — Frontend: Build Cycle Awareness
+
+- **`web/src/pages/Scout.tsx`** — after dossier creation, show "Baseline locked" badge with SHA and timestamp. Remove "Regenerate" button.
+- **`web/src/components/CertificateModal.tsx`** — extend to show delta metrics (baseline → final) alongside absolute scores.
+- **`web/src/pages/ProjectDetail.tsx`** — show current build cycle status: active cycle with branch name, dossier link, seal link (when sealed).
+
+### 58.8 — Tests
+
+- `test_dossier_lock.py` — dossier lock mechanism, reject regeneration on locked dossier
+- `test_build_cycle.py` — build cycle CRUD, lifecycle transitions
+- `test_rich_dossier_metrics.py` — 9-dimension scoring, neutral defaults for missing data
+- `test_seal_delta.py` — Seal reads from dossier baseline, computes delta correctly
+- `test_readme_generator.py` — README v2 and v3 generation, skip for non-greenfield
+
+**Schema coverage:**
+
+| Table | Change |
+|-------|--------|
+| `scout_runs` | Add `dossier_locked_at TIMESTAMPTZ`, `dossier_build_cycle_id UUID` |
+| `build_cycles` | New table (id, project_id, repo_id, user_id, dossier_run_id, branch_name, baseline_sha, seal_id, status, created_at, sealed_at) |
+| `certificates` | Add `build_cycle_id UUID`, `baseline_score INTEGER`, `delta_json JSONB` |
+
+**Exit criteria:**
+
+- Dossier is immutable once created — 409 returned on regeneration attempt
+- Dossier contains 9-dimension Seal-aligned metrics with neutral defaults for missing data
+- Scores no longer cluster — different repos produce meaningfully different scores
+- Build cycle entity links dossier → branch → seal as a triple
+- Seal evaluates branch delta from dossier baseline, not absolute project state
+- Certificate renderer shows baseline → final delta per dimension
+- README v2 generated when contracts are pushed (greenfield only)
+- README v3 generated when build completes (greenfield only)
+- Hypothesis field removed from Scout UI
+- All new tests pass; existing Scout and Seal tests updated for new dossier structure
+
+---
+
+## Phase 59 — Forge Seal Persistence
+
+**Objective:** Persist the Forge Certificate (forge seal) to Neon PostgreSQL at
+build completion so seals survive server restarts, are queryable by project /
+user / build, and form a permanent audit trail.  Replaces the ephemeral
+MCP artifact-store-only seal with a proper DB-backed record.
+
+**Deliverables:**
+- `db/migrations/025_certificates.sql` — CREATE TABLE certificates with
+  project_id, build_id, user_id, verdict, overall_score, baseline_score,
+  scores_json, delta_json, certificate_html, integrity_hash, generated_at.
+  Also wires the FK build_cycles.seal_id → certificates.id (column added in 024).
+- `app/repos/certificate_repo.py` — create_certificate(), get_certificate_by_build(),
+  get_latest_certificate(), get_certificates_by_project()
+- `app/services/build_service.py` — write certificate at both completion points
+  (conversation-mode and plan-execute mode), after git ops, wrapped in try/except
+  so a cert-write failure never aborts the build record.
+- `app/api/routers/projects.py` — certificate GET endpoints serve the stored
+  record first; fall back to live recompute for pre-migration builds.
+
+**Exit criteria:**
+- After a build completes a row exists in certificates pinned to project_id, build_id, user_id
+- GET /projects/{id}/certificate returns the stored record without recomputing
+- Certificate survives a server restart
+- build_cycles.seal_id FK resolves correctly
+- All existing certificate tests pass

@@ -2685,3 +2685,169 @@ New component (~180 lines) rendering:
 - ❌ Audio cues or notifications
 - ❌ Export / copy-all-errors (data lives in Neon, accessed within the app)
 
+---
+
+## §39 — Branch-per-Build Isolation
+
+ForgeGuard's autonomous build system must never push to the user's default branch.
+Every build cycle runs on an isolated branch. The sealed branch **is** the deliverable —
+the user reviews and merges (or discards) at their discretion.
+
+### 39a. Branch Naming & Creation
+
+The Forge IDE agent creates a branch at the start of each build cycle:
+
+```
+forge/build-{build_cycle_id}
+```
+
+- **`forge_ide/git_ops.py`** — new `create_build_branch(repo_url, base_sha, cycle_id) -> str`
+  Creates `forge/build-{cycle_id}` from `base_sha` (the dossier baseline SHA).
+  Returns the branch name. Fails loudly if the branch already exists.
+- **`forge_ide/runner.py`** — at build start, call `create_build_branch()` using the
+  `baseline_sha` from the linked dossier. All subsequent file writes target this branch.
+- Branch is pushed immediately after creation so the remote tracks it from the first commit.
+
+### 39b. Commit Authorship & Tagging
+
+Every commit the Forge IDE makes must be clearly identifiable as machine-authored:
+
+- **Author:** `ForgeGuard Bot <forgeguard-bot@users.noreply.github.com>`
+- **Commit message prefix:** `[forge] ` — e.g. `[forge] scaffold project structure`
+- **`forge_ide/git_ops.py`** — update `commit_and_push()` to always use the bot author
+  and enforce the `[forge]` prefix. Human commits on the branch are allowed (the user can
+  push to the branch too) but Forge never commits without the tag.
+- **Metadata trailer:** each commit message includes a `Build-Cycle: {cycle_id}` trailer
+  so any commit can be traced back to its build cycle.
+
+### 39c. Branch Lifecycle in the IDE Modal
+
+The IDE modal (`ForgeIDEModal.tsx`) must surface the branch context at all times:
+
+| Element | Location | Content |
+|---------|----------|---------|
+| Branch badge | Header bar, next to project name | `forge/build-abc123` (truncated cycle ID) |
+| Baseline SHA | Info panel | First 8 chars of dossier baseline SHA |
+| Commit count | Activity tab | Running count of `[forge]` commits on the branch |
+| Branch status | Header bar | `active` / `sealing` / `sealed` / `abandoned` |
+
+- **`web/src/components/ForgeIDEModal.tsx`** — add branch badge and status indicator.
+  Read from the build cycle API (`/api/build-cycles/{id}`).
+- **`web/src/components/ActivityLog.tsx`** — show branch name in log header. Commits
+  prefixed with `[forge]` get a bot icon; others get a user icon.
+
+### 39d. Seal Triggers Branch Completion
+
+When the build finishes and the Seal is issued:
+
+1. `build_cycle_service.finish_cycle()` runs the Seal scorer against the branch.
+2. The branch receives a final commit: `[forge] sealed — verdict: CERTIFIED` (or CONDITIONAL / FLAGGED).
+3. The `build_cycles` row is updated: `status = 'sealed'`, `sealed_at = now()`, `seal_id` linked.
+4. The branch is **not** merged or deleted — it remains as-is for the user to review.
+
+- **`forge_ide/runner.py`** — after Seal, push the seal-summary commit and call
+  `build_cycle_service.seal_cycle()`.
+- **`app/services/build_cycle_service.py`** — `finish_cycle()` validates that the branch
+  exists and has at least one `[forge]` commit before allowing seal.
+
+### 39e. Abandoned Cycles
+
+If a user cancels a build or the build fails irrecoverably:
+
+- **`app/services/build_cycle_service.py`** — `abandon_cycle(cycle_id)` sets status to
+  `abandoned`. The branch is **not** deleted (preserves forensic value). The dossier remains
+  locked. A new build cycle can be started for the same project (new dossier, new branch).
+- **`forge_ide/runner.py`** — on unrecoverable failure, call `abandon_cycle()` and log
+  the failure reason to the build cycle record.
+
+### 39f. ForgeGuard Never Touches Main
+
+This is a hard invariant:
+
+- **`forge_ide/git_ops.py`** — add a guard in `commit_and_push()`: if the target branch
+  is `main`, `master`, or the repo's default branch, raise `ForgeInvariantError`.
+  This guard is unconditional and cannot be overridden.
+- **`forge_ide/invariants.py`** — add `NEVER_PUSH_DEFAULT_BRANCH` invariant check to the
+  pre-commit hook chain.
+- **Test:** `test_branch_isolation.py` — verify that any attempt to commit to the default
+  branch raises an error, regardless of configuration.
+
+### 39g. MCP Tool Exposure
+
+The MCP server exposes branch management to the IDE agent:
+
+| Tool | Description |
+|------|-------------|
+| `forge_create_branch` | Create build branch from dossier baseline SHA |
+| `forge_get_branch_status` | Return branch name, commit count, status |
+| `forge_list_branch_commits` | List commits on the build branch with authorship |
+| `forge_seal_branch` | Trigger seal process on the branch |
+| `forge_abandon_branch` | Mark cycle as abandoned |
+
+- **`forge_ide/mcp/tools/`** — implement each tool. All tools require a valid
+  `build_cycle_id` parameter. The agent cannot operate without a build cycle context.
+
+### 39h. Implementation Order
+
+| Step | Task | Layer |
+|------|------|-------|
+| 1 | `build_cycles` DB migration + repo | Backend |
+| 2 | `create_build_branch()` + default-branch guard in `git_ops.py` | IDE |
+| 3 | Bot authorship + `[forge]` prefix in `commit_and_push()` | IDE |
+| 4 | Wire `runner.py` to create branch at build start | IDE |
+| 5 | `build_cycle_service.py` — start / finish / abandon | Backend |
+| 6 | MCP tools for branch management | IDE/MCP |
+| 7 | IDE modal branch badge + status | Frontend |
+| 8 | Seal-on-branch + final commit | IDE + Backend |
+| 9 | Integration tests | Testing |
+
+### 39i. What We're NOT Doing (Scoped Out)
+
+- ❌ Auto-merge to main after seal (user responsibility — ForgeGuard delivers the branch)
+- ❌ PR creation from ForgeGuard (future consideration, not in scope)
+- ❌ Branch protection rule management (user's GitHub settings, not ours)
+- ❌ Multi-branch concurrent builds per project (one active cycle at a time)
+- ❌ Branch deletion (branches are permanent forensic records)
+
+---
+
+## §40 — User Notepad (Replaces Hypothesis)
+
+The "hypothesis" field in the Scout deep scan was an attempt to let users provide context
+before scanning. In practice it was confusing — users didn't know what to write, and the
+LLM ignored it half the time. The concept is valid but belongs in the IDE, not Scout.
+
+### 40a. Concept
+
+A persistent, per-project notepad where the user jots down goals, context, and constraints
+that the Forge IDE agent reads as part of its context window. Unlike hypothesis (a one-shot
+input tied to a scan), the notepad persists across the entire build cycle and can be edited
+at any time.
+
+### 40b. Data Model
+
+- **`db/migrations/`** — new `project_notes` table:
+  ```
+  id          UUID PRIMARY KEY
+  project_id  UUID REFERENCES projects(id)
+  user_id     UUID REFERENCES users(id)
+  content     TEXT
+  updated_at  TIMESTAMPTZ DEFAULT now()
+  ```
+- One active note per project per user. Updates overwrite (not append).
+
+### 40c. IDE Integration
+
+- **`web/src/components/ForgeIDEModal.tsx`** — add a collapsible "Notepad" panel in the
+  sidebar. Auto-saves on blur (debounced 500ms). Shows character count and last-saved time.
+- **`forge_ide/context_pack.py`** — when building the agent's context, include the
+  notepad content under a `## User Notes` section. The agent sees it as first-class context.
+- **`forge_ide/mcp/tools/`** — `forge_read_notepad` tool so the agent can explicitly
+  re-read the notepad mid-build if notified of changes.
+
+### 40d. What We're NOT Doing (Scoped Out)
+
+- ❌ Rich text / markdown editing in the notepad (plain text only)
+- ❌ Version history of notes (single overwrite)
+- ❌ Note sharing between users on the same project
+- ❌ LLM-assisted note suggestions

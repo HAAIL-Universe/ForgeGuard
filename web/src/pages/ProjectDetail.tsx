@@ -102,6 +102,17 @@ function ProjectDetail() {
   /* Dynamic loading status text shown on the 3-D orb while starting */
   const [loadingStatus, setLoadingStatus] = useState<string | undefined>(undefined);
 
+  /* Phase 58: Build cycle state */
+  interface BuildCycle {
+    id: string;
+    status: string;
+    branch_name: string;
+    baseline_sha: string | null;
+    created_at: string;
+    sealed_at: string | null;
+  }
+  const [buildCycle, setBuildCycle] = useState<BuildCycle | null>(null);
+
   /* Build history */
   interface BuildHistoryItem {
     id: string;
@@ -151,6 +162,22 @@ function ProjectDetail() {
       } catch { /* ignore */ }
     };
     if (projectId && token) fetchBuilds();
+  }, [projectId, token]);
+
+  /* Phase 58: Fetch active build cycle */
+  useEffect(() => {
+    const fetchCycle = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/projects/${projectId}/build-cycle`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setBuildCycle(data.cycle ?? null);
+        }
+      } catch { /* ignore */ }
+    };
+    if (projectId && token) fetchCycle();
   }, [projectId, token]);
 
   const hasContracts = (project?.contracts?.length ?? 0) > 0;
@@ -835,6 +862,63 @@ function ProjectDetail() {
 
         {/* BYOK warning */}
         {hasContracts && !buildActive && !(user?.has_anthropic_key) && needsKeyBanner}
+
+        {/* Phase 58: Active Build Cycle Banner */}
+        {buildCycle && buildCycle.status === 'active' && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            background: '#1E293B',
+            border: '1px solid #3B82F6',
+            borderRadius: '8px',
+            padding: '10px 16px',
+            marginBottom: '16px',
+            fontSize: '0.8rem',
+          }}>
+            <span style={{ fontSize: '1rem' }}>🔄</span>
+            <div style={{ flex: 1 }}>
+              <span style={{ color: '#93C5FD', fontWeight: 600 }}>Build Cycle Active</span>
+              <span style={{ color: '#64748B', marginLeft: '8px', fontFamily: 'monospace', fontSize: '0.72rem' }}>
+                {buildCycle.branch_name}
+              </span>
+              {buildCycle.baseline_sha && (
+                <span style={{ color: '#64748B', marginLeft: '8px', fontFamily: 'monospace', fontSize: '0.72rem' }}>
+                  baseline {buildCycle.baseline_sha.slice(0, 8)}
+                </span>
+              )}
+              <div style={{ color: '#94A3B8', fontSize: '0.7rem', marginTop: '2px' }}>
+                Started {new Date(buildCycle.created_at).toLocaleString()}
+              </div>
+            </div>
+          </div>
+        )}
+        {buildCycle && buildCycle.status === 'sealed' && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            background: '#052E16',
+            border: '1px solid #22C55E',
+            borderRadius: '8px',
+            padding: '10px 16px',
+            marginBottom: '16px',
+            fontSize: '0.8rem',
+          }}>
+            <span style={{ fontSize: '1rem' }}>🛡️</span>
+            <div style={{ flex: 1 }}>
+              <span style={{ color: '#4ADE80', fontWeight: 600 }}>Build Cycle Sealed</span>
+              <span style={{ color: '#86EFAC', marginLeft: '8px', fontFamily: 'monospace', fontSize: '0.72rem' }}>
+                {buildCycle.branch_name}
+              </span>
+              {buildCycle.sealed_at && (
+                <div style={{ color: '#6EE7B7', fontSize: '0.7rem', marginTop: '2px' }}>
+                  Sealed {new Date(buildCycle.sealed_at).toLocaleString()}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Build Actions */}
         <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>

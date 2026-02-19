@@ -103,8 +103,7 @@ function Scout() {
   const [view, setView] = useState<View>('repos');
   const [activeRepo, setActiveRepo] = useState<Repo | null>(null);
   const [activeRun, setActiveRun] = useState<ScoutRun | null>(null);
-  const [hypothesis, setHypothesis] = useState('');
-  const [showHypothesis, setShowHypothesis] = useState<string | null>(null);
+  // Phase 58: hypothesis removed from UI (kept as null in API for backward compat)
 
   /* Live check results during a run */
   const [liveChecks, setLiveChecks] = useState<Record<string, 'PASS' | 'FAIL' | 'WARN' | 'running' | 'pending'>>({});
@@ -116,6 +115,9 @@ function Scout() {
   const [deepSteps, setDeepSteps] = useState<Record<string, string>>({});
   const [deepScanResult, setDeepScanResult] = useState<DeepScanResult | null>(null);
   const [deepScanning, setDeepScanning] = useState(false);
+
+  /* Phase 58: dossier lock status */
+  const [dossierLocked, setDossierLocked] = useState<{ locked: boolean; run_id?: string } | null>(null);
 
   /* Upgrade plan state */
   const [upgradePlan, setUpgradePlan] = useState<Record<string, any> | null>(null);
@@ -159,6 +161,19 @@ function Scout() {
       }
     } catch { /* best effort */ }
     finally { setHistoryLoading(false); }
+  }, [token]);
+
+  /* Phase 58: Fetch dossier lock status for a run */
+  const fetchDossierLockStatus = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/scout/runs/${runId}/dossier/locked`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDossierLocked(data);
+      }
+    } catch { /* best effort */ }
   }, [token]);
 
   useEffect(() => {
@@ -212,6 +227,8 @@ function Scout() {
                 setView('dossier');
               })
               .catch(() => setView('dossier'));
+            // Phase 58: fetch lock status
+            fetchDossierLockStatus(p.id);
             // Fetch score history
             if (p.repo_id) {
               fetch(`${API_BASE}/scout/${p.repo_id}/score-history`, {
@@ -250,7 +267,7 @@ function Scout() {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ hypothesis: hypothesis.trim() || null }),
+        body: JSON.stringify({ hypothesis: null }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Scout run failed' }));
@@ -280,7 +297,7 @@ function Scout() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          hypothesis: hypothesis.trim() || null,
+          hypothesis: null,
           include_llm: true,
         }),
       });
@@ -339,6 +356,8 @@ function Scout() {
               setDeepScanResult(dosData);
             }
             setView('dossier');
+            // Phase 58: fetch lock status
+            fetchDossierLockStatus(activeDeepRunId);
             // Fetch score history
             if (detail.repo_id) {
               fetch(`${API_BASE}/scout/${detail.repo_id}/score-history`, {
@@ -361,6 +380,8 @@ function Scout() {
     setActiveRun(run);
     const repo = repos.find((r) => r.id === run.repo_id) ?? null;
     setActiveRepo(repo);
+    // Phase 58: fetch lock status
+    fetchDossierLockStatus(run.id);
     try {
       const res = await fetch(`${API_BASE}/scout/runs/${run.id}/dossier`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -526,7 +547,7 @@ function Scout() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             {view !== 'repos' && (
               <button
-                onClick={() => { setView('repos'); setActiveRepo(null); setActiveRun(null); setHypothesis(''); setShowHypothesis(null); }}
+                onClick={() => { setView('repos'); setActiveRepo(null); setActiveRun(null); }}
                 style={{
                   background: 'transparent',
                   border: '1px solid #334155',
@@ -651,22 +672,7 @@ function Scout() {
                     </div>
                     {!isDeleted && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                      {/* Hypothesis toggle */}
-                      <button
-                        onClick={() => setShowHypothesis(showHypothesis === repo.id ? null : repo.id)}
-                        title="Add hypothesis"
-                        style={{
-                          background: 'transparent',
-                          border: '1px solid #334155',
-                          color: showHypothesis === repo.id ? '#2563EB' : '#64748B',
-                          borderRadius: '6px',
-                          padding: '4px 8px',
-                          cursor: 'pointer',
-                          fontSize: '0.7rem',
-                        }}
-                      >
-                        💡
-                      </button>
+
                       <button
                         onClick={() => handleScout(repo)}
                         data-testid={`scout-repo-${repo.id}`}
@@ -703,29 +709,7 @@ function Scout() {
                       </button>
                     </div>
                     )}
-                    {/* Hypothesis input row */}
-                    {showHypothesis === repo.id && (
-                      <div style={{ width: '100%', marginTop: '8px' }}>
-                        <input
-                          type="text"
-                          placeholder="I think the auth middleware might be leaking tokens…"
-                          value={hypothesis}
-                          onChange={(e) => setHypothesis(e.target.value)}
-                          data-testid="scout-hypothesis"
-                          style={{
-                            width: '100%',
-                            padding: '6px 10px',
-                            background: '#0F172A',
-                            border: '1px solid #334155',
-                            borderRadius: '6px',
-                            color: '#F8FAFC',
-                            fontSize: '0.8rem',
-                            outline: 'none',
-                            boxSizing: 'border-box',
-                          }}
-                        />
-                      </div>
-                    )}
+
                   </div>
                 );
                 })}
@@ -1006,6 +990,34 @@ function Scout() {
         {/* ─── DOSSIER VIEW ─── */}
         {view === 'dossier' && deepScanResult && (
           <div>
+            {/* Phase 58: Baseline Locked badge */}
+            {dossierLocked?.locked && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                background: '#14532D',
+                border: '1px solid #22C55E',
+                borderRadius: '8px',
+                padding: '10px 16px',
+                marginBottom: '16px',
+                fontSize: '0.8rem',
+              }}>
+                <span style={{ fontSize: '1rem' }}>🔒</span>
+                <div>
+                  <span style={{ color: '#4ADE80', fontWeight: 600 }}>Baseline Locked</span>
+                  {deepScanResult.head_sha && (
+                    <span style={{ color: '#86EFAC', marginLeft: '8px', fontFamily: 'monospace', fontSize: '0.72rem' }}>
+                      SHA {deepScanResult.head_sha.slice(0, 8)}
+                    </span>
+                  )}
+                  <div style={{ color: '#6EE7B7', fontSize: '0.7rem', marginTop: '2px' }}>
+                    This dossier is immutable and serves as the build baseline.
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Stack Profile */}
             {deepScanResult.stack_profile && (
               <div style={{ marginBottom: '24px' }}>
@@ -1150,18 +1162,24 @@ function Scout() {
                     </div>
                   </div>
                   {/* Dimension bars */}
-                  {Object.entries(deepScanResult.metrics.scores || {}).map(([dim, info]: [string, any]) => (
+                  {Object.entries(deepScanResult.metrics.scores || {}).map(([dim, info]: [string, any]) => {
+                    const maxScore = info.weight !== undefined ? 100 : 20;
+                    const pct = (info.score / maxScore) * 100;
+                    return (
                     <div key={dim} style={{ marginBottom: '8px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '3px' }}>
                         <span style={{ textTransform: 'capitalize' }}>{dim.replace(/_/g, ' ')}</span>
-                        <span style={{ color: '#64748B' }}>{info.score}/20</span>
+                        <span style={{ color: '#64748B' }}>
+                          {info.score}/{maxScore}
+                          {info.weight !== undefined && <span style={{ marginLeft: '6px', fontSize: '0.65rem' }}>({Math.round(info.weight * 100)}%)</span>}
+                        </span>
                       </div>
                       <div style={{ height: '6px', background: '#0F172A', borderRadius: '3px', overflow: 'hidden' }}>
                         <div style={{
                           height: '100%',
-                          width: `${(info.score / 20) * 100}%`,
+                          width: `${pct}%`,
                           borderRadius: '3px',
-                          background: info.score >= 16 ? '#22C55E' : info.score >= 10 ? '#F59E0B' : '#EF4444',
+                          background: pct >= 80 ? '#22C55E' : pct >= 50 ? '#F59E0B' : '#EF4444',
                           transition: 'width 0.4s ease',
                         }} />
                       </div>
@@ -1171,7 +1189,8 @@ function Scout() {
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1392,7 +1411,7 @@ function Scout() {
                   {upgradePlanLoading ? '⏳ Generating…' : '📋 Generate Upgrade Plan'}
                 </button>
               )}
-              {activeRepo && (
+              {activeRepo && !dossierLocked?.locked && (
                 <button
                   onClick={() => handleDeepScan(activeRepo)}
                   style={{

@@ -89,6 +89,12 @@ FAKE_TOOLS = [
     {"name": "forge_list_contracts", "description": "List contracts", "input_schema": {}},
     {"name": "forge_get_summary", "description": "Summary", "input_schema": {}},
     {"name": "forge_scratchpad", "description": "Scratchpad", "input_schema": {}},
+    {"name": "forge_ask_clarification", "description": "Ask clarification", "input_schema": {}},
+    # Project-scoped tools (Phase F)
+    {"name": "forge_get_project_context", "description": "Project context", "input_schema": {}},
+    {"name": "forge_list_project_contracts", "description": "List project contracts", "input_schema": {}},
+    {"name": "forge_get_project_contract", "description": "Get project contract", "input_schema": {}},
+    {"name": "forge_get_build_contracts", "description": "Get build contracts", "input_schema": {}},
 ]
 
 

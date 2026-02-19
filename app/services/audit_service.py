@@ -124,16 +124,18 @@ async def process_push_event(payload: dict) -> dict | None:
                 "files_total": total_files,
             })
 
-        # Try to load boundaries.json from the repo
+        # Try to load boundaries.json from the repo (check common locations)
         boundaries = None
-        boundaries_content = await get_repo_file_content(
-            access_token, full_name, "boundaries.json", commit_sha
-        )
-        if boundaries_content:
-            try:
-                boundaries = json.loads(boundaries_content)
-            except json.JSONDecodeError:
-                boundaries = None
+        for _bpath in ("boundaries.json", "Forge/Contracts/boundaries.json"):
+            boundaries_content = await get_repo_file_content(
+                access_token, full_name, _bpath, commit_sha
+            )
+            if boundaries_content:
+                try:
+                    boundaries = json.loads(boundaries_content)
+                except json.JSONDecodeError:
+                    boundaries = None
+                break
 
         # Run audit checks
         check_results = run_all_checks(files, boundaries)
@@ -416,16 +418,18 @@ async def backfill_repo_commits(
                 "files_total": total_files,
             })
 
-        # Load boundaries.json if present
+        # Load boundaries.json if present (check common locations)
         boundaries = None
-        boundaries_content = await get_repo_file_content(
-            access_token, full_name, "boundaries.json", head_sha,
-        )
-        if boundaries_content:
-            try:
-                boundaries = json.loads(boundaries_content)
-            except json.JSONDecodeError:
-                boundaries = None
+        for _bpath in ("boundaries.json", "Forge/Contracts/boundaries.json"):
+            boundaries_content = await get_repo_file_content(
+                access_token, full_name, _bpath, head_sha,
+            )
+            if boundaries_content:
+                try:
+                    boundaries = json.loads(boundaries_content)
+                except json.JSONDecodeError:
+                    boundaries = None
+                break
 
         # Run audit checks
         check_results = run_all_checks(files, boundaries)

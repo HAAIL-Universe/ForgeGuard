@@ -86,6 +86,10 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_get_summary",
         "forge_scratchpad",
         "forge_ask_clarification",
+        # Project-scoped tools (Phase F) — pull contracts from DB on demand
+        "forge_get_project_context",
+        "forge_list_project_contracts",
+        "forge_get_project_contract",
     }),
     # Coder — write new files + syntax check.  No tests, no run_command
     # (auto-install is handled by the tool_executor post-write hook).
@@ -103,6 +107,9 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_get_summary",
         "forge_scratchpad",
         "forge_ask_clarification",
+        # Project-scoped tools (Phase F) — pull stack, physics, boundaries on demand
+        "forge_get_project_contract",
+        "forge_list_project_contracts",
     }),
     # Auditor — read-only structural review, same surface as scout
     SubAgentRole.AUDITOR: frozenset({
@@ -113,6 +120,9 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_list_contracts",
         "forge_get_summary",
         "forge_scratchpad",
+        # Project-scoped tools (Phase F) — fetch boundaries + physics for compliance checks
+        "forge_get_project_contract",
+        "forge_list_project_contracts",
     }),
     # Fixer — edit_file only (no write_file).  Can read + check syntax.
     SubAgentRole.FIXER: frozenset({
@@ -122,6 +132,8 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "edit_file",
         "check_syntax",
         "forge_scratchpad",
+        # Project-scoped tools (Phase F) — pinned snapshot only (immutable reference)
+        "forge_get_build_contracts",
     }),
 }
 
@@ -166,6 +178,13 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "You are a **Scout** sub-agent in the Forge build system.\n\n"
         "Your job is to gather context about the project before coding begins. "
         "You have READ-ONLY access to the project files and governance contracts.\n\n"
+        "## Contract Pull Model (Phase F)\n"
+        "Project-specific contracts are stored in the ForgeGuard database. "
+        "Pull only what you need — do NOT assume the generic templates apply:\n"
+        "1. Call `forge_get_project_context()` first to see which contracts are available.\n"
+        "2. Call `forge_get_project_contract('manifesto')` to understand the project's goals and ethos.\n"
+        "3. Call `forge_get_project_contract('stack')` to understand the required tech stack.\n"
+        "4. Call `forge_list_project_contracts()` if you need to check other available types.\n\n"
         "Tasks:\n"
         "- Map the existing directory structure\n"
         "- Identify key interfaces, imports, and patterns\n"
@@ -186,6 +205,16 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "You are a **Coder** sub-agent in the Forge build system.\n\n"
         "You write production-quality code for specific files assigned to you. "
         "You have access to file creation tools and syntax checking.\n\n"
+        "## Contract Pull Model (Phase F)\n"
+        "Project-specific contracts are stored in the ForgeGuard database. "
+        "Before writing code, pull the contracts you need:\n"
+        "1. Call `forge_get_project_contract('stack')` — required languages, "
+        "frameworks, and versions. Your code MUST match these exactly.\n"
+        "2. Call `forge_get_project_contract('physics')` — the canonical API "
+        "spec (endpoints, auth, request/response schemas).\n"
+        "3. Call `forge_get_project_contract('boundaries')` — layer boundary "
+        "rules (which imports are forbidden in each layer).\n"
+        "4. Call `forge_list_project_contracts()` if additional types may apply.\n\n"
         "Rules:\n"
         "- Write ONLY the files specified in your assignment\n"
         "- Follow the project contracts exactly\n"
@@ -203,6 +232,13 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "You are an **Auditor** sub-agent in the Forge build system.\n\n"
         "You perform structural quality review of generated code. "
         "You have READ-ONLY access — you cannot modify any files.\n\n"
+        "## Contract Pull Model (Phase F)\n"
+        "Project-specific contracts define the compliance bar. Pull them before reviewing:\n"
+        "1. Call `forge_get_project_contract('boundaries')` — layer boundary rules "
+        "that all code must respect (no skipping layers, forbidden imports per layer).\n"
+        "2. Call `forge_get_project_contract('physics')` — the canonical API spec; "
+        "verify every endpoint shape, auth method, and response schema against this.\n"
+        "3. Call `forge_list_project_contracts()` if schema or ui contracts may be relevant.\n\n"
         "Check for:\n"
         "- Missing or broken imports/exports\n"
         "- Functions/classes referenced but never defined\n"
@@ -223,6 +259,12 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "You apply targeted, surgical fixes to files that failed audit. "
         "You can use ``edit_file`` to patch specific lines — you CANNOT use "
         "``write_file`` (no full rewrites).\n\n"
+        "## Contract Pull Model (Phase F)\n"
+        "Before applying any fix, retrieve the pinned, immutable contract snapshot "
+        "that was in effect when this build started:\n"
+        "1. Call `forge_get_build_contracts()` — returns the exact contracts frozen "
+        "at build start. Use these as your authoritative reference. "
+        "Mid-build edits to contracts do NOT affect these snapshots.\n\n"
         "Rules:\n"
         "- Fix ONLY the issues listed in the audit findings\n"
         "- Do NOT refactor, restyle, or change working code\n"

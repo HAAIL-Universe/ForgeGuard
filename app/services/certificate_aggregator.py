@@ -108,6 +108,11 @@ async def aggregate_certificate_data(
     # ── Scout ─────────────────────────────────────────────────────
     scout_data = await _aggregate_scout(repo_id, user_id) if repo_id else None
 
+    # ── Dossier baseline (Phase 58) ──────────────────────────────
+    dossier_baseline = None
+    if scout_data and scout_data.get("dossier_available"):
+        dossier_baseline = await _extract_dossier_baseline(repo_id, user_id)
+
     # ── Contracts ─────────────────────────────────────────────────
     contracts = await get_contracts_by_project(project_id)
     contracts_data = {
@@ -122,6 +127,7 @@ async def aggregate_certificate_data(
         "audit": audit_data,
         "governance": governance_data,
         "scout": scout_data,
+        "dossier_baseline": dossier_baseline,
         "contracts": contracts_data,
     }
 
@@ -312,3 +318,54 @@ def _iso(val: Any) -> str | None:
     if hasattr(val, "isoformat"):
         return val.isoformat()
     return str(val)
+
+
+# ---------------------------------------------------------------------------
+# Phase 58 — Dossier baseline extraction
+# ---------------------------------------------------------------------------
+
+
+async def _extract_dossier_baseline(
+    repo_id: UUID, user_id: UUID,
+) -> dict | None:
+    """Extract the locked dossier's 9-dimension baseline metrics.
+
+    Returns a dict with ``baseline_sha``, ``computed_score``, and per-dimension
+    scores, or *None* if no locked dossier exists.
+    """
+    try:
+        runs = await get_scout_runs_by_repo(repo_id, user_id, limit=5)
+    except Exception:
+        logger.exception("Failed to fetch scout runs for dossier baseline")
+        return None
+
+    # Find the latest completed deep scan with a lock
+    for run in runs:
+        if run.get("scan_type") != "deep" or run.get("status") != "completed":
+            continue
+        full_run = await get_scout_run(run["id"])
+        if full_run is None:
+            continue
+        # Check if locked (dossier_locked_at exists)
+        if not full_run.get("dossier_locked_at"):
+            continue
+
+        results = full_run.get("results")
+        if results is None:
+            continue
+        if isinstance(results, str):
+            results = json.loads(results)
+
+        metrics = results.get("metrics")
+        if metrics is None:
+            continue
+
+        return {
+            "dossier_run_id": str(full_run["id"]),
+            "baseline_sha": results.get("head_sha"),
+            "computed_score": metrics.get("computed_score"),
+            "dimensions": metrics.get("scores", {}),
+            "locked_at": _iso(full_run.get("dossier_locked_at")),
+        }
+
+    return None

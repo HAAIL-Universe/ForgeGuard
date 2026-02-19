@@ -29,6 +29,7 @@ from app.services.upgrade_executor import (
 )
 from app.repos.user_repo import get_user_by_id
 from app.repos.scout_repo import get_scout_run
+from app.repos.scout_repo import is_dossier_locked as _is_locked
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scout", tags=["scout"])
@@ -137,6 +138,16 @@ async def scout_run_dossier(
             detail="No dossier available for this run",
         )
     return dossier
+
+
+@router.get("/runs/{run_id}/dossier/locked")
+async def dossier_lock_status(
+    run_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Return whether the dossier for a run is locked (immutable)."""
+    locked = await _is_locked(run_id)
+    return {"run_id": str(run_id), "locked": locked}
 
 
 @router.get("/{repo_id}/history")

@@ -1,14 +1,14 @@
-"""Tests for app.services.scout_metrics — Phase 39."""
+"""Tests for app.services.scout_metrics — Phase 39 (updated for Phase 58).
+
+Phase 58 replaced the 5-dimension 0-20 scoring with 9-dimension 0-100
+weighted scoring.  The detect_smells tests remain unchanged.  Dimension
+scorer tests are now in test_rich_dossier_metrics.py.
+"""
 
 import pytest
 from app.services.scout_metrics import (
     compute_repo_metrics,
     detect_smells,
-    _score_test_ratio,
-    _score_doc_coverage,
-    _score_dependency_health,
-    _score_code_organization,
-    _score_security_posture,
 )
 
 # ---------------------------------------------------------------------------
@@ -139,106 +139,7 @@ class TestDetectSmells:
 
 
 # ---------------------------------------------------------------------------
-# Dimension scorer tests
-# ---------------------------------------------------------------------------
-
-class TestScoreTestRatio:
-    def test_no_source(self):
-        result = _score_test_ratio([], [])
-        assert result["score"] == 0
-
-    def test_excellent_ratio(self):
-        source = [f"src/{i}.py" for i in range(10)]
-        tests = [f"tests/test_{i}.py" for i in range(5)]  # 0.33 ratio
-        result = _score_test_ratio(source + tests, tests)
-        assert result["score"] == 20
-
-    def test_zero_tests(self):
-        source = [f"src/{i}.py" for i in range(10)]
-        result = _score_test_ratio(source, [])
-        assert result["score"] == 0
-
-
-class TestScoreDocCoverage:
-    def test_full_docs(self):
-        result = _score_doc_coverage(BASIC_TREE, BASIC_FILES)
-        assert result["score"] >= 10  # README + docs/ + substantial readme
-
-    def test_no_docs(self):
-        tree = ["app/main.py", "app/config.py"]
-        files = {"app/main.py": "print('hello')\n"}
-        result = _score_doc_coverage(tree, files)
-        assert result["score"] == 0
-
-    def test_readme_only(self):
-        tree = ["README.md", "app/main.py"]
-        files = {"README.md": "# Project\n\nSmall readme.\n"}
-        result = _score_doc_coverage(tree, files)
-        assert result["score"] >= 6  # README found
-        assert result["score"] < 20  # Not everything
-
-
-class TestScoreDependencyHealth:
-    def test_pinned_with_lock(self):
-        tree = ["requirements.txt", "requirements.lock", "app/main.py"]
-        files = {"requirements.txt": "fastapi==0.100.0\nuvicorn==0.22.0\n"}
-        result = _score_dependency_health(tree, files, {})
-        assert result["score"] >= 15
-
-    def test_no_manifest(self):
-        tree = ["app/main.py"]
-        files = {"app/main.py": "print('hello')\n"}
-        result = _score_dependency_health(tree, files, {})
-        assert result["score"] < 10
-
-
-class TestScoreCodeOrganization:
-    def test_well_organized(self):
-        tree = [
-            "app/__init__.py", "app/main.py", "app/routes.py",
-            "lib/utils.py", "lib/helpers.py",
-            "tests/test_main.py",
-        ]
-        files = {"app/main.py": "x = 1\n" * 50, "lib/utils.py": "y = 2\n" * 30}
-        result = _score_code_organization(tree, files, {"entry_points": ["app/main.py"]})
-        assert result["score"] >= 10
-
-    def test_all_at_root(self):
-        tree = ["main.py", "config.py"]
-        files = {"main.py": "x = 1\n" * 50}
-        result = _score_code_organization(tree, files, {})
-        assert result["score"] <= 14  # Flat structure penalty
-
-
-class TestScoreSecurityPosture:
-    def test_clean_security(self):
-        result = _score_security_posture([], [])
-        assert result["score"] == 20
-
-    def test_secrets_deduction(self):
-        smells = [
-            {"id": "secrets_in_source", "severity": "HIGH", "name": "Secrets", "detail": "", "files": [], "count": 0},
-        ]
-        result = _score_security_posture(smells, [])
-        assert result["score"] <= 15
-
-    def test_multiple_high_deductions(self):
-        smells = [
-            {"id": "secrets_in_source", "severity": "HIGH", "name": "S", "detail": "", "files": [], "count": 0},
-            {"id": "raw_sql", "severity": "HIGH", "name": "R", "detail": "", "files": [], "count": 0},
-            {"id": "eval_exec", "severity": "HIGH", "name": "E", "detail": "", "files": [], "count": 0},
-        ]
-        result = _score_security_posture(smells, [])
-        assert result["score"] <= 5
-
-    def test_w1_fail_deduction(self):
-        checks = [{"code": "W1", "result": "FAIL"}]
-        result = _score_security_posture([], checks)
-        assert result["score"] == 15
-
-
-# ---------------------------------------------------------------------------
-# compute_repo_metrics integration
+# compute_repo_metrics integration (updated for Phase 58 nine dimensions)
 # ---------------------------------------------------------------------------
 
 class TestComputeRepoMetrics:
@@ -251,22 +152,24 @@ class TestComputeRepoMetrics:
         assert isinstance(m["computed_score"], int)
         assert 0 <= m["computed_score"] <= 100
 
-    def test_five_dimensions(self):
+    def test_nine_dimensions(self):
         m = compute_repo_metrics(BASIC_TREE, BASIC_FILES)
         dims = set(m["scores"].keys())
-        assert dims == {"test_file_ratio", "doc_coverage", "dependency_health",
-                        "code_organization", "security_posture"}
+        assert dims == {"build_integrity", "test_coverage", "audit_compliance",
+                        "governance", "security", "cost_efficiency",
+                        "reliability", "consistency", "architecture"}
 
-    def test_each_dim_has_score_and_details(self):
+    def test_each_dim_has_score_weight_and_details(self):
         m = compute_repo_metrics(BASIC_TREE, BASIC_FILES)
         for dim, info in m["scores"].items():
             assert "score" in info, f"{dim} missing score"
+            assert "weight" in info, f"{dim} missing weight"
             assert "details" in info, f"{dim} missing details"
-            assert 0 <= info["score"] <= 20, f"{dim} score out of range: {info['score']}"
+            assert 0 <= info["score"] <= 100, f"{dim} score out of range: {info['score']}"
 
-    def test_computed_score_is_sum(self):
+    def test_computed_score_is_weighted_average(self):
         m = compute_repo_metrics(BASIC_TREE, BASIC_FILES)
-        expected = sum(d["score"] for d in m["scores"].values())
+        expected = round(sum(d["score"] * d["weight"] for d in m["scores"].values()))
         assert m["computed_score"] == expected
 
     def test_file_stats(self):
@@ -284,8 +187,8 @@ class TestComputeRepoMetrics:
         tree = ["main.py"]
         files = {"main.py": "result = eval(input())\n" * 600}
         m = compute_repo_metrics(tree, files)
-        assert m["computed_score"] < 50
+        assert m["computed_score"] < 60
 
-    def test_good_repo_high_score(self):
+    def test_good_repo_reasonable_score(self):
         m = compute_repo_metrics(BASIC_TREE, BASIC_FILES)
-        assert m["computed_score"] >= 50
+        assert m["computed_score"] >= 40

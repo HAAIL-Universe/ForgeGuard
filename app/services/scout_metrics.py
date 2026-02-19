@@ -19,8 +19,8 @@ SmellReport = dict[str, Any]
 #   "detail": str, "files": list[str], "count": int }
 
 RepoMetrics = dict[str, Any]
-# { "scores": { dim: {"score": 0-20, "details": [...]} },
-#   "computed_score": 0-100,
+# { "scores": { dim: {"score": 0-100, "weight": float, "details": [...]} },
+#   "computed_score": 0-100 (weighted),
 #   "file_stats": { ... },
 #   "smells": list[SmellReport] }
 
@@ -331,8 +331,25 @@ def _check_unpinned_deps(file_contents: dict[str, str]) -> SmellReport | None:
 
 
 # ---------------------------------------------------------------------------
-# 39.1 — Metrics Engine
+# 58.2 — 9-Dimension Metrics Engine (Seal-aligned)
 # ---------------------------------------------------------------------------
+
+# Dimension weights — must sum to 1.0 (identical to certificate_scorer)
+_WEIGHTS: dict[str, float] = {
+    "build_integrity": 0.15,
+    "test_coverage": 0.15,
+    "audit_compliance": 0.10,
+    "governance": 0.10,
+    "security": 0.10,
+    "cost_efficiency": 0.05,
+    "reliability": 0.15,
+    "consistency": 0.10,
+    "architecture": 0.10,
+}
+
+# Neutral score for dimensions that have no data at dossier time
+_NEUTRAL = 50
+
 
 def compute_repo_metrics(
     tree_paths: list[str],
@@ -342,6 +359,10 @@ def compute_repo_metrics(
     checks: list[dict] | None = None,
 ) -> RepoMetrics:
     """Compute deterministic quality metrics from deep scan artifacts.
+
+    Phase 58 — 9 Seal-aligned dimensions, each 0-100, weighted to a
+    single computed_score 0-100.  Dimensions that lack data at dossier
+    time score neutral (50) rather than 0, with a note explaining why.
 
     Parameters
     ----------
@@ -385,16 +406,38 @@ def compute_repo_metrics(
     # Compute smells
     smells = detect_smells(tree_paths, file_contents)
 
-    # Score each dimension
-    scores = {
-        "test_file_ratio": _score_test_ratio(source_files, test_files_list),
-        "doc_coverage": _score_doc_coverage(tree_paths, file_contents),
-        "dependency_health": _score_dependency_health(tree_paths, file_contents, stack_profile),
-        "code_organization": _score_code_organization(tree_paths, file_contents, architecture),
-        "security_posture": _score_security_posture(smells, checks),
+    # Build scout-like data for architecture scorer
+    scout_data_for_arch = {
+        "stack_profile": stack_profile,
+        "architecture": architecture,
+        "tree_size": len(tree_paths),
+        "files_analysed": len(file_contents),
+        "checks_passed": sum(1 for c in checks if c.get("result") == "PASS"),
+        "checks_failed": sum(1 for c in checks if c.get("result") == "FAIL"),
+        "checks_warned": sum(1 for c in checks if c.get("result") == "WARN"),
     }
 
-    computed_score = sum(d["score"] for d in scores.values())
+    # Score each dimension (all 0-100 with weight)
+    scores = {
+        "build_integrity": _score_build_integrity_baseline(),
+        "test_coverage": _score_test_coverage(
+            source_files, test_files_list, file_contents, tree_paths,
+        ),
+        "audit_compliance": _score_audit_compliance(checks),
+        "governance": _score_governance(checks),
+        "security": _score_security(smells, checks, file_contents),
+        "cost_efficiency": _score_cost_efficiency_baseline(),
+        "reliability": _score_reliability_baseline(),
+        "consistency": _score_consistency(
+            tree_paths, file_contents, source_files, non_test_source, stack_profile,
+        ),
+        "architecture": _score_architecture(scout_data_for_arch),
+    }
+
+    # Weighted overall
+    computed_score = round(
+        sum(d["score"] * d["weight"] for d in scores.values())
+    )
 
     return {
         "scores": scores,
@@ -405,252 +448,212 @@ def compute_repo_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Dimension scorers (each returns {"score": 0-20, "details": [...]})
+# Dimension scorers (each returns {"score": 0-100, "weight": float, "details": [...]})
 # ---------------------------------------------------------------------------
 
-def _score_test_ratio(
+
+def _dim(score: float, key: str, details: list[str]) -> dict:
+    """Helper to build a dimension result dict."""
+    return {
+        "score": max(0, min(100, round(score))),
+        "weight": _WEIGHTS[key],
+        "details": details,
+    }
+
+
+# ── 1. Build Integrity ──────────────────────────────────────────
+
+def _score_build_integrity_baseline() -> dict:
+    """Neutral at dossier time — no build exists yet."""
+    return _dim(_NEUTRAL, "build_integrity", [
+        "No build history at dossier baseline — neutral score applied",
+    ])
+
+
+# ── 2. Test Coverage ────────────────────────────────────────────
+
+def _score_test_coverage(
     source_files: list[str],
     test_files: list[str],
+    file_contents: dict[str, str],
+    tree_paths: list[str],
 ) -> dict:
-    """Score 0-20 based on test file coverage."""
+    """Score 0-100 based on test file coverage, structure, and depth."""
     details: list[str] = []
 
     if not source_files:
         details.append("No source files found")
-        return {"score": 0, "details": details}
+        return _dim(0, "test_coverage", details)
 
     total = len(source_files)
     tests = len(test_files)
     ratio = tests / total if total > 0 else 0.0
-
     details.append(f"{tests} test files / {total} source files (ratio: {ratio:.2f})")
 
-    # Score brackets
-    if ratio >= 0.3:
-        score = 20
-        details.append("Excellent test coverage ratio")
-    elif ratio >= 0.2:
-        score = 16
-        details.append("Good test coverage ratio")
-    elif ratio >= 0.1:
-        score = 12
-        details.append("Moderate test coverage ratio")
-    elif ratio > 0:
-        score = 6
-        details.append("Low test coverage ratio")
-    else:
-        score = 0
-        details.append("No test files found")
+    # Base score from ratio (continuous, up to 50 points)
+    ratio_score = min(50, ratio * 166.7)  # 0.30 ratio → 50 pts
+    details.append(f"Test ratio contributes {ratio_score:.0f}/50 points")
 
-    return {"score": score, "details": details}
+    # Test structure bonus (up to 20 points)
+    structure_score = 0.0
+    test_dirs = {p.split("/")[0] for p in test_files if "/" in p}
+    src_dirs = {p.split("/")[0] for p in source_files if "/" in p and not _is_test(p)}
+    if test_dirs:
+        structure_score += 10
+        details.append(f"Test directories: {', '.join(sorted(test_dirs)[:3])}")
+    if test_dirs & src_dirs:
+        structure_score += 5
+        details.append("Test dirs overlap source dirs (co-located)")
+    # Check for test naming conventions
+    named_tests = [p for p in test_files if re.search(r"test_|_test\.|\.test\.|\.spec\.", p)]
+    if named_tests:
+        name_ratio = len(named_tests) / max(len(test_files), 1)
+        structure_score += min(5, name_ratio * 5)
+        details.append(f"{len(named_tests)}/{len(test_files)} follow naming conventions")
 
-
-def _score_doc_coverage(
-    tree_paths: list[str],
-    file_contents: dict[str, str],
-) -> dict:
-    """Score 0-20 based on documentation presence and quality."""
-    details: list[str] = []
-    score = 0
+    # Documentation/README bonus (up to 15 points)
+    doc_score = 0.0
     root_files = {p.lower() for p in tree_paths if "/" not in p}
-
-    # README exists (+6)
     readme_names = {"readme.md", "readme.rst", "readme.txt", "readme"}
-    has_readme = any(f in readme_names for f in root_files)
-    if has_readme:
-        score += 6
-        details.append("README found at root")
-
-        # README size bonus (+4 for substantial README)
+    if any(f in readme_names for f in root_files):
+        doc_score += 5
+        details.append("README present")
         for fpath, content in file_contents.items():
             if fpath.lower().split("/")[-1] in readme_names:
                 chars = len(content)
                 if chars > 2000:
-                    score += 4
-                    details.append(f"README is substantial ({chars:,} chars)")
+                    doc_score += 5
+                    details.append(f"README substantial ({chars:,} chars)")
                 elif chars > 500:
-                    score += 2
-                    details.append(f"README is moderate ({chars:,} chars)")
-                else:
-                    details.append(f"README is minimal ({chars:,} chars)")
-                break
-    else:
-        details.append("No README found")
-
-    # docs/ directory (+4)
-    has_docs_dir = any(p.lower().startswith("docs/") or "/docs/" in p.lower() for p in tree_paths)
+                    doc_score += 2
+    has_docs_dir = any(p.lower().startswith("docs/") for p in tree_paths)
     if has_docs_dir:
-        score += 4
+        doc_score += 5
         details.append("docs/ directory found")
 
-    # CHANGELOG / CONTRIBUTING (+3)
-    extras = {"changelog", "changelog.md", "contributing", "contributing.md"}
-    found_extras = [f for f in root_files if f in extras]
-    if found_extras:
-        score += 3
-        details.append(f"Extra docs: {', '.join(found_extras)}")
-
-    # Docstrings in entry point files (+3)
-    docstring_count = 0
-    for fpath, content in file_contents.items():
-        fname = fpath.split("/")[-1].lower()
-        if fname in ("main.py", "app.py", "server.py", "__init__.py", "index.ts"):
-            if '"""' in content or "'''" in content or "/**" in content:
-                docstring_count += 1
-    if docstring_count > 0:
-        score += 3
-        details.append(f"Docstrings found in {docstring_count} entry point(s)")
-
-    return {"score": min(20, score), "details": details}
-
-
-def _score_dependency_health(
-    tree_paths: list[str],
-    file_contents: dict[str, str],
-    stack_profile: dict,
-) -> dict:
-    """Score 0-20 based on dependency management."""
-    details: list[str] = []
-    score = 10  # Start neutral
-
-    root_files = {p.lower() for p in tree_paths if "/" not in p}
-
-    # Manifest file exists (+4)
+    # Dependency management bonus (up to 15 points)
+    dep_score = 0.0
     manifests = {"requirements.txt", "pyproject.toml", "package.json", "go.mod",
                  "cargo.toml", "gemfile", "build.gradle", "pom.xml"}
     found_manifests = [f for f in root_files if f in manifests]
     if found_manifests:
-        score += 4
-        details.append(f"Manifest found: {', '.join(found_manifests)}")
-    else:
-        score -= 4
-        details.append("No dependency manifest found")
+        dep_score += 8
+        details.append(f"Manifest: {', '.join(found_manifests)}")
+    locks = {"poetry.lock", "pipfile.lock", "package-lock.json",
+             "yarn.lock", "pnpm-lock.yaml", "go.sum", "cargo.lock"}
+    if any(f in locks for f in root_files):
+        dep_score += 7
+        details.append("Lock file present")
 
-    # Lock file exists (+3)
-    locks = {"requirements.lock", "poetry.lock", "pipfile.lock", "package-lock.json",
-             "yarn.lock", "pnpm-lock.yaml", "go.sum", "cargo.lock", "gemfile.lock"}
-    found_locks = [f for f in root_files if f in locks]
-    if found_locks:
-        score += 3
-        details.append(f"Lock file found: {', '.join(found_locks)}")
-    else:
-        score -= 2
-        details.append("No lock file found")
-
-    # Check for pinned deps
-    for fpath, content in file_contents.items():
-        fname = fpath.split("/")[-1].lower()
-        if fname == "requirements.txt":
-            lines = [l.strip() for l in content.splitlines()
-                     if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("-")]
-            pinned = sum(1 for l in lines if re.search(r"==", l))
-            if lines:
-                pin_rate = pinned / len(lines)
-                if pin_rate >= 0.8:
-                    score += 3
-                    details.append(f"{pinned}/{len(lines)} Python deps pinned ({pin_rate:.0%})")
-                elif pin_rate >= 0.5:
-                    details.append(f"{pinned}/{len(lines)} Python deps pinned ({pin_rate:.0%})")
-                else:
-                    score -= 2
-                    details.append(f"Only {pinned}/{len(lines)} Python deps pinned ({pin_rate:.0%})")
-
-    # Dep count signal
-    dep_count = len(stack_profile.get("manifest_files", []))
-    if dep_count > 0:
-        details.append(f"{dep_count} manifest file(s) detected by stack profiler")
-
-    return {"score": max(0, min(20, score)), "details": details}
+    total_score = ratio_score + structure_score + doc_score + dep_score
+    return _dim(total_score, "test_coverage", details)
 
 
-def _score_code_organization(
-    tree_paths: list[str],
-    file_contents: dict[str, str],
-    architecture: dict,
-) -> dict:
-    """Score 0-20 based on code structure and organization."""
+# ── 3. Audit Compliance ─────────────────────────────────────────
+
+def _score_audit_compliance(checks: list[dict]) -> dict:
+    """Score 0-100 based on audit check pass rate from the deep scan."""
     details: list[str] = []
-    score = 10  # Start neutral
 
-    source_files = [p for p in tree_paths if _is_source(p) and not _is_test(p)]
+    if not checks:
+        details.append("No audit checks available — neutral score applied")
+        return _dim(_NEUTRAL, "audit_compliance", details)
 
-    # Max file length check
-    max_lines = 0
-    long_files = 0
-    for fpath, content in file_contents.items():
-        if _is_source(fpath) and not _is_test(fpath):
-            lines = content.count("\n") + 1
-            max_lines = max(max_lines, lines)
-            if lines > 500:
-                long_files += 1
+    passed = sum(1 for c in checks if c.get("result") == "PASS")
+    failed = sum(1 for c in checks if c.get("result") == "FAIL")
+    warned = sum(1 for c in checks if c.get("result") == "WARN")
+    total = len(checks)
 
-    if max_lines > 0:
-        if max_lines <= 300:
-            score += 4
-            details.append(f"Largest file: {max_lines} lines (well-organized)")
-        elif max_lines <= 500:
-            score += 2
-            details.append(f"Largest file: {max_lines} lines (reasonable)")
-        else:
-            score -= 2
-            details.append(f"Largest file: {max_lines} lines ({long_files} files >500 lines)")
+    pass_rate = passed / total if total > 0 else 0
+    base_score = pass_rate * 80
+    details.append(f"{passed}/{total} checks passed ({pass_rate:.0%})")
 
-    # Directory structure depth
-    if source_files:
-        max_depth = max(_depth(p) for p in source_files)
-        avg_depth = sum(_depth(p) for p in source_files) / len(source_files)
-        if 1 <= avg_depth <= 4:
-            score += 3
-            details.append(f"Good directory depth (avg: {avg_depth:.1f}, max: {max_depth})")
-        elif avg_depth < 1:
-            score -= 1
-            details.append("Flat structure — all files at root")
-        else:
-            score -= 1
-            details.append(f"Deep nesting (avg: {avg_depth:.1f}, max: {max_depth})")
+    # Penalty for warnings
+    if warned > 0:
+        warn_penalty = min(10, warned * 2)
+        base_score -= warn_penalty
+        details.append(f"{warned} warnings (−{warn_penalty} pts)")
 
-    # Separation of concerns — check for distinct directories
-    top_dirs = set()
-    for p in source_files:
-        parts = p.split("/")
-        if len(parts) > 1:
-            top_dirs.add(parts[0])
-    if len(top_dirs) >= 3:
-        score += 3
-        details.append(f"{len(top_dirs)} top-level source directories (good separation)")
-    elif len(top_dirs) >= 2:
-        score += 1
-        details.append(f"{len(top_dirs)} top-level source directories")
-    elif source_files:
-        details.append("All source in a single directory")
+    # Bonus for zero failures
+    if failed == 0 and total > 0:
+        base_score += 20
+        details.append("All blocking checks passed (+20 pts)")
+    elif failed > 0:
+        details.append(f"{failed} blocking failures")
 
-    # Architecture entry points
-    entry_points = architecture.get("entry_points", [])
-    if entry_points:
-        details.append(f"{len(entry_points)} entry point(s) identified")
-
-    return {"score": max(0, min(20, score)), "details": details}
+    return _dim(base_score, "audit_compliance", details)
 
 
-def _score_security_posture(
+# ── 4. Governance ────────────────────────────────────────────────
+
+def _score_governance(checks: list[dict]) -> dict:
+    """Score 0-100 based on per-check governance breakdown (A1-A9, W1-W3)."""
+    details: list[str] = []
+
+    if not checks:
+        details.append("No governance check data — neutral score applied")
+        return _dim(_NEUTRAL, "governance", details)
+
+    # Separate blocking (A*) from warning (W*)
+    blocking = [c for c in checks if c.get("code", "").startswith("A")]
+    warnings = [c for c in checks if c.get("code", "").startswith("W")]
+
+    b_passed = sum(1 for c in blocking if c.get("result") == "PASS")
+    b_failed = sum(1 for c in blocking if c.get("result") == "FAIL")
+    w_passed = sum(1 for c in warnings if c.get("result") == "PASS")
+    w_warned = sum(1 for c in warnings if c.get("result") == "WARN")
+
+    # Blocking checks worth 70% of score
+    if blocking:
+        b_rate = b_passed / len(blocking)
+        b_score = b_rate * 70
+        details.append(f"Blocking: {b_passed}/{len(blocking)} passed")
+    else:
+        b_score = 35  # Half credit if no blocking checks
+        details.append("No blocking checks found")
+
+    # Warning checks worth 30% of score
+    if warnings:
+        w_rate = w_passed / len(warnings)
+        w_score = w_rate * 30
+        details.append(f"Warnings: {w_passed}/{len(warnings)} clean")
+    else:
+        w_score = 15  # Half credit
+        details.append("No warning checks found")
+
+    # Per-check detail
+    for c in checks:
+        code = c.get("code", "?")
+        result = c.get("result", "?")
+        if result in ("FAIL", "WARN"):
+            name = c.get("name", c.get("check_name", code))
+            details.append(f"  {code}: {result} — {name}")
+
+    return _dim(b_score + w_score, "governance", details)
+
+
+# ── 5. Security ──────────────────────────────────────────────────
+
+def _score_security(
     smells: list[SmellReport],
     checks: list[dict],
+    file_contents: dict[str, str],
 ) -> dict:
-    """Score 0-20 based on security signals from smells and checks."""
+    """Score 0-100 based on security signals from smells, checks, and patterns."""
     details: list[str] = []
-    score = 20  # Start perfect, deduct for problems
+    score = 100.0  # Start perfect, deduct for problems
 
     # Deductions from detected smells
     smell_ids = {s["id"] for s in smells}
 
     high_security_smells = {"secrets_in_source", "raw_sql", "eval_exec", "env_committed"}
-    medium_security_smells = {"no_gitignore"}
+    medium_security_smells = {"no_gitignore", "unpinned_deps"}
 
     high_found = high_security_smells & smell_ids
     medium_found = medium_security_smells & smell_ids
 
     if high_found:
-        deduction = min(15, len(high_found) * 5)
+        deduction = min(40, len(high_found) * 12)
         score -= deduction
         details.append(f"{len(high_found)} high-severity security issue(s) (−{deduction} pts)")
         for sid in high_found:
@@ -658,20 +661,196 @@ def _score_security_posture(
             details.append(f"  • {smell['name']}")
 
     if medium_found:
-        deduction = min(5, len(medium_found) * 2)
+        deduction = min(15, len(medium_found) * 5)
         score -= deduction
         details.append(f"{len(medium_found)} medium-severity issue(s) (−{deduction} pts)")
 
-    # Bonus from governance checks
+    # W1 governance check
     if checks:
         w1 = next((c for c in checks if c.get("code") == "W1"), None)
         if w1 and w1.get("result") == "PASS":
             details.append("W1 secrets scan: clean")
         elif w1 and w1.get("result") == "FAIL":
+            score -= 15
+            details.append("W1 secrets scan: FAILED (−15 pts)")
+        elif w1 and w1.get("result") == "WARN":
+            score -= 8
+            details.append("W1 secrets scan: WARNING (−8 pts)")
+
+    # Auth pattern detection (bonus signals)
+    auth_files = 0
+    for fpath, content in file_contents.items():
+        if _is_source(fpath):
+            lower_content = content.lower()
+            if any(pat in lower_content for pat in (
+                "jwt", "oauth", "bearer", "authenticate", "authorization",
+                "password_hash", "bcrypt", "argon2",
+            )):
+                auth_files += 1
+    if auth_files > 0:
+        score = min(100, score + 5)
+        details.append(f"Auth patterns found in {auth_files} file(s) (+5 pts)")
+
+    if round(score) >= 95:
+        details.append("No significant security issues detected")
+
+    return _dim(score, "security", details)
+
+
+# ── 6. Cost Efficiency ──────────────────────────────────────────
+
+def _score_cost_efficiency_baseline() -> dict:
+    """Neutral at dossier time — no build cost data exists yet."""
+    return _dim(_NEUTRAL, "cost_efficiency", [
+        "No build cost data at dossier baseline — neutral score applied",
+    ])
+
+
+# ── 7. Reliability ──────────────────────────────────────────────
+
+def _score_reliability_baseline() -> dict:
+    """Neutral at dossier time — no build/audit history trend available."""
+    return _dim(_NEUTRAL, "reliability", [
+        "No build/audit trend at dossier baseline — neutral score applied",
+    ])
+
+
+# ── 8. Consistency ──────────────────────────────────────────────
+
+def _score_consistency(
+    tree_paths: list[str],
+    file_contents: dict[str, str],
+    source_files: list[str],
+    non_test_source: list[str],
+    stack_profile: dict,
+) -> dict:
+    """Score 0-100 based on code consistency, style regularity, and structure."""
+    details: list[str] = []
+    score = 50.0  # Start neutral
+
+    # ── File length uniformity (up to +15 / -10) ─────────────────
+    line_counts: list[int] = []
+    long_files = 0
+    for fpath, content in file_contents.items():
+        if _is_source(fpath) and not _is_test(fpath):
+            lines = content.count("\n") + 1
+            line_counts.append(lines)
+            if lines > 500:
+                long_files += 1
+
+    if line_counts:
+        avg = sum(line_counts) / len(line_counts)
+        max_lines = max(line_counts)
+        if max_lines <= 300:
+            score += 15
+            details.append(f"Largest file: {max_lines} lines (well-sized)")
+        elif max_lines <= 500:
+            score += 8
+            details.append(f"Largest file: {max_lines} lines (reasonable)")
+        else:
+            score -= min(10, long_files * 3)
+            details.append(f"Largest file: {max_lines} lines ({long_files} >500 lines)")
+
+        # Variance check
+        if len(line_counts) >= 3:
+            variance = sum((x - avg) ** 2 for x in line_counts) / len(line_counts)
+            std_dev = variance ** 0.5
+            cv = std_dev / avg if avg > 0 else 0
+            if cv < 0.5:
+                score += 5
+                details.append(f"Low file-size variance (CV: {cv:.2f})")
+            elif cv > 1.5:
+                score -= 5
+                details.append(f"High file-size variance (CV: {cv:.2f})")
+
+    # ── Directory structure (up to +15 / -5) ──────────────────────
+    if non_test_source:
+        depths = [_depth(p) for p in non_test_source]
+        avg_depth = sum(depths) / len(depths)
+        max_depth_val = max(depths)
+        if 1 <= avg_depth <= 4:
+            score += 10
+            details.append(f"Good directory depth (avg: {avg_depth:.1f}, max: {max_depth_val})")
+        elif avg_depth < 1:
             score -= 5
-            details.append("W1 secrets scan: FAILED (−5 pts)")
+            details.append("Flat structure — all files at root")
+        else:
+            score -= 3
+            details.append(f"Deep nesting (avg: {avg_depth:.1f})")
 
-    if score == 20:
-        details.append("No security issues detected")
+        top_dirs = set()
+        for p in non_test_source:
+            parts = p.split("/")
+            if len(parts) > 1:
+                top_dirs.add(parts[0])
+        if len(top_dirs) >= 3:
+            score += 5
+            details.append(f"{len(top_dirs)} top-level source directories (good separation)")
+        elif len(top_dirs) >= 2:
+            score += 2
+            details.append(f"{len(top_dirs)} top-level source directories")
 
-    return {"score": max(0, min(20, score)), "details": details}
+    # ── Naming convention consistency (up to +10) ─────────────────
+    snake_count = 0
+    camel_count = 0
+    for p in source_files:
+        fname = p.split("/")[-1]
+        base = fname.rsplit(".", 1)[0] if "." in fname else fname
+        if "_" in base:
+            snake_count += 1
+        elif any(c.isupper() for c in base[1:]):
+            camel_count += 1
+    total_named = snake_count + camel_count
+    if total_named > 0:
+        dominant = max(snake_count, camel_count)
+        consistency_ratio = dominant / total_named
+        if consistency_ratio >= 0.9:
+            score += 10
+            convention = "snake_case" if snake_count > camel_count else "camelCase"
+            details.append(f"Naming: {consistency_ratio:.0%} {convention} (consistent)")
+        elif consistency_ratio >= 0.7:
+            score += 5
+            details.append(f"Naming: {consistency_ratio:.0%} consistent")
+        else:
+            score -= 3
+            details.append(f"Mixed naming conventions ({snake_count} snake, {camel_count} camel)")
+
+    # ── Docstring presence in source files (+5) ───────────────────
+    docstring_files = 0
+    checked_files = 0
+    for fpath, content in file_contents.items():
+        if _is_source(fpath) and not _is_test(fpath):
+            checked_files += 1
+            if '"""' in content or "'''" in content or "/**" in content:
+                docstring_files += 1
+    if checked_files > 0:
+        ds_ratio = docstring_files / checked_files
+        if ds_ratio >= 0.5:
+            score += 5
+            details.append(f"Docstrings in {docstring_files}/{checked_files} source files")
+        elif ds_ratio > 0:
+            score += 2
+            details.append(f"Some docstrings ({docstring_files}/{checked_files} files)")
+
+    return _dim(score, "consistency", details)
+
+
+# ── 9. Architecture ─────────────────────────────────────────────
+
+def _score_architecture(scout_data: dict) -> dict:
+    """Score 0-100 using the architecture baseline comparison.
+
+    Delegates to ``architecture_baseline.compare_against_baseline()``
+    which evaluates 9 stack-aware rules and returns a weighted score.
+    """
+    from app.services.architecture_baseline import compare_against_baseline
+
+    result = compare_against_baseline(scout_data)
+    return {
+        "score": max(0, min(100, result["score"])),
+        "weight": _WEIGHTS["architecture"],
+        "details": result.get("details", []),
+        "grade": result.get("grade", "?"),
+        "rules_passed": result.get("rules_passed", 0),
+        "rules_evaluated": result.get("rules_evaluated", 0),
+    }

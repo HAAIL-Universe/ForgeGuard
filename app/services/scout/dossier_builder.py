@@ -15,9 +15,23 @@ logger = logging.getLogger(__name__)
 
 _DOSSIER_SYSTEM_PROMPT = """You are a senior software architect performing a comprehensive project review.
 You will receive:
-  1. Measured metrics (deterministic, already computed) with scores per dimension.
+  1. Measured metrics (deterministic, already computed) with 9 weighted dimensions (0-100 each).
   2. Detected smells / risks (concrete findings with file paths).
   3. Stack profile, architecture map, and selected code samples.
+
+The 9 dimensions are (with weights):
+  - build_integrity (15%) — build completion quality (may be neutral if no builds yet)
+  - test_coverage (15%) — test file ratio, structure, documentation, deps
+  - audit_compliance (10%) — audit check pass rate
+  - governance (10%) — per-check governance breakdown (A1-A9, W1-W3)
+  - security (10%) — secrets, smells, auth patterns
+  - cost_efficiency (5%) — build cost (may be neutral if no builds yet)
+  - reliability (15%) — build/audit trend (may be neutral at baseline)
+  - consistency (10%) — code style, file size uniformity, naming conventions
+  - architecture (10%) — structural rules (layers, separation, test structure)
+
+Dimensions scoring "neutral" (50) mean insufficient data exists at this stage.
+Do NOT penalise neutral dimensions — narrate them as "awaiting data".
 
 Your job is to NARRATE the measured data — do NOT invent your own score.
 Use the computed_score provided in the metrics block as the quality score.
@@ -44,7 +58,7 @@ Produce a Project Dossier as valid JSON with exactly this schema:
 RULES:
 - The quality_assessment.score MUST equal the computed_score integer.
 - Every detected smell MUST appear in risk_areas.
-- Strengths / weaknesses must reference specific metric dimensions.
+- Strengths / weaknesses must reference specific metric dimensions by name.
 - Recommendations must be concrete and actionable.
 Return ONLY the JSON object. No markdown fences, no extra text."""
 

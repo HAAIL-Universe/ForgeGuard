@@ -14,7 +14,7 @@ from app.clients.github_client import (
     list_commits,
 )
 from app.repos.repo_repo import get_repo_by_id
-from app.repos.scout_repo import create_scout_run, update_scout_run
+from app.repos.scout_repo import create_scout_run, update_scout_run, lock_dossier
 from app.repos.user_repo import get_user_by_id
 from app.services.architecture_mapper import map_architecture
 from app.services.scout_metrics import compute_repo_metrics
@@ -38,7 +38,7 @@ _KEY_FILENAMES = {
     "README.md", "readme.md", "README.rst",
     "package.json", "requirements.txt", "pyproject.toml", "Pipfile",
     "Cargo.toml", "go.mod", "Gemfile", "pom.xml",
-    "forge.json", "boundaries.json",
+    "forge.json", "boundaries.json", "Forge/Contracts/boundaries.json",
     "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
     ".env.example",
 }
@@ -197,7 +197,10 @@ async def _execute_deep_scan(
         # ── Step 6: Run audit checks on fetched files ─────────────
         await _send_deep_progress(user_id_str, run_id, "audit", "Running compliance checks")
         boundaries = None
-        boundaries_content = file_contents.get("boundaries.json")
+        boundaries_content = (
+            file_contents.get("boundaries.json")
+            or file_contents.get("Forge/Contracts/boundaries.json")
+        )
         if boundaries_content:
             try:
                 boundaries = json.loads(boundaries_content)
@@ -258,6 +261,14 @@ async def _execute_deep_scan(
             checks_warned=checks_warned,
             computed_score=repo_metrics.get("computed_score"),
         )
+
+        # ── Auto-lock dossier (Phase 58) ─────────────────────────
+        if dossier is not None:
+            try:
+                await lock_dossier(run_id)
+                logger.info("Dossier %s locked automatically", run_id)
+            except ValueError:
+                logger.warning("Dossier %s could not be locked (already locked?)", run_id)
 
         await ws_manager.send_to_user(user_id_str, {
             "type": "scout_complete",

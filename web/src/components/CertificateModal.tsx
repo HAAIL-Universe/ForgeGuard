@@ -27,6 +27,9 @@ interface CertificateData {
     builds_total: number;
     contracts_count: number;
     generated_at: string;
+    /* Phase 58: dossier baseline delta */
+    baseline_score?: number | null;
+    delta?: Record<string, { baseline: number; final: number; delta: number }> | null;
   };
 }
 
@@ -260,6 +263,88 @@ export default function CertificateModal({ projectId, token, onClose }: Certific
                   ))}
                 </div>
               </div>
+
+              {/* Phase 58: Dossier Baseline Delta */}
+              {cert.baseline_score != null && cert.delta && Object.keys(cert.delta).length > 0 && (
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: '0.85rem', color: '#94A3B8' }}>
+                    Dossier Baseline → Final
+                  </h4>
+                  <div style={{
+                    background: '#0F172A',
+                    borderRadius: '8px',
+                    padding: '12px 16px',
+                    fontSize: '0.78rem',
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      marginBottom: '10px',
+                      padding: '6px 0',
+                      borderBottom: '1px solid #1E293B',
+                      fontWeight: 600,
+                      color: '#94A3B8',
+                      fontSize: '0.72rem',
+                      textTransform: 'uppercase',
+                    }}>
+                      <span style={{ flex: 2 }}>Dimension</span>
+                      <span style={{ flex: 1, textAlign: 'right' }}>Baseline</span>
+                      <span style={{ flex: 1, textAlign: 'right' }}>Final</span>
+                      <span style={{ flex: 1, textAlign: 'right' }}>Delta</span>
+                    </div>
+                    {Object.entries(cert.delta).map(([dim, vals]) => {
+                      const deltaColor = vals.delta > 0 ? '#22C55E' : vals.delta < 0 ? '#EF4444' : '#64748B';
+                      const deltaSign = vals.delta > 0 ? '+' : '';
+                      return (
+                        <div key={dim} style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          padding: '4px 0',
+                          borderBottom: '1px solid #1E293B',
+                        }}>
+                          <span style={{ flex: 2, color: '#CBD5E1', textTransform: 'capitalize' }}>
+                            {dim.replace(/_/g, ' ')}
+                          </span>
+                          <span style={{ flex: 1, textAlign: 'right', color: '#64748B' }}>
+                            {Math.round(vals.baseline)}
+                          </span>
+                          <span style={{ flex: 1, textAlign: 'right', color: '#CBD5E1' }}>
+                            {Math.round(vals.final)}
+                          </span>
+                          <span style={{ flex: 1, textAlign: 'right', color: deltaColor, fontWeight: 600 }}>
+                            {deltaSign}{Math.round(vals.delta)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      padding: '8px 0 0',
+                      fontWeight: 700,
+                      fontSize: '0.82rem',
+                    }}>
+                      <span style={{ flex: 2, color: '#F8FAFC' }}>Overall</span>
+                      <span style={{ flex: 1, textAlign: 'right', color: '#64748B' }}>
+                        {Math.round(cert.baseline_score)}
+                      </span>
+                      <span style={{ flex: 1, textAlign: 'right', color: '#F8FAFC' }}>
+                        {Math.round(cert.overall_score)}
+                      </span>
+                      <span style={{
+                        flex: 1,
+                        textAlign: 'right',
+                        fontWeight: 700,
+                        color: cert.overall_score - cert.baseline_score > 0 ? '#22C55E'
+                          : cert.overall_score - cert.baseline_score < 0 ? '#EF4444' : '#64748B',
+                      }}>
+                        {cert.overall_score - cert.baseline_score > 0 ? '+' : ''}
+                        {Math.round(cert.overall_score - cert.baseline_score)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Build Summary */}
               {cert.build_summary && (
