@@ -74,8 +74,22 @@ function CommitRow({ audit, onClick }: CommitRowProps) {
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0, marginLeft: '12px' }}>
         {audit.check_summary && (
-          <span style={{ color: '#64748B', fontSize: '0.65rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-            {audit.check_summary}
+          <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+            {audit.check_summary.split(/\s+/).map((part, i) => {
+              const resultColors: Record<string, string> = {
+                PASS: '#64748B',
+                FAIL: '#EF4444',
+                WARN: '#EAB308',
+                ERROR: '#F97316',
+              };
+              const result = part.split(':')[1] || '';
+              const color = resultColors[result] || '#64748B';
+              return (
+                <span key={i} style={{ color, marginRight: '6px' }}>
+                  {part}
+                </span>
+              );
+            })}
           </span>
         )}
         <ResultBadge result={audit.overall_result} />
