@@ -6,4 +6,5 @@ Sub-modules:
     context      — context construction, conversation compaction
     planner      — phase planning, LLM plan generation, file manifests
     verification — inline audit, per-file audit, governance checks
+    subagent     — sub-agent handoff protocol, per-role tool sets, runner
 """
