@@ -152,7 +152,7 @@ if ($migrationFiles.Count -gt 0) {
     Info "psql not found — running migrations via Python..."
     $pyMigrate = Join-Path $root "_migrate.py"
     if (Test-Path $pyMigrate) {
-      & $pip_python $pyMigrate $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
+      & $activePython $pyMigrate $dbUrl @($migrationFiles | ForEach-Object { $_.FullName })
       if ($LASTEXITCODE -eq 0) { Ok "All migrations applied via Python." }
       else { Warn "Some migrations may have failed — check output above." }
     } else {
