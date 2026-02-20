@@ -345,6 +345,7 @@ async def _run_recovery_planner(
         messages=[{"role": "user", "content": user_message}],
         max_tokens=4096,
         provider="anthropic",
+        enable_caching=True,
     )
 
     planner_text = result["text"] if isinstance(result, dict) else result
@@ -655,6 +656,7 @@ Rules:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4096,
             provider="anthropic",
+            enable_caching=True,
         )
 
         text = result["text"] if isinstance(result, dict) else result
@@ -1131,6 +1133,7 @@ Rules:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2048,
             provider="anthropic",
+            enable_caching=True,
         )
 
         text = result["text"] if isinstance(result, dict) else result
@@ -1310,6 +1313,7 @@ async def _review_written_files(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
             provider="anthropic",
+            enable_caching=True,
         )
 
         text = result["text"] if isinstance(result, dict) else result
@@ -1889,6 +1893,7 @@ async def _generate_skeleton_manifest(
             messages=[{"role": "user", "content": user_message}],
             max_tokens=4096,
             provider="anthropic",
+            enable_caching=True,
         )
 
         text = result["text"] if isinstance(result, dict) else result
@@ -2143,6 +2148,7 @@ async def _generate_full_manifest(
                 messages=[{"role": "user", "content": user_message}],
                 max_tokens=16384,
                 provider="anthropic",
+                enable_caching=True,
             )
         except (ValueError, Exception) as exc:
             err_str = str(exc).lower()
@@ -2164,6 +2170,7 @@ async def _generate_full_manifest(
                     messages=[{"role": "user", "content": truncated_msg}],
                     max_tokens=16384,
                     provider="anthropic",
+                    enable_caching=True,
                 )
             else:
                 raise
@@ -2453,6 +2460,7 @@ async def _generate_single_file(
                 messages=[{"role": "user", "content": user_message}],
                 max_tokens=max_tokens,
                 provider="anthropic",
+                enable_caching=True,
             ),
             timeout=_FILE_GEN_TIMEOUT,
         )
@@ -2497,6 +2505,7 @@ async def _generate_single_file(
                     messages=[{"role": "user", "content": minimal_msg}],
                     max_tokens=max_tokens,
                     provider="anthropic",
+                    enable_caching=True,
                 ),
                 timeout=_FILE_GEN_TIMEOUT,
             )
@@ -2525,6 +2534,7 @@ async def _generate_single_file(
                 }],
                 max_tokens=max_tokens,
                 provider="anthropic",
+                enable_caching=True,
             ),
             timeout=_FILE_GEN_TIMEOUT,
         )
@@ -2629,6 +2639,7 @@ async def _generate_fix_manifest(
             messages=[{"role": "user", "content": user_message}],
             max_tokens=4096,
             provider="anthropic",
+            enable_caching=True,
         )
 
         text = result["text"] if isinstance(result, dict) else result

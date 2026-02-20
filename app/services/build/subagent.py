@@ -601,14 +601,16 @@ async def run_sub_agent(
     role_tools = tools_for_role(handoff.role, BUILDER_TOOLS)
     allowed_names = tool_names_for_role(handoff.role)
 
-    # 3. Build system prompt
+    # 3. Build system prompt — inject contracts so they benefit from
+    #    Anthropic prompt caching across all sub-agent calls with the
+    #    same role + contracts.
     sys_prompt = system_prompt_for_role(handoff.role)
+    if handoff.contracts_text:
+        sys_prompt += f"\n\n## Project Contracts\n{handoff.contracts_text}"
 
     # 4. Build user message
     parts: list[str] = []
 
-    if handoff.contracts_text:
-        parts.append(f"## Project Contracts\n{handoff.contracts_text}\n")
     if handoff.phase_deliverables:
         parts.append(f"## Phase Deliverables\n{handoff.phase_deliverables}\n")
     if handoff.context_files:
@@ -987,12 +989,16 @@ async def _run_coder_single_shot(
         handoff.handoff_id = f"{handoff.role.value}_{handoff.build_id.hex[:8]}_{int(time.time())}"
 
     model = handoff.model or _default_model_for_role(handoff.role)
+
+    # Inject contracts into system prompt so they benefit from Anthropic
+    # prompt caching — the system block is identical across all batches
+    # in a tier, saving ~12k tokens of repeated input per batch.
     sys_prompt = _SINGLE_SHOT_CODER_PROMPT
+    if handoff.contracts_text:
+        sys_prompt += f"\n\n## Project Contracts\n{handoff.contracts_text}"
 
     # Build user message (same structure as multi-turn)
     parts: list[str] = []
-    if handoff.contracts_text:
-        parts.append(f"## Project Contracts\n{handoff.contracts_text}\n")
     if handoff.phase_deliverables:
         parts.append(f"## Phase Deliverables\n{handoff.phase_deliverables}\n")
     if handoff.context_files:
