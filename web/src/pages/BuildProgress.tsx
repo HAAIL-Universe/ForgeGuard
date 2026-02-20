@@ -1738,7 +1738,8 @@ function BuildProgress() {
                 }}
               >
                 Cancel Build
-              
+              </button>
+            )}
             {isActive && (
               <button
                 onClick={() => setShowForceCancelConfirm(true)}
@@ -1757,7 +1758,6 @@ function BuildProgress() {
               >
                 Force Cancel
               </button>
-            )}</button>
             )}
             {build && (
               <button
@@ -2823,27 +2823,7 @@ function BuildProgress() {
                   {(() => {
                     if (sendingInterject) return 'Sending...';
                     const match = SLASH_COMMANDS.find((c) => c.cmd === interjectionText.trim().toLowerCase());
-        
-
-      {showForceCancelConfirm && (
-        <ConfirmDialog
-          title="Force Cancel Build"
-          message="This will immediately kill the build task and mark it as failed. Use this only if the normal Cancel isn't responding. This cannot be undone."
-          confirmLabel="Force Cancel"
-          onConfirm={handleForceCancel}
-          onCancel={() => setShowForceCancelConfirm(false)}
-        />
-      )}
-
-      {showNukeConfirm && (
-        <ConfirmDialog
-          title="☢ Nuke Build"
-          message={`This will permanently destroy the build, delete the remote branch (or revert the default branch to its pre-build state), and remove all build records. This CANNOT be undone.`}
-          confirmLabel="Nuke It"
-          onConfirm={handleNuke}
-          onCancel={() => setShowNukeConfirm(false)}
-        />
-      )}            return match ? `${match.icon} ${match.cmd.slice(1).charAt(0).toUpperCase()}${match.cmd.slice(2)}` : 'Interject';
+                    return match ? `${match.icon} ${match.cmd.slice(1).charAt(0).toUpperCase()}${match.cmd.slice(2)}` : 'Interject';
                   })()}
                 </button>
               </div>
@@ -2862,6 +2842,26 @@ function BuildProgress() {
           confirmLabel="Cancel Build"
           onConfirm={handleCancel}
           onCancel={() => setShowCancelConfirm(false)}
+        />
+      )}
+
+      {showForceCancelConfirm && (
+        <ConfirmDialog
+          title="Force Cancel Build"
+          message="This will immediately kill the build task and mark it as failed. Use this only if the normal Cancel isn't responding. This cannot be undone."
+          confirmLabel="Force Cancel"
+          onConfirm={handleForceCancel}
+          onCancel={() => setShowForceCancelConfirm(false)}
+        />
+      )}
+
+      {showNukeConfirm && (
+        <ConfirmDialog
+          title="☢ Nuke Build"
+          message={`This will permanently destroy the build, delete the remote branch (or revert the default branch to its pre-build state), and remove all build records. This CANNOT be undone.`}
+          confirmLabel="Nuke It"
+          onConfirm={handleNuke}
+          onCancel={() => setShowNukeConfirm(false)}
         />
       )}
 
