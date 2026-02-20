@@ -26,6 +26,20 @@ _FILE_AUDIT_SEMAPHORE = asyncio.Semaphore(3)
 # Max fix attempts the auditor (Key 2) will try before deferring to builder
 _AUDITOR_FIX_ROUNDS = 2
 
+# Patterns that identify test files — these get auto-PASS (no LLM audit)
+_TEST_PATTERNS = re.compile(
+    r"(^|/)tests?/"
+    r"|test_[^/]+\.(py|ts|tsx|js|jsx)$"
+    r"|[^/]+_test\.(py|ts|tsx|js|jsx)$"
+    r"|[^/]+\.(?:test|spec)\.(ts|tsx|js|jsx)$"
+    r"|(^|/)__tests__/",
+)
+
+
+def _is_test_file(file_path: str) -> bool:
+    """Return True if *file_path* looks like a test / spec file."""
+    return bool(_TEST_PATTERNS.search(file_path))
+
 
 # ---------------------------------------------------------------------------
 # Inline (phase-level) audit
@@ -582,14 +596,26 @@ async def _audit_single_file(
     t0 = _time.monotonic()
 
     try:
-        # --- fast-path: audit disabled / trivially small files ---
-        if not audit_llm_enabled or len(file_content.strip()) < 50:
+        # --- fast-path: audit disabled / trivially small files / test files ---
+        if (
+            not audit_llm_enabled
+            or len(file_content.strip()) < 50
+            or _is_test_file(file_path)
+        ):
             dur = int((_time.monotonic() - t0) * 1000)
+            _reason = (
+                "test file — auto-pass" if _is_test_file(file_path)
+                else "audit disabled or trivial"
+            )
             await _state._broadcast_build_event(user_id, build_id, "file_audited", {
                 "path": file_path,
                 "verdict": "PASS",
                 "findings": "",
                 "duration_ms": dur,
+            })
+            await _state._broadcast_build_event(user_id, build_id, "build_log", {
+                "message": f"Audit skip {progress_tag} {file_path} ({_reason})",
+                "source": "audit", "level": "info",
             })
             return (file_path, "PASS", "")
 

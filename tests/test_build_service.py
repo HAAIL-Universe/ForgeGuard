@@ -498,9 +498,9 @@ async def test_audit_single_file_disabled(mock_build_repo, mock_manager):
     )
 
     assert result == ("src/foo.py", "PASS", "")
-    # Should have broadcast file_audited
-    mock_manager.send_to_user.assert_called_once()
-    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    # Should have broadcast file_audited + build_log (skip reason)
+    assert mock_manager.send_to_user.call_count == 2
+    ws_payload = mock_manager.send_to_user.call_args_list[0][0][1]
     assert ws_payload["type"] == "file_audited"
     assert ws_payload["payload"]["verdict"] == "PASS"
 
@@ -520,7 +520,9 @@ async def test_audit_single_file_trivially_small(mock_build_repo, mock_manager):
     )
 
     assert result == ("src/init.py", "PASS", "")
-    ws_payload = mock_manager.send_to_user.call_args[0][1]
+    # file_audited + build_log (skip reason)
+    assert mock_manager.send_to_user.call_count == 2
+    ws_payload = mock_manager.send_to_user.call_args_list[0][0][1]
     assert ws_payload["type"] == "file_audited"
     assert ws_payload["payload"]["verdict"] == "PASS"
 

@@ -621,6 +621,7 @@ Rules:
 - Every file from the list above MUST appear in exactly one chunk
 - Foundation/config files first, then models/data, then services, then API/routes, then UI
 - Max {_MAX_CHUNK_SIZE} files per chunk
+- NEVER create test-only chunks.  Pair each test file with its corresponding source file in the SAME chunk (e.g. chat_service.py and test_chat_service.py together)
 - builder_prompt should be specific: mention key interfaces, patterns, dependencies
 - Keep the total output under 200 lines"""
 
@@ -756,12 +757,27 @@ Rules:
 
 
 def _algorithmic_chunks(manifest: list[dict]) -> list[dict]:
-    """Fallback: group by dependency depth + directory, respecting _MAX_CHUNK_SIZE."""
+    """Fallback: group by dependency depth + directory, respecting _MAX_CHUNK_SIZE.
+
+    Test files are merged into the chunk that contains their source file
+    so we never produce test-only chunks.
+    """
+    from app.services.build.verification import _is_test_file
+
     sorted_files = _dependency_sort(manifest)
 
-    # Group by directory for cohesion
-    dir_groups: dict[str, list[dict]] = {}
+    # Separate source vs test files
+    source_files: list[dict] = []
+    test_files: list[dict] = []
     for f in sorted_files:
+        if _is_test_file(f["path"]):
+            test_files.append(f)
+        else:
+            source_files.append(f)
+
+    # Group source files by directory for cohesion
+    dir_groups: dict[str, list[dict]] = {}
+    for f in source_files:
         d = str(Path(f["path"]).parent)
         dir_groups.setdefault(d, []).append(f)
 
@@ -797,6 +813,49 @@ def _algorithmic_chunks(manifest: list[dict]) -> list[dict]:
             "entries": current,
             "builder_prompt": "",
         })
+
+    # --- Merge test files into their source file's chunk ---
+    if test_files:
+        # Build a map: chunk_index -> set of source paths in that chunk
+        chunk_src_paths: list[set[str]] = [
+            set(c["files"]) for c in chunks
+        ]
+
+        remaining_tests: list[dict] = []
+        for tf in test_files:
+            placed = False
+            tp = tf["path"]
+            # Try to find a chunk containing a related source file
+            for ci, src_set in enumerate(chunk_src_paths):
+                for sp in src_set:
+                    # Heuristic: test_foo.py ↔ foo.py, or same base name
+                    src_base = Path(sp).stem
+                    test_base = Path(tp).stem
+                    normalised = (
+                        test_base.removeprefix("test_")
+                        .removesuffix("_test")
+                        .removesuffix(".test")
+                        .removesuffix(".spec")
+                    )
+                    if normalised == src_base:
+                        chunks[ci]["entries"].append(tf)
+                        chunks[ci]["files"].append(tp)
+                        chunk_src_paths[ci].add(tp)
+                        placed = True
+                        break
+                if placed:
+                    break
+            if not placed:
+                remaining_tests.append(tf)
+
+        # Any unmatched tests go into a single trailing chunk
+        if remaining_tests:
+            chunks.append({
+                "name": f"Chunk {len(chunks)} — remaining tests",
+                "files": [f["path"] for f in remaining_tests],
+                "entries": remaining_tests,
+                "builder_prompt": "Write tests for the corresponding source files built in earlier chunks.",
+            })
 
     return chunks
 
@@ -2320,14 +2379,26 @@ async def execute_tier(
         + "\n\n".join(_contract_parts)
     ) if _contract_parts else ""
 
+    # Slimmed contract summary for test-heavy batches (just stack info)
+    _test_contract_parts = [p for p in _contract_parts[:1]]  # stack only
+    contracts_summary_slim = (
+        "## Project Contracts (slim — test batch)\n"
+        + "\n\n".join(_test_contract_parts)
+    ) if _test_contract_parts else ""
+
     # Dispatch each batch as a sub-agent
     async def run_batch(batch: list[dict], batch_idx: int) -> SubAgentResult:
+        from .verification import _is_test_file
+
         batch_paths = [f["path"] for f in batch]
+        _test_count = sum(1 for p in batch_paths if _is_test_file(p))
+        _batch_is_test_heavy = _test_count > len(batch_paths) / 2
 
         # Build context from already-written files (prior tiers)
         # Cap each file at 3k chars and total at 15k to control Opus input cost.
-        _CTX_PER_FILE_CAP = 3_000
-        _CTX_TOTAL_CAP = 15_000
+        # Test-heavy batches get tighter caps — they mainly need their source file.
+        _CTX_PER_FILE_CAP = 2_000 if _batch_is_test_heavy else 3_000
+        _CTX_TOTAL_CAP = 8_000 if _batch_is_test_heavy else 15_000
         context_files: dict[str, str] = {}
         _ctx_total = 0
         for f in batch:
@@ -2351,10 +2422,12 @@ async def execute_tier(
                     _ctx_total += len(_snippet)
 
         # Also get auto-detected context from disk (kept slim)
+        # Test-heavy batches get minimal disk context — source files are
+        # more useful and are already in context_files via depends_on.
         disk_context = build_context_pack(
             working_dir, batch_paths,
-            max_context_files=6,
-            max_context_chars=15_000,
+            max_context_files=3 if _batch_is_test_heavy else 6,
+            max_context_chars=6_000 if _batch_is_test_heavy else 15_000,
         )
         for k, v in disk_context.items():
             if k not in context_files:
@@ -2388,8 +2461,8 @@ async def execute_tier(
             assignment=assignment,
             files=batch_paths,
             context_files=context_files,
-            contracts_text=contracts_summary,  # compact index, not full text
-            phase_deliverables=phase_deliverables,
+            contracts_text=contracts_summary_slim if _batch_is_test_heavy else contracts_summary,
+            phase_deliverables=phase_deliverables if not _batch_is_test_heavy else "",
             max_tokens=16_384,
             timeout_seconds=300.0,
         )

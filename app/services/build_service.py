@@ -5135,6 +5135,19 @@ async def _run_build_plan_execute(
                     await _merge_tier_results(chunk_written, chunk_files, chunk_idx)
                     _chunk_audit_tasks = pending_file_audits[_chunk_audit_start:]
 
+                    # Broadcast how many audits are in-flight so UI doesn't go quiet
+                    if _chunk_audit_tasks:
+                        _audit_file_names = ", ".join(
+                            fp for fp in chunk_written.keys()
+                        )[:300]
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": (
+                                f"Chunk {chunk_idx}: {len(_chunk_audit_tasks)} file audit(s) queued "
+                                f"({_audit_file_names})"
+                            ),
+                            "source": "audit", "level": "info",
+                        })
+
                     # ── Step 4: Planner reviews what was built ──
                     remaining = chunks[chunk_idx + 1:]
                     chunk_interfaces = await _review_chunk_completion(
@@ -5170,6 +5183,8 @@ async def _run_build_plan_execute(
                         _chunk_raw = await asyncio.gather(
                             *_chunk_audit_tasks, return_exceptions=True,
                         )
+                        _pass_count = 0
+                        _fail_count = 0
                         for _tr in _chunk_raw:
                             if isinstance(_tr, BaseException):
                                 logger.warning("Chunk %d audit error: %s", chunk_idx, _tr)
@@ -5177,8 +5192,19 @@ async def _run_build_plan_execute(
                             fpath, fverdict, ffindings = _tr
                             if fverdict == "FAIL":
                                 blocking_files.append((fpath, ffindings))
+                                _fail_count += 1
                             else:
                                 passed_files.append(fpath)
+                                _pass_count += 1
+
+                        # Broadcast audit summary so user sees progress
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": (
+                                f"Chunk {chunk_idx} audits done: "
+                                f"{_pass_count} passed, {_fail_count} failed"
+                            ),
+                            "source": "audit", "level": "info" if _fail_count == 0 else "warn",
+                        })
 
                     # ── Step 6: Fix any audit failures ──
                     if not _fix_queue.empty():
