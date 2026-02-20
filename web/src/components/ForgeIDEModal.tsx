@@ -126,7 +126,7 @@ interface ChecklistItem {
   file: string;
   action: string;
   description: string;
-  status: 'pending' | 'written' | 'auditing' | 'passed' | 'failed' | 'rejected';
+  status: 'pending' | 'generating' | 'written' | 'auditing' | 'passed' | 'failed' | 'rejected';
   tierIndex?: number;
 }
 
@@ -229,7 +229,7 @@ const ACTION_ICON: Record<string, string> = { modify: '✏️', create: '➕', d
 
 const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistItem[] }) {
   if (items.length === 0) return null;
-  const done = items.filter(i => i.status !== 'pending').length;
+  const done = items.filter(i => i.status !== 'pending' && i.status !== 'generating').length;
   const hasTiers = items.some(i => i.tierIndex !== undefined && i.tierIndex >= 0);
 
   // Group items by tier if tiers exist
@@ -244,18 +244,20 @@ const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistI
 
   const renderItem = (item: ChecklistItem, i: number) => {
     const icon = item.status === 'pending' ? '☐'
+      : item.status === 'generating' ? '⏳'
       : item.status === 'written' ? '☑'
       : item.status === 'passed' ? '✅'
       : item.status === 'failed' ? '❌'
       : item.status === 'rejected' ? '🚫'
       : '⏳';
     const color = item.status === 'pending' ? '#475569'
+      : item.status === 'generating' ? '#FBBF24'
       : item.status === 'written' ? '#A78BFA'
       : item.status === 'passed' ? '#22C55E'
       : item.status === 'failed' ? '#EF4444'
       : item.status === 'rejected' ? '#EF4444'
       : '#94A3B8';
-    const strike = item.status !== 'pending';
+    const strike = item.status !== 'pending' && item.status !== 'generating';
     return (
       <div key={i} style={{ display: 'flex', gap: '6px', lineHeight: 1.6, color }}>
         <span style={{ flexShrink: 0, width: '16px' }}>{icon}</span>
@@ -1002,6 +1004,14 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [fixProgress, setFixProgress] = useState<{ tier: number; attempt: number; max: number } | null>(null);
   const [fileChecklist, setFileChecklist] = useState<ChecklistItem[]>([]);
   const [opusAgents, setOpusAgents] = useState<AgentInfo[]>([]);
+  const [pendingPlanReview, setPendingPlanReview] = useState<{
+    phase: string;
+    planText: string;
+    chunks: { index: number; name: string; files: { path: string; purpose: string; estimated_lines: number; language: string }[] }[];
+    costEstimate: { estimated_cost_low_usd: number; estimated_cost_high_usd: number };
+    autoApproveCountdown: number;
+  } | null>(null);
+  const planReviewTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
   /* Per-phase file tracking for expandable sidebar */
   const [phaseFiles, setPhaseFiles] = useState<Record<number, { path: string; size_bytes?: number; language?: string; committed: boolean }[]>>({});
@@ -1622,6 +1632,58 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setStatus('running');
               break;
 
+            case 'plan_review': {
+              const AUTO_APPROVE_SECS = 15;
+              const costEst = (p.cost_estimate as any) || { estimated_cost_low_usd: 0, estimated_cost_high_usd: 0 };
+              const chunks = (p.chunks as any[]) || [];
+              const planText = (p.plan_text as string) || '';
+              setPendingPlanReview({
+                phase: (p.phase as string) || '',
+                planText,
+                chunks,
+                costEstimate: costEst,
+                autoApproveCountdown: AUTO_APPROVE_SECS,
+              });
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'planner', level: 'info',
+                message: `📋 Build plan ready — ${chunks.length} chunks, `
+                  + `est. $${costEst.estimated_cost_low_usd?.toFixed(2)}–$${costEst.estimated_cost_high_usd?.toFixed(2)}. `
+                  + `Auto-approving in ${AUTO_APPROVE_SECS}s…`,
+                worker: 'sonnet',
+              }]);
+              // Start countdown timer
+              if (planReviewTimerRef.current) clearInterval(planReviewTimerRef.current);
+              planReviewTimerRef.current = setInterval(() => {
+                setPendingPlanReview((prev) => {
+                  if (!prev) {
+                    if (planReviewTimerRef.current) { clearInterval(planReviewTimerRef.current); planReviewTimerRef.current = null; }
+                    return null;
+                  }
+                  const next = prev.autoApproveCountdown - 1;
+                  if (next <= 0) {
+                    // Auto-approve
+                    if (planReviewTimerRef.current) { clearInterval(planReviewTimerRef.current); planReviewTimerRef.current = null; }
+                    respondToPlanReview('approve');
+                    return null;
+                  }
+                  return { ...prev, autoApproveCountdown: next };
+                });
+              }, 1000);
+              break;
+            }
+
+            case 'plan_approved':
+              if (planReviewTimerRef.current) { clearInterval(planReviewTimerRef.current); planReviewTimerRef.current = null; }
+              setPendingPlanReview(null);
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'info',
+                message: `✅ Plan approved — builders starting (${p.chunks || '?'} chunks, ${p.files || '?'} files)`,
+                worker: 'system',
+              }]);
+              break;
+
             case 'build_paused':
               setStatus('paused');
               setPendingPrompt(true);
@@ -1876,7 +1938,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 ));
               }
               setFileChecklist((prev) => prev.map((c) =>
-                c.file === p.path ? { ...c, status: 'written' as const } : c
+                c.file === p.path ? { ...c, status: 'generating' as const } : c
               ));
               break;
             }
@@ -2192,6 +2254,24 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
     // Optimistically clear — WS build_clarification_resolved will confirm
     setPendingClarification(null);
   };
+
+  /* Approve or reject build plan */
+  const respondToPlanReview = useCallback(async (action: 'approve' | 'reject') => {
+    if (planReviewTimerRef.current) { clearInterval(planReviewTimerRef.current); planReviewTimerRef.current = null; }
+    setPendingPlanReview(null);
+    setLogs((prev) => [...prev, {
+      timestamp: new Date().toISOString(),
+      source: 'user', level: 'system',
+      message: action === 'approve' ? '> Plan approved ✅' : '> Plan rejected ❌',
+    }]);
+    try {
+      await fetch(`${API_BASE}/projects/${projectId}/build/approve-plan`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+    } catch { /* WS plan_approved event confirms */ }
+  }, [projectId, token]);
 
   /* Send a slash command */
   const sendCmd = useCallback(async (cmd: string) => {
@@ -3092,9 +3172,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           {activeTab === 'activity' && (
             <div style={{
               flexShrink: 0,
-              borderTop: pendingClarification ? '1px solid #FBBF2466' : pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : status === 'preparing' ? '1px solid #38BDF833' : '1px solid #1E293B',
-              background: pendingClarification ? '#1C1A10' : pendingPrompt ? '#1C1510' : '#0F172A', padding: '0', position: 'relative',
-              boxShadow: pendingClarification ? '0 -2px 20px rgba(251,191,36,0.15)' : pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : status === 'preparing' ? '0 -2px 20px rgba(56, 189, 248, 0.12)' : 'none',
+              borderTop: pendingClarification ? '1px solid #FBBF2466' : pendingPlanReview ? '1px solid #38BDF866' : pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : status === 'preparing' ? '1px solid #38BDF833' : '1px solid #1E293B',
+              background: pendingClarification ? '#1C1A10' : pendingPlanReview ? '#0F1A2E' : pendingPrompt ? '#1C1510' : '#0F172A', padding: '0', position: 'relative',
+              boxShadow: pendingClarification ? '0 -2px 20px rgba(251,191,36,0.15)' : pendingPlanReview ? '0 -2px 20px rgba(56,189,248,0.15)' : pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : status === 'preparing' ? '0 -2px 20px rgba(56, 189, 248, 0.12)' : 'none',
               transition: 'box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease',
             }}>
               {/* Clarification card — shown when builder asks a question */}
@@ -3139,6 +3219,77 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       ))}
                     </div>
                   )}
+                </div>
+              )}
+              {/* Plan review card — shown when planner asks for approval */}
+              {pendingPlanReview && !pendingClarification && (
+                <div style={{
+                  margin: '8px 12px',
+                  padding: '10px 14px',
+                  background: '#0F1A2E',
+                  border: '1px solid #38BDF866',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  maxHeight: '40vh',
+                  overflow: 'hidden',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ color: '#38BDF8', fontSize: '0.8rem', fontWeight: 700 }}>
+                      📋 Build Plan — {pendingPlanReview.phase}
+                    </div>
+                    <div style={{ color: '#64748B', fontSize: '0.65rem' }}>
+                      Auto-approve in {pendingPlanReview.autoApproveCountdown}s
+                    </div>
+                  </div>
+                  {/* Cost estimate */}
+                  <div style={{ color: '#94A3B8', fontSize: '0.72rem' }}>
+                    Est. cost: <span style={{ color: '#FBBF24', fontWeight: 600 }}>
+                      ${pendingPlanReview.costEstimate.estimated_cost_low_usd?.toFixed(2)}
+                      –${pendingPlanReview.costEstimate.estimated_cost_high_usd?.toFixed(2)}
+                    </span>
+                    {' · '}{pendingPlanReview.chunks.length} chunks
+                    {' · '}{pendingPlanReview.chunks.reduce((n, c) => n + c.files.length, 0)} files
+                  </div>
+                  {/* Chunk summary (scrollable) */}
+                  <div style={{ overflowY: 'auto', maxHeight: '20vh', fontSize: '0.68rem', color: '#CBD5E1', lineHeight: 1.6 }}>
+                    {pendingPlanReview.chunks.map((chunk) => (
+                      <div key={chunk.index} style={{ marginBottom: '6px' }}>
+                        <div style={{ color: '#A78BFA', fontWeight: 600 }}>
+                          Chunk {chunk.index + 1}: {chunk.name}
+                        </div>
+                        {chunk.files.map((f) => (
+                          <div key={f.path} style={{ paddingLeft: '12px', color: '#94A3B8' }}>
+                            {f.path} <span style={{ color: '#475569' }}>— {f.purpose} (~{f.estimated_lines} lines)</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  {/* Buttons */}
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => respondToPlanReview('approve')}
+                      style={{
+                        flex: 1, background: '#065F46', border: '1px solid #22C55E66',
+                        borderRadius: '4px', color: '#22C55E', fontSize: '0.75rem',
+                        padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                      }}
+                    >
+                      ✅ Approve & Build
+                    </button>
+                    <button
+                      onClick={() => respondToPlanReview('reject')}
+                      style={{
+                        background: '#3B1114', border: '1px solid #EF444466',
+                        borderRadius: '4px', color: '#EF4444', fontSize: '0.75rem',
+                        padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                      }}
+                    >
+                      ❌ Reject
+                    </button>
+                  </div>
                 </div>
               )}
               {/* Autocomplete dropdown */}
