@@ -4850,6 +4850,15 @@ async def _run_build_plan_execute(
         touched_files: set[str] = set()
         # Use key 2 for auditor if available (separate rate limits)
         _audit_key = api_key_2.strip() if api_key_2.strip() else api_key
+        # Build API key pool for multi-key rotation (BYOK keys)
+        pool_keys = [api_key]
+        if api_key_2.strip():
+            pool_keys.append(api_key_2.strip())
+        key_pool = ApiKeyPool(
+            api_keys=pool_keys,
+            input_tpm=settings.ANTHROPIC_INPUT_TPM,
+            output_tpm=settings.ANTHROPIC_OUTPUT_TPM,
+        )
         # Incremental commit counter (how many commits so far this phase)
         _incr_commit_count = 0
 
