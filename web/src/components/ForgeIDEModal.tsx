@@ -986,6 +986,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKENS });
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
   const [leftTab, setLeftTab] = useState<'tasks' | 'chat'>('tasks');
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
@@ -2650,15 +2651,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
         {/* ── Left Panel: Tasks / Narrator ── */}
         <div style={{
-          width: '280px', flexShrink: 0,
+          width: leftCollapsed ? '36px' : '280px', flexShrink: 0,
           background: '#0F172A', borderRight: '1px solid #1E293B',
           display: 'flex', flexDirection: 'column',
+          transition: 'width 0.2s ease',
+          overflow: 'hidden',
         }}>
           {/* Left tab switcher */}
           <div style={{
             display: 'flex', borderBottom: '1px solid #1E293B', flexShrink: 0,
           }}>
-            {(['tasks', 'chat'] as const).map((tab) => (
+            {!leftCollapsed && (['tasks', 'chat'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setLeftTab(tab)}
@@ -2673,6 +2676,20 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 {tab === 'tasks' ? (isBuild ? `Phases (${tasks.length})` : `Tasks (${tasks.length})`) : `💬 Chat${chatMessages.length > 0 ? ` (${chatMessages.length})` : ''}`}
               </button>
             ))}
+            <button
+              onClick={() => setLeftCollapsed(c => !c)}
+              title={leftCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: '#475569', fontSize: '0.75rem', padding: '4px 8px',
+                flexShrink: 0, lineHeight: 1,
+                transition: 'color 0.15s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#F1F5F9')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
+            >
+              {leftCollapsed ? '▸' : '◂'}
+            </button>
           </div>
 
           {/* Tasks tab */}
