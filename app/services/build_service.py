@@ -4426,6 +4426,51 @@ async def _run_build_plan_execute(
                 })
 
                 _accumulated_interfaces = ""
+                # Pre-planned interface map for next tier (from pipeline)
+                _next_tier_plan: str | None = None
+
+                # Helper: merge tier results into tracking dicts
+                async def _merge_tier_results(
+                    tier_written: dict[str, str],
+                    tier_files_ref: list[dict],
+                    tier_idx_ref: int,
+                ) -> None:
+                    for fp, content in tier_written.items():
+                        phase_files_written[fp] = content
+                        all_files_written[fp] = content
+                        touched_files.add(fp)
+                        _tier_handled.add(fp)
+                        file_info = {
+                            "path": fp,
+                            "size_bytes": len(content.encode("utf-8")),
+                            "language": _detect_language(fp),
+                        }
+                        if not any(f["path"] == fp for f in files_written_list):
+                            files_written_list.append(file_info)
+
+                        _journal.record(
+                            "file_written",
+                            f"Wrote {fp} ({len(content.encode('utf-8'))} bytes)",
+                            metadata={"file_path": fp, "size_bytes": len(content.encode('utf-8'))},
+                        )
+
+                        _purpose = next(
+                            (f.get("purpose", "") for f in tier_files_ref if f["path"] == fp), "",
+                        )
+                        pending_file_audits.append(asyncio.create_task(
+                            _audit_and_cache(
+                                _manifest_cache_path,
+                                build_id, user_id,
+                                _audit_key,
+                                fp, content, _purpose,
+                                audit_llm_enabled,
+                                audit_index=len(pending_file_audits) + 1,
+                                audit_total=len(manifest),
+                                working_dir=working_dir,
+                                fix_queue=_fix_queue,
+                            )
+                        ))
+
                 for tier_idx, tier_files in enumerate(tiers):
                     # Cancel / pause check between tiers
                     bid = str(build_id)
@@ -4450,76 +4495,88 @@ async def _run_build_plan_execute(
                             await _fail_build(build_id, user_id, "Build aborted after /pause")
                             return
 
+                    # ── Get interface map ──
+                    # Tier 0: no dependencies → skip interface planning entirely.
+                    # Later tiers: use the pre-planned map from the pipeline,
+                    # or plan synchronously if pipeline didn't produce one.
+                    if tier_idx == 0:
+                        interface_map = ""
+                        await build_repo.append_build_log(
+                            build_id,
+                            "Tier 0: foundation tier — skipping interface planning",
+                            source="planner", level="info",
+                        )
+                    elif _next_tier_plan is not None:
+                        # Pipeline already planned this tier while we built the previous one
+                        interface_map = _next_tier_plan
+                        _next_tier_plan = None
+                    else:
+                        await _set_build_activity(
+                            build_id, user_id,
+                            f"Tier {tier_idx}/{len(tiers)-1}: Planning interfaces...",
+                            model="sonnet",
+                        )
+                        interface_map = await _plan_tier_interfaces(
+                            build_id, user_id, api_key,
+                            tier_idx, tier_files,
+                            _accumulated_interfaces,
+                            contracts, phase_deliverables,
+                            working_dir,
+                        )
+
+                    # ── Pipeline: Opus builds this tier while Sonnet plans the next ──
                     await _set_build_activity(
                         build_id, user_id,
-                        f"Tier {tier_idx}/{len(tiers)-1}: Planning interfaces...",
-                        model="sonnet",
-                    )
-
-                    # Sonnet plans interfaces for this tier
-                    interface_map = await _plan_tier_interfaces(
-                        build_id, user_id, api_key,
-                        tier_idx, tier_files,
-                        _accumulated_interfaces,
-                        contracts, phase_deliverables,
-                        working_dir,
-                    )
-
-                    await _set_build_activity(
-                        build_id, user_id,
-                        f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files in parallel...",
+                        f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files...",
                         model="opus",
                     )
 
-                    # Opus sub-agents build files in parallel
-                    tier_written = await execute_tier(
-                        build_id, user_id, api_key,
-                        tier_idx, tier_files, contracts,
-                        phase_deliverables, working_dir,
-                        interface_map, all_files_written,
-                        key_pool=key_pool,
-                    )
+                    _has_next = tier_idx + 1 < len(tiers)
 
-                    # Merge tier results into tracking dicts
-                    for fp, content in tier_written.items():
-                        phase_files_written[fp] = content
-                        all_files_written[fp] = content
-                        touched_files.add(fp)
-                        _tier_handled.add(fp)
-                        file_info = {
-                            "path": fp,
-                            "size_bytes": len(content.encode("utf-8")),
-                            "language": _detect_language(fp),
-                        }
-                        if not any(f["path"] == fp for f in files_written_list):
-                            files_written_list.append(file_info)
-
-                        # Journal: record each file
-                        _journal.record(
-                            "file_written",
-                            f"Wrote {fp} ({len(content.encode('utf-8'))} bytes)",
-                            metadata={"file_path": fp, "size_bytes": len(content.encode('utf-8'))},
+                    async def _plan_next_tier() -> str:
+                        """Sonnet plans tier N+1 concurrently with Opus building tier N."""
+                        _next_idx = tier_idx + 1
+                        _next_files = tiers[_next_idx]
+                        await _set_build_activity(
+                            build_id, user_id,
+                            f"Tier {_next_idx}/{len(tiers)-1}: Pre-planning interfaces...",
+                            model="sonnet",
+                        )
+                        return await _plan_tier_interfaces(
+                            build_id, user_id, api_key,
+                            _next_idx, _next_files,
+                            _accumulated_interfaces,
+                            contracts, phase_deliverables,
+                            working_dir,
                         )
 
-                        # Kick off per-file audit in background
-                        _purpose = next(
-                            (f.get("purpose", "") for f in tier_files if f["path"] == fp), "",
-                        )
-                        pending_file_audits.append(asyncio.create_task(
-                            _audit_and_cache(
-                                _manifest_cache_path,
-                                build_id, user_id,
-                                _audit_key,
-                                fp, content, _purpose,
-                                audit_llm_enabled,
-                                audit_index=len(pending_file_audits) + 1,
-                                audit_total=len(manifest),
-                                working_dir=working_dir,
-                                fix_queue=_fix_queue,
-                            )
+                    if _has_next:
+                        # Run Opus build + Sonnet planning in parallel
+                        build_task = asyncio.create_task(execute_tier(
+                            build_id, user_id, api_key,
+                            tier_idx, tier_files, contracts,
+                            phase_deliverables, working_dir,
+                            interface_map, all_files_written,
+                            key_pool=key_pool,
                         ))
+                        plan_task = asyncio.create_task(_plan_next_tier())
 
-                    # Extract actual interfaces written in this tier
+                        tier_written = await build_task
+                        _next_tier_plan = await plan_task
+                    else:
+                        # Last tier — no next tier to pre-plan
+                        tier_written = await execute_tier(
+                            build_id, user_id, api_key,
+                            tier_idx, tier_files, contracts,
+                            phase_deliverables, working_dir,
+                            interface_map, all_files_written,
+                            key_pool=key_pool,
+                        )
+
+                    # Merge results
+                    await _merge_tier_results(tier_written, tier_files, tier_idx)
+
+                    # Extract actual interfaces for next-tier context
                     actual_interfaces = await _extract_tier_interfaces(
                         build_id, user_id, api_key,
                         tier_idx, tier_written, working_dir,
@@ -4528,7 +4585,7 @@ async def _run_build_plan_execute(
 
                     await build_repo.append_build_log(
                         build_id,
-                        f"Tier {tier_idx} complete: {len(tier_written)}/{len(tier_files)} files written",
+                        f"Tier {tier_idx} done: {len(tier_written)}/{len(tier_files)} files",
                         source="planner", level="info",
                     )
         except Exception as _tier_exc:

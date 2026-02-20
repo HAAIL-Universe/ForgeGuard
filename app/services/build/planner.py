@@ -605,40 +605,42 @@ async def _plan_tier_interfaces(
         if ctype in relevant_contract_types:
             contracts_text += f"\n### {ctype}\n{c.get('content', '')[:8000]}\n"
 
-    prompt = f"""You are Sonnet, the **planning** LLM in the Forge build system.
+    # Cap contracts to keep prompt small — interface planning is about
+    # names and signatures, not full contract text.
+    MAX_CONTRACT_CHARS = 4000
+    if len(contracts_text) > MAX_CONTRACT_CHARS:
+        contracts_text = contracts_text[:MAX_CONTRACT_CHARS] + "\n[...truncated]"
 
-Your job is to produce an **Interface Map** for Tier {tier_index} — a set of files that will be built in parallel by Opus sub-agents.
+    prompt = f"""Produce a SHORT interface cheat-sheet for Tier {tier_index}.
 
-The Interface Map ensures every file in this tier uses consistent imports, class names, function signatures, and conventions. Opus builders will follow this map exactly.
+These {len(tier_files)} files will be built in parallel. Each builder only sees this cheat-sheet — keep it concise.
 
-## Prior Tier Interfaces (already built)
-{prior_tier_interfaces or "(This is the first tier — no prior interfaces.)"}
+For each file give ONE block:
+  path: <file>
+  exports: ClassName, function_name(args) -> ret, CONSTANT
+  imports: from <prior_file> import X, Y
 
-## Phase Deliverables
-{phase_deliverables}
+Prior tiers already built:
+{prior_tier_interfaces or '(none — this is the first tier)'}
 
-## Relevant Contracts
-{contracts_text}
-
-## Files in Tier {tier_index}
+Files in this tier:
 {chr(10).join(file_specs)}
 
-## Output Format
-Produce a YAML-like interface map. For each file, specify:
-- **exports**: exact class names, function signatures with type hints, constants
-- **imports_from**: which prior-tier files they should import from (with exact names)
-- **conventions**: naming patterns, error handling, or architectural patterns to follow
+Contracts (summary):
+{contracts_text}
 
-Be PRECISE — use exact Python/TypeScript identifiers that the builders should use.
-Only output the interface map. No preamble, no explanation."""
+Rules:
+- Use exact identifiers the builders should use.
+- One line per export. No prose, no explanations, no examples.
+- Keep the whole output under 120 lines."""
 
     try:
         result = await llm_chat(
             api_key=api_key,
             model=_state.settings.LLM_PLANNER_MODEL,
-            system_prompt="You are a precise software architect. Output only the interface map.",
+            system_prompt="You are a build coordinator. Output ONLY the interface cheat-sheet. No preamble.",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=8192,
+            max_tokens=2048,
             provider="anthropic",
         )
 
@@ -664,19 +666,19 @@ Only output the interface map. No preamble, no explanation."""
             working_dir,
         )
 
-        # Broadcast scratchpad event so the UI can display it
+        # Broadcast scratchpad event — short preview only
         await _state._broadcast_build_event(user_id, build_id, "scratchpad_write", {
             "key": scratchpad_key,
             "source": "sonnet",
             "role": "planner",
-            "summary": f"Interface map for Tier {tier_index} ({len(tier_files)} files)",
-            "content": text[:2000],  # Preview for UI
+            "summary": f"Tier {tier_index} interfaces ({len(tier_files)} files)",
+            "content": text[:500],
             "full_length": len(text),
         })
 
         await _state.build_repo.append_build_log(
             build_id,
-            f"Sonnet planned Tier {tier_index} interfaces ({len(tier_files)} files, {input_t + output_t} tokens)",
+            f"Tier {tier_index} interfaces planned ({len(tier_files)} files, {input_t + output_t} tok)",
             source="planner", level="info",
         )
 
@@ -744,8 +746,8 @@ async def _extract_tier_interfaces(
         "key": scratchpad_key,
         "source": "sonnet",
         "role": "planner",
-        "summary": f"Extracted interfaces from Tier {tier_index} ({len(written_files)} files)",
-        "content": text[:2000],
+        "summary": f"Tier {tier_index} actual exports ({len(written_files)} files)",
+        "content": text[:500],
         "full_length": len(text),
     })
 
