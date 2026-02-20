@@ -1115,7 +1115,10 @@ async def resume_build(
             if _best_completed >= current_phase_num:
                 resume_from = _best_completed  # phase already done â†’ continue
             else:
-                resume_from = current_phase_num - 1 if current_phase_num > 0 else -1
+                # Use max(..., 0) so Phase 0 retry gets resume_from=0
+                # (not -1, which would trigger a fresh clone over the
+                # existing working directory).
+                resume_from = max(current_phase_num - 1, 0)
 
         # Cancel old build first
         await build_repo.update_build_status(build_id, "cancelled")
@@ -2268,7 +2271,10 @@ async def _run_build_conversation(
             directive = _build_directive(contracts)
 
         # Set up working directory for file writing
-        if target_type == "github_new" and target_ref and working_dir:
+        # Skip clone if the directory is already a git repo (orphan recovery
+        # may reuse an existing workspace with resume_from_phase unset).
+        _conv_already_cloned = working_dir and (Path(working_dir) / ".git").is_dir()
+        if target_type == "github_new" and target_ref and working_dir and not _conv_already_cloned:
             try:
                 # Create a new GitHub repo
                 repo_data = await github_client.create_github_repo(
@@ -2295,7 +2301,7 @@ async def _run_build_conversation(
             except Exception as exc:
                 await _fail_build(build_id, user_id, f"Failed to create GitHub repo: {exc}")
                 return
-        elif target_type == "github_existing" and target_ref and working_dir:
+        elif target_type == "github_existing" and target_ref and working_dir and not _conv_already_cloned:
             try:
                 clone_url = f"https://github.com/{target_ref}.git"
                 # Remove empty tempdir so git clone can create it
@@ -4265,7 +4271,10 @@ async def _run_build_plan_execute(
 
     # --- Workspace setup (git clone, branch, contracts) ---
     # --- Workspace setup (skip if continuing from a prior build) ---
-    if resume_from_phase < 0:
+    # Also skip clone if the working_dir is already a git repo (orphan
+    # recovery may set resume_from_phase=-1 with an existing workspace).
+    _already_cloned = (Path(working_dir) / ".git").is_dir()
+    if resume_from_phase < 0 and not _already_cloned:
         if target_type == "github_new" and target_ref:
             try:
                 repo_data = await github_client.create_github_repo(
