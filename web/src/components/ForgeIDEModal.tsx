@@ -2192,16 +2192,34 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             body: JSON.stringify({ message: trimmed }),
           });
         }
-        try {
-          const body = await res.json();
-          if (body.message || body.status) {
+        if (!res.ok) {
+          // Server returned an error — show it
+          try {
+            const errBody = await res.json();
             setLogs((prev) => [...prev, {
               timestamp: new Date().toISOString(), source: 'command-ack',
-              level: body.ok === false ? 'error' : 'system',
-              message: body.message || `Status: ${body.status}`,
+              level: 'error',
+              message: errBody.detail || errBody.message || errBody.error || `Command failed (${res.status})`,
+            }]);
+          } catch {
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(), source: 'command-ack',
+              level: 'error',
+              message: `Command failed (${res.status})`,
             }]);
           }
-        } catch { /* silent */ }
+        } else {
+          try {
+            const body = await res.json();
+            if (body.message || body.status) {
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(), source: 'command-ack',
+                level: body.ok === false ? 'error' : 'system',
+                message: body.message || `Status: ${body.status}`,
+              }]);
+            }
+          } catch { /* silent */ }
+        }
       } catch {
         setLogs((prev) => [...prev, {
           timestamp: new Date().toISOString(), source: 'system', level: 'error',

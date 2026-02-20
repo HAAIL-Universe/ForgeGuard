@@ -4448,6 +4448,11 @@ async def _run_build_plan_execute(
                         if not any(f["path"] == fp for f in files_written_list):
                             files_written_list.append(file_info)
 
+                        # Broadcast file_created so the Changes tab updates
+                        await _broadcast_build_event(
+                            user_id, build_id, "file_created", file_info,
+                        )
+
                         _journal.record(
                             "file_written",
                             f"Wrote {fp} ({len(content.encode('utf-8'))} bytes)",
@@ -4858,6 +4863,11 @@ async def _run_build_plan_execute(
                 }
                 if not any(f["path"] == file_path for f in files_written_list):
                     files_written_list.append(file_info)
+
+                # Broadcast file_created so the Changes tab updates
+                await _broadcast_build_event(
+                    user_id, build_id, "file_created", file_info,
+                )
 
                 # Mark task done
                 await _broadcast_build_event(user_id, build_id, "plan_task_complete", {
