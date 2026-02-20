@@ -18,6 +18,7 @@ class StartBuildRequest(BaseModel):
     target_ref: str | None = None
     branch: str = "main"
     contract_batch: int | None = None
+    fresh_start: bool = False
 
 
 class DeleteBuildsRequest(BaseModel):
@@ -76,6 +77,7 @@ async def start_build(
             target_ref=body.target_ref if body else None,
             branch=body.branch if body else "main",
             contract_batch=body.contract_batch if body else None,
+            fresh_start=body.fresh_start if body else False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

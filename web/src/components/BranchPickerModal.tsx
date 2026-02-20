@@ -10,6 +10,7 @@ import { useState } from 'react';
 export interface BranchChoice {
   branch: string;
   contractBatch: number | null;
+  freshStart?: boolean;
 }
 
 interface ContractVersion {
@@ -41,6 +42,7 @@ export default function BranchPickerModal({
   const [customBranch, setCustomBranch] = useState('');
   const [step, setStep] = useState<'branch' | 'version'>('branch');
   const [selectedBatch, setSelectedBatch] = useState<number | null>(null);
+  const [freshStart, setFreshStart] = useState(false);
 
   const branchName = mode === 'main' ? 'main' : customBranch.trim();
   const canConfirm = !starting && (mode === 'main' || branchName.length > 0);
@@ -51,12 +53,12 @@ export default function BranchPickerModal({
     if (hasMultipleVersions) {
       setStep('version');
     } else {
-      onConfirm({ branch: branchName, contractBatch: null });
+      onConfirm({ branch: branchName, contractBatch: null, freshStart: mode === 'new' && freshStart });
     }
   };
 
   const handleVersionConfirm = () => {
-    onConfirm({ branch: branchName, contractBatch: selectedBatch });
+    onConfirm({ branch: branchName, contractBatch: selectedBatch, freshStart: mode === 'new' && freshStart });
   };
 
   const handleBack = () => {
@@ -390,6 +392,25 @@ export default function BranchPickerModal({
               if (e.key === 'Enter' && canConfirm) handleBranchNext();
             }}
           />
+        )}
+        {mode === 'new' && (
+          <label
+            data-testid="fresh-start-toggle"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              marginLeft: '26px', marginTop: '4px', cursor: 'pointer',
+              fontSize: '0.78rem', color: '#94A3B8', userSelect: 'none',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={freshStart}
+              onChange={(e) => setFreshStart(e.target.checked)}
+              data-testid="fresh-start-checkbox"
+              style={{ accentColor: '#2563EB', width: '14px', height: '14px', cursor: 'pointer' }}
+            />
+            Fresh start — ignore existing files, build from contracts only
+          </label>
         )}
       </div>
     </div>

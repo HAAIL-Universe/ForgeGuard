@@ -286,7 +286,7 @@ function ProjectDetail() {
       await handleTargetConfirm({
         target_type: 'github_existing',
         target_ref: project.repo_full_name,
-      }, choice.branch, choice.contractBatch);
+      }, choice.branch, choice.contractBatch, choice.freshStart);
       return;
     }
     /* No repo connected — close picker, show target picker modal */
@@ -294,7 +294,7 @@ function ProjectDetail() {
     setShowTargetPicker(true);
   };
 
-  const handleTargetConfirm = async (target: BuildTarget, branch?: string, contractBatch?: number | null) => {
+  const handleTargetConfirm = async (target: BuildTarget, branch?: string, contractBatch?: number | null, freshStart?: boolean) => {
     setStarting(true);
     setLoadingStatus('Queuing build…');
     let keepStarting = false;
@@ -309,6 +309,7 @@ function ProjectDetail() {
           ...target,
           branch: branch ?? selectedBranch,
           contract_batch: contractBatch ?? selectedContractBatch ?? null,
+          fresh_start: freshStart ?? false,
         }),
       });
       if (res.ok) {

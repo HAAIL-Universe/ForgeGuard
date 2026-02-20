@@ -654,6 +654,7 @@ async def start_build(
     contract_batch: int | None = None,
     resume_from_phase: int = -1,
     working_dir_override: str | None = None,
+    fresh_start: bool = False,
 ) -> dict:
     """Start a build for a project.
 
@@ -757,6 +758,7 @@ async def start_build(
             branch=branch,
             api_key_2=user_api_key_2,
             resume_from_phase=resume_from_phase,
+            fresh_start=fresh_start,
         )
     )
     _active_tasks[str(build["id"])] = task
@@ -2234,6 +2236,7 @@ async def _run_build(
     branch: str = "main",
     api_key_2: str = "",
     resume_from_phase: int = -1,
+    fresh_start: bool = False,
 ) -> None:
     """Dispatch to the appropriate build mode.
 
@@ -2282,6 +2285,7 @@ async def _run_build(
                 branch=branch,
                 api_key_2=api_key_2,
                 resume_from_phase=resume_from_phase,
+                fresh_start=fresh_start,
             )
         else:
             await _run_build_conversation(
@@ -4346,6 +4350,7 @@ async def _run_build_plan_execute(
     api_key_2: str = "",
     phases: list[dict] | None = None,
     resume_from_phase: int = -1,
+    fresh_start: bool = False,
 ) -> None:
     """Plan-then-execute build architecture.
 
@@ -4547,33 +4552,48 @@ async def _run_build_plan_execute(
 
     # --- Reconnaissance: capture initial workspace snapshot ---
     _ws_snapshot = None
-    try:
-        from forge_ide.workspace import Workspace as _IdeWorkspace, capture_snapshot, snapshot_to_workspace_info, update_snapshot as _update_snapshot
-        _ide_ws = _IdeWorkspace(working_dir)
-        _ws_snapshot = capture_snapshot(_ide_ws)
-        _recon_log = (
-            f"Recon complete â€” {_ws_snapshot.total_files} files, "
-            f"{_ws_snapshot.total_lines:,} lines, "
-            f"{len(_ws_snapshot.symbol_table)} symbols, "
-            f"{_ws_snapshot.test_inventory.test_count} tests, "
-            f"{len(_ws_snapshot.schema_inventory.tables)} tables"
-        )
+    if fresh_start:
+        # Fresh start: skip scanning existing files
+        _recon_log = "Fresh start -- skipping workspace scan, building from contracts only"
         await build_repo.append_build_log(
             build_id, _recon_log, source="system", level="info",
         )
         await _broadcast_build_event(user_id, build_id, "recon_complete", {
-            "total_files": _ws_snapshot.total_files,
-            "total_lines": _ws_snapshot.total_lines,
-            "test_count": _ws_snapshot.test_inventory.test_count,
-            "tables": list(_ws_snapshot.schema_inventory.tables),
-            "symbols_count": len(_ws_snapshot.symbol_table),
+            "total_files": 0, "total_lines": 0, "test_count": 0,
+            "tables": [], "symbols_count": 0, "fresh_start": True,
         })
         await _broadcast_build_event(user_id, build_id, "build_log", {
             "message": _recon_log, "source": "system", "level": "info",
         })
-    except Exception as exc:
-        logger.warning("Workspace snapshot failed (non-fatal): %s", exc)
-        _ws_snapshot = None
+        logger.info("Fresh start build %s -- workspace recon skipped", build_id)
+    else:
+        try:
+            from forge_ide.workspace import Workspace as _IdeWorkspace, capture_snapshot, snapshot_to_workspace_info, update_snapshot as _update_snapshot
+            _ide_ws = _IdeWorkspace(working_dir)
+            _ws_snapshot = capture_snapshot(_ide_ws)
+            _recon_log = (
+                f"Recon complete -- {_ws_snapshot.total_files} files, "
+                f"{_ws_snapshot.total_lines:,} lines, "
+                f"{len(_ws_snapshot.symbol_table)} symbols, "
+                f"{_ws_snapshot.test_inventory.test_count} tests, "
+                f"{len(_ws_snapshot.schema_inventory.tables)} tables"
+            )
+            await build_repo.append_build_log(
+                build_id, _recon_log, source="system", level="info",
+            )
+            await _broadcast_build_event(user_id, build_id, "recon_complete", {
+                "total_files": _ws_snapshot.total_files,
+                "total_lines": _ws_snapshot.total_lines,
+                "test_count": _ws_snapshot.test_inventory.test_count,
+                "tables": list(_ws_snapshot.schema_inventory.tables),
+                "symbols_count": len(_ws_snapshot.symbol_table),
+            })
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _recon_log, "source": "system", "level": "info",
+            })
+        except Exception as exc:
+            logger.warning("Workspace snapshot failed (non-fatal): %s", exc)
+            _ws_snapshot = None
 
     # --- Session Journal (Phase 43) ---
     from forge_ide.journal import SessionJournal as _SessionJournal, compute_snapshot_hash as _compute_snapshot_hash
@@ -4770,7 +4790,10 @@ async def _run_build_plan_execute(
 
         # Build workspace info â€” prefer snapshot, fallback to raw walk
         workspace_info = ""
-        if _ws_snapshot is not None:
+        if fresh_start and not all_files_written:
+            # Fresh start + first phase: planner sees empty workspace
+            workspace_info = "(empty workspace -- fresh start)"
+        elif _ws_snapshot is not None:
             try:
                 # Update snapshot incrementally if files were written
                 if all_files_written and _ide_ws is not None:
