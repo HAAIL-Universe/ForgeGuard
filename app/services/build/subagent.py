@@ -91,25 +91,16 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_list_project_contracts",
         "forge_get_project_contract",
     }),
-    # Coder — write new files + syntax check.  No tests, no run_command
-    # (auto-install is handled by the tool_executor post-write hook).
+    # Coder — write new files + syntax check.  Contracts are pre-loaded
+    # in context; no need for contract-pull or discovery tools.
+    # Keeping the tool set minimal cuts ~600 tokens of tool definitions
+    # per API round — a significant cost saving across the tool loop.
     SubAgentRole.CODER: frozenset({
         "read_file",
-        "list_directory",
-        "search_code",
         "write_file",
         "edit_file",
         "check_syntax",
-        "run_command",
-        "forge_get_contract",
-        "forge_get_phase_window",
-        "forge_list_contracts",
-        "forge_get_summary",
         "forge_scratchpad",
-        "forge_ask_clarification",
-        # Project-scoped tools (Phase F) — pull stack, physics, boundaries on demand
-        "forge_get_project_contract",
-        "forge_list_project_contracts",
     }),
     # Auditor — read-only structural review, same surface as scout
     SubAgentRole.AUDITOR: frozenset({
@@ -205,18 +196,10 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "You are a **Coder** sub-agent in the Forge build system.\n\n"
         "You write production-quality code for specific files assigned to you. "
         "You have access to file creation tools and syntax checking.\n\n"
-        "## Contract Pull Model — IMPORTANT\n"
-        "Your assignment includes a contract INDEX (types + previews), NOT full text. "
-        "You MUST pull the contracts you need via tools before writing any code:\n"
-        "1. Call `forge_get_project_contract('stack')` — required languages, "
-        "frameworks, and versions. Your code MUST match these exactly.\n"
-        "2. Call `forge_get_project_contract('physics')` — the canonical API "
-        "spec (endpoints, auth, request/response schemas).\n"
-        "3. Call `forge_get_project_contract('boundaries')` — layer boundary "
-        "rules (which imports are forbidden in each layer).\n"
-        "4. Call `forge_get_project_contract('schema')` if your files touch data models.\n"
-        "Pull ONLY the contracts relevant to your assigned files. "
-        "Do NOT pull all contracts — be selective.\n\n"
+        "## Contracts — PRE-LOADED\n"
+        "Relevant project contracts (stack, physics, boundaries, schema) are "
+        "included in your context below. Do NOT use tool calls to fetch "
+        "contracts — everything you need is already provided.\n\n"
         "Rules:\n"
         "- Write ONLY the files specified in your assignment\n"
         "- Follow the project contracts exactly\n"

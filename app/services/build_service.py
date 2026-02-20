@@ -4990,8 +4990,6 @@ async def _run_build_plan_execute(
                 })
 
                 _accumulated_interfaces = ""
-                # Pre-planned interface maps — dict[tier_idx, asyncio.Task[str]]
-                _tier_plan_pool: dict[int, asyncio.Task[str]] = {}
 
                 # Helper: merge tier results into tracking dicts
                 async def _merge_tier_results(
@@ -5069,9 +5067,9 @@ async def _run_build_plan_execute(
                             return
 
                     # ── Get interface map ──
-                    # Tier 0: no dependencies → skip interface planning entirely.
-                    # Later tiers: use the pre-planned map from the pool,
-                    # or plan synchronously if pool didn't produce one.
+                    # Tier 0: no dependencies → skip interface planning.
+                    # Later tiers: plan synchronously so we use real context
+                    # from the previous tier's actual output.
                     if tier_idx == 0:
                         interface_map = ""
                         await build_repo.append_build_log(
@@ -5079,19 +5077,6 @@ async def _run_build_plan_execute(
                             "Tier 0: foundation tier — skipping interface planning",
                             source="planner", level="info",
                         )
-                    elif tier_idx in _tier_plan_pool:
-                        # Await the pre-planned result
-                        try:
-                            interface_map = await _tier_plan_pool[tier_idx]
-                        except Exception as _pp_exc:
-                            logger.warning("Pre-planned tier %d failed: %s — planning sync", tier_idx, _pp_exc)
-                            interface_map = await _plan_tier_interfaces(
-                                build_id, user_id, api_key,
-                                tier_idx, tier_files,
-                                _accumulated_interfaces,
-                                contracts, phase_deliverables,
-                                working_dir,
-                            )
                     else:
                         await _set_build_activity(
                             build_id, user_id,
@@ -5106,48 +5091,16 @@ async def _run_build_plan_execute(
                             working_dir,
                         )
 
-                    # ── Pipeline: Opus builds this tier while Sonnet plans ALL remaining ──
+                    # ── Sequential: plan → build → commit, one tier at a time ──
                     await _set_build_activity(
                         build_id, user_id,
                         f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files...",
                         model="opus",
                     )
 
-                    # Fire off Sonnet to pre-plan all unplanned future tiers
-                    _remaining_unplanned = [
-                        ti for ti in range(tier_idx + 1, len(tiers))
-                        if ti not in _tier_plan_pool
-                    ]
-
-                    async def _plan_remaining_tiers(tier_indices: list[int]) -> None:
-                        """Sonnet plans multiple tiers sequentially while Opus builds."""
-                        for _pi in tier_indices:
-                            _pf = tiers[_pi]
-                            await _set_build_activity(
-                                build_id, user_id,
-                                f"Tier {_pi}/{len(tiers)-1}: Pre-planning interfaces...",
-                                model="sonnet",
-                            )
-                            _result = await _plan_tier_interfaces(
-                                build_id, user_id, api_key,
-                                _pi, _pf,
-                                _accumulated_interfaces,
-                                contracts, phase_deliverables,
-                                working_dir,
-                            )
-                            # Store result — wrapping in a completed future for consistency
-                            _fut: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-                            _fut.set_result(_result)
-                            _tier_plan_pool[_pi] = _fut
-
-                    if _remaining_unplanned:
-                        _planning_task = asyncio.create_task(
-                            _plan_remaining_tiers(_remaining_unplanned)
-                        )
-                    else:
-                        _planning_task = None
-
-                    # Build current tier
+                    # Build current tier (no parallel pre-planning — we wait
+                    # for actual interfaces from THIS tier before planning the
+                    # next one, so each tier benefits from real context).
                     tier_written = await execute_tier(
                         build_id, user_id, api_key,
                         tier_idx, tier_files, contracts,
@@ -5251,12 +5204,7 @@ async def _run_build_plan_execute(
                         source="planner", level="info",
                     )
 
-                # Wait for any remaining planning tasks
-                if _planning_task and not _planning_task.done():
-                    try:
-                        await _planning_task
-                    except Exception:
-                        pass  # Errors handled per-tier above
+                # (No parallel planning tasks to wait for — sequential mode)
         except Exception as _tier_exc:
             logger.error("Tier execution failed: %s — falling back to sequential", _tier_exc, exc_info=True)
             _tier_err_msg = f"Tier system error: {_tier_exc} — remaining files will be generated sequentially"

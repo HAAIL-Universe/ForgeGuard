@@ -506,11 +506,19 @@ def _topological_sort(files: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# Maximum files per tier.  Large tiers get split into sub-tiers so each
+# group is small enough for the agents to reason carefully about.
+_MAX_TIER_SIZE = 6
+
+
 def _compute_tiers(files: list[dict]) -> list[list[dict]]:
     """Group manifest files into dependency tiers for parallel execution.
 
     Each tier contains files that depend ONLY on files in previous tiers,
     meaning all files within a tier can be built concurrently.
+
+    Large tiers (> _MAX_TIER_SIZE) are split into sub-tiers grouped by
+    directory affinity so agents get smaller, focused batches.
 
     Returns a list-of-lists: ``tiers[0]`` is the foundation tier (no deps),
     ``tiers[1]`` depends only on tier 0, etc.
@@ -545,13 +553,43 @@ def _compute_tiers(files: list[dict]) -> list[list[dict]]:
 
     # Group by depth
     max_depth = max(path_to_depth.values()) if path_to_depth else 0
-    tiers: list[list[dict]] = [[] for _ in range(max_depth + 1)]
+    raw_tiers: list[list[dict]] = [[] for _ in range(max_depth + 1)]
     for f in files:
         d = path_to_depth.get(f["path"], 0)
-        tiers[d].append(f)
+        raw_tiers[d].append(f)
 
-    # Filter empty tiers
-    return [t for t in tiers if t]
+    # Split oversized tiers into sub-tiers of _MAX_TIER_SIZE
+    tiers: list[list[dict]] = []
+    for tier in raw_tiers:
+        if not tier:
+            continue
+        if len(tier) <= _MAX_TIER_SIZE:
+            tiers.append(tier)
+        else:
+            # Group by directory for cohesion, then chunk
+            dir_groups: dict[str, list[dict]] = {}
+            for f in tier:
+                d = str(Path(f["path"]).parent)
+                dir_groups.setdefault(d, []).append(f)
+            # Build sub-tiers by packing directory groups
+            sub_tier: list[dict] = []
+            for _d, group in sorted(dir_groups.items()):
+                if len(sub_tier) + len(group) > _MAX_TIER_SIZE:
+                    if sub_tier:
+                        tiers.append(sub_tier)
+                    # If a single dir group exceeds cap, chunk it
+                    if len(group) > _MAX_TIER_SIZE:
+                        for j in range(0, len(group), _MAX_TIER_SIZE):
+                            tiers.append(group[j:j + _MAX_TIER_SIZE])
+                        sub_tier = []
+                    else:
+                        sub_tier = list(group)
+                else:
+                    sub_tier.extend(group)
+            if sub_tier:
+                tiers.append(sub_tier)
+
+    return tiers
 
 
 def _tier_summary(tiers: list[list[dict]]) -> str:
@@ -1750,19 +1788,21 @@ async def _generate_fix_manifest(
 # Parallel tier execution — dispatch sub-agents per tier
 # ---------------------------------------------------------------------------
 
-_MAX_PARALLEL_AGENTS = 4  # configurable: max concurrent Opus sub-agents per tier
+_MAX_PARALLEL_AGENTS = 2  # max concurrent Opus sub-agents per tier (lower = cheaper, more thoughtful)
 
 
 def _batch_tier_files(
     tier_files: list[dict],
     max_agents: int = _MAX_PARALLEL_AGENTS,
 ) -> list[list[dict]]:
-    """Split a tier's files into sub-agent batches (2-4 files each).
+    """Split a tier's files into sub-agent batches (max 3 files each).
 
     Groups closely related files (same directory) together.
     Returns a list of batches, each being a list of file entries.
     """
-    if len(tier_files) <= 2:
+    _MAX_PER_BATCH = 3  # keep batches small so agents reason carefully
+
+    if len(tier_files) <= _MAX_PER_BATCH:
         return [tier_files]
 
     # Group by directory
@@ -1775,13 +1815,13 @@ def _batch_tier_files(
     batches: list[list[dict]] = []
     current_batch: list[dict] = []
     for _dir, group in sorted(dir_groups.items()):
-        if len(current_batch) + len(group) > 4:
+        if len(current_batch) + len(group) > _MAX_PER_BATCH:
             if current_batch:
                 batches.append(current_batch)
             # If group itself is big, split it
-            if len(group) > 4:
-                for j in range(0, len(group), 4):
-                    batches.append(group[j:j + 4])
+            if len(group) > _MAX_PER_BATCH:
+                for j in range(0, len(group), _MAX_PER_BATCH):
+                    batches.append(group[j:j + _MAX_PER_BATCH])
                 current_batch = []
             else:
                 current_batch = list(group)
@@ -1864,31 +1904,51 @@ async def execute_tier(
         ],
     })
 
-    # Build compact contract INDEX (not full text) — agents pull
-    # full contracts on demand via forge_get_project_contract tool.
+    # Pre-load relevant contracts INLINE so Coder agents don't need
+    # tool calls to fetch them.  Each contract pull via tool would add
+    # a full round-trip (output tokens for tool_use + input replay of
+    # the growing message history).  Pre-loading is far cheaper.
+    _CONTRACT_PER_CAP = 3_000   # chars per contract
+    _CONTRACT_TOTAL_CAP = 12_000  # total chars for all contracts
     relevant_types = set()
     for f in tier_files:
         for prefix, types in _CONTRACT_RELEVANCE.items():
             fp = f["path"]
             if fp.startswith(prefix) or fp.replace("backend/", "").startswith(prefix):
                 relevant_types.update(types)
-    relevant_types.update(["manifesto", "blueprint", "stack"])
+    # Always include the core contracts coders need
+    relevant_types.update(["stack", "physics", "boundaries", "schema"])
 
-    contract_index_lines: list[str] = []
-    for c in contracts:
+    _contract_parts: list[str] = []
+    _contract_total = 0
+    # Prioritise key types first
+    _priority_order = ["stack", "physics", "boundaries", "schema"]
+    _sorted_contracts = sorted(
+        contracts,
+        key=lambda c: (
+            _priority_order.index(c.get("contract_type", ""))
+            if c.get("contract_type", "") in _priority_order
+            else 100
+        ),
+    )
+    for c in _sorted_contracts:
         ctype = c.get("contract_type", "")
-        if ctype in relevant_types:
-            # Include first ~200 chars as a teaser so the agent knows
-            # whether to pull the full contract.
-            preview = (c.get("content", "") or "")[:200].replace("\n", " ").strip()
-            contract_index_lines.append(f"- **{ctype}**: {preview}...")
+        if ctype not in relevant_types:
+            continue
+        content = (c.get("content", "") or "").strip()
+        if not content:
+            continue
+        if len(content) > _CONTRACT_PER_CAP:
+            content = content[:_CONTRACT_PER_CAP] + "\n[...truncated]"
+        if _contract_total + len(content) > _CONTRACT_TOTAL_CAP:
+            break
+        _contract_parts.append(f"### {ctype}\n{content}")
+        _contract_total += len(content)
 
     contracts_summary = (
-        "## Available Project Contracts\n"
-        "Use `forge_get_project_contract('<type>')` to fetch full text.\n"
-        "Available types:\n"
-        + "\n".join(contract_index_lines)
-    ) if contract_index_lines else ""
+        "## Project Contracts (pre-loaded)\n"
+        + "\n\n".join(_contract_parts)
+    ) if _contract_parts else ""
 
     # Dispatch each batch as a sub-agent
     async def run_batch(batch: list[dict], batch_idx: int) -> SubAgentResult:

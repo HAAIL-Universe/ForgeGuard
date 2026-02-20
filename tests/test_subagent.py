@@ -155,7 +155,9 @@ class TestToolsForRole:
         assert "write_file" in names
         assert "edit_file" in names
         assert "check_syntax" in names
-        assert "run_command" in names
+        # Coder has a minimal tool set (no run_command, no contract-pull tools)
+        # to reduce tool definition tokens sent with every API round.
+        assert "run_command" not in names
         # Coder should NOT run tests
         assert "run_tests" not in names
 
