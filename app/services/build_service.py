@@ -4650,11 +4650,14 @@ async def _run_build_plan_execute(
     # Workspace is set up, recon is done, journal + invariants
     # initialised.  Pause here and let the user decide when to start
     # spending money on planners and builders.
-    _n_files = _ws_snapshot.total_files
-    _n_lines = _ws_snapshot.total_lines
-    _n_tests = _ws_snapshot.test_inventory.test_count
-    _n_tables = len(_ws_snapshot.schema_inventory.tables)
-    _n_symbols = len(_ws_snapshot.symbol_table)
+    if _ws_snapshot is not None:
+        _n_files = _ws_snapshot.total_files
+        _n_lines = _ws_snapshot.total_lines
+        _n_tests = _ws_snapshot.test_inventory.test_count
+        _n_tables = len(_ws_snapshot.schema_inventory.tables)
+        _n_symbols = len(_ws_snapshot.symbol_table)
+    else:
+        _n_files = _n_lines = _n_tests = _n_tables = _n_symbols = 0
 
     # Each line is broadcast as a separate build_log so it renders as
     # its own row in the Activity feed (no collapsed "Show more" block).
