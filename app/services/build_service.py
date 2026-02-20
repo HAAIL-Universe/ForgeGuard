@@ -5015,7 +5015,6 @@ async def _run_build_plan_execute(
                 build_id, user_id, api_key,
                 contracts, phase, workspace_info,
                 prior_phase_context=_prior_ctx,
-                max_files=_manifest_max_files,
             )
 
         if manifest:
@@ -5055,7 +5054,6 @@ async def _run_build_plan_execute(
                 build_id, user_id, api_key,
                 contracts, phase, workspace_info,
                 prior_phase_context=_prior_ctx,
-                max_files=_manifest_max_files,
             )
             # Cache the retry result too
             if manifest:
