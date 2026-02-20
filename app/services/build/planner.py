@@ -948,7 +948,7 @@ async def _generate_skeleton_manifest(
         contract_parts.append(f"## {c['contract_type']}\n{c['content'][:3000]}\n")
     contracts_text = "\n---\n".join(contract_parts)
 
-    MAX_SKELETON_CONTRACTS = 50_000
+    MAX_SKELETON_CONTRACTS = 30_000
     if len(contracts_text) > MAX_SKELETON_CONTRACTS:
         contracts_text = contracts_text[:MAX_SKELETON_CONTRACTS] + "\n[...truncated]"
 
@@ -1169,7 +1169,7 @@ async def _generate_full_manifest(
         contract_parts.append(f"## {c['contract_type']}\n{c['content']}\n")
     contracts_text = "\n---\n".join(contract_parts)
 
-    MAX_PLANNER_CONTRACTS_CHARS = 100_000
+    MAX_PLANNER_CONTRACTS_CHARS = 40_000
     if len(contracts_text) > MAX_PLANNER_CONTRACTS_CHARS:
         contracts_text = (
             contracts_text[:MAX_PLANNER_CONTRACTS_CHARS]
@@ -1232,7 +1232,7 @@ async def _generate_full_manifest(
                     "Planner context overflow (%d chars) — retrying truncated",
                     len(user_message),
                 )
-                MAX_FALLBACK_CHARS = 600_000
+                MAX_FALLBACK_CHARS = 80_000
                 truncated_msg = (
                     user_message[:MAX_FALLBACK_CHARS]
                     + "\n\n[... truncated ...]\n\n"
@@ -1397,10 +1397,17 @@ async def _generate_single_file(
 
     relevant_contracts = _select_contracts_for_file(file_path, contracts)
     contracts_text = ""
+    _PER_CONTRACT_CAP = 4_000  # keep each contract type compact
     for c in relevant_contracts:
-        contracts_text += f"\n## {c['contract_type']}\n{c['content']}\n"
+        _ctext = c["content"]
+        if len(_ctext) > _PER_CONTRACT_CAP:
+            _ctext = (
+                _ctext[:_PER_CONTRACT_CAP]
+                + f"\n[... {c['contract_type']} truncated at {_PER_CONTRACT_CAP} chars ...]\n"
+            )
+        contracts_text += f"\n## {c['contract_type']}\n{_ctext}\n"
 
-    MAX_CONTRACTS_CHARS = 120_000
+    MAX_CONTRACTS_CHARS = 20_000
     if len(contracts_text) > MAX_CONTRACTS_CHARS:
         contracts_text = (
             contracts_text[:MAX_CONTRACTS_CHARS]
@@ -1537,7 +1544,7 @@ async def _generate_single_file(
                 f"Do not add explanation before or after.\n"
             )
             minimal_msg = "\n".join(minimal_parts)
-            MAX_FALLBACK_CHARS = 600_000
+            MAX_FALLBACK_CHARS = 80_000
             if len(minimal_msg) > MAX_FALLBACK_CHARS:
                 minimal_msg = (
                     minimal_msg[:MAX_FALLBACK_CHARS]
@@ -1850,7 +1857,8 @@ async def execute_tier(
         ],
     })
 
-    # Build contracts text (filtered for relevance)
+    # Build compact contract INDEX (not full text) — agents pull
+    # full contracts on demand via forge_get_project_contract tool.
     relevant_types = set()
     for f in tier_files:
         for prefix, types in _CONTRACT_RELEVANCE.items():
@@ -1859,10 +1867,21 @@ async def execute_tier(
                 relevant_types.update(types)
     relevant_types.update(["manifesto", "blueprint", "stack"])
 
-    contracts_text = ""
+    contract_index_lines: list[str] = []
     for c in contracts:
-        if c.get("contract_type", "") in relevant_types:
-            contracts_text += f"\n### {c['contract_type']}\n{c.get('content', '')[:8000]}\n"
+        ctype = c.get("contract_type", "")
+        if ctype in relevant_types:
+            # Include first ~200 chars as a teaser so the agent knows
+            # whether to pull the full contract.
+            preview = (c.get("content", "") or "")[:200].replace("\n", " ").strip()
+            contract_index_lines.append(f"- **{ctype}**: {preview}...")
+
+    contracts_summary = (
+        "## Available Project Contracts\n"
+        "Use `forge_get_project_contract('<type>')` to fetch full text.\n"
+        "Available types:\n"
+        + "\n".join(contract_index_lines)
+    ) if contract_index_lines else ""
 
     # Dispatch each batch as a sub-agent
     async def run_batch(batch: list[dict], batch_idx: int) -> SubAgentResult:
@@ -1878,11 +1897,11 @@ async def execute_tier(
                 if ctx in all_files_written:
                     context_files[ctx] = all_files_written[ctx]
 
-        # Also get auto-detected context from disk
+        # Also get auto-detected context from disk (kept slim)
         disk_context = build_context_pack(
             working_dir, batch_paths,
-            max_context_files=8,
-            max_context_chars=40_000,
+            max_context_files=6,
+            max_context_chars=20_000,
         )
         for k, v in disk_context.items():
             if k not in context_files:
@@ -1916,7 +1935,7 @@ async def execute_tier(
             assignment=assignment,
             files=batch_paths,
             context_files=context_files,
-            contracts_text=contracts_text,
+            contracts_text=contracts_summary,  # compact index, not full text
             phase_deliverables=phase_deliverables,
             max_tokens=16_384,
             timeout_seconds=300.0,
