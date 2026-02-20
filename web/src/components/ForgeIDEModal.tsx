@@ -2475,8 +2475,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 {fmtTokens(tokenUsage.sonnet.total)}
               </span>
             </div>
-            {/* Haiku counter (narrator) */}
-            {narratorEnabled && (
+            {/* Haiku counter (chat) */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span style={{
                   fontSize: '0.5rem', fontWeight: 700, padding: '1px 5px',
@@ -2491,7 +2490,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   {fmtTokens(tokenUsage.haiku.total)}
                 </span>
               </div>
-            )}
             {/* Total */}
             <div style={{ borderLeft: '1px solid #334155', paddingLeft: '8px' }}>
               <span style={{
