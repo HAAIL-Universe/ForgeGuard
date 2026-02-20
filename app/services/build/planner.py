@@ -634,11 +634,21 @@ Rules:
 - One line per export. No prose, no explanations, no examples.
 - Keep the whole output under 120 lines."""
 
+    # Broadcast thinking event — what Sonnet is about to receive
+    _imap_sys = "You are a build coordinator. Output ONLY the interface cheat-sheet. No preamble."
+    await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+        "model": "sonnet",
+        "purpose": f"Planning Tier {tier_index} interfaces ({len(tier_files)} files)",
+        "system_prompt": _imap_sys,
+        "user_message_preview": prompt[:800],
+        "user_message_length": len(prompt),
+    })
+
     try:
         result = await llm_chat(
             api_key=api_key,
             model=_state.settings.LLM_PLANNER_MODEL,
-            system_prompt="You are a build coordinator. Output ONLY the interface cheat-sheet. No preamble.",
+            system_prompt=_imap_sys,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2048,
             provider="anthropic",
@@ -755,8 +765,327 @@ async def _extract_tier_interfaces(
 
 
 # ---------------------------------------------------------------------------
-# File manifest generation
+# Live Sonnet quality review — reviews files as they're written
 # ---------------------------------------------------------------------------
+
+_REVIEW_SYSTEM_PROMPT = """You are a rapid code reviewer. Check each file for:
+1. Missing imports or wrong import paths
+2. Empty/stub functions that should have implementation
+3. Type errors or signature mismatches with the interface map
+4. Missing error handling in critical paths
+
+Output ONE LINE per file:
+OK: <path> — no issues
+WARN: <path> — <brief issue description>
+
+Keep it SHORT. No code blocks, no suggestions, just verdicts."""
+
+
+async def _review_written_files(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    files: dict[str, str],
+    interface_map: str,
+    tier_index: int,
+) -> list[dict]:
+    """Quick Sonnet review of written files — catches issues before formal audit.
+
+    Returns list of {path, verdict, note} dicts.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    if not files:
+        return []
+
+    # Build file snippets — just first/last lines for speed
+    snippets = []
+    for path, content in files.items():
+        lines = content.split("\n")
+        if len(lines) > 60:
+            preview = "\n".join(lines[:30]) + "\n...\n" + "\n".join(lines[-20:])
+        else:
+            preview = content
+        snippets.append(f"### {path}\n```\n{preview}\n```")
+
+    prompt = (
+        f"Review these {len(files)} files from Tier {tier_index}.\n\n"
+        f"Interface map:\n{interface_map[:2000]}\n\n"
+        + "\n\n".join(snippets)
+    )
+
+    # Broadcast thinking event — Sonnet review prompt
+    await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+        "model": "sonnet",
+        "purpose": f"Reviewing {len(files)} files from Tier {tier_index}",
+        "system_prompt": _REVIEW_SYSTEM_PROMPT,
+        "user_message_preview": prompt[:800],
+        "user_message_length": len(prompt),
+    })
+
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=_state.settings.LLM_PLANNER_MODEL,
+            system_prompt=_REVIEW_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            provider="anthropic",
+        )
+
+        text = result["text"] if isinstance(result, dict) else result
+        usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+        # Record cost
+        input_t = usage.get("input_tokens", 0)
+        output_t = usage.get("output_tokens", 0)
+        model = _state.settings.LLM_PLANNER_MODEL
+        input_rate, output_rate = _get_token_rates(model)
+        cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+        await _state.build_repo.record_build_cost(
+            build_id, f"review:tier_{tier_index}", input_t, output_t, model, cost,
+        )
+        await _accumulate_cost(build_id, input_t, output_t, model, cost)
+
+        # Parse results
+        reviews: list[dict] = []
+        for line in text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("OK:"):
+                parts = line[3:].split("—", 1)
+                path = parts[0].strip()
+                reviews.append({"path": path, "verdict": "ok", "note": ""})
+            elif line.startswith("WARN:"):
+                parts = line[5:].split("—", 1)
+                path = parts[0].strip()
+                note = parts[1].strip() if len(parts) > 1 else "potential issue"
+                reviews.append({"path": path, "verdict": "warn", "note": note})
+
+        # Broadcast results
+        for r in reviews:
+            icon = "✅" if r["verdict"] == "ok" else "⚠️"
+            msg = f"{icon} Reviewed {r['path']}"
+            if r["note"]:
+                msg += f" — {r['note']}"
+            await _state._broadcast_build_event(user_id, build_id, "sonnet_review", {
+                "path": r["path"],
+                "verdict": r["verdict"],
+                "note": r["note"],
+                "tier": tier_index,
+            })
+
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Sonnet reviewed {len(reviews)} files from tier {tier_index} "
+            f"({sum(1 for r in reviews if r['verdict'] == 'warn')} warnings)",
+            source="planner", level="info",
+        )
+
+        return reviews
+
+    except Exception as exc:
+        logger.warning("Sonnet review failed for tier %d: %s", tier_index, exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# File manifest generation — two-stage: skeleton → full
+# ---------------------------------------------------------------------------
+
+_SKELETON_SYSTEM_PROMPT = """You are a build planner. Output ONLY valid JSON — no preamble, no markdown fences.
+Produce a skeleton manifest: paths, purpose, and dependency edges only.
+Keep it FAST — one line per file, no essays."""
+
+_SKELETON_USER_TEMPLATE = """List every file needed for this phase.
+
+## Contracts (summary)
+{contracts_text}
+
+## Phase
+{phase_text}
+
+{prior_phase_context}
+
+## Existing Workspace
+{workspace_info}
+
+Output JSON:
+{{"phase": "Phase {phase_num}", "files": [
+  {{"path": "relative/path.py", "purpose": "one sentence", "depends_on": ["other/file.py"]}}
+]}}
+
+Rules:
+- Include ALL files: implementation, tests, config, migrations, docs.
+- `depends_on` = files from THIS manifest that must exist first.
+- Keep purpose to ONE sentence.
+- Do NOT include files already on disk unless the phase requires modifying them."""
+
+
+async def _generate_skeleton_manifest(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    contracts: list[dict],
+    current_phase: dict,
+    workspace_info: str,
+    prior_phase_context: str = "",
+) -> list[dict] | None:
+    """Fast skeleton manifest — paths + purpose + deps only (~5-10s).
+
+    Returns a list of dicts with keys: path, purpose, depends_on, status.
+    Enough to compute tiers immediately. Language/estimated_lines/context_files
+    use defaults and get refined during per-tier interface planning.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    contract_parts = []
+    for c in contracts:
+        if c["contract_type"] == "phases":
+            continue
+        # Shorter summaries for skeleton — just first 3000 chars each
+        contract_parts.append(f"## {c['contract_type']}\n{c['content'][:3000]}\n")
+    contracts_text = "\n---\n".join(contract_parts)
+
+    MAX_SKELETON_CONTRACTS = 50_000
+    if len(contracts_text) > MAX_SKELETON_CONTRACTS:
+        contracts_text = contracts_text[:MAX_SKELETON_CONTRACTS] + "\n[...truncated]"
+
+    phase_text = (
+        f"Phase {current_phase['number']} — {current_phase['name']}\n"
+        f"Objective: {current_phase.get('objective', '')}\n"
+        f"Deliverables:\n"
+    )
+    for d in current_phase.get("deliverables", []):
+        phase_text += f"- {d}\n"
+
+    user_message = _SKELETON_USER_TEMPLATE.format(
+        contracts_text=contracts_text,
+        phase_text=phase_text,
+        prior_phase_context=prior_phase_context or "(first phase)",
+        workspace_info=workspace_info,
+        phase_num=current_phase["number"],
+    )
+
+    await _state.build_repo.append_build_log(
+        build_id,
+        f"Generating skeleton manifest for Phase {current_phase['number']}",
+        source="planner", level="info",
+    )
+
+    # Broadcast thinking event — skeleton manifest prompt
+    await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+        "model": "sonnet",
+        "purpose": f"Planning file manifest for Phase {current_phase['number']}",
+        "system_prompt": _SKELETON_SYSTEM_PROMPT,
+        "user_message_preview": user_message[:800],
+        "user_message_length": len(user_message),
+    })
+
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=_state.settings.LLM_PLANNER_MODEL,
+            system_prompt=_SKELETON_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=4096,
+            provider="anthropic",
+        )
+
+        text = result["text"] if isinstance(result, dict) else result
+        usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+        # Record cost
+        input_t = usage.get("input_tokens", 0)
+        output_t = usage.get("output_tokens", 0)
+        model = _state.settings.LLM_PLANNER_MODEL
+        input_rate, output_rate = _get_token_rates(model)
+        cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+        await _state.build_repo.record_build_cost(
+            build_id, f"Phase {current_phase['number']} (skeleton)", input_t, output_t, model, cost,
+        )
+        await _accumulate_cost(build_id, input_t, output_t, model, cost)
+
+        # Parse JSON
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            first_nl = cleaned.find("\n")
+            if first_nl >= 0:
+                cleaned = cleaned[first_nl + 1:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+        cleaned = cleaned.strip()
+
+        manifest = json.loads(cleaned)
+        files = manifest.get("files", [])
+
+        valid_files = []
+        seen_paths: set[str] = set()
+        for f in files:
+            path = f.get("path", "")
+            if not path or ".." in path or path.startswith("/"):
+                continue
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            # Infer language from extension
+            ext = Path(path).suffix.lstrip(".")
+            lang_map = {
+                "py": "python", "ts": "typescript", "tsx": "typescript",
+                "js": "javascript", "jsx": "javascript", "md": "markdown",
+                "yml": "yaml", "yaml": "yaml", "json": "json",
+                "sql": "sql", "sh": "shell", "ps1": "powershell",
+                "ini": "ini", "toml": "toml", "env": "shell",
+                "mako": "mako", "html": "html", "css": "css",
+            }
+            valid_files.append({
+                "path": path,
+                "action": f.get("action", "create"),
+                "purpose": f.get("purpose", ""),
+                "depends_on": f.get("depends_on", []),
+                "context_files": [],  # filled during tier detail planning
+                "estimated_lines": f.get("estimated_lines", 100),
+                "language": f.get("language", lang_map.get(ext, "python")),
+                "status": "pending",
+            })
+
+        sorted_files = _topological_sort(valid_files)
+
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Skeleton manifest: {len(sorted_files)} files ({input_t + output_t} tokens)",
+            source="planner", level="info",
+        )
+
+        return sorted_files
+
+    except json.JSONDecodeError as exc:
+        logger.warning("Skeleton JSON parse failed: %s — trying regex", exc)
+        try:
+            json_match = re.search(r"\{[\s\S]*\}", text)
+            if json_match:
+                manifest = json.loads(json_match.group())
+                return _topological_sort([
+                    {
+                        "path": f.get("path", ""),
+                        "action": f.get("action", "create"),
+                        "purpose": f.get("purpose", ""),
+                        "depends_on": f.get("depends_on", []),
+                        "context_files": [],
+                        "estimated_lines": f.get("estimated_lines", 100),
+                        "language": f.get("language", "python"),
+                        "status": "pending",
+                    }
+                    for f in manifest.get("files", [])
+                    if f.get("path") and ".." not in f.get("path", "") and not f.get("path", "").startswith("/")
+                ]) or None
+        except Exception:
+            pass
+        return None
+    except Exception as exc:
+        logger.error("Skeleton manifest failed: %s", exc, exc_info=True)
+        return None
 
 
 async def _generate_file_manifest(
@@ -770,6 +1099,10 @@ async def _generate_file_manifest(
 ) -> list[dict] | None:
     """Generate a structured file manifest for a phase via Sonnet planner.
 
+    Uses two-stage approach:
+    1. Try fast skeleton manifest (~5-10s, paths + deps only)
+    2. Fall back to full manifest if skeleton fails
+
     Parameters
     ----------
     prior_phase_context : str
@@ -777,6 +1110,51 @@ async def _generate_file_manifest(
         Injected into the planner prompt so the manifest accounts for
         cross-phase dependencies.
     """
+    # Stage 1: Try fast skeleton
+    skeleton = await _generate_skeleton_manifest(
+        build_id, user_id, api_key,
+        contracts, current_phase,
+        workspace_info, prior_phase_context,
+    )
+    if skeleton and len(skeleton) >= 2:
+        await _state._broadcast_build_event(user_id, build_id, "file_manifest", {
+            "phase": f"Phase {current_phase['number']}",
+            "files": [
+                {
+                    "path": f["path"],
+                    "purpose": f["purpose"],
+                    "status": f["status"],
+                    "language": f["language"],
+                    "estimated_lines": f["estimated_lines"],
+                }
+                for f in skeleton
+            ],
+        })
+        return skeleton
+
+    # Stage 2: Skeleton failed or too few files — fall back to full manifest
+    await _state.build_repo.append_build_log(
+        build_id,
+        "Skeleton manifest insufficient — falling back to full manifest generation",
+        source="planner", level="warn",
+    )
+    return await _generate_full_manifest(
+        build_id, user_id, api_key,
+        contracts, current_phase,
+        workspace_info, prior_phase_context,
+    )
+
+
+async def _generate_full_manifest(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    contracts: list[dict],
+    current_phase: dict,
+    workspace_info: str,
+    prior_phase_context: str = "",
+) -> list[dict] | None:
+    """Full manifest generation — original monolithic approach (fallback)."""
     from app.clients.llm_client import chat as llm_chat
 
     if not _PLANNER_BUILD_PROMPT_PATH.exists():
@@ -826,6 +1204,15 @@ async def _generate_file_manifest(
         f"Generating file manifest for Phase {current_phase['number']}",
         source="planner", level="info",
     )
+
+    # Broadcast thinking event — full manifest prompt
+    await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+        "model": "sonnet",
+        "purpose": f"Full manifest generation for Phase {current_phase['number']}",
+        "system_prompt": system_prompt[:400] + ("..." if len(system_prompt) > 400 else ""),
+        "user_message_preview": user_message[:800],
+        "user_message_length": len(user_message),
+    })
 
     text = ""
     try:
@@ -1092,6 +1479,18 @@ async def _generate_single_file(
     )
 
     user_message = "\n".join(parts)
+
+    # Broadcast thinking event — what Opus is about to receive
+    await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+        "model": "opus",
+        "purpose": f"Building {file_path}",
+        "system_prompt": system_prompt,
+        "user_message_preview": user_message[:800],
+        "user_message_length": len(user_message),
+        "file": file_path,
+        "contracts_included": [c['contract_type'] for c in relevant_contracts],
+        "context_files": list(budgeted_context.keys()),
+    })
 
     await _state._broadcast_build_event(user_id, build_id, "file_generating", {
         "path": file_path,
@@ -1420,6 +1819,17 @@ async def execute_tier(
 
     batches = _batch_tier_files(tier_files)
 
+    # Compute common path prefix for display stripping
+    all_paths = [f["path"] for f in tier_files]
+    if len(all_paths) > 1:
+        _common = os.path.commonpath(all_paths)
+        # Only strip if it's a directory prefix (contains /)
+        common_prefix = (_common.rsplit("/", 1)[0] + "/") if "/" in _common else ""
+    elif all_paths and "/" in all_paths[0]:
+        common_prefix = all_paths[0].rsplit("/", 1)[0] + "/"
+    else:
+        common_prefix = ""
+
     await _state.build_repo.append_build_log(
         build_id,
         f"Tier {tier_index}: {len(tier_files)} files in {len(batches)} parallel batches",
@@ -1429,7 +1839,15 @@ async def execute_tier(
         "tier": tier_index,
         "file_count": len(tier_files),
         "batch_count": len(batches),
-        "files": [f["path"] for f in tier_files],
+        "files": all_paths,
+        "common_prefix": common_prefix,
+        "agents": [
+            {
+                "agent_id": f"agent-{idx}",
+                "files": [f["path"] for f in batch],
+            }
+            for idx, batch in enumerate(batches)
+        ],
     })
 
     # Build contracts text (filtered for relevance)
@@ -1504,15 +1922,57 @@ async def execute_tier(
             timeout_seconds=300.0,
         )
 
+        _agent_id = f"agent-{batch_idx}"
+
+        # Broadcast thinking event — what the sub-agent is about to receive
+        await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+            "model": "opus",
+            "purpose": f"Agent {batch_idx} — building {len(batch)} files",
+            "system_prompt": "CODER sub-agent: write production-quality code for assigned files",
+            "user_message_preview": assignment[:800],
+            "user_message_length": len(assignment),
+            "files": batch_paths,
+            "context_file_count": len(context_files),
+        })
+
+        # Broadcast agent start with file list
+        await _state._broadcast_build_event(user_id, build_id, "agent_start", {
+            "agent_id": _agent_id,
+            "tier": tier_index,
+            "files": batch_paths,
+            "file_count": len(batch_paths),
+            "common_prefix": common_prefix,
+        })
+
         # Emit per-file generating events
         for fp in batch_paths:
             await _state._broadcast_build_event(user_id, build_id, "file_generating", {
                 "path": fp,
-                "batch_index": batch_idx,
+                "agent_id": _agent_id,
                 "tier": tier_index,
+                "common_prefix": common_prefix,
             })
 
-        return await run_sub_agent(handoff, working_dir, api_key, key_pool=key_pool)
+        _sub_result = await run_sub_agent(handoff, working_dir, api_key, key_pool=key_pool)
+
+        # Broadcast per-file completion from this agent
+        for fp in _sub_result.files_written:
+            await _state._broadcast_build_event(user_id, build_id, "agent_file_done", {
+                "agent_id": _agent_id,
+                "tier": tier_index,
+                "path": fp,
+            })
+
+        # Broadcast agent completion
+        await _state._broadcast_build_event(user_id, build_id, "agent_done", {
+            "agent_id": _agent_id,
+            "tier": tier_index,
+            "files_written": _sub_result.files_written,
+            "file_count": len(_sub_result.files_written),
+            "duration_s": round(_sub_result.duration_seconds, 1),
+        })
+
+        return _sub_result
 
     # Run batches in parallel
     tasks = [

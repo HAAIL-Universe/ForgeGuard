@@ -92,6 +92,17 @@ interface LogEntry {
     fileCount: number;
     files?: string[];
   };
+  /** Present when this is an LLM thinking/prompt event */
+  thinking?: {
+    purpose: string;
+    systemPrompt: string;
+    userMessagePreview: string;
+    userMessageLength: number;
+    file?: string;
+    contractsIncluded?: string[];
+    contextFiles?: string[];
+    files?: string[];
+  };
 }
 
 function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
@@ -117,6 +128,28 @@ interface ChecklistItem {
   description: string;
   status: 'pending' | 'written' | 'auditing' | 'passed' | 'failed' | 'rejected';
   tierIndex?: number;
+}
+
+/* ---------- Agent tracking types ---------- */
+
+interface AgentFileEntry {
+  path: string;
+  displayPath: string;
+  status: 'pending' | 'building' | 'done';
+}
+
+interface AgentInfo {
+  agentId: string;
+  tier: number;
+  files: AgentFileEntry[];
+  status: 'running' | 'done';
+  startedAt: string;
+}
+
+interface TierAgentGroup {
+  tier: number;
+  agents: AgentInfo[];
+  commonPrefix: string;
 }
 
 /* ---------- Build mode types ---------- */
@@ -277,6 +310,295 @@ const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistI
   );
 });
 
+/* ---------- Agent Panel (grouped Opus display) ---------- */
+
+const AgentFileRow = memo(function AgentFileRow({ file, accentColor }: { file: AgentFileEntry; accentColor: string }) {
+  const icon = file.status === 'done' ? '✅' : file.status === 'building' ? '⏳' : '○';
+  const color = file.status === 'done' ? '#22C55E' : file.status === 'building' ? accentColor : '#475569';
+  return (
+    <div style={{ display: 'flex', gap: '6px', lineHeight: 1.6, color, fontSize: '0.7rem', paddingLeft: '16px' }}>
+      <span style={{ flexShrink: 0, width: '14px' }}>{icon}</span>
+      <span style={{
+        opacity: file.status === 'done' ? 0.6 : 1,
+        textDecoration: file.status === 'done' ? 'line-through' : 'none',
+      }}>
+        {file.displayPath}
+      </span>
+    </div>
+  );
+});
+
+const AgentSection = memo(function AgentSection({ agent, accentColor }: { agent: AgentInfo; accentColor: string }) {
+  const [collapsed, setCollapsed] = useState(agent.status === 'done');
+  const doneCount = agent.files.filter(f => f.status === 'done').length;
+  const total = agent.files.length;
+  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+  const isDone = agent.status === 'done';
+
+  // Auto-collapse when done, auto-expand when running
+  useEffect(() => {
+    setCollapsed(isDone);
+  }, [isDone]);
+
+  return (
+    <div style={{ marginBottom: '4px' }}>
+      <div
+        onClick={() => setCollapsed(!collapsed)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '3px 8px', cursor: 'pointer',
+          background: isDone ? '#22C55E08' : `${accentColor}0C`,
+          borderLeft: `2px solid ${isDone ? '#22C55E44' : accentColor + '66'}`,
+          borderRadius: '2px', fontSize: '0.65rem',
+          color: isDone ? '#22C55E' : accentColor,
+          fontWeight: 600, letterSpacing: '0.3px',
+        }}
+      >
+        <span style={{ fontSize: '0.6rem' }}>{collapsed ? '▶' : '▼'}</span>
+        <span>{agent.agentId.replace('agent-', 'Agent ')}</span>
+        <span style={{ color: '#64748B', fontWeight: 400 }}>— Tier {agent.tier}</span>
+        <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums', color: '#94A3B8', fontWeight: 400 }}>
+          ({doneCount}/{total})
+        </span>
+        {!isDone && (
+          <span style={{ fontSize: '0.55rem', color: accentColor }}>⚡</span>
+        )}
+      </div>
+      {/* Mini progress bar */}
+      <div style={{ height: '2px', background: '#1E293B', marginTop: '1px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%', width: `${pct}%`,
+          background: isDone ? '#22C55E' : `linear-gradient(90deg, ${accentColor}, #A855F7)`,
+          transition: 'width 0.3s ease',
+        }} />
+      </div>
+      {!collapsed && (
+        <div style={{ padding: '2px 0' }}>
+          {agent.files.map((f) => (
+            <AgentFileRow key={f.path} file={f} accentColor={accentColor} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+const AgentPanel = memo(function AgentPanel({
+  agents,
+  status,
+  opusLogs,
+  label,
+  labelColor,
+  emptyText,
+}: {
+  agents: AgentInfo[];
+  status: string;
+  opusLogs: LogEntry[];
+  label: string;
+  labelColor: string;
+  emptyText: string;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scrolledAway = useRef(false);
+  const prevCount = useRef(agents.length);
+  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
+
+  const handleScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    scrolledAway.current = remaining > 60;
+  }, []);
+
+  useEffect(() => {
+    if (agents.length !== prevCount.current) {
+      prevCount.current = agents.length;
+      if (!scrolledAway.current && containerRef.current) {
+        requestAnimationFrame(() => {
+          const el = containerRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      }
+    }
+  }, [agents.length]);
+
+  const totalFiles = agents.reduce((n, a) => n + a.files.length, 0);
+  const doneFiles = agents.reduce((n, a) => n + a.files.filter(f => f.status === 'done').length, 0);
+  const activeAgents = agents.filter(a => a.status === 'running').length;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minHeight: 0 }}>
+      {/* Panel header */}
+      <div style={{
+        padding: '4px 12px', borderBottom: '1px solid #1E293B',
+        fontSize: '0.6rem', fontWeight: 700, color: labelColor,
+        letterSpacing: '0.5px', background: labelColor + '08',
+        display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0,
+      }}>
+        <span style={{
+          width: '6px', height: '6px', borderRadius: '50%',
+          background: labelColor, display: 'inline-block',
+        }} />
+        {label}
+        {agents.length > 0 && (
+          <span style={{ color: '#475569', fontSize: '0.55rem', fontWeight: 400 }}>
+            {activeAgents > 0 ? `${activeAgents} active` : ''} · {doneFiles}/{totalFiles} files
+          </span>
+        )}
+      </div>
+      {/* Agent list */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        style={{
+          flex: 1, overflowY: 'auto', padding: '6px 8px',
+          fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+          fontSize: '0.75rem', lineHeight: 1.5,
+        }}
+      >
+        {agents.length === 0 ? (
+          opusLogs.length === 0 ? (
+            <div style={{ color: '#475569', padding: '12px 0', fontSize: '0.7rem' }}>
+              {emptyText}
+            </div>
+          ) : (
+            /* Fall back to flat log display when no agent events yet */
+            opusLogs.map((log, i) => {
+              const color = LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info;
+              const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+              const isLLMThinking = !!log.thinking;
+              const isExpanded = isLLMThinking && expandedThinking.has(i);
+              return (
+                <div key={i}>
+                  <div
+                    style={{
+                      display: 'flex', gap: '8px', padding: isLLMThinking ? '3px 0 3px 12px' : '1px 0',
+                      color: isLLMThinking ? labelColor : color,
+                      borderLeft: isLLMThinking ? `2px solid ${labelColor}66` : 'none',
+                      background: isLLMThinking ? `${labelColor}0A` : undefined,
+                      cursor: isLLMThinking ? 'pointer' : undefined,
+                      borderRadius: isLLMThinking ? '2px' : undefined,
+                    }}
+                    onClick={isLLMThinking ? () => {
+                      setExpandedThinking((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(i)) next.delete(i); else next.add(i);
+                        return next;
+                      });
+                    } : undefined}
+                  >
+                    <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem' }}>{ts}</span>
+                    <span style={{ wordBreak: 'break-word' }}>
+                      {log.message}
+                      {isLLMThinking && (
+                        <span style={{ color: labelColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
+                          {isExpanded ? '▼' : '▶'} {(log.thinking!.userMessageLength / 1000).toFixed(1)}k chars
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {isExpanded && log.thinking && (
+                    <div style={{
+                      margin: '2px 0 6px 86px', background: '#0F172A',
+                      border: `1px solid ${labelColor}33`, borderRadius: '4px',
+                      fontSize: '0.7rem', lineHeight: 1.5, overflow: 'hidden',
+                    }}>
+                      <div style={{ padding: '6px 10px', borderBottom: `1px solid ${labelColor}22` }}>
+                        <div style={{ color: labelColor, fontSize: '0.6rem', fontWeight: 700, marginBottom: '3px' }}>SYSTEM PROMPT</div>
+                        <pre style={{ margin: 0, color: '#94A3B8', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '120px', overflowY: 'auto' }}>
+                          <code>{log.thinking.systemPrompt}</code>
+                        </pre>
+                      </div>
+                      <div style={{ padding: '6px 10px' }}>
+                        <div style={{ color: labelColor, fontSize: '0.6rem', fontWeight: 700, marginBottom: '3px' }}>
+                          USER MESSAGE ({(log.thinking.userMessageLength / 1000).toFixed(1)}k chars)
+                        </div>
+                        <pre style={{ margin: 0, color: '#CBD5E1', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto' }}>
+                          <code>{log.thinking.userMessagePreview}</code>
+                          {log.thinking.userMessageLength > log.thinking.userMessagePreview.length && (
+                            <span style={{ color: '#64748B', fontStyle: 'italic' }}>
+                              {'\n'}... truncated ({log.thinking.userMessageLength - log.thinking.userMessagePreview.length} more chars)
+                            </span>
+                          )}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )
+        ) : (
+          <>
+            {/* Show Opus thinking entries above agent sections */}
+            {opusLogs.filter(l => !!l.thinking).map((log, i) => {
+              const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+              const isExpanded = expandedThinking.has(i + 10000);
+              return (
+                <div key={`think-${i}`} style={{ marginBottom: '4px' }}>
+                  <div
+                    style={{
+                      display: 'flex', gap: '8px', padding: '3px 0 3px 12px',
+                      color: labelColor, borderLeft: `2px solid ${labelColor}66`,
+                      background: `${labelColor}0A`, cursor: 'pointer', borderRadius: '2px',
+                    }}
+                    onClick={() => {
+                      setExpandedThinking((prev) => {
+                        const next = new Set(prev);
+                        const key = i + 10000;
+                        if (next.has(key)) next.delete(key); else next.add(key);
+                        return next;
+                      });
+                    }}
+                  >
+                    <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem' }}>{ts}</span>
+                    <span style={{ wordBreak: 'break-word' }}>
+                      {log.message}
+                      <span style={{ color: labelColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
+                        {isExpanded ? '▼' : '▶'} {(log.thinking!.userMessageLength / 1000).toFixed(1)}k chars
+                      </span>
+                    </span>
+                  </div>
+                  {isExpanded && log.thinking && (
+                    <div style={{
+                      margin: '2px 0 6px 86px', background: '#0F172A',
+                      border: `1px solid ${labelColor}33`, borderRadius: '4px',
+                      fontSize: '0.7rem', lineHeight: 1.5, overflow: 'hidden',
+                    }}>
+                      <div style={{ padding: '6px 10px', borderBottom: `1px solid ${labelColor}22` }}>
+                        <div style={{ color: labelColor, fontSize: '0.6rem', fontWeight: 700, marginBottom: '3px' }}>SYSTEM PROMPT</div>
+                        <pre style={{ margin: 0, color: '#94A3B8', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '120px', overflowY: 'auto' }}>
+                          <code>{log.thinking.systemPrompt}</code>
+                        </pre>
+                      </div>
+                      <div style={{ padding: '6px 10px' }}>
+                        <div style={{ color: labelColor, fontSize: '0.6rem', fontWeight: 700, marginBottom: '3px' }}>
+                          USER MESSAGE ({(log.thinking.userMessageLength / 1000).toFixed(1)}k chars)
+                        </div>
+                        <pre style={{ margin: 0, color: '#CBD5E1', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto' }}>
+                          <code>{log.thinking.userMessagePreview}</code>
+                          {log.thinking.userMessageLength > log.thinking.userMessagePreview.length && (
+                            <span style={{ color: '#64748B', fontStyle: 'italic' }}>
+                              {'\n'}... truncated ({log.thinking.userMessageLength - log.thinking.userMessagePreview.length} more chars)
+                            </span>
+                          )}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {agents.map((agent) => (
+              <AgentSection key={agent.agentId} agent={agent} accentColor={labelColor} />
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
+
 /* ---------- Active log line (own timer) ---------- */
 
 /**
@@ -356,6 +678,7 @@ const LogPane = memo(function LogPane({
   const scrolledAway = useRef(false);
   const prevLogCount = useRef(panelLogs.length);
   const [expandedScratchpads, setExpandedScratchpads] = useState<Set<number>>(new Set());
+  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -445,40 +768,60 @@ const LogPane = memo(function LogPane({
           }
 
           const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
-          const isThinking = log.level === 'thinking';
+          const isThinkingLevel = log.level === 'thinking';
           const isScratchpad = !!log.scratchpad;
+          const isLLMThinking = !!log.thinking;
           const isTier = !!log.tier;
-          const isExpanded = isScratchpad && expandedScratchpads.has(i);
+          const isExpandable = isScratchpad || isLLMThinking;
+          const isExpanded = isScratchpad
+            ? expandedScratchpads.has(i)
+            : isLLMThinking ? expandedThinking.has(i) : false;
+
+          const thinkingColor = isLLMThinking
+            ? (log.worker === 'opus' ? '#D946EF' : '#38BDF8')
+            : undefined;
 
           return (
             <div key={i}>
               <div
                 style={{
-                  color,
+                  color: isLLMThinking ? thinkingColor : color,
                   display: 'flex', gap: '8px',
-                  padding: isThinking ? '1px 0 1px 12px' : '1px 0',
-                  borderLeft: isThinking ? '2px solid #7C3AED33'
+                  padding: isThinkingLevel ? '1px 0 1px 12px'
+                    : isLLMThinking ? '3px 0 3px 12px' : '1px 0',
+                  borderLeft: isLLMThinking ? `2px solid ${thinkingColor}66`
+                    : isThinkingLevel ? '2px solid #7C3AED33'
                     : isScratchpad ? '2px solid #F59E0B44'
                     : isTier ? '2px solid #3B82F644'
                     : 'none',
                   opacity: log.level === 'debug' ? 0.5 : 1,
-                  cursor: isScratchpad ? 'pointer' : undefined,
-                  background: isScratchpad ? '#F59E0B08' : isTier ? '#3B82F608' : undefined,
-                  borderRadius: isScratchpad || isTier ? '2px' : undefined,
+                  cursor: isExpandable ? 'pointer' : undefined,
+                  background: isLLMThinking ? `${thinkingColor}0A`
+                    : isScratchpad ? '#F59E0B08'
+                    : isTier ? '#3B82F608' : undefined,
+                  borderRadius: isExpandable || isTier ? '2px' : undefined,
                 }}
-                onClick={isScratchpad ? () => {
-                  setExpandedScratchpads((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(i)) next.delete(i); else next.add(i);
-                    return next;
-                  });
+                onClick={isExpandable ? () => {
+                  if (isScratchpad) {
+                    setExpandedScratchpads((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(i)) next.delete(i); else next.add(i);
+                      return next;
+                    });
+                  } else if (isLLMThinking) {
+                    setExpandedThinking((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(i)) next.delete(i); else next.add(i);
+                      return next;
+                    });
+                  }
                 } : undefined}
-                title={isScratchpad ? 'Click to expand scratchpad content' : undefined}
+                title={isExpandable ? 'Click to expand' : undefined}
               >
                 <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
                   {ts}
                 </span>
-                {icon && (
+                {icon && !isLLMThinking && (
                   <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
                     {icon}
                   </span>
@@ -488,6 +831,11 @@ const LogPane = memo(function LogPane({
                   {isScratchpad && (
                     <span style={{ color: '#F59E0B', fontSize: '0.6rem', marginLeft: '6px' }}>
                       {isExpanded ? '▼' : '▶'} {log.scratchpad!.fullLength} chars
+                    </span>
+                  )}
+                  {isLLMThinking && (
+                    <span style={{ color: thinkingColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
+                      {isExpanded ? '▼' : '▶'} {(log.thinking!.userMessageLength / 1000).toFixed(1)}k chars
                     </span>
                   )}
                 </span>
@@ -515,6 +863,63 @@ const LogPane = memo(function LogPane({
                     </div>
                   )}
                 </pre>
+              )}
+              {/* Expanded LLM thinking content */}
+              {isExpanded && log.thinking && (
+                <div style={{
+                  margin: '2px 0 6px 86px',
+                  background: '#0F172A',
+                  border: `1px solid ${thinkingColor}33`,
+                  borderRadius: '4px',
+                  fontSize: '0.7rem',
+                  lineHeight: 1.5,
+                  overflow: 'hidden',
+                }}>
+                  {/* System prompt section */}
+                  <div style={{ padding: '6px 10px', borderBottom: `1px solid ${thinkingColor}22` }}>
+                    <div style={{ color: thinkingColor, fontSize: '0.6rem', fontWeight: 700, marginBottom: '3px', letterSpacing: '0.5px' }}>
+                      SYSTEM PROMPT
+                    </div>
+                    <pre style={{
+                      margin: 0, color: '#94A3B8', whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word', maxHeight: '120px', overflowY: 'auto',
+                    }}>
+                      <code>{log.thinking.systemPrompt}</code>
+                    </pre>
+                  </div>
+                  {/* User message preview section */}
+                  <div style={{ padding: '6px 10px', borderBottom: `1px solid ${thinkingColor}22` }}>
+                    <div style={{ color: thinkingColor, fontSize: '0.6rem', fontWeight: 700, marginBottom: '3px', letterSpacing: '0.5px' }}>
+                      USER MESSAGE ({(log.thinking.userMessageLength / 1000).toFixed(1)}k chars)
+                    </div>
+                    <pre style={{
+                      margin: 0, color: '#CBD5E1', whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto',
+                    }}>
+                      <code>{log.thinking.userMessagePreview}</code>
+                      {log.thinking.userMessageLength > log.thinking.userMessagePreview.length && (
+                        <span style={{ color: '#64748B', fontStyle: 'italic' }}>
+                          {'\n'}... truncated ({log.thinking.userMessageLength - log.thinking.userMessagePreview.length} more chars)
+                        </span>
+                      )}
+                    </pre>
+                  </div>
+                  {/* Metadata bar */}
+                  <div style={{
+                    padding: '4px 10px', display: 'flex', gap: '12px', flexWrap: 'wrap',
+                    color: '#64748B', fontSize: '0.6rem',
+                  }}>
+                    {log.thinking.contractsIncluded && log.thinking.contractsIncluded.length > 0 && (
+                      <span>Contracts: {log.thinking.contractsIncluded.join(', ')}</span>
+                    )}
+                    {log.thinking.contextFiles && log.thinking.contextFiles.length > 0 && (
+                      <span>Context: {log.thinking.contextFiles.length} files</span>
+                    )}
+                    {log.thinking.files && log.thinking.files.length > 0 && (
+                      <span>Files: {log.thinking.files.join(', ')}</span>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           );
@@ -563,6 +968,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   } | null>(null);
   const [fixProgress, setFixProgress] = useState<{ tier: number; attempt: number; max: number } | null>(null);
   const [fileChecklist, setFileChecklist] = useState<ChecklistItem[]>([]);
+  const [opusAgents, setOpusAgents] = useState<AgentInfo[]>([]);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
@@ -967,11 +1373,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               );
               break;
 
-            case 'file_generating':
-              setFileChecklist((prev) => prev.map((c) =>
-                c.file === p.path ? { ...c, status: 'written' as const } : c
-              ));
-              break;
+            /* file_generating handled below with agent tracking */
 
             case 'file_generated':
               setFileChecklist((prev) => prev.map((c) =>
@@ -1150,6 +1552,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 message: `♻ Context reset for ${p.phase || 'next phase'} (dropped ${p.dropped || 0} messages)`,
                 worker: 'system',
               }]);
+              // Clear agent tracker for new phase
+              setOpusAgents([]);
               break;
 
             case 'verification_result':
@@ -1191,6 +1595,47 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
+            /* ---- Sonnet live review results ---- */
+            case 'sonnet_review': {
+              const icon = p.verdict === 'ok' ? '✅' : '⚠️';
+              const note = (p.note as string) || '';
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'review', level: p.verdict === 'ok' ? 'info' : 'warn',
+                message: `${icon} Reviewed ${p.path}${note ? ` — ${note}` : ''}`,
+                worker: 'sonnet',
+              }]);
+              break;
+            }
+
+            /* ---- LLM thinking / prompt visibility ---- */
+            case 'llm_thinking': {
+              const model = (p.model as string) || 'sonnet';
+              const purpose = (p.purpose as string) || 'Processing...';
+              const sysPrompt = (p.system_prompt as string) || '';
+              const msgPreview = (p.user_message_preview as string) || '';
+              const msgLen = (p.user_message_length as number) || 0;
+              const thinkWorker: 'sonnet' | 'opus' = model === 'opus' ? 'opus' : 'sonnet';
+              const icon = thinkWorker === 'sonnet' ? '🧠' : '📋';
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'thinking', level: 'thinking',
+                message: `${icon} ${purpose}`,
+                worker: thinkWorker,
+                thinking: {
+                  purpose,
+                  systemPrompt: sysPrompt,
+                  userMessagePreview: msgPreview,
+                  userMessageLength: msgLen,
+                  file: (p.file as string) || undefined,
+                  contractsIncluded: p.contracts_included as string[] || undefined,
+                  contextFiles: (p.context_files as string[]) || undefined,
+                  files: (p.files as string[]) || undefined,
+                },
+              }]);
+              break;
+            }
+
             /* ---- Tier progress events ---- */
             case 'tiers_computed': {
               setLogs((prev) => [...prev, {
@@ -1219,10 +1664,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'tier_start': {
               const tierFiles = (p.files as string[]) || [];
+              const prefix = (p.common_prefix as string) || '';
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: 'planner', level: 'info',
-                message: `⚡ Tier ${p.tier}: Building ${p.file_count || tierFiles.length} files in ${p.batch_count || 1} parallel batches`,
+                message: `⚡ Tier ${p.tier}: Building ${p.file_count || tierFiles.length} files in ${p.batch_count || 1} parallel agents`,
                 worker: 'opus',
                 tier: {
                   index: p.tier as number,
@@ -1248,10 +1694,80 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   files: written,
                 },
               }]);
+              // Mark all agents in this tier as done
+              setOpusAgents((prev) => prev.map(a =>
+                a.tier === (p.tier as number)
+                  ? { ...a, status: 'done' as const, files: a.files.map(f => ({ ...f, status: 'done' as const })) }
+                  : a
+              ));
               break;
             }
 
-            /* ---- Sub-agent events ---- */
+            /* ---- Agent tracking events ---- */
+            case 'agent_start': {
+              const agentId = p.agent_id as string;
+              const tier = p.tier as number;
+              const files = (p.files as string[]) || [];
+              const prefix = (p.common_prefix as string) || '';
+              setOpusAgents((prev) => {
+                // Don't add duplicate
+                if (prev.some(a => a.agentId === agentId)) return prev;
+                return [...prev, {
+                  agentId,
+                  tier,
+                  status: 'running' as const,
+                  startedAt: new Date().toISOString(),
+                  files: files.map(f => ({
+                    path: f,
+                    displayPath: prefix && f.startsWith(prefix) ? f.slice(prefix.length) : f,
+                    status: 'pending' as const,
+                  })),
+                }];
+              });
+              break;
+            }
+
+            case 'file_generating': {
+              // Mark file as building in agent tracker
+              const agentId = p.agent_id as string;
+              if (agentId) {
+                setOpusAgents((prev) => prev.map(a =>
+                  a.agentId === agentId
+                    ? { ...a, files: a.files.map(f => f.path === p.path ? { ...f, status: 'building' as const } : f) }
+                    : a
+                ));
+              }
+              setFileChecklist((prev) => prev.map((c) =>
+                c.file === p.path ? { ...c, status: 'written' as const } : c
+              ));
+              break;
+            }
+
+            case 'agent_file_done': {
+              const agentId = p.agent_id as string;
+              setOpusAgents((prev) => prev.map(a =>
+                a.agentId === agentId
+                  ? { ...a, files: a.files.map(f => f.path === p.path ? { ...f, status: 'done' as const } : f) }
+                  : a
+              ));
+              break;
+            }
+
+            case 'agent_done': {
+              const agentId = p.agent_id as string;
+              setOpusAgents((prev) => prev.map(a =>
+                a.agentId === agentId
+                  ? {
+                      ...a,
+                      status: 'done' as const,
+                      files: a.files.map(f => ({ ...f, status: 'done' as const })),
+                    }
+                  : a
+              ));
+              break;
+            }
+
+            /* ---- Sub-agent events (legacy flat log) ---- */
             case 'subagent_start':
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
@@ -2187,12 +2703,13 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
               {/* Right column — stacked Opus (top) + Sonnet (bottom) — 60% */}
               <div ref={rightColRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                {/* Opus — top */}
+                {/* Opus — top (agent grouped view) */}
                 <div style={{ height: `${opusPct}%`, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                    <LogPane
-                      logs={opusLogs}
+                    <AgentPanel
+                      agents={opusAgents}
                       status={status}
+                      opusLogs={opusLogs}
                       label="OPUS"
                       labelColor="#D946EF"
                       emptyText={status === 'preparing' ? 'Preparing…' : status === 'ready' ? 'Opus builder will appear here' : 'Waiting for builder…'}

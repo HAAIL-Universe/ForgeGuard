@@ -4407,7 +4407,7 @@ async def _run_build_plan_execute(
                 from app.services.build.planner import (
                     _compute_tiers, _tier_summary,
                     _plan_tier_interfaces, _extract_tier_interfaces,
-                    execute_tier,
+                    _review_written_files, execute_tier,
                 )
 
                 tiers = _compute_tiers(_pending_manifest)
@@ -4426,8 +4426,8 @@ async def _run_build_plan_execute(
                 })
 
                 _accumulated_interfaces = ""
-                # Pre-planned interface map for next tier (from pipeline)
-                _next_tier_plan: str | None = None
+                # Pre-planned interface maps — dict[tier_idx, asyncio.Task[str]]
+                _tier_plan_pool: dict[int, asyncio.Task[str]] = {}
 
                 # Helper: merge tier results into tracking dicts
                 async def _merge_tier_results(
@@ -4497,8 +4497,8 @@ async def _run_build_plan_execute(
 
                     # ── Get interface map ──
                     # Tier 0: no dependencies → skip interface planning entirely.
-                    # Later tiers: use the pre-planned map from the pipeline,
-                    # or plan synchronously if pipeline didn't produce one.
+                    # Later tiers: use the pre-planned map from the pool,
+                    # or plan synchronously if pool didn't produce one.
                     if tier_idx == 0:
                         interface_map = ""
                         await build_repo.append_build_log(
@@ -4506,10 +4506,19 @@ async def _run_build_plan_execute(
                             "Tier 0: foundation tier — skipping interface planning",
                             source="planner", level="info",
                         )
-                    elif _next_tier_plan is not None:
-                        # Pipeline already planned this tier while we built the previous one
-                        interface_map = _next_tier_plan
-                        _next_tier_plan = None
+                    elif tier_idx in _tier_plan_pool:
+                        # Await the pre-planned result
+                        try:
+                            interface_map = await _tier_plan_pool[tier_idx]
+                        except Exception as _pp_exc:
+                            logger.warning("Pre-planned tier %d failed: %s — planning sync", tier_idx, _pp_exc)
+                            interface_map = await _plan_tier_interfaces(
+                                build_id, user_id, api_key,
+                                tier_idx, tier_files,
+                                _accumulated_interfaces,
+                                contracts, phase_deliverables,
+                                working_dir,
+                            )
                     else:
                         await _set_build_activity(
                             build_id, user_id,
@@ -4524,70 +4533,97 @@ async def _run_build_plan_execute(
                             working_dir,
                         )
 
-                    # ── Pipeline: Opus builds this tier while Sonnet plans the next ──
+                    # ── Pipeline: Opus builds this tier while Sonnet plans ALL remaining ──
                     await _set_build_activity(
                         build_id, user_id,
                         f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files...",
                         model="opus",
                     )
 
-                    _has_next = tier_idx + 1 < len(tiers)
+                    # Fire off Sonnet to pre-plan all unplanned future tiers
+                    _remaining_unplanned = [
+                        ti for ti in range(tier_idx + 1, len(tiers))
+                        if ti not in _tier_plan_pool
+                    ]
 
-                    async def _plan_next_tier() -> str:
-                        """Sonnet plans tier N+1 concurrently with Opus building tier N."""
-                        _next_idx = tier_idx + 1
-                        _next_files = tiers[_next_idx]
-                        await _set_build_activity(
-                            build_id, user_id,
-                            f"Tier {_next_idx}/{len(tiers)-1}: Pre-planning interfaces...",
-                            model="sonnet",
+                    async def _plan_remaining_tiers(tier_indices: list[int]) -> None:
+                        """Sonnet plans multiple tiers sequentially while Opus builds."""
+                        for _pi in tier_indices:
+                            _pf = tiers[_pi]
+                            await _set_build_activity(
+                                build_id, user_id,
+                                f"Tier {_pi}/{len(tiers)-1}: Pre-planning interfaces...",
+                                model="sonnet",
+                            )
+                            _result = await _plan_tier_interfaces(
+                                build_id, user_id, api_key,
+                                _pi, _pf,
+                                _accumulated_interfaces,
+                                contracts, phase_deliverables,
+                                working_dir,
+                            )
+                            # Store result — wrapping in a completed future for consistency
+                            _fut: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+                            _fut.set_result(_result)
+                            _tier_plan_pool[_pi] = _fut
+
+                    if _remaining_unplanned:
+                        _planning_task = asyncio.create_task(
+                            _plan_remaining_tiers(_remaining_unplanned)
                         )
-                        return await _plan_tier_interfaces(
-                            build_id, user_id, api_key,
-                            _next_idx, _next_files,
-                            _accumulated_interfaces,
-                            contracts, phase_deliverables,
-                            working_dir,
-                        )
-
-                    if _has_next:
-                        # Run Opus build + Sonnet planning in parallel
-                        build_task = asyncio.create_task(execute_tier(
-                            build_id, user_id, api_key,
-                            tier_idx, tier_files, contracts,
-                            phase_deliverables, working_dir,
-                            interface_map, all_files_written,
-                            key_pool=key_pool,
-                        ))
-                        plan_task = asyncio.create_task(_plan_next_tier())
-
-                        tier_written = await build_task
-                        _next_tier_plan = await plan_task
                     else:
-                        # Last tier — no next tier to pre-plan
-                        tier_written = await execute_tier(
-                            build_id, user_id, api_key,
-                            tier_idx, tier_files, contracts,
-                            phase_deliverables, working_dir,
-                            interface_map, all_files_written,
-                            key_pool=key_pool,
-                        )
+                        _planning_task = None
+
+                    # Build current tier
+                    tier_written = await execute_tier(
+                        build_id, user_id, api_key,
+                        tier_idx, tier_files, contracts,
+                        phase_deliverables, working_dir,
+                        interface_map, all_files_written,
+                        key_pool=key_pool,
+                    )
 
                     # Merge results
                     await _merge_tier_results(tier_written, tier_files, tier_idx)
 
-                    # Extract actual interfaces for next-tier context
-                    actual_interfaces = await _extract_tier_interfaces(
+                    # Extract interfaces + review written files in parallel
+                    _extract_task = asyncio.create_task(_extract_tier_interfaces(
                         build_id, user_id, api_key,
                         tier_idx, tier_written, working_dir,
-                    )
+                    ))
+                    _review_task = asyncio.create_task(_review_written_files(
+                        build_id, user_id, api_key,
+                        tier_written, interface_map, tier_idx,
+                    ))
+
+                    actual_interfaces = await _extract_task
                     _accumulated_interfaces += f"\n\n{actual_interfaces}"
+
+                    # Await review — non-blocking (failures logged internally)
+                    try:
+                        _reviews = await _review_task
+                        _warn_count = sum(1 for r in _reviews if r["verdict"] == "warn")
+                        if _warn_count > 0:
+                            await _set_build_activity(
+                                build_id, user_id,
+                                f"Sonnet found {_warn_count} warning(s) in tier {tier_idx}",
+                                model="sonnet",
+                            )
+                    except Exception:
+                        pass  # Review is advisory, not blocking
 
                     await build_repo.append_build_log(
                         build_id,
                         f"Tier {tier_idx} done: {len(tier_written)}/{len(tier_files)} files",
                         source="planner", level="info",
                     )
+
+                # Wait for any remaining planning tasks
+                if _planning_task and not _planning_task.done():
+                    try:
+                        await _planning_task
+                    except Exception:
+                        pass  # Errors handled per-tier above
         except Exception as _tier_exc:
             logger.error("Tier execution failed: %s — falling back to sequential", _tier_exc, exc_info=True)
             await build_repo.append_build_log(
@@ -5548,17 +5584,46 @@ async def _run_build_plan_execute(
             and target_type in ("github_new", "github_existing")
             and access_token
         ):
-            try:
-                await _set_build_activity(build_id, user_id, f"Pushing {phase_name} to GitHub...")
-                await git_client.push(
-                    working_dir, branch=branch, access_token=access_token,
-                )
+            _push_ok = False
+            for _push_attempt in range(1, settings.GIT_PUSH_MAX_RETRIES + 1):
+                try:
+                    await _set_build_activity(build_id, user_id, f"Pushing {phase_name} to GitHub...")
+                    await git_client.push(
+                        working_dir, branch=branch, access_token=access_token,
+                    )
+                    _push_msg = f"✅ Pushed {phase_name} to GitHub"
+                    await build_repo.append_build_log(
+                        build_id, _push_msg,
+                        source="system", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _push_msg, "source": "system", "level": "info",
+                    })
+                    _push_ok = True
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        "Git push attempt %d/%d failed for %s: %s",
+                        _push_attempt, settings.GIT_PUSH_MAX_RETRIES, phase_name, exc,
+                    )
+                    _fail_msg = f"Git push attempt {_push_attempt}/{settings.GIT_PUSH_MAX_RETRIES} failed: {exc}"
+                    await build_repo.append_build_log(
+                        build_id, _fail_msg, source="system", level="warn",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _fail_msg, "source": "system", "level": "warn",
+                    })
+                    if _push_attempt < settings.GIT_PUSH_MAX_RETRIES:
+                        await asyncio.sleep(2 ** _push_attempt)
+
+            if not _push_ok:
+                _final_msg = f"⚠ Git push failed after {settings.GIT_PUSH_MAX_RETRIES} attempts — commit is local only"
                 await build_repo.append_build_log(
-                    build_id, f"Pushed {phase_name} to GitHub",
-                    source="system", level="info",
+                    build_id, _final_msg, source="system", level="error",
                 )
-            except Exception as exc:
-                logger.warning("Git push failed for %s: %s", phase_name, exc)
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _final_msg, "source": "system", "level": "error",
+                })
 
         # --- Store phase outcome as artifact for next-phase context ---
         _outcome_status = "pass"
