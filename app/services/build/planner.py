@@ -1370,11 +1370,353 @@ async def _review_written_files(
 
 
 # ---------------------------------------------------------------------------
+# Intelligent context assembly — phase-aware filtering (Phase 50)
+# ---------------------------------------------------------------------------
+
+# Phase keywords → which contract types are useful for planning that phase.
+# Matched against phase name, objective, and deliverable text (case-insensitive).
+_PHASE_SCOPE_KEYWORDS: dict[str, list[str]] = {
+    # Backend foundation / infrastructure
+    "config":       ["stack", "boundaries"],
+    "foundation":   ["stack", "schema", "boundaries"],
+    "setup":        ["stack", "boundaries"],
+    "environment":  ["stack"],
+    "docker":       ["stack"],
+    "ci":           ["stack"],
+    # Data layer
+    "model":        ["schema", "stack", "boundaries"],
+    "database":     ["schema", "stack", "boundaries"],
+    "migration":    ["schema", "stack"],
+    "schema":       ["schema", "stack"],
+    "repo":         ["schema", "stack", "boundaries"],
+    "repository":   ["schema", "stack", "boundaries"],
+    "orm":          ["schema", "stack"],
+    # API / routes
+    "api":          ["physics", "stack", "boundaries", "schema"],
+    "route":        ["physics", "stack", "boundaries", "schema"],
+    "endpoint":     ["physics", "stack", "boundaries", "schema"],
+    "router":       ["physics", "stack", "boundaries"],
+    "rest":         ["physics", "stack", "boundaries"],
+    "websocket":    ["physics", "stack", "boundaries"],
+    # Services / business logic
+    "service":      ["blueprint", "stack", "boundaries", "schema"],
+    "logic":        ["blueprint", "stack", "boundaries"],
+    "middleware":   ["stack", "boundaries", "physics"],
+    # Auth
+    "auth":         ["physics", "stack", "boundaries"],
+    "login":        ["physics", "stack", "boundaries"],
+    "permission":   ["physics", "stack", "boundaries"],
+    "jwt":          ["physics", "stack"],
+    # Frontend / UI
+    "ui":           ["ui", "stack"],
+    "frontend":     ["ui", "stack"],
+    "component":    ["ui", "stack"],
+    "page":         ["ui", "stack", "schema"],
+    "react":        ["ui", "stack"],
+    "css":          ["ui", "stack"],
+    "layout":       ["ui", "stack"],
+    "navigation":   ["ui", "stack"],
+    # Testing
+    "test":         ["stack", "boundaries", "schema", "physics"],
+    "testing":      ["stack", "boundaries", "schema", "physics"],
+    # Documentation
+    "doc":          ["blueprint", "manifesto"],
+    "readme":       ["blueprint", "manifesto"],
+}
+
+# Contract sections that are relevant to specific scope areas.
+# Matched against markdown headings (## / ###) inside contract content.
+_SECTION_KEYWORDS: dict[str, list[str]] = {
+    "stack":      ["stack", "framework", "language", "runtime", "database", "orm",
+                   "dependency", "dependencies", "package", "library", "tool",
+                   "infrastructure", "docker", "deploy"],
+    "schema":     ["table", "model", "column", "field", "relation", "entity",
+                   "migration", "index", "constraint", "foreign key", "schema",
+                   "enum", "type"],
+    "physics":    ["endpoint", "route", "api", "request", "response", "auth",
+                   "header", "status", "method", "payload", "websocket", "webhook"],
+    "boundaries": ["layer", "boundary", "import", "forbidden", "allowed",
+                   "architecture", "separation", "dependency rule"],
+    "blueprint":  ["feature", "requirement", "flow", "behavior", "module",
+                   "service", "component"],
+    "ui":         ["component", "page", "layout", "style", "theme", "navigation",
+                   "responsive", "modal", "form", "button"],
+    "manifesto":  ["vision", "goal", "principle", "ethos", "mission"],
+}
+
+# Workspace directory patterns relevant to specific scope areas.
+_WORKSPACE_SCOPE: dict[str, list[str]] = {
+    "backend":   ["app/", "src/", "backend/", "server/", "api/"],
+    "frontend":  ["web/", "frontend/", "client/", "src/components/", "src/pages/"],
+    "database":  ["db/", "migrations/", "alembic/", "app/repos/", "app/models/"],
+    "config":    ["config", "env", ".toml", ".yml", ".yaml", ".ini", "requirements",
+                  "package.json", "pyproject", "Dockerfile", "docker-compose"],
+    "test":      ["tests/", "test/", "__tests__/", "spec/"],
+}
+
+
+def _analyse_phase_scope(phase: dict) -> dict:
+    """Analyse phase deliverables and return a structured scope descriptor.
+
+    Returns::
+
+        {
+            "keywords": ["model", "database", "schema"],
+            "contract_types": {"schema", "stack", "boundaries"},
+            "workspace_areas": {"backend", "database", "config"},
+            "raw_text": "Phase 1 — Foundation: models, database setup...",
+        }
+    """
+    # Combine all text from the phase for keyword matching
+    parts = [
+        str(phase.get("name", "")),
+        str(phase.get("objective", "")),
+    ]
+    for d in phase.get("deliverables", []):
+        parts.append(str(d))
+    raw_text = " ".join(parts).lower()
+
+    # Find matching keywords
+    matched_keywords: list[str] = []
+    matched_contract_types: set[str] = set()
+    for keyword, ctypes in _PHASE_SCOPE_KEYWORDS.items():
+        if keyword in raw_text:
+            matched_keywords.append(keyword)
+            matched_contract_types.update(ctypes)
+
+    # Always include stack — every phase needs to know the tech stack
+    matched_contract_types.add("stack")
+
+    # If nothing matched, be conservative — include core contracts
+    if not matched_keywords:
+        matched_contract_types.update(["stack", "schema", "boundaries", "blueprint"])
+        matched_keywords.append("(no keywords matched — using defaults)")
+
+    # Determine relevant workspace areas
+    workspace_areas: set[str] = set()
+    for area, patterns in _WORKSPACE_SCOPE.items():
+        for pattern in patterns:
+            if pattern in raw_text:
+                workspace_areas.add(area)
+    # Infer from contract types
+    if "schema" in matched_contract_types:
+        workspace_areas.add("database")
+        workspace_areas.add("backend")
+    if "physics" in matched_contract_types:
+        workspace_areas.add("backend")
+    if "ui" in matched_contract_types:
+        workspace_areas.add("frontend")
+    if not workspace_areas:
+        workspace_areas.add("backend")  # default
+        workspace_areas.add("config")
+
+    return {
+        "keywords": matched_keywords,
+        "contract_types": matched_contract_types,
+        "workspace_areas": workspace_areas,
+        "raw_text": raw_text,
+    }
+
+
+def _filter_contracts_for_phase(
+    contracts: list[dict],
+    scope: dict,
+) -> tuple[list[dict], list[str]]:
+    """Filter contracts to only those relevant to the phase scope.
+
+    Returns (included_contracts, excluded_names) for transparency.
+    """
+    wanted = scope["contract_types"]
+    included: list[dict] = []
+    excluded: list[str] = []
+
+    for c in contracts:
+        ctype = c.get("contract_type", "")
+        if ctype == "phases":
+            continue  # never include the phases contract
+        if ctype in wanted:
+            included.append(c)
+        else:
+            excluded.append(ctype)
+
+    return included, excluded
+
+
+def _extract_relevant_sections(
+    content: str,
+    scope: dict,
+    max_chars: int = 4000,
+) -> str:
+    """Extract only the markdown sections relevant to the phase scope.
+
+    Parses the content by ``## / ###`` headings and keeps sections whose
+    heading matches any keyword in the scope's contract types.  Falls back
+    to the full content (truncated) if no sections match.
+
+    Returns the extracted text, trimmed to *max_chars*.
+    """
+    # Collect all relevant keywords for section matching
+    relevant_keywords: set[str] = set()
+    for ctype in scope["contract_types"]:
+        kws = _SECTION_KEYWORDS.get(ctype, [])
+        relevant_keywords.update(kws)
+
+    # Also add raw phase keywords for broader matching
+    for kw in scope.get("keywords", []):
+        if not kw.startswith("("):  # skip "(no keywords matched…)" placeholder
+            relevant_keywords.add(kw)
+
+    if not relevant_keywords:
+        # Can't filter — return truncated whole content
+        return content[:max_chars]
+
+    # Parse into sections by heading
+    lines = content.split("\n")
+    sections: list[dict] = []
+    current_heading = "(preamble)"
+    current_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            # Save previous section
+            if current_lines:
+                sections.append({
+                    "heading": current_heading,
+                    "text": "\n".join(current_lines),
+                })
+            current_heading = stripped.lstrip("#").strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    # Don't forget the last section
+    if current_lines:
+        sections.append({
+            "heading": current_heading,
+            "text": "\n".join(current_lines),
+        })
+
+    # Score each section: does its heading match any relevant keyword?
+    matched_sections: list[str] = []
+    heading_lower_cache: dict[int, str] = {}
+
+    for i, sec in enumerate(sections):
+        heading_lower = sec["heading"].lower()
+        heading_lower_cache[i] = heading_lower
+
+        # Always include preamble (contract intro/title)
+        if sec["heading"] == "(preamble)":
+            # But only if it's short (< 500 chars)
+            if len(sec["text"]) < 500:
+                matched_sections.append(sec["text"])
+            continue
+
+        # Check if heading matches any relevant keyword
+        for kw in relevant_keywords:
+            if kw in heading_lower:
+                matched_sections.append(sec["text"])
+                break
+
+    if not matched_sections:
+        # No sections matched — fall back to full content (truncated)
+        return content[:max_chars]
+
+    result = "\n\n".join(matched_sections)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n[...section truncated]"
+    return result
+
+
+def _filter_workspace_for_phase(
+    workspace_info: str,
+    scope: dict,
+) -> str:
+    """Filter workspace info to only show directories/files relevant to this phase.
+
+    Returns a trimmed workspace string.  Lines not matching any relevant
+    area are collapsed into a summary count.
+    """
+    if not workspace_info or workspace_info.startswith("(empty"):
+        return workspace_info
+
+    areas = scope.get("workspace_areas", set())
+    if not areas:
+        return workspace_info
+
+    # Collect all relevant path prefixes/patterns
+    relevant_patterns: list[str] = []
+    for area in areas:
+        patterns = _WORKSPACE_SCOPE.get(area, [])
+        relevant_patterns.extend(patterns)
+
+    # Also always include root-level config files
+    relevant_patterns.extend([
+        "requirements", "pyproject", "package.json", "Dockerfile",
+        "docker-compose", ".env", "alembic", "README", "LICENSE",
+    ])
+
+    lines = workspace_info.split("\n")
+    kept: list[str] = []
+    skipped = 0
+
+    for line in lines:
+        stripped = line.strip().lstrip("- ")
+        if not stripped:
+            continue
+
+        # Check if line matches any relevant pattern
+        matched = False
+        for pattern in relevant_patterns:
+            if pattern.lower() in stripped.lower():
+                matched = True
+                break
+
+        # Root-level files (no "/" in path) are always relevant
+        if not matched and "/" not in stripped and "." in stripped:
+            matched = True
+
+        if matched:
+            kept.append(line)
+        else:
+            skipped += 1
+
+    result = "\n".join(kept)
+    if skipped > 0:
+        result += f"\n(... {skipped} other files/dirs not relevant to this phase)"
+
+    return result
+
+
+def _deduplicate_prior_phase_files(
+    prior_context: str,
+) -> list[str]:
+    """Extract file paths already built in prior phases.
+
+    Returns a list of paths that should NOT be recreated unless the
+    current phase explicitly needs to modify them.
+    """
+    if not prior_context:
+        return []
+
+    built_files: list[str] = []
+    for line in prior_context.split("\n"):
+        stripped = line.strip()
+        # Match lines like: - `app/config.py` — Set up configuration
+        if stripped.startswith("- `") and "`" in stripped[3:]:
+            path = stripped[3:stripped.index("`", 3)]
+            if path and "/" in path:
+                built_files.append(path)
+    return built_files
+
+
+# ---------------------------------------------------------------------------
 # File manifest generation — two-stage: skeleton → full
 # ---------------------------------------------------------------------------
 
 _SKELETON_SYSTEM_PROMPT = """You are a build planner. Output ONLY valid JSON — no preamble, no markdown fences.
 Produce a skeleton manifest: paths, purpose, and dependency edges only.
+Group files into tiers by dependency order: tier 0 = no deps, tier 1 = depends on tier 0, etc.
 Keep it FAST — one line per file, no essays."""
 
 _MINI_BUILD_CONSTRAINT = """
@@ -1387,29 +1729,32 @@ This is a mini build. You MUST produce at most {max_files} files total.
 - Skip optional files like separate config, migrations, or docs unless essential.
 """
 
-_SKELETON_USER_TEMPLATE = """List every file needed for this phase.
+_SKELETON_USER_TEMPLATE = """Plan every file needed for this phase.
 
-## Contracts (summary)
-{contracts_text}
-
-## Phase
+## Phase Scope
 {phase_text}
 
-{prior_phase_context}
+## Already Built (prior phases — DO NOT recreate)
+{prior_files_text}
 
-## Existing Workspace
+## Contracts (phase-relevant only)
+{contracts_text}
+
+## Existing Workspace (phase-relevant subset)
 {workspace_info}
 
-Output JSON:
+Output JSON with tiered dependency ordering:
 {{"phase": "Phase {phase_num}", "files": [
-  {{"path": "relative/path.py", "purpose": "one sentence", "depends_on": ["other/file.py"]}}
+  {{"path": "relative/path.py", "purpose": "one sentence", "depends_on": ["other/file.py"], "tier": 0}}
 ]}}
 
 Rules:
-- Include ALL files: implementation, tests, config, migrations, docs.
-- `depends_on` = files from THIS manifest that must exist first.
+- tier 0 = no dependencies, tier 1 = depends on tier 0 files, tier 2 = depends on tier 1, etc.
+- `depends_on` = files from THIS manifest that must exist first (not prior-phase files).
+- Include implementation, tests, config, migrations.
+- Do NOT recreate files listed in "Already Built" unless this phase must modify them.
 - Keep purpose to ONE sentence.
-- Do NOT include files already on disk unless the phase requires modifying them."""
+- Order files by tier (tier 0 first, then tier 1, etc.)."""
 
 
 async def _generate_skeleton_manifest(
@@ -1422,28 +1767,78 @@ async def _generate_skeleton_manifest(
     prior_phase_context: str = "",
     max_files: int | None = None,
 ) -> list[dict] | None:
-    """Fast skeleton manifest — paths + purpose + deps only (~5-10s).
+    """Fast skeleton manifest — paths + purpose + deps + tiers (~5-10s).
+
+    Uses intelligent context assembly:
+    1. Analyse phase scope from deliverables
+    2. Filter contracts to only phase-relevant types
+    3. Extract relevant sections within each contract
+    4. Filter workspace info to relevant directories
+    5. Deduplicate files already built in prior phases
+    6. Send a tighter, more focused prompt to Sonnet
 
     Returns a list of dicts with keys: path, purpose, depends_on, status.
-    Enough to compute tiers immediately. Language/estimated_lines/context_files
-    use defaults and get refined during per-tier interface planning.
     """
     from app.clients.llm_client import chat as llm_chat
 
+    phase_num = current_phase["number"]
+
+    # ── Step 1: Analyse phase scope ──
+    scope = _analyse_phase_scope(current_phase)
+
+    await _state._broadcast_build_event(user_id, build_id, "build_log", {
+        "message": (
+            f"Phase {phase_num} scope: keywords={scope['keywords']}, "
+            f"contracts={sorted(scope['contract_types'])}, "
+            f"areas={sorted(scope['workspace_areas'])}"
+        ),
+        "source": "planner", "level": "info",
+    })
+
+    # ── Step 2: Filter contracts to phase-relevant types ──
+    relevant_contracts, excluded_types = _filter_contracts_for_phase(contracts, scope)
+
+    if excluded_types:
+        await _state._broadcast_build_event(user_id, build_id, "build_log", {
+            "message": (
+                f"Contracts filtered: using {len(relevant_contracts)} "
+                f"({', '.join(c.get('contract_type', '?') for c in relevant_contracts)}), "
+                f"skipping {len(excluded_types)} ({', '.join(excluded_types)})"
+            ),
+            "source": "planner", "level": "info",
+        })
+
+    # ── Step 3: Extract relevant sections from each contract ──
     contract_parts = []
-    for c in contracts:
-        if c["contract_type"] == "phases":
-            continue
-        # Shorter summaries for skeleton — just first 3000 chars each
-        contract_parts.append(f"## {c['contract_type']}\n{c['content'][:3000]}\n")
+    for c in relevant_contracts:
+        ctype = c.get("contract_type", "")
+        content = c.get("content", "") or ""
+        extracted = _extract_relevant_sections(content, scope, max_chars=4000)
+        contract_parts.append(f"## {ctype}\n{extracted}\n")
     contracts_text = "\n---\n".join(contract_parts)
 
-    MAX_SKELETON_CONTRACTS = 30_000
-    if len(contracts_text) > MAX_SKELETON_CONTRACTS:
-        contracts_text = contracts_text[:MAX_SKELETON_CONTRACTS] + "\n[...truncated]"
+    # Safety cap (should be much smaller now thanks to filtering)
+    _MAX_FILTERED_CONTRACTS = 20_000
+    if len(contracts_text) > _MAX_FILTERED_CONTRACTS:
+        contracts_text = contracts_text[:_MAX_FILTERED_CONTRACTS] + "\n[...truncated]"
 
+    # ── Step 4: Filter workspace to relevant areas ──
+    filtered_workspace = _filter_workspace_for_phase(workspace_info, scope)
+
+    # ── Step 5: Deduplicate prior-phase files ──
+    prior_files = _deduplicate_prior_phase_files(prior_phase_context)
+    if prior_files:
+        prior_files_text = "\n".join(f"- {f}" for f in prior_files)
+        await _state._broadcast_build_event(user_id, build_id, "build_log", {
+            "message": f"Prior phases built {len(prior_files)} files — will not recreate",
+            "source": "planner", "level": "info",
+        })
+    else:
+        prior_files_text = "(first phase — nothing built yet)"
+
+    # ── Step 6: Build the focused prompt ──
     phase_text = (
-        f"Phase {current_phase['number']} — {current_phase['name']}\n"
+        f"Phase {phase_num} — {current_phase['name']}\n"
         f"Objective: {current_phase.get('objective', '')}\n"
         f"Deliverables:\n"
     )
@@ -1453,18 +1848,27 @@ async def _generate_skeleton_manifest(
     user_message = _SKELETON_USER_TEMPLATE.format(
         contracts_text=contracts_text,
         phase_text=phase_text,
-        prior_phase_context=prior_phase_context or "(first phase)",
-        workspace_info=workspace_info,
-        phase_num=current_phase["number"],
+        prior_files_text=prior_files_text,
+        workspace_info=filtered_workspace,
+        phase_num=phase_num,
     )
 
     # Inject file budget constraint for mini builds
     if max_files is not None:
         user_message = _MINI_BUILD_CONSTRAINT.format(max_files=max_files) + "\n" + user_message
 
+    # Transparency: log token savings vs old approach
+    _old_style_size = sum(len(c.get("content", "")[:3000]) for c in contracts if c.get("contract_type") != "phases")
+    _new_size = len(contracts_text)
+    _savings_pct = round((1 - _new_size / max(_old_style_size, 1)) * 100)
+
     await _state.build_repo.append_build_log(
         build_id,
-        f"Generating skeleton manifest for Phase {current_phase['number']}",
+        (
+            f"Planning Phase {phase_num} manifest — "
+            f"{len(relevant_contracts)} contracts ({_new_size:,} chars, "
+            f"{_savings_pct}% smaller than unfiltered)"
+        ),
         source="planner", level="info",
     )
 
