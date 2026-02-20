@@ -253,7 +253,9 @@ def test_get_version_delegates_to_repo(mock_snap, mock_project, mock_get_user):
 # ---------- Snapshot creation during generation ----------
 
 
+@patch("app.services.project.contract_generator.llm_chat", new_callable=AsyncMock, return_value={"text": "[]", "usage": {"input_tokens": 0, "output_tokens": 0}})
 @patch("app.services.project.contract_generator.manager")
+@patch("app.services.project.contract_generator._generate_greenfield_contract_with_tools", new_callable=AsyncMock, return_value=("content", {"input_tokens": 100, "output_tokens": 200}))
 @patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
@@ -263,7 +265,8 @@ def test_get_version_delegates_to_repo(mock_snap, mock_project, mock_get_user):
 @pytest.mark.asyncio
 async def test_generate_snapshots_before_regeneration(
     mock_project, mock_existing, mock_snapshot,
-    mock_upsert, mock_status, mock_gen, mock_manager,
+    mock_upsert, mock_status, mock_gen, mock_greenfield_gen, mock_manager,
+    mock_llm_chat,
 ):
     """When ALL contracts already exist (full set), generate_contracts snapshots them first."""
     from app.services.project.contract_generator import CONTRACT_TYPES
@@ -304,7 +307,9 @@ async def test_generate_snapshots_before_regeneration(
     mock_snapshot.assert_called_once_with(UUID(PROJECT_ID))
 
 
+@patch("app.services.project.contract_generator.llm_chat", new_callable=AsyncMock, return_value={"text": "[]", "usage": {"input_tokens": 0, "output_tokens": 0}})
 @patch("app.services.project.contract_generator.manager")
+@patch("app.services.project.contract_generator._generate_greenfield_contract_with_tools", new_callable=AsyncMock, return_value=("content", {"input_tokens": 100, "output_tokens": 200}))
 @patch("app.services.project.contract_generator._generate_contract_content", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project.contract_generator.upsert_contract", new_callable=AsyncMock)
@@ -314,7 +319,8 @@ async def test_generate_snapshots_before_regeneration(
 @pytest.mark.asyncio
 async def test_generate_no_snapshot_for_first_generation(
     mock_project, mock_existing, mock_snapshot,
-    mock_upsert, mock_status, mock_gen, mock_manager,
+    mock_upsert, mock_status, mock_gen, mock_greenfield_gen, mock_manager,
+    mock_llm_chat,
 ):
     """First generation (no existing contracts) does not create a snapshot."""
     from app.services.project_service import generate_contracts

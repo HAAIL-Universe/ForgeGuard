@@ -28,8 +28,14 @@ CREATE INDEX IF NOT EXISTS idx_build_cycles_status
     ON build_cycles(project_id, status)
     WHERE status = 'active';
 
--- ── certificates: link back to build cycle ──────────────────────
-ALTER TABLE certificates
-    ADD COLUMN IF NOT EXISTS build_cycle_id  UUID,
-    ADD COLUMN IF NOT EXISTS baseline_score  INTEGER,
-    ADD COLUMN IF NOT EXISTS delta_json      JSONB;
+-- ── certificates: link back to build cycle (only if table already exists) ──
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = 'public' AND table_name = 'certificates') THEN
+        ALTER TABLE certificates
+            ADD COLUMN IF NOT EXISTS build_cycle_id  UUID,
+            ADD COLUMN IF NOT EXISTS baseline_score  INTEGER,
+            ADD COLUMN IF NOT EXISTS delta_json      JSONB;
+    END IF;
+END$$;

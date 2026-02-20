@@ -23,7 +23,16 @@ from .project import (
     list_project_contracts,
 )
 from .remote import api_get
-from .session import clear_session, set_session
+from .session import clear_session, get_session, set_session
+
+# Contract types that are generated per-project and live in the Neon DB.
+# When a session is active, these should be fetched from the DB rather
+# than from local disk.  Static governance templates (system_prompt,
+# auditor_prompt, etc.) remain on disk.
+_DB_CONTRACT_TYPES = frozenset({
+    "manifesto", "blueprint", "stack", "schema", "physics",
+    "boundaries", "ui", "phases", "builder_directive",
+})
 
 # ── Tool catalogue ────────────────────────────────────────────────────────
 
@@ -388,6 +397,9 @@ async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return result
     if LOCAL_MODE:
         result = _dispatch_local(name, arguments)
+        if isinstance(result, dict) and result.get("__redirect_to_db__"):
+            # Local dispatch determined this contract lives in the DB
+            result = await _resolve_contract_from_db(name, arguments)
         _log_result(name, result, start)
         return result
     result = await _dispatch_remote(name, arguments)
@@ -473,7 +485,7 @@ async def _dispatch_project(name: str, arguments: dict[str, Any]) -> dict[str, A
 
 
 def _dispatch_local(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Serve from local disk."""
+    """Serve from local disk — but redirect DB contracts when session active."""
     match name:
         case "forge_summary":
             return get_summary()
@@ -483,23 +495,99 @@ def _dispatch_local(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             contract_name = arguments.get("name")
             if not contract_name:
                 return {"error": "Missing required parameter: name"}
+            # DB-backed contracts redirect to project handler when session set
+            session = get_session()
+            if contract_name in _DB_CONTRACT_TYPES and session.project_id:
+                logger.info(
+                    "[mcp:local] redirecting %s to DB (project=%s)",
+                    contract_name, session.project_id,
+                )
+                return _NEED_ASYNC  # handled in dispatch()
             return load_contract(contract_name)
         case "forge_get_invariants":
             return get_invariants()
         case "forge_get_boundaries":
+            session = get_session()
+            if session.project_id:
+                return _NEED_ASYNC
             return load_contract("boundaries")
         case "forge_get_physics":
+            session = get_session()
+            if session.project_id:
+                return _NEED_ASYNC
             return load_contract("physics")
         case "forge_get_directive":
+            session = get_session()
+            if session.project_id:
+                return _NEED_ASYNC
             return load_contract("builder_directive")
         case "forge_get_stack":
+            session = get_session()
+            if session.project_id:
+                return _NEED_ASYNC
             return load_contract("stack")
         case _:
             return {"error": f"Unknown tool: {name}"}
 
 
+# Sentinel returned by _dispatch_local when an async DB fetch is needed
+_NEED_ASYNC = {"__redirect_to_db__": True}
+
+
+async def _resolve_contract_from_db(
+    name: str, arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch a generated contract from the Neon DB via project-scoped API.
+
+    Maps the generic tool names (forge_get_contract, forge_get_boundaries,
+    etc.) to the project-scoped handler that reads from PostgreSQL.
+    """
+    # Determine contract type from tool name or arguments
+    contract_type: str | None = None
+    match name:
+        case "forge_get_contract":
+            contract_type = arguments.get("name")
+        case "forge_get_boundaries":
+            contract_type = "boundaries"
+        case "forge_get_physics":
+            contract_type = "physics"
+        case "forge_get_directive":
+            contract_type = "builder_directive"
+        case "forge_get_stack":
+            contract_type = "stack"
+
+    if not contract_type:
+        return {"error": f"Cannot resolve contract type for tool: {name}"}
+
+    return await get_project_contract({"contract_type": contract_type})
+
+
 async def _dispatch_remote(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Proxy to ForgeGuard API."""
+    # When a session is active and the tool requests a DB-backed contract,
+    # fetch from the project-scoped API (Neon) instead of the generic
+    # /forge/contracts/ routes (which serve static local files).
+    session = get_session()
+    if session.project_id:
+        contract_name: str | None = None
+        match name:
+            case "forge_get_contract":
+                contract_name = arguments.get("name")
+            case "forge_get_boundaries":
+                contract_name = "boundaries"
+            case "forge_get_physics":
+                contract_name = "physics"
+            case "forge_get_directive":
+                contract_name = "builder_directive"
+            case "forge_get_stack":
+                contract_name = "stack"
+        if contract_name and contract_name in _DB_CONTRACT_TYPES:
+            logger.info(
+                "[mcp:remote] redirecting %s to DB (project=%s)",
+                contract_name, session.project_id,
+            )
+            return await get_project_contract({"contract_type": contract_name})
+
     match name:
         case "forge_summary":
             return await api_get("/forge/summary")

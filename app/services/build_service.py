@@ -459,15 +459,21 @@ async def _setup_project_environment(
         return None
 
     # ----- Step 2: Upgrade pip -----
-    pip_exe = str(
-        venv_dir / ("Scripts" if os.name == "nt" else "bin") / "pip"
+    # Use 'python -m pip' instead of bare pip.exe to avoid Windows file-locking
+    # (pip.exe can't overwrite itself while running as a console wrapper).
+    _py_exe = str(
+        venv_dir / ("Scripts" if os.name == "nt" else "bin")
+        / ("python.exe" if os.name == "nt" else "python")
     )
+    _setup_warnings: list[str] = []
     await _log("\u2b06 Upgrading pip...")
-    await _stream_command(
-        [pip_exe, "install", "--upgrade", "pip"],
+    _pip_rc, _ = await _stream_command(
+        [_py_exe, "-m", "pip", "install", "--upgrade", "pip"],
         label="pip upgrade",
         timeout=60,
     )
+    if _pip_rc != 0:
+        _setup_warnings.append("pip upgrade")
 
     # ----- Step 3: Detect stack and set up Node if needed -----
     stack_needs_node = False
@@ -482,16 +488,36 @@ async def _setup_project_environment(
                 break
 
     if stack_needs_node:
+        import shutil as _shutil_setup
         pkg_json = Path(working_dir) / "package.json"
-        if not pkg_json.exists():
+        # On Windows, npm ships as npm.cmd — Popen can't resolve .cmd
+        # without shell=True, so use the explicit extension.
+        _npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+        _npm_path = _shutil_setup.which(_npm_cmd)
+        if not _npm_path:
+            await _log(
+                "\u26a0 npm not found on PATH \u2014 Node.js setup skipped. "
+                "Install Node.js if this project requires a frontend build.",
+                level="warn",
+            )
+            _setup_warnings.append("npm not found")
+        elif not pkg_json.exists():
             await _log("\U0001f4e6 Initialising Node.js project (npm init)...")
-            await _stream_command(
-                ["npm", "init", "-y"],
+            _npm_rc, _ = await _stream_command(
+                [_npm_cmd, "init", "-y"],
                 label="npm init",
                 timeout=30,
             )
+            if _npm_rc != 0:
+                _setup_warnings.append("npm init")
 
-    await _log("\u2705 Project environment ready")
+    if _setup_warnings:
+        await _log(
+            f"\u26a0 Project environment ready (warnings: {', '.join(_setup_warnings)})",
+            level="warn",
+        )
+    else:
+        await _log("\u2705 Project environment ready")
     return str(venv_dir)
 
 
@@ -649,7 +675,9 @@ async def start_build(
         # Use current/live contracts
         contracts = await project_repo.get_contracts_by_project(project_id)
         if not contracts:
-            raise ValueError("No contracts found. Generate contracts before building.")
+            raise ValueError(
+                "No contracts found — generate contracts from the project page before starting a build."
+            )
 
     # Prevent concurrent builds
     latest = await build_repo.get_latest_build_for_project(project_id)
@@ -1042,6 +1070,23 @@ async def resume_build(
                     )
             except Exception as exc:
                 logger.warning("Git log fallback failed in orphan recovery: %s", exc)
+
+        # --- Disk fallback: detect mid-phase manifests on disk ----------
+        #     When completed_phases == -1 but the working dir has cached
+        #     manifests, infer the in-progress phase from the highest one.
+        if _best_completed < 0 and _best_dir and Path(_best_dir).exists():
+            _orph_manifests = sorted(Path(_best_dir).glob(".forge/manifest_phase_*.json"))
+            if _orph_manifests:
+                for _omf in _orph_manifests:
+                    _omf_m = _re_resume.search(r"manifest_phase_(\d+)", _omf.name)
+                    if _omf_m:
+                        _omf_phase = int(_omf_m.group(1))
+                        current_phase_num = max(current_phase_num, _omf_phase)
+                logger.info(
+                    "Orphan recovery: inferred current_phase=%d from "
+                    "manifest cache in %s",
+                    current_phase_num, _best_dir,
+                )
 
         # Figure out resume point: for 'retry' we redo the current phase,
         # for 'skip' we advance past it, for 'abort' we cancel.
@@ -2699,6 +2744,23 @@ async def _run_build_conversation(
                         }
                     )
 
+                    # Broadcast scratchpad writes to UI
+                    if item.name == "forge_scratchpad":
+                        _sp_op = (item.input.get("operation") or "").lower()
+                        if _sp_op in ("write", "append"):
+                            _sp_key = item.input.get("key", "")
+                            _sp_val = item.input.get("value", "")
+                            await _broadcast_build_event(
+                                user_id, build_id, "scratchpad_write", {
+                                    "key": _sp_key,
+                                    "source": "opus",
+                                    "role": "builder",
+                                    "summary": f"Builder wrote to scratchpad: {_sp_key}",
+                                    "content": str(_sp_val)[:2000],
+                                    "full_length": len(str(_sp_val)),
+                                },
+                            )
+
                     # Track write_file calls as files_written
                     if item.name == "write_file" and tool_result.startswith("OK:"):
                         _touch_progress(build_id)
@@ -4281,8 +4343,211 @@ async def _run_build_plan_execute(
         touched_files: set[str] = set()
         # Use key 2 for auditor if available (separate rate limits)
         _audit_key = api_key_2.strip() if api_key_2.strip() else api_key
+
+        # ──────────────────────────────────────────────────────────────
+        # 2a. Tier-based parallel generation
+        #     Sonnet plans interfaces per tier → Opus sub-agents build
+        #     in parallel → extract actual interfaces for next tier.
+        #     Any files not covered fall through to the sequential loop.
+        # ──────────────────────────────────────────────────────────────
+        _tier_handled: set[str] = set()  # paths fully generated by tier system
+        try:
+            # Pre-load cached / already-on-disk files so tier system can skip them
+            _cached_content: dict[str, str] = {}
+            for _pre in manifest:
+                _pp = _pre["path"]
+                _ps = _pre.get("status", "pending")
+                _ep = Path(working_dir) / _pp
+                if _ps in ("audited", "fixed") and _ep.exists() and _ep.stat().st_size > 0:
+                    _cached_content[_pp] = _ep.read_text(encoding="utf-8", errors="replace")
+                    phase_files_written[_pp] = _cached_content[_pp]
+                    all_files_written[_pp] = _cached_content[_pp]
+                    _tier_handled.add(_pp)
+                    _pv = _pre.get("audit_verdict", "PASS")
+                    await _broadcast_build_event(user_id, build_id, "file_generated", {
+                        "path": _pp, "size_bytes": _ep.stat().st_size,
+                        "language": _detect_language(_pp),
+                        "tokens_in": 0, "tokens_out": 0, "duration_ms": 0,
+                        "skipped": True,
+                    })
+                    await _broadcast_build_event(user_id, build_id, "file_audited", {
+                        "path": _pp, "verdict": _pv, "findings": "", "duration_ms": 0,
+                    })
+                    if _pv == "FAIL":
+                        blocking_files.append((_pp, _pre.get("audit_findings", "")))
+                    else:
+                        passed_files.append(_pp)
+                elif _pre.get("action", "create") == "create" and _ep.exists() and _ep.stat().st_size > 0:
+                    _cached_content[_pp] = _ep.read_text(encoding="utf-8", errors="replace")
+                    phase_files_written[_pp] = _cached_content[_pp]
+                    all_files_written[_pp] = _cached_content[_pp]
+                    _tier_handled.add(_pp)
+                    await _broadcast_build_event(user_id, build_id, "file_generated", {
+                        "path": _pp, "size_bytes": _ep.stat().st_size,
+                        "language": _detect_language(_pp),
+                        "tokens_in": 0, "tokens_out": 0, "duration_ms": 0,
+                        "skipped": True,
+                    })
+                    _update_manifest_cache(_manifest_cache_path, _pp, "audited", "PASS")
+                    await _broadcast_build_event(user_id, build_id, "file_audited", {
+                        "path": _pp, "verdict": "PASS", "findings": "", "duration_ms": 0,
+                    })
+                    passed_files.append(_pp)
+
+            _pending_manifest = [f for f in manifest if f["path"] not in _tier_handled]
+
+            if _pending_manifest:
+                from app.services.build.planner import (
+                    _compute_tiers, _tier_summary,
+                    _plan_tier_interfaces, _extract_tier_interfaces,
+                    execute_tier,
+                )
+
+                tiers = _compute_tiers(_pending_manifest)
+                _tier_log = f"Computed {len(tiers)} dependency tiers for {len(_pending_manifest)} pending files"
+                await build_repo.append_build_log(build_id, _tier_log, source="planner", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _tier_log, "source": "planner", "level": "info",
+                })
+                await _broadcast_build_event(user_id, build_id, "tiers_computed", {
+                    "phase": phase_name,
+                    "tier_count": len(tiers),
+                    "tiers": [
+                        {"tier": ti, "files": [f["path"] for f in tf]}
+                        for ti, tf in enumerate(tiers)
+                    ],
+                })
+
+                _accumulated_interfaces = ""
+                for tier_idx, tier_files in enumerate(tiers):
+                    # Cancel / pause check between tiers
+                    bid = str(build_id)
+                    if bid in _cancel_flags:
+                        _cancel_flags.discard(bid)
+                        await _fail_build(build_id, user_id, "Build stopped via /stop")
+                        return
+                    if bid in _pause_flags:
+                        _pause_flags.discard(bid)
+                        await _pause_build(build_id, user_id, phase_name, 0, "Build paused via /pause")
+                        event = _pause_events.get(bid)
+                        if event:
+                            try:
+                                await asyncio.wait_for(event.wait(), timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60)
+                            except asyncio.TimeoutError:
+                                await _fail_build(build_id, user_id, "RISK_EXCEEDS_SCOPE: pause timed out")
+                                return
+                        action = _resume_actions.pop(bid, "retry")
+                        _pause_events.pop(bid, None)
+                        await build_repo.resume_build(build_id)
+                        if action == "abort":
+                            await _fail_build(build_id, user_id, "Build aborted after /pause")
+                            return
+
+                    await _set_build_activity(
+                        build_id, user_id,
+                        f"Tier {tier_idx}/{len(tiers)-1}: Planning interfaces..."
+                    )
+
+                    # Sonnet plans interfaces for this tier
+                    interface_map = await _plan_tier_interfaces(
+                        build_id, user_id, api_key,
+                        tier_idx, tier_files,
+                        _accumulated_interfaces,
+                        contracts, phase_deliverables,
+                        working_dir,
+                    )
+
+                    await _set_build_activity(
+                        build_id, user_id,
+                        f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files in parallel..."
+                    )
+
+                    # Opus sub-agents build files in parallel
+                    tier_written = await execute_tier(
+                        build_id, user_id, api_key,
+                        tier_idx, tier_files, contracts,
+                        phase_deliverables, working_dir,
+                        interface_map, all_files_written,
+                        key_pool=key_pool,
+                    )
+
+                    # Merge tier results into tracking dicts
+                    for fp, content in tier_written.items():
+                        phase_files_written[fp] = content
+                        all_files_written[fp] = content
+                        touched_files.add(fp)
+                        _tier_handled.add(fp)
+                        file_info = {
+                            "path": fp,
+                            "size_bytes": len(content.encode("utf-8")),
+                            "language": _detect_language(fp),
+                        }
+                        if not any(f["path"] == fp for f in files_written_list):
+                            files_written_list.append(file_info)
+
+                        # Journal: record each file
+                        _journal.record(
+                            "file_written",
+                            f"Wrote {fp} ({len(content.encode('utf-8'))} bytes)",
+                            metadata={"file_path": fp, "size_bytes": len(content.encode('utf-8'))},
+                        )
+
+                        # Kick off per-file audit in background
+                        _purpose = next(
+                            (f.get("purpose", "") for f in tier_files if f["path"] == fp), "",
+                        )
+                        pending_file_audits.append(asyncio.create_task(
+                            _audit_and_cache(
+                                _manifest_cache_path,
+                                build_id, user_id,
+                                _audit_key,
+                                fp, content, _purpose,
+                                audit_llm_enabled,
+                                audit_index=len(pending_file_audits) + 1,
+                                audit_total=len(manifest),
+                                working_dir=working_dir,
+                                fix_queue=_fix_queue,
+                            )
+                        ))
+
+                    # Extract actual interfaces written in this tier
+                    actual_interfaces = await _extract_tier_interfaces(
+                        build_id, user_id, api_key,
+                        tier_idx, tier_written, working_dir,
+                    )
+                    _accumulated_interfaces += f"\n\n{actual_interfaces}"
+
+                    await build_repo.append_build_log(
+                        build_id,
+                        f"Tier {tier_idx} complete: {len(tier_written)}/{len(tier_files)} files written",
+                        source="planner", level="info",
+                    )
+        except Exception as _tier_exc:
+            logger.error("Tier execution failed: %s — falling back to sequential", _tier_exc, exc_info=True)
+            await build_repo.append_build_log(
+                build_id,
+                f"Tier system error: {_tier_exc} — remaining files will be generated sequentially",
+                source="system", level="warn",
+            )
+
+        # ──────────────────────────────────────────────────────────────
+        # 2b. Sequential fallback — generate any files NOT handled
+        #     by the tier system (errors, missing, etc.)
+        # ──────────────────────────────────────────────────────────────
+        _remaining_count = sum(1 for f in manifest if f["path"] not in _tier_handled)
+        if _remaining_count:
+            _fb_msg = f"Generating {_remaining_count} remaining files sequentially..."
+            await build_repo.append_build_log(build_id, _fb_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _fb_msg, "source": "system", "level": "info",
+            })
+
         for i, file_entry in enumerate(manifest):
             file_path = file_entry["path"]
+
+            # Skip anything already handled by tier execution or pre-load
+            if file_path in _tier_handled:
+                continue
 
             # --- Check cancel / pause flags before each file ---
             bid = str(build_id)

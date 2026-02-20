@@ -158,17 +158,17 @@ const btnGhost: React.CSSProperties = {
 /*  Progress bar                                                      */
 /* ------------------------------------------------------------------ */
 
-function ProgressBar({ completed, current, skipped }: { completed: string[]; current: string | null; skipped: string[] }) {
+function ProgressBar({ completed, current, skipped, sections, labels }: { completed: string[]; current: string | null; skipped: string[]; sections: string[]; labels: Record<string, string> }) {
   return (
     <div style={{ display: 'flex', gap: '3px', padding: '0 20px 10px' }} data-testid="questionnaire-progress">
-      {ALL_SECTIONS.map((s) => {
+      {sections.map((s) => {
         const isSkipped = skipped.includes(s);
         const done = completed.includes(s);
         const active = s === current;
         return (
           <div
             key={s}
-            title={`${SECTION_LABELS[s] ?? s}${isSkipped ? ' (auto)' : ''}`}
+            title={`${labels[s] ?? s}${isSkipped ? ' (auto)' : ''}`}
             style={{
               flex: 1,
               height: '4px',
@@ -559,7 +559,7 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
                 {qState.is_complete
                   ? 'All sections complete ✓'
                   : qState.current_section
-                    ? `Section: ${SECTION_LABELS[qState.current_section] ?? qState.current_section}`
+                    ? `Section: ${(buildMode === 'mini' ? MINI_SECTION_LABELS : SECTION_LABELS)[qState.current_section] ?? qState.current_section}`
                     : 'Starting...'}
               </p>
             )}
@@ -618,6 +618,8 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
                     });
                     setInput('');
                     setError('');
+                    // Kick off the LLM again so the user sees the opening question
+                    sendMessage("Let's get started. What would you like to build?", true);
                   }
                 } catch { /* ignore */ }
                 setResetting(false);
@@ -659,7 +661,7 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
 
         {/* Progress bar — hidden during contract generation */}
         {!generatingContracts && (
-          <ProgressBar completed={qState.completed_sections} current={qState.current_section} skipped={buildMode === 'mini' ? ALL_SECTIONS.filter(s => !MINI_SECTIONS.includes(s)) : []} />
+          <ProgressBar completed={qState.completed_sections} current={qState.current_section} skipped={[]} sections={activeSections} labels={buildMode === 'mini' ? MINI_SECTION_LABELS : SECTION_LABELS} />
         )}
 
         {/* Messages — hidden during contract generation */}

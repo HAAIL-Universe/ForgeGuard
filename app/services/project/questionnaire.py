@@ -9,6 +9,7 @@ from app.config import settings
 from app.repos.project_repo import (
     get_project_by_id,
     update_project_status,
+    update_questionnaire_history,
     update_questionnaire_state,
 )
 
@@ -70,16 +71,40 @@ CRITICAL RULES:
 - When all 7 sections are done, set section to "complete".
 """
 
-_MINI_ADDENDUM = """
+_MINI_SYSTEM_PROMPT = """\
+You are a project intake specialist for Forge, an autonomous build system.
+This is a MINI BUILD — a quick proof-of-concept scaffold.
 
---- MINI BUILD MODE ---
-This project is a Mini Build (quick proof-of-concept scaffold).
-Only ask about these sections: product_intent, ui_requirements.
-Do NOT ask the user about tech_stack, database_schema, api_endpoints,
-architectural_boundaries, or deployment_target — those will be resolved
-automatically during contract generation based on the product intent.
+Your job is to collect just two things from the user:
+1. product_intent — What the product does, who it’s for, the core problem it
+   solves, and the 2-3 key features that define the experience.
+2. ui_requirements — Design style, layout preferences, colour scheme,
+   responsive needs, and overall look-and-feel.
 
-When both product_intent and ui_requirements are done, set section to "complete".
+That’s it. Only these two sections exist. There are NO other sections.
+Do NOT ask about tech stack, backend, frontend framework, database, APIs,
+architectural boundaries, or deployment. Those are auto-resolved by Forge.
+
+CRITICAL RULES:
+- Even if a project description is provided, do NOT treat product_intent as
+  already captured. The description is just a brief summary. You MUST ask the
+  user to elaborate on their vision.
+- Ask 1-2 focused questions per section, then set section_complete=true.
+- After the user answers, ALWAYS set section_complete to true and move on.
+  Do NOT ask follow-ups within the same section. One answer per section is enough.
+- Infer sensible defaults for anything unclear — DO NOT ask for clarification.
+- ALWAYS include extracted_data with at least a summary of what you captured.
+- Your response MUST be ONLY valid JSON — no markdown fences, no extra text:
+  {
+    "reply": "<your message>",
+    "section": "<product_intent | ui_requirements | complete>",
+    "section_complete": true|false,
+    "extracted_data": { <key-value pairs of captured information> }
+  }
+- The "section" field MUST be one of: "product_intent", "ui_requirements", or
+  "complete". Never use any other value.
+- When section_complete is true, extracted_data MUST contain the captured data.
+- When both sections are done, set section to "complete".
 """
 
 
@@ -98,7 +123,7 @@ def _sections_for_mode(build_mode: str) -> list[str]:
 def _system_prompt_for_mode(build_mode: str) -> str:
     """Return the system prompt appropriate for the build mode."""
     if build_mode == "mini":
-        return _SYSTEM_PROMPT + _MINI_ADDENDUM
+        return _MINI_SYSTEM_PROMPT
     return _SYSTEM_PROMPT
 
 
@@ -184,9 +209,10 @@ async def process_questionnaire_message(
         raise ValueError("Project not found")
 
     qs = project.get("questionnaire_state") or {}
+    qh = project.get("questionnaire_history") or {}
     completed = qs.get("completed_sections", [])
     answers = qs.get("answers", {})
-    history = qs.get("conversation_history", [])
+    history = qh.get("conversation_history", [])
 
     # Resolve section list and system prompt for this project's build_mode
     build_mode = project.get("build_mode", "full")
@@ -214,16 +240,29 @@ async def process_questionnaire_message(
         await update_project_status(project_id, "questionnaire")
 
     # Build conversation for LLM
+    section_msg_count = sum(
+        1 for m in history if m["role"] == "user" and m.get("section") == current_section
+    )
     context_msg = (
         f"Project name: {project['name']}\n"
         f"Project description: {project.get('description', 'N/A')}\n"
         f"Current section: {current_section}\n"
         f"Completed sections: {', '.join(completed) if completed else 'none'}\n"
         f"Previously collected data: {json.dumps(answers, indent=2)}\n"
-        f"IMPORTANT: The user has been on '{current_section}' for "
-        f"{sum(1 for m in history if m['role'] == 'user' and m.get('section') == current_section)} "
-        f"messages already. Set section_complete=true NOW and move to the next section."
     )
+    # Only push the LLM to complete the section after real user exchanges
+    if section_msg_count >= 1:
+        context_msg += (
+            f"IMPORTANT: The user has been on '{current_section}' for "
+            f"{section_msg_count} messages already. Set section_complete=true "
+            f"NOW and move to the next section."
+        )
+    else:
+        context_msg += (
+            f"The user is just arriving at '{current_section}'. "
+            f"Greet them warmly and ask your questions for this section. "
+            f"Do NOT set section_complete=true yet — wait for their answer first."
+        )
 
     # Anthropic requires strictly alternating user/assistant roles.
     # Merge context into the first user message and ensure no consecutive
@@ -289,6 +328,12 @@ async def process_questionnaire_message(
 
     # --- Section-completion logic (3 independent triggers) ---
     llm_section = parsed.get("section") or current_section
+    # Clamp: if LLM references a section not in this build mode, treat it
+    # as the current section so we don't accidentally jump to full-build sections.
+    if llm_section not in sections and llm_section != "complete":
+        logger.info("LLM returned section '%s' outside build mode sections %s — clamping to '%s'",
+                     llm_section, sections, current_section)
+        llm_section = current_section
     llm_says_complete = bool(parsed.get("section_complete"))
     extracted = parsed.get("extracted_data")
 
@@ -341,7 +386,7 @@ async def process_questionnaire_message(
     history.append({"role": "assistant", "content": parsed["reply"], "section": reply_section})
 
     # Accumulate token usage
-    prev_usage = qs.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
+    prev_usage = qh.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
     total_usage = {
         "input_tokens": prev_usage.get("input_tokens", 0) + usage.get("input_tokens", 0),
         "output_tokens": prev_usage.get("output_tokens", 0) + usage.get("output_tokens", 0),
@@ -350,10 +395,9 @@ async def process_questionnaire_message(
     new_state = {
         "completed_sections": completed,
         "answers": answers,
-        "conversation_history": history,
-        "token_usage": total_usage,
     }
     await update_questionnaire_state(project_id, new_state)
+    await update_questionnaire_history(project_id, history, total_usage)
 
     # Check if all sections are now complete
     remaining = [s for s in sections if s not in completed]
@@ -362,9 +406,13 @@ async def process_questionnaire_message(
     if is_complete and project["status"] != "contracts_ready":
         await update_project_status(project_id, "contracts_ready")
 
+    # Use the authoritative next-section rather than raw LLM output.
+    # This prevents the LLM from advertising sections outside the build mode.
+    authoritative_section = "complete" if is_complete else (next_section or current_section)
+
     return {
         "reply": parsed["reply"],
-        "section": parsed.get("section", current_section),
+        "section": authoritative_section,
         "completed_sections": completed,
         "remaining_sections": remaining,
         "is_complete": is_complete,
@@ -384,10 +432,11 @@ async def get_questionnaire_state(
         raise ValueError("Project not found")
 
     qs = project.get("questionnaire_state") or {}
+    qh = project.get("questionnaire_history") or {}
     build_mode = project.get("build_mode", "full")
     progress = _questionnaire_progress(qs, build_mode)
-    progress["conversation_history"] = qs.get("conversation_history", [])
-    progress["token_usage"] = qs.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
+    progress["conversation_history"] = qh.get("conversation_history", [])
+    progress["token_usage"] = qh.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
     return progress
 
 
@@ -403,5 +452,6 @@ async def reset_questionnaire(
         raise ValueError("Project not found")
 
     await update_questionnaire_state(project_id, {})
+    await update_questionnaire_history(project_id, [], {"input_tokens": 0, "output_tokens": 0})
     await update_project_status(project_id, "draft")
     return {"status": "reset"}

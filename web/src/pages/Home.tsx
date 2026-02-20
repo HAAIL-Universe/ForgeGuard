@@ -32,14 +32,15 @@ function Home() {
       const repoItems = repos.items ?? repos ?? [];
       const projectItems = projects.items ?? projects ?? [];
 
-      // Count active builds (status === 'running')
+      // Count active builds (running, pending, or paused)
       const activeBuilds = projectItems.filter(
-        (p: { latest_build_status?: string }) => p.latest_build_status === 'running',
+        (p: { latest_build_status?: string }) =>
+          p.latest_build_status === 'running' || p.latest_build_status === 'pending' || p.latest_build_status === 'paused',
       ).length;
 
-      // Count recent audits from repos (rough: count repos with recent audits)
+      // Count repos that have been audited (have a last_audit_at timestamp)
       const recentAudits = repoItems.filter(
-        (r: { latest_audit_status?: string }) => r.latest_audit_status,
+        (r: { last_audit_at?: string }) => r.last_audit_at,
       ).length;
 
       setStats({

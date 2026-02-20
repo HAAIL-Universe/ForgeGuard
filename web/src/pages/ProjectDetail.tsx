@@ -77,7 +77,7 @@ function ProjectDetail() {
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   const [contractsExpanded, setContractsExpanded] = useState(false);
   const [showRegenerate, setShowRegenerate] = useState(false);
-  const [pushingContracts, setPushingContracts] = useState(false);
+
   const [showTargetPicker, setShowTargetPicker] = useState(false);
 
   /* Contract version history */
@@ -670,59 +670,6 @@ function ProjectDetail() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '0.9rem' }}>Generated Contracts</h3>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  disabled={pushingContracts}
-                  onClick={async () => {
-                    setPushingContracts(true);
-                    const minDelay = new Promise((r) => setTimeout(r, 1000));
-                    try {
-                      const [res] = await Promise.all([
-                        fetch(`${API_BASE}/projects/${projectId}/contracts/push`, {
-                          method: 'POST',
-                          headers: { Authorization: `Bearer ${token}` },
-                        }),
-                        minDelay,
-                      ]);
-                      if (res.ok) {
-                        const data = await res.json();
-                        addToast(data.message || 'Contracts pushed to GitHub', 'success');
-                      } else {
-                        const err = await res.json().catch(() => ({ detail: 'Push failed' }));
-                        addToast(err.detail || 'Push failed');
-                      }
-                    } catch {
-                      addToast('Network error pushing contracts');
-                    } finally {
-                      setPushingContracts(false);
-                    }
-                  }}
-                  style={{
-                    background: pushingContracts ? '#115E59' : '#0D9488',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '6px 14px',
-                    cursor: pushingContracts ? 'not-allowed' : 'pointer',
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    transition: 'background 0.15s',
-                    opacity: pushingContracts ? 0.8 : 1,
-                    minWidth: '110px',
-                  }}
-                  onMouseEnter={(e) => { if (!pushingContracts) e.currentTarget.style.background = '#0F766E'; }}
-                  onMouseLeave={(e) => { if (!pushingContracts) e.currentTarget.style.background = '#0D9488'; }}
-                >
-                  {pushingContracts ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{
-                        display: 'inline-block', width: '12px', height: '12px',
-                        border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff',
-                        borderRadius: '50%', animation: 'spin 0.8s linear infinite',
-                      }} />
-                      Pushing…
-                    </span>
-                  ) : '🚀 Push to Git'}
-                </button>
                 <button
                   onClick={() => setShowRegenerate(true)}
                   style={{

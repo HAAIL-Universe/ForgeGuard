@@ -291,8 +291,15 @@ def check_a4_boundary_compliance(
                 continue
 
             for rule in forbidden:
-                pattern = rule.get("pattern", "")
-                reason = rule.get("reason", "")
+                # Support both dict {"pattern": ..., "reason": ...} and plain string entries
+                if isinstance(rule, str):
+                    pattern = rule
+                    reason = ""
+                else:
+                    pattern = rule.get("pattern", "")
+                    reason = rule.get("reason", "")
+                if not pattern:
+                    continue
                 if re.search(pattern, content, re.IGNORECASE):
                     violations.append(
                         f"[{layer_name}] {entry} contains '{pattern}' ({reason})"

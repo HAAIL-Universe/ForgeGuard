@@ -314,7 +314,6 @@ Open **http://localhost:5174** and sign in with GitHub.
 | `GET` | `/projects/{id}/contracts` | Bearer | List contracts |
 | `GET` | `/projects/{id}/contracts/history` | Bearer | Contract version history |
 | `GET` | `/projects/{id}/contracts/history/{batch}` | Bearer | Get specific batch |
-| `POST` | `/projects/{id}/contracts/push` | Bearer | Push contracts to repo |
 | `GET` | `/projects/{id}/contracts/{type}` | Bearer | Get specific contract |
 | `PUT` | `/projects/{id}/contracts/{type}` | Bearer | Update contract |
 | `GET` | `/projects/{id}/certificate` | Bearer | Get project certificate |

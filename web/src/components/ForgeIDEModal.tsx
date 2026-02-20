@@ -78,6 +78,20 @@ interface LogEntry {
   level: string;
   message: string;
   worker?: 'sonnet' | 'opus' | 'system';
+  /** Present when this log entry is a clickable scratchpad write */
+  scratchpad?: {
+    key: string;
+    content: string;
+    fullLength: number;
+    role: string;
+  };
+  /** Present when this is a tier progress entry */
+  tier?: {
+    index: number;
+    action: 'start' | 'complete';
+    fileCount: number;
+    files?: string[];
+  };
 }
 
 function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
@@ -102,6 +116,7 @@ interface ChecklistItem {
   action: string;
   description: string;
   status: 'pending' | 'written' | 'auditing' | 'passed' | 'failed' | 'rejected';
+  tierIndex?: number;
 }
 
 /* ---------- Build mode types ---------- */
@@ -182,10 +197,47 @@ const ACTION_ICON: Record<string, string> = { modify: '✏️', create: '➕', d
 const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistItem[] }) {
   if (items.length === 0) return null;
   const done = items.filter(i => i.status !== 'pending').length;
+  const hasTiers = items.some(i => i.tierIndex !== undefined && i.tierIndex >= 0);
+
+  // Group items by tier if tiers exist
+  const tierGroups: Map<number, ChecklistItem[]> = new Map();
+  if (hasTiers) {
+    for (const it of items) {
+      const t = it.tierIndex ?? -1;
+      if (!tierGroups.has(t)) tierGroups.set(t, []);
+      tierGroups.get(t)!.push(it);
+    }
+  }
+
+  const renderItem = (item: ChecklistItem, i: number) => {
+    const icon = item.status === 'pending' ? '☐'
+      : item.status === 'written' ? '☑'
+      : item.status === 'passed' ? '✅'
+      : item.status === 'failed' ? '❌'
+      : item.status === 'rejected' ? '🚫'
+      : '⏳';
+    const color = item.status === 'pending' ? '#475569'
+      : item.status === 'written' ? '#A78BFA'
+      : item.status === 'passed' ? '#22C55E'
+      : item.status === 'failed' ? '#EF4444'
+      : item.status === 'rejected' ? '#EF4444'
+      : '#94A3B8';
+    const strike = item.status !== 'pending';
+    return (
+      <div key={i} style={{ display: 'flex', gap: '6px', lineHeight: 1.6, color }}>
+        <span style={{ flexShrink: 0, width: '16px' }}>{icon}</span>
+        <span style={{ textDecoration: strike ? 'line-through' : 'none', opacity: strike ? 0.6 : 1 }}>
+          {ACTION_ICON[item.action] || '📄'} {item.file}
+        </span>
+      </div>
+    );
+  };
+
   return (
     <div style={{
       borderTop: '1px solid #1E293B', padding: '6px 12px',
       background: '#0D0D1A', fontSize: '0.7rem', flexShrink: 0,
+      maxHeight: '35vh', overflowY: 'auto',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
         <span style={{ color: '#94A3B8', fontWeight: 700, letterSpacing: '0.5px', fontSize: '0.6rem' }}>FILE PROGRESS</span>
@@ -200,29 +252,27 @@ const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistI
           transition: 'width 0.4s ease',
         }} />
       </div>
-      {items.map((item, i) => {
-        const icon = item.status === 'pending' ? '☐'
-          : item.status === 'written' ? '☑'
-          : item.status === 'passed' ? '✅'
-          : item.status === 'failed' ? '❌'
-          : item.status === 'rejected' ? '🚫'
-          : '⏳';
-        const color = item.status === 'pending' ? '#475569'
-          : item.status === 'written' ? '#A78BFA'
-          : item.status === 'passed' ? '#22C55E'
-          : item.status === 'failed' ? '#EF4444'
-          : item.status === 'rejected' ? '#EF4444'
-          : '#94A3B8';
-        const strike = item.status !== 'pending';
-        return (
-          <div key={i} style={{ display: 'flex', gap: '6px', lineHeight: 1.6, color }}>
-            <span style={{ flexShrink: 0, width: '16px' }}>{icon}</span>
-            <span style={{ textDecoration: strike ? 'line-through' : 'none', opacity: strike ? 0.6 : 1 }}>
-              {ACTION_ICON[item.action] || '📄'} {item.file}
-            </span>
-          </div>
-        );
-      })}
+      {hasTiers ? (
+        // Render grouped by tier
+        Array.from(tierGroups.entries()).sort(([a], [b]) => a - b).map(([tierIdx, tierItems]) => {
+          const tierDone = tierItems.filter(x => x.status !== 'pending').length;
+          return (
+            <div key={`tier-${tierIdx}`} style={{ marginBottom: '6px' }}>
+              <div style={{
+                color: '#60A5FA', fontSize: '0.6rem', fontWeight: 600,
+                padding: '2px 0', borderBottom: '1px solid #1E293B44',
+                marginBottom: '2px',
+              }}>
+                {tierIdx >= 0 ? `⚡ TIER ${tierIdx}` : '📋 UNGROUPED'} ({tierDone}/{tierItems.length})
+              </div>
+              {tierItems.map((item, i) => renderItem(item, tierIdx * 1000 + i))}
+            </div>
+          );
+        })
+      ) : (
+        // Flat list
+        items.map((item, i) => renderItem(item, i))
+      )}
     </div>
   );
 });
@@ -305,6 +355,7 @@ const LogPane = memo(function LogPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const scrolledAway = useRef(false);
   const prevLogCount = useRef(panelLogs.length);
+  const [expandedScratchpads, setExpandedScratchpads] = useState<Set<number>>(new Set());
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -395,25 +446,76 @@ const LogPane = memo(function LogPane({
 
           const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
           const isThinking = log.level === 'thinking';
+          const isScratchpad = !!log.scratchpad;
+          const isTier = !!log.tier;
+          const isExpanded = isScratchpad && expandedScratchpads.has(i);
+
           return (
-            <div key={i} style={{
-              color,
-              display: 'flex', gap: '8px',
-              padding: isThinking ? '1px 0 1px 12px' : '1px 0',
-              borderLeft: isThinking ? '2px solid #7C3AED33' : 'none',
-              opacity: log.level === 'debug' ? 0.5 : 1,
-            }}>
-              <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
-                {ts}
-              </span>
-              {icon && (
-                <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
-                  {icon}
+            <div key={i}>
+              <div
+                style={{
+                  color,
+                  display: 'flex', gap: '8px',
+                  padding: isThinking ? '1px 0 1px 12px' : '1px 0',
+                  borderLeft: isThinking ? '2px solid #7C3AED33'
+                    : isScratchpad ? '2px solid #F59E0B44'
+                    : isTier ? '2px solid #3B82F644'
+                    : 'none',
+                  opacity: log.level === 'debug' ? 0.5 : 1,
+                  cursor: isScratchpad ? 'pointer' : undefined,
+                  background: isScratchpad ? '#F59E0B08' : isTier ? '#3B82F608' : undefined,
+                  borderRadius: isScratchpad || isTier ? '2px' : undefined,
+                }}
+                onClick={isScratchpad ? () => {
+                  setExpandedScratchpads((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(i)) next.delete(i); else next.add(i);
+                    return next;
+                  });
+                } : undefined}
+                title={isScratchpad ? 'Click to expand scratchpad content' : undefined}
+              >
+                <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
+                  {ts}
                 </span>
+                {icon && (
+                  <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
+                    {icon}
+                  </span>
+                )}
+                <span style={{ wordBreak: 'break-word' }}>
+                  {log.message}
+                  {isScratchpad && (
+                    <span style={{ color: '#F59E0B', fontSize: '0.6rem', marginLeft: '6px' }}>
+                      {isExpanded ? '▼' : '▶'} {log.scratchpad!.fullLength} chars
+                    </span>
+                  )}
+                </span>
+              </div>
+              {/* Expanded scratchpad content */}
+              {isExpanded && log.scratchpad && (
+                <pre style={{
+                  margin: '2px 0 4px 86px',
+                  padding: '6px 10px',
+                  background: '#0F172A',
+                  border: '1px solid #F59E0B33',
+                  borderRadius: '4px',
+                  color: '#CBD5E1',
+                  fontSize: '0.7rem',
+                  lineHeight: 1.5,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                }}>
+                  <code>{log.scratchpad.content}</code>
+                  {log.scratchpad.fullLength > log.scratchpad.content.length && (
+                    <div style={{ color: '#64748B', fontStyle: 'italic', marginTop: '4px' }}>
+                      ... truncated ({log.scratchpad.fullLength - log.scratchpad.content.length} more chars)
+                    </div>
+                  )}
+                </pre>
               )}
-              <span style={{ wordBreak: 'break-word' }}>
-                {log.message}
-              </span>
             </div>
           );
         })}
@@ -598,8 +700,19 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           if (costRes.ok) {
             const cd = await costRes.json();
             setCostData(cd);
-            // Map cost tokens to tokenUsage (all as Opus since build uses Opus primarily)
-            if (cd.tokens_in || cd.tokens_out) {
+            // Map per-model tokens if available, otherwise fall back to aggregate
+            const mt = cd.model_tokens as Record<string, { input: number; output: number; total: number }> | undefined;
+            if (mt) {
+              const opus = mt.opus || { input: 0, output: 0, total: 0 };
+              const sonnet = mt.sonnet || { input: 0, output: 0, total: 0 };
+              const haiku = mt.haiku || { input: 0, output: 0, total: 0 };
+              setTokenUsage({
+                opus: { input: opus.input, output: opus.output, total: opus.total },
+                sonnet: { input: sonnet.input, output: sonnet.output, total: sonnet.total },
+                haiku: { input: haiku.input, output: haiku.output, total: haiku.total },
+                total: opus.total + sonnet.total + haiku.total,
+              });
+            } else if (cd.tokens_in || cd.tokens_out) {
               setTokenUsage((prev) => ({
                 ...prev,
                 opus: { input: cd.tokens_in || 0, output: cd.tokens_out || 0, total: (cd.tokens_in || 0) + (cd.tokens_out || 0) },
@@ -782,6 +895,21 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 spend_cap: p.spend_cap ?? null,
                 pct_used: p.pct_used || 0,
               });
+              // Update per-model token buckets from model_tokens
+              if (p.model_tokens) {
+                const mt = p.model_tokens as Record<string, { input: number; output: number; total: number }>;
+                setTokenUsage((prev) => {
+                  const opus = mt.opus || { input: 0, output: 0, total: 0 };
+                  const sonnet = mt.sonnet || { input: 0, output: 0, total: 0 };
+                  const haiku = mt.haiku || { input: 0, output: 0, total: 0 };
+                  return {
+                    opus: { input: opus.input, output: opus.output, total: opus.total },
+                    sonnet: { input: sonnet.input, output: sonnet.output, total: sonnet.total },
+                    haiku: { input: haiku.input, output: haiku.output, total: haiku.total },
+                    total: opus.total + sonnet.total + haiku.total,
+                  };
+                });
+              }
               break;
 
             case 'phase_plan':
@@ -1040,6 +1168,107 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 source: 'governance', level: data.type === 'governance_pass' ? 'info' : 'warn',
                 message: `Governance ${data.type === 'governance_pass' ? '✅ PASS' : '❌ FAIL'}`,
                 worker: 'system',
+              }]);
+              break;
+
+            /* ---- Scratchpad writes (from any agent) ---- */
+            case 'scratchpad_write': {
+              const spWorker: 'sonnet' | 'opus' = p.source === 'sonnet' ? 'sonnet' : 'opus';
+              const preview = (p.summary as string) || (p.content_preview as string) || '';
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: p.role || 'agent',
+                level: 'info',
+                message: `📝 Scratchpad [${p.key}]: ${preview.slice(0, 120)}${preview.length > 120 ? '…' : ''}`,
+                worker: spWorker,
+                scratchpad: {
+                  key: p.key as string,
+                  content: (p.content_preview as string) || '',
+                  fullLength: (p.full_length as number) || 0,
+                  role: (p.role as string) || 'agent',
+                },
+              }]);
+              break;
+            }
+
+            /* ---- Tier progress events ---- */
+            case 'tiers_computed': {
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'planner', level: 'info',
+                message: `🏗️ ${p.tier_count} dependency tiers computed for ${p.phase || 'this phase'}`,
+                worker: 'sonnet',
+                tier: {
+                  index: -1, action: 'start',
+                  fileCount: (p.tiers as { files: string[] }[])?.reduce((n: number, t: { files: string[] }) => n + t.files.length, 0) ?? 0,
+                },
+              }]);
+              // Assign tier indices to existing checklist items
+              const tierMap = new Map<string, number>();
+              for (const t of (p.tiers as { tier: number; files: string[] }[]) || []) {
+                for (const f of t.files) {
+                  tierMap.set(f, t.tier);
+                }
+              }
+              setFileChecklist((prev) => prev.map((c) => ({
+                ...c,
+                tierIndex: tierMap.get(c.file) ?? c.tierIndex,
+              })));
+              break;
+            }
+
+            case 'tier_start': {
+              const tierFiles = (p.files as string[]) || [];
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'planner', level: 'info',
+                message: `⚡ Tier ${p.tier}: Building ${p.file_count || tierFiles.length} files in ${p.batch_count || 1} parallel batches`,
+                worker: 'opus',
+                tier: {
+                  index: p.tier as number,
+                  action: 'start',
+                  fileCount: tierFiles.length,
+                  files: tierFiles,
+                },
+              }]);
+              break;
+            }
+
+            case 'tier_complete': {
+              const written = (p.files_written as string[]) || [];
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'planner', level: 'info',
+                message: `✅ Tier ${p.tier} complete: ${p.file_count || written.length} files written`,
+                worker: 'opus',
+                tier: {
+                  index: p.tier as number,
+                  action: 'complete',
+                  fileCount: written.length,
+                  files: written,
+                },
+              }]);
+              break;
+            }
+
+            /* ---- Sub-agent events ---- */
+            case 'subagent_start':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: p.role || 'agent',
+                level: 'info',
+                message: `🤖 Sub-agent [${p.role}] started — ${p.file_count || 0} files`,
+                worker: 'opus',
+              }]);
+              break;
+
+            case 'subagent_done':
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: p.role || 'agent',
+                level: 'info',
+                message: `✔ Sub-agent [${p.role}] done — ${(p.files_written as string[])?.length || 0} files written`,
+                worker: 'opus',
               }]);
               break;
           }

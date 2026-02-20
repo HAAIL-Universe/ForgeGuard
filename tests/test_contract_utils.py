@@ -416,8 +416,13 @@ class TestGreenfieldMiniDefaults:
                 "get_technical_preferences", {}, self._MINI_ANSWERS, {}
             )
         )
-        assert result["tech_stack"] == MINI_DEFAULTS["tech_stack"]
-        assert result["architectural_boundaries"] == MINI_DEFAULTS["architectural_boundaries"]
+        # Base defaults should be present (adaptive adds _inferred_from_product_intent)
+        for k, v in MINI_DEFAULTS["tech_stack"].items():
+            assert result["tech_stack"][k] == v
+        for k, v in MINI_DEFAULTS["architectural_boundaries"].items():
+            assert result["architectural_boundaries"][k] == v
+        # Adaptive enrichment should be present since product_intent exists
+        assert "_inferred_from_product_intent" in result["tech_stack"]
 
     def test_user_requirements_returns_defaults_for_placeholder(self):
         result = json.loads(
@@ -427,9 +432,11 @@ class TestGreenfieldMiniDefaults:
         )
         # ui_requirements is real data — not replaced
         assert result["ui_requirements"]["type"] == "CLI"
-        # api_endpoints and database_schema are placeholders — defaults used
-        assert result["api_endpoints"] == MINI_DEFAULTS["api_endpoints"]
-        assert result["database_schema"] == MINI_DEFAULTS["database_schema"]
+        # api_endpoints and database_schema are placeholders — base defaults present
+        for k, v in MINI_DEFAULTS["api_endpoints"].items():
+            assert result["api_endpoints"][k] == v
+        for k, v in MINI_DEFAULTS["database_schema"].items():
+            assert result["database_schema"][k] == v
 
     def test_deployment_prefs_returns_defaults_for_placeholder(self):
         result = json.loads(
@@ -437,7 +444,8 @@ class TestGreenfieldMiniDefaults:
                 "get_deployment_preferences", {}, self._MINI_ANSWERS, {}
             )
         )
-        assert result == MINI_DEFAULTS["deployment_target"]
+        for k, v in MINI_DEFAULTS["deployment_target"].items():
+            assert result[k] == v
 
     def test_project_intent_unaffected_by_placeholders(self):
         """product_intent is always real user data — never defaulted."""
@@ -458,8 +466,9 @@ class TestGreenfieldMiniDefaults:
             )
         )
         assert result["tech_stack"]["backend"] == "Flask"
-        # architectural_boundaries is still placeholder → default
-        assert result["architectural_boundaries"] == MINI_DEFAULTS["architectural_boundaries"]
+        # architectural_boundaries is still placeholder → base default present
+        for k, v in MINI_DEFAULTS["architectural_boundaries"].items():
+            assert result["architectural_boundaries"][k] == v
 
     def test_missing_section_not_defaulted(self):
         """If a section key is entirely missing (not placeholder), no default."""
@@ -513,7 +522,7 @@ class TestToolSchemas:
         assert len(CONTEXT_TOOLS_SCOUT) == 8
 
     def test_greenfield_tool_count(self):
-        assert len(CONTEXT_TOOLS_GREENFIELD) == 6
+        assert len(CONTEXT_TOOLS_GREENFIELD) == 8
 
     def test_scout_tool_names(self):
         expected = {
@@ -535,6 +544,8 @@ class TestToolSchemas:
             "get_technical_preferences",
             "get_user_requirements",
             "get_deployment_preferences",
+            "get_all_answers",
+            "review_draft",
             "get_prior_contract",
             "submit_contract",
         }

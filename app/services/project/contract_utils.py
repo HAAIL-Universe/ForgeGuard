@@ -49,6 +49,28 @@ MINI_DEFAULTS: dict[str, dict] = {
     },
 }
 
+
+def _adaptive_mini_default(key: str, answers_data: dict) -> dict:
+    """Return a mini default enriched with product-intent context.
+
+    For mini builds, questionnaire sections beyond product_intent and
+    ui_requirements are auto-filled.  Rather than returning static
+    defaults, we inject the user's product description so the contract
+    LLM can *infer* a reasonable value from what the user actually said.
+    """
+    base = dict(MINI_DEFAULTS.get(key, {}))
+    intent = answers_data.get("product_intent")
+    if intent and isinstance(intent, dict) and not _is_placeholder(intent):
+        base["_inferred_from_product_intent"] = (
+            "The user only answered product-intent and UI questions. "
+            "Infer sensible values for this section based on what they "
+            "described. The defaults above are starting suggestions only — "
+            "override them if the product clearly needs something different "
+            f"(e.g. a mobile app might need React Native, not React).\n\n"
+            f"Product intent: {json.dumps(intent, default=str)}"
+        )
+    return base
+
 _AUTO_PLACEHOLDER_PREFIXES = ("completed by LLM", "inferred from conversation", "force-completed")
 
 
@@ -166,11 +188,15 @@ RULES:
 WORKFLOW:
 1. Use the available tools to fetch the context you need for THIS specific
    contract type.  Only call tools whose data is relevant — do not
-   fetch everything.
+   fetch everything.  For broad contracts (blueprint, phases, builder_directive)
+   prefer get_all_answers() over multiple granular calls.
 2. Reason about what you have fetched.  If you need additional context
    (e.g. a prior contract for consistency), fetch it.
-3. Once you have enough context, call submit_contract(content) with the
-   COMPLETE contract.  Do NOT stream partial content.  One call, final text.
+3. Draft the contract mentally.  For important contracts (blueprint, phases,
+   builder_directive), call review_draft(content) to self-check your draft
+   against the source answers before submitting.
+4. Once you are confident the contract is complete and accurate, call
+   submit_contract(content) with the FINAL text.  One call, final text.
 
 TOOL GUIDANCE:
 - get_prior_contract(type)         → fetch a single previously generated
@@ -183,6 +209,15 @@ TOOL GUIDANCE:
                                      and UI preferences from questionnaire.
 - get_deployment_preferences()     → hosting, scale, and infrastructure
                                      preferences from questionnaire.
+- get_all_answers()                → ALL questionnaire answers in one call.
+                                     Use this for contract types that need a
+                                     broad view (e.g. blueprint, phases,
+                                     builder_directive) instead of calling
+                                     multiple granular tools.
+- review_draft(content)            → returns ALL source questionnaire answers
+                                     alongside your draft.  Use this to
+                                     self-check before submitting.  Costs
+                                     one turn but catches hallucinations.
 - submit_contract(content)         → submit the finished contract.  This
                                      terminates the session.
 """
@@ -393,6 +428,36 @@ CONTEXT_TOOLS_GREENFIELD: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_all_answers",
+        "description": (
+            "Get ALL questionnaire answers in a single call. Returns every "
+            "section (product_intent, tech_stack, ui_requirements, etc.) "
+            "plus project name and description. Use this instead of calling "
+            "multiple granular tools when you need a broad view of the project."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "review_draft",
+        "description": (
+            "Self-check a draft contract before submitting. Pass your draft "
+            "content and receive it back alongside ALL source questionnaire "
+            "answers so you can verify accuracy, completeness, and consistency "
+            "with what the user actually said. Use this for important contracts "
+            "like blueprint, phases, and builder_directive."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The draft contract content to review.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
         "name": "get_prior_contract",
         "description": (
             "Fetch a previously generated contract by type.  Use this to "
@@ -507,7 +572,7 @@ def execute_greenfield_tool(
                 if val and not _is_placeholder(val):
                     prefs[key] = val
                 elif _is_placeholder(val) and key in MINI_DEFAULTS:
-                    prefs[key] = MINI_DEFAULTS[key]
+                    prefs[key] = _adaptive_mini_default(key, answers_data)
             return json.dumps(prefs)
         case "get_user_requirements":
             req = {}
@@ -516,13 +581,44 @@ def execute_greenfield_tool(
                 if val and not _is_placeholder(val):
                     req[key] = val
                 elif _is_placeholder(val) and key in MINI_DEFAULTS:
-                    req[key] = MINI_DEFAULTS[key]
+                    req[key] = _adaptive_mini_default(key, answers_data)
             return json.dumps(req)
         case "get_deployment_preferences":
             raw = answers_data.get("deployment_target")
             if _is_placeholder(raw):
-                raw = MINI_DEFAULTS.get("deployment_target", {})
+                raw = _adaptive_mini_default("deployment_target", answers_data)
             return json.dumps(raw or {})
+        case "get_all_answers":
+            # Return everything in one shot — useful for broad contracts
+            all_data = {}
+            for key, val in answers_data.items():
+                if _is_placeholder(val) and key in MINI_DEFAULTS:
+                    all_data[key] = _adaptive_mini_default(key, answers_data)
+                elif val:
+                    all_data[key] = val
+            return json.dumps(all_data)
+        case "review_draft":
+            # Return source answers alongside the draft for self-checking
+            draft = tool_input.get("content", "")
+            all_answers = {}
+            for key, val in answers_data.items():
+                if _is_placeholder(val) and key in MINI_DEFAULTS:
+                    all_answers[key] = _adaptive_mini_default(key, answers_data)
+                elif val:
+                    all_answers[key] = val
+            review = {
+                "instruction": (
+                    "Compare your draft against the source answers below. "
+                    "Check: (1) no hallucinated features not mentioned by the user, "
+                    "(2) no missing features the user DID mention, "
+                    "(3) terminology matches the user's language, "
+                    "(4) scope is appropriate for the build mode. "
+                    "If satisfied, call submit_contract. If not, revise and submit."
+                ),
+                "source_answers": all_answers,
+                "your_draft_length_chars": len(draft),
+            }
+            return json.dumps(review)
         case "get_prior_contract":
             ctype = tool_input.get("contract_type", "")
             content = prior_contracts.get(ctype)
@@ -552,6 +648,7 @@ async def generate_contract_with_tools(
     repo_name: str = "",
     max_turns: int = 12,
     enable_caching: bool = True,
+    on_turn_progress: "Any | None" = None,  # async (input_tokens, output_tokens) -> None
 ) -> tuple[str, dict]:
     """Generate a single contract using a multi-turn tool-use loop.
 
@@ -627,6 +724,16 @@ async def generate_contract_with_tools(
             _turn + 1, max_turns, contract_type, model, stop_reason,
             usage.get("input_tokens", 0), usage.get("output_tokens", 0),
         )
+
+        # Emit per-turn progress so the UI can show live token counts
+        if on_turn_progress is not None:
+            try:
+                await on_turn_progress(
+                    total_usage["input_tokens"],
+                    total_usage["output_tokens"],
+                )
+            except Exception:
+                pass  # best-effort — don't break generation
 
         # Append assistant turn to message history
         messages.append({"role": "assistant", "content": content_blocks})

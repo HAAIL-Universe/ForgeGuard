@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from app.repos import build_repo
 from app.repos.project_repo import (
     get_contracts_by_project,
     get_project_by_id,
+    save_generation_metrics,
     snapshot_contracts,
     update_project_status,
     upsert_contract,
@@ -264,10 +266,19 @@ Keep it focused — only endpoints needed for the MVP features.""",
 Generate an architectural boundaries spec in JSON format:
 {
   "description": "Layer boundary rules...",
-  "layers": [ { "name": "...", "glob": "...", "forbidden": [...] } ],
+  "layers": [
+    {
+      "name": "<layer_name>",
+      "glob": "<file_glob_pattern>",
+      "forbidden": [
+        { "pattern": "<regex_or_import>", "reason": "<why forbidden>" }
+      ]
+    }
+  ],
   "known_violations": []
 }
 Define 3-4 layers with basic separation of concerns. Keep it simple for a mini build.
+Each entry in "forbidden" MUST be an object with "pattern" and "reason" keys — never a plain string.
 Output MUST be valid JSON.""",
 
     "builder_directive_mini": """\
@@ -414,6 +425,8 @@ async def generate_contracts(
         existing_map = {}  # regenerate everything
 
     generated = []
+    generation_timing: dict[str, float] = {}  # contract_type -> elapsed seconds
+    gen_wall_start = time.monotonic()  # wall-clock start for total elapsed
     # Seed prior_contracts from existing contracts for chaining continuity
     prior_contracts: dict[str, str] = {
         ct: existing_map[ct]["content"]
@@ -482,6 +495,22 @@ async def generate_contracts(
             # takes effect immediately, even mid-generation.
             answers_data = _extract_answers_data(project, answers)
 
+            # Callback for per-turn live token progress on the UI
+            async def _turn_progress(in_tok: int, out_tok: int, _ct=contract_type, _idx=idx) -> None:
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": _ct,
+                        "status": "streaming",
+                        "index": _idx,
+                        "total": total,
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                    },
+                })
+
+            t0 = time.monotonic()
             llm_task = asyncio.ensure_future(
                 _generate_greenfield_contract_with_tools(
                     contract_type=contract_type,
@@ -492,6 +521,7 @@ async def generate_contracts(
                     provider=provider,
                     prior_contracts=prior_contracts,
                     build_mode=build_mode,
+                    on_turn_progress=_turn_progress,
                 )
             )
             cancel_task = asyncio.ensure_future(cancel_event.wait())
@@ -519,6 +549,8 @@ async def generate_contracts(
 
             # LLM finished first — clean up the cancel waiter
             cancel_task.cancel()
+            elapsed_s = round(time.monotonic() - t0, 2)
+            generation_timing[contract_type] = elapsed_s
             content, usage = llm_task.result()
 
             # Store for chaining into subsequent contracts
@@ -545,13 +577,107 @@ async def generate_contracts(
                     "total": total,
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
+                    "elapsed_s": elapsed_s,
                 },
             })
     finally:
         _active_generations.pop(pid, None)
 
+    # --- Fix 4: Post-generation cross-contract consistency check ----------
+    await _run_consistency_check(project_id, user_id, prior_contracts)
+
+    # --- Store generation timing metrics ----------------------------------
+    total_elapsed_s = round(time.monotonic() - gen_wall_start, 2)
+    await save_generation_metrics(project_id, {
+        "timing": generation_timing,
+        "total_elapsed_s": total_elapsed_s,
+        "model": llm_model,
+        "build_mode": build_mode,
+        "generated_at": asyncio.get_event_loop().time(),
+    })
+
     await update_project_status(project_id, "contracts_ready")
     return generated
+
+
+_CONSISTENCY_PROMPT = """\
+You are a senior technical reviewer.  You have been given a set of software \
+design contracts for the same project.  Your job is to identify concrete \
+inconsistencies between them — e.g.
+
+• A database column referenced in the schema contract but missing from the \
+  API contract.
+• A feature described in the blueprint that the phases contract never schedules.
+• Tech-stack choices in the stack contract that contradict the boundaries contract.
+• Naming mismatches (different names for the same entity across contracts).
+
+Respond ONLY with a JSON array of issue objects:
+[{"severity":"warn"|"error","contracts":["type1","type2"],"description":"..."}]
+
+If everything is consistent, return an empty array: []
+Do NOT include commentary outside the JSON.
+"""
+
+
+async def _run_consistency_check(
+    project_id: UUID,
+    user_id: UUID,
+    prior_contracts: dict[str, str],
+) -> None:
+    """Run a lightweight LLM pass to flag cross-contract inconsistencies.
+
+    This is best-effort: failures are logged but never block the pipeline.
+    Results are pushed to the client via WS so the user (and any future
+    auto-fix step) can see them.
+    """
+    if len(prior_contracts) < 2:
+        return  # Nothing to cross-check
+
+    pid = str(project_id)
+    try:
+        # Build a condensed view — truncate very long contracts to stay in budget
+        MAX_CHARS_PER_CONTRACT = 12_000
+        condensed = []
+        for ctype, content in prior_contracts.items():
+            text = content[:MAX_CHARS_PER_CONTRACT]
+            if len(content) > MAX_CHARS_PER_CONTRACT:
+                text += "\n\n[... truncated ...]"
+            condensed.append(f"=== {ctype} ===\n{text}")
+
+        user_msg = "\n\n".join(condensed)
+
+        resp = await llm_chat(
+            api_key=settings.ANTHROPIC_API_KEY,
+            model=settings.LLM_PLANNER_MODEL,
+            system_prompt=_CONSISTENCY_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+            max_tokens=2048,
+        )
+
+        raw = resp.get("text", "").strip()
+        issues = json.loads(raw) if raw else []
+
+        if issues:
+            logger.warning(
+                "Consistency check found %d issue(s) for project %s: %s",
+                len(issues), pid, json.dumps(issues, indent=2),
+            )
+        else:
+            logger.info("Consistency check passed for project %s", pid)
+
+        # Push results to client regardless (empty = all good)
+        await manager.send_to_user(str(user_id), {
+            "type": "contract_consistency",
+            "payload": {
+                "project_id": pid,
+                "issues": issues,
+            },
+        })
+
+    except Exception:
+        logger.exception(
+            "Consistency check failed for project %s — non-blocking", pid,
+        )
 
 
 async def cancel_contract_generation(
@@ -721,6 +847,7 @@ async def _generate_greenfield_contract_with_tools(
     provider: str,
     prior_contracts: dict[str, str],
     build_mode: str = "full",
+    on_turn_progress: "Any | None" = None,
 ) -> tuple[str, dict]:
     """Generate a single greenfield contract using the multi-turn tool-use loop.
 
@@ -754,6 +881,7 @@ async def _generate_greenfield_contract_with_tools(
         model=model,
         provider=provider,
         repo_name=project.get("name", ""),
+        on_turn_progress=on_turn_progress,
     )
 
 

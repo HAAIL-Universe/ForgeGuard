@@ -59,20 +59,6 @@ const JOURNEY_STEPS = [
   },
 ];
 
-/* ── The 9 Contract types ─────────────────────────────────────────────── */
-
-const CONTRACTS = [
-  { name: 'Blueprint', file: 'blueprint.md', description: 'Product intent, MVP scope, hard boundaries' },
-  { name: 'Manifesto', file: 'manifesto.md', description: 'Non-negotiable engineering principles' },
-  { name: 'Stack', file: 'stack.md', description: 'Language, framework, DB, auth, deployment decisions' },
-  { name: 'Schema', file: 'schema.md', description: 'Canonical database tables and indexes' },
-  { name: 'Physics', file: 'physics.yaml', description: 'API specification — endpoints, shapes, auth' },
-  { name: 'Boundaries', file: 'boundaries.json', description: 'Layer rules enforced by audit' },
-  { name: 'UI', file: 'ui.md', description: 'Shell layout, screens, routes, theme, responsive' },
-  { name: 'Phases', file: 'phases.md', description: 'Ordered build phases with exit criteria' },
-  { name: 'Builder Directive', file: 'builder_directive.md', description: 'System prompt for the autonomous builder' },
-];
-
 /* ── Page component ───────────────────────────────────────────────────── */
 
 function Build() {
@@ -216,7 +202,7 @@ function Build() {
             )}
           </div>
           <button
-            onClick={() => activeMini ? navigate(`/projects/${activeMini.id}`) : navigate('/repos')}
+            onClick={() => activeMini ? navigate(`/projects/${activeMini.id}`) : navigate('/projects')}
             style={{
               background: activeMini ? '#22C55E' : '#2563EB',
               color: '#fff',
@@ -311,47 +297,6 @@ function Build() {
                   <div style={{ color: '#94A3B8', fontSize: '0.8rem', lineHeight: 1.4 }}>
                     {step.description}
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* ── Contracts explained ──────────────────────────────────── */}
-        <div style={{ marginBottom: '32px' }}>
-          <h2 style={{ margin: '0 0 6px', fontSize: '1rem', fontWeight: 600, color: '#CBD5E1' }}>
-            The 9 Forge Contracts
-          </h2>
-          <p style={{ margin: '0 0 16px', color: '#64748B', fontSize: '0.8rem', lineHeight: 1.4 }}>
-            Contracts are the source of truth. The builder cannot write a line
-            of code that isn't justified by a contract. They're generated from
-            your questionnaire answers and can be edited before building.
-          </p>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-              gap: '8px',
-            }}
-          >
-            {CONTRACTS.map((contract) => (
-              <div
-                key={contract.name}
-                style={{
-                  background: '#1E293B',
-                  borderRadius: '8px',
-                  padding: '14px 16px',
-                  border: '1px solid #334155',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{contract.name}</span>
-                  <span style={{ color: '#64748B', fontSize: '0.7rem', fontFamily: 'monospace' }}>
-                    {contract.file}
-                  </span>
-                </div>
-                <div style={{ color: '#94A3B8', fontSize: '0.78rem', lineHeight: 1.3 }}>
-                  {contract.description}
                 </div>
               </div>
             ))}

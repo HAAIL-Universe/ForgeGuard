@@ -44,6 +44,19 @@ _build_spend_caps: dict[str, float | None] = {}
 _build_cost_warned: dict[str, bool] = {}
 _last_cost_ticker: dict[str, float] = {}
 
+# Per-model token tracking  {build_id: {"opus": {"in": N, "out": N}, ...}}
+_build_model_tokens: dict[str, dict[str, dict[str, int]]] = {}
+
+
+def _model_bucket(model: str) -> str:
+    """Map a model name to a UI bucket: opus | sonnet | haiku."""
+    m = model.lower()
+    if "opus" in m:
+        return "opus"
+    if "haiku" in m:
+        return "haiku"
+    return "sonnet"
+
 
 class CostCapExceeded(Exception):
     """Raised when a build's running cost exceeds the configured spend cap."""
@@ -62,6 +75,13 @@ async def _accumulate_cost(
     _build_api_calls[bid] = _build_api_calls.get(bid, 0) + 1
     _build_total_input_tokens[bid] = _build_total_input_tokens.get(bid, 0) + input_tokens
     _build_total_output_tokens[bid] = _build_total_output_tokens.get(bid, 0) + output_tokens
+
+    # Per-model tracking
+    bucket = _model_bucket(model)
+    mt = _build_model_tokens.setdefault(bid, {})
+    bkt = mt.setdefault(bucket, {"in": 0, "out": 0})
+    bkt["in"] += input_tokens
+    bkt["out"] += output_tokens
 
     now = time.time()
     last = _last_cost_ticker.get(bid, 0.0)
@@ -82,6 +102,7 @@ async def _broadcast_cost_ticker(build_id: UUID, user_id: UUID) -> None:
     effective_cap = spend_cap if spend_cap else (_state.settings.BUILD_MAX_COST_USD or None)
     pct_used = (running_cost / effective_cap * 100) if effective_cap else 0.0
 
+    mt = _build_model_tokens.get(bid, {})
     await _state._broadcast_build_event(user_id, build_id, "cost_ticker", {
         "total_cost_usd": round(running_cost, 6),
         "api_calls": _build_api_calls.get(bid, 0),
@@ -89,6 +110,10 @@ async def _broadcast_cost_ticker(build_id: UUID, user_id: UUID) -> None:
         "tokens_out": _build_total_output_tokens.get(bid, 0),
         "spend_cap": effective_cap,
         "pct_used": round(pct_used, 1),
+        "model_tokens": {
+            k: {"input": v["in"], "output": v["out"], "total": v["in"] + v["out"]}
+            for k, v in mt.items()
+        },
     })
 
 
@@ -150,6 +175,7 @@ def _init_cost_tracking(build_id: UUID, user_id: UUID, spend_cap: float | None) 
     _build_cost_warned[bid] = False
     _last_cost_ticker[bid] = 0.0
     _build_cost_user[bid] = user_id
+    _build_model_tokens[bid] = {}
 
 
 def _cleanup_cost_tracking(build_id: UUID) -> None:
@@ -163,16 +189,22 @@ def _cleanup_cost_tracking(build_id: UUID) -> None:
     _build_cost_warned.pop(bid, None)
     _last_cost_ticker.pop(bid, None)
     _build_cost_user.pop(bid, None)
+    _build_model_tokens.pop(bid, None)
 
 
 def get_build_cost_live(build_id: str) -> dict:
     """Return current in-memory cost info for a build (for REST endpoints)."""
+    mt = _build_model_tokens.get(build_id, {})
     return {
         "total_cost_usd": round(float(_build_running_cost.get(build_id, Decimal(0))), 6),
         "api_calls": _build_api_calls.get(build_id, 0),
         "tokens_in": _build_total_input_tokens.get(build_id, 0),
         "tokens_out": _build_total_output_tokens.get(build_id, 0),
         "spend_cap": _build_spend_caps.get(build_id),
+        "model_tokens": {
+            k: {"input": v["in"], "output": v["out"], "total": v["in"] + v["out"]}
+            for k, v in mt.items()
+        },
     }
 
 

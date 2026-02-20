@@ -40,9 +40,7 @@ export default function BranchPickerModal({
   const [mode, setMode] = useState<'main' | 'new'>('main');
   const [customBranch, setCustomBranch] = useState('');
   const [step, setStep] = useState<'branch' | 'version'>('branch');
-  const [selectedBatch, setSelectedBatch] = useState<number | null>(
-    contractVersions.length > 0 ? contractVersions[0].batch : null
-  );
+  const [selectedBatch, setSelectedBatch] = useState<number | null>(null);
 
   const branchName = mode === 'main' ? 'main' : customBranch.trim();
   const canConfirm = !starting && (mode === 'main' || branchName.length > 0);
@@ -243,6 +241,35 @@ export default function BranchPickerModal({
       <p style={{ margin: 0, fontSize: '0.8rem', color: '#94A3B8' }}>
         Multiple contract versions exist. Choose which contracts to build with.
       </p>
+
+      {/* Current (latest) option */}
+      <div
+        style={selectedBatch === null ? cardSelected : cardBase}
+        onClick={() => setSelectedBatch(null)}
+        data-testid="version-current"
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span
+            style={{
+              width: '16px', height: '16px', borderRadius: '50%',
+              border: `2px solid ${selectedBatch === null ? '#2563EB' : '#475569'}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}
+          >
+            {selectedBatch === null && (
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2563EB' }} />
+            )}
+          </span>
+          <div>
+            <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#F8FAFC' }}>
+              Current (Latest)
+            </span>
+            <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#94A3B8' }}>
+              Live contracts — most recent generation
+            </p>
+          </div>
+        </div>
+      </div>
 
       {/* Snapshot versions */}
       {contractVersions.map((v) => (

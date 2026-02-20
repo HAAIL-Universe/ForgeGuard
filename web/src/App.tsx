@@ -48,6 +48,7 @@ const BuildProgress = lazyWithRetry(() => import('./pages/BuildProgress'));
 const BuildIDE = lazyWithRetry(() => import('./pages/BuildIDE'));
 const BuildComplete = lazyWithRetry(() => import('./pages/BuildComplete'));
 const BuildLanding = lazyWithRetry(() => import('./pages/Build'));
+const ProjectsPage = lazyWithRetry(() => import('./pages/Projects'));
 const Settings = lazyWithRetry(() => import('./pages/Settings'));
 const Scout = lazyWithRetry(() => import('./pages/Scout'));
 
@@ -140,6 +141,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <BuildLanding />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects"
+              element={
+                <ProtectedRoute>
+                  <ProjectsPage />
                 </ProtectedRoute>
               }
             />

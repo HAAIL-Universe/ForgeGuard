@@ -25,7 +25,7 @@ from app.services.project_service import (
     list_contracts,
     list_user_projects,
     process_questionnaire_message,
-    push_contracts_to_git,
+
     reset_questionnaire,
     update_contract,
 )
@@ -116,6 +116,7 @@ async def list_projects(
                 "description": p["description"],
                 "status": p["status"],
                 "build_mode": p.get("build_mode", "full"),
+                "latest_build_status": p.get("latest_build_status"),
                 "created_at": p["created_at"],
                 "updated_at": p["updated_at"],
             }
@@ -267,15 +268,6 @@ async def get_contract_history_batch(
             for c in contracts
         ]
     }
-
-
-@router.post("/{project_id}/contracts/push")
-async def push_contracts(
-    project_id: UUID,
-    current_user: dict = Depends(get_current_user),
-) -> dict:
-    """Push all contracts to the linked GitHub repository."""
-    return await push_contracts_to_git(current_user["id"], project_id)
 
 
 @router.get("/{project_id}/contracts/{contract_type}")

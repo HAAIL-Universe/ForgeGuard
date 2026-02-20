@@ -3,7 +3,6 @@
 import asyncio
 import json as _json
 import logging
-import time
 from typing import Any, Callable, Awaitable
 
 import httpx
@@ -259,9 +258,6 @@ async def chat_anthropic(
 # Anthropic — streaming (live token progress)
 # ---------------------------------------------------------------------------
 
-# Minimum interval between on_progress callbacks (seconds)
-_STREAM_THROTTLE_S = 0.35
-
 # Rough chars-per-token estimate for output counting during stream
 _CHARS_PER_TOKEN = 4.0
 
@@ -314,7 +310,6 @@ async def chat_anthropic_streaming(
         input_tokens = 0
         output_tokens = 0
         char_count = 0
-        last_progress = 0.0
 
         async with client.stream(
             "POST",
@@ -348,7 +343,6 @@ async def chat_anthropic_streaming(
                     input_tokens = usage.get("input_tokens", 0)
                     if on_progress:
                         await on_progress(input_tokens, 0)
-                        last_progress = time.monotonic()
 
                 elif event_type == "content_block_delta":
                     delta = data.get("delta", {})
@@ -357,12 +351,10 @@ async def chat_anthropic_streaming(
                         text_parts.append(txt)
                         char_count += len(txt)
 
-                        # Throttled progress updates
-                        now = time.monotonic()
-                        if on_progress and (now - last_progress) >= _STREAM_THROTTLE_S:
+                        # Live progress — every text delta
+                        if on_progress:
                             est_output = int(char_count / _CHARS_PER_TOKEN)
                             await on_progress(input_tokens, est_output)
-                            last_progress = now
 
                 elif event_type == "message_delta":
                     usage = data.get("usage", {})

@@ -11,7 +11,9 @@
       "mcp__forgeguard__forge_get_directive",
       "mcp__forgeguard__forge_get_contract",
       "Bash(dir:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(git stash:*)",
+      "Bash(grep:*)"
     ]
   },
   "enabledMcpjsonServers": [

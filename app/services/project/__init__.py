@@ -24,7 +24,7 @@ __all__ = [
     "_CONTRACT_INSTRUCTIONS",
     "generate_contracts",
     "cancel_contract_generation",
-    "push_contracts_to_git",
+
     # CRUD (defined in this file)
     "create_new_project",
     "list_user_projects",
@@ -63,7 +63,7 @@ from .contract_generator import (  # noqa: F401
     _load_generic_template,
     cancel_contract_generation,
     generate_contracts,
-    push_contracts_to_git,
+
 )
 from .questionnaire import (  # noqa: F401
     QUESTIONNAIRE_SECTIONS,

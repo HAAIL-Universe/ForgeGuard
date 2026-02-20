@@ -125,12 +125,13 @@ async def test_create_new_project(mock_create):
 
 
 @pytest.mark.asyncio
+@patch("app.services.project.questionnaire.update_questionnaire_history", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.update_questionnaire_state", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.llm_chat", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 async def test_process_questionnaire_first_message(
-    mock_project, mock_llm, mock_status, mock_qs
+    mock_project, mock_llm, mock_status, mock_qs, mock_qh
 ):
     mock_project.return_value = {
         "id": PROJECT_ID,
@@ -139,6 +140,7 @@ async def test_process_questionnaire_first_message(
         "description": "test",
         "status": "draft",
         "questionnaire_state": {},
+        "questionnaire_history": {},
     }
     mock_llm.return_value = {
         "text": json.dumps({

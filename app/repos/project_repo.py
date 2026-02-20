@@ -26,7 +26,8 @@ async def create_project(
         INSERT INTO projects (user_id, name, description, repo_id, local_path, build_mode)
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, user_id, name, description, status, repo_id,
-                  local_path, build_mode, questionnaire_state, created_at, updated_at
+                  local_path, build_mode, questionnaire_state, questionnaire_history,
+                  created_at, updated_at
         """,
         user_id,
         name,
@@ -44,7 +45,8 @@ async def get_project_by_id(project_id: UUID) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT p.id, p.user_id, p.name, p.description, p.status, p.repo_id,
-               p.local_path, p.questionnaire_state, p.created_at, p.updated_at,
+               p.local_path, p.build_mode, p.questionnaire_state,
+               p.questionnaire_history, p.created_at, p.updated_at,
                r.full_name AS repo_full_name
         FROM projects p
         LEFT JOIN repos r ON r.id = p.repo_id
@@ -60,11 +62,18 @@ async def get_projects_by_user(user_id: UUID) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
         """
-        SELECT id, user_id, name, description, status, repo_id,
-               local_path, questionnaire_state, created_at, updated_at
-        FROM projects
-        WHERE user_id = $1
-        ORDER BY created_at DESC
+        SELECT p.id, p.user_id, p.name, p.description, p.status, p.repo_id,
+               p.local_path, p.build_mode, p.created_at, p.updated_at,
+               lb.status AS latest_build_status
+        FROM projects p
+        LEFT JOIN LATERAL (
+            SELECT b.status FROM builds b
+            WHERE b.project_id = p.id
+            ORDER BY b.created_at DESC
+            LIMIT 1
+        ) lb ON true
+        WHERE p.user_id = $1
+        ORDER BY p.created_at DESC
         """,
         user_id,
     )
@@ -84,11 +93,39 @@ async def update_project_status(project_id: UUID, status: str) -> None:
     )
 
 
+async def save_generation_metrics(
+    project_id: UUID,
+    metrics: dict,
+) -> None:
+    """Store contract generation metrics (timing, tokens) as JSONB."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE projects
+           SET generation_metrics = $2::jsonb,
+               updated_at = now()
+         WHERE id = $1
+        """,
+        project_id,
+        json.dumps(metrics),
+    )
+
+
 async def update_questionnaire_state(
     project_id: UUID,
     state: dict,
 ) -> None:
-    """Overwrite the questionnaire_state JSONB column."""
+    """Overwrite the questionnaire_state JSONB column.
+
+    Only persists ``completed_sections`` and ``answers``.
+    Conversation history and token usage live in the separate
+    ``questionnaire_history`` column — see ``update_questionnaire_history``.
+    """
+    # Strip heavy keys that belong in the history column
+    lightweight = {
+        k: v for k, v in state.items()
+        if k not in ("conversation_history", "token_usage")
+    }
     pool = await get_pool()
     await pool.execute(
         """
@@ -96,7 +133,32 @@ async def update_questionnaire_state(
         WHERE id = $1
         """,
         project_id,
-        json.dumps(state),
+        json.dumps(lightweight),
+    )
+
+
+async def update_questionnaire_history(
+    project_id: UUID,
+    history: list[dict],
+    token_usage: dict,
+) -> None:
+    """Overwrite the questionnaire_history JSONB column.
+
+    Stores conversation_history (chat turns) and cumulative token_usage
+    separately from the lightweight questionnaire_state.
+    """
+    blob = {
+        "conversation_history": history,
+        "token_usage": token_usage,
+    }
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE projects SET questionnaire_history = $2::jsonb, updated_at = now()
+        WHERE id = $1
+        """,
+        project_id,
+        json.dumps(blob),
     )
 
 
@@ -277,9 +339,12 @@ async def get_snapshot_contracts(project_id: UUID, batch: int) -> list[dict]:
 
 
 def _project_to_dict(row) -> dict:
-    """Convert a project row to a dict, parsing JSONB questionnaire_state."""
+    """Convert a project row to a dict, parsing JSONB columns."""
     d = dict(row)
     qs = d.get("questionnaire_state")
     if isinstance(qs, str):
         d["questionnaire_state"] = json.loads(qs)
+    qh = d.get("questionnaire_history")
+    if isinstance(qh, str):
+        d["questionnaire_history"] = json.loads(qh)
     return d

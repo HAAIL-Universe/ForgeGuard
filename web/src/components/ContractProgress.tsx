@@ -11,6 +11,17 @@ import { useWebSocket } from '../hooks/useWebSocket';
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 /* ------------------------------------------------------------------ */
+/*  Helpers                                                           */
+/* ------------------------------------------------------------------ */
+
+/** Format seconds into MM:SS */
+function fmtTimer(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Contract type labels                                              */
 /* ------------------------------------------------------------------ */
 
@@ -129,14 +140,23 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
   const [cancelling, setCancelling] = useState(false);
   const [cumulativeTokens, setCumulativeTokens] = useState<TokenUsage>(initialTokenUsage);
   const [liveTokens, setLiveTokens] = useState<Record<string, { input: number; output: number }>>({});
+  const [contractTimers, setContractTimers] = useState<Record<string, { startedAt: number; frozenElapsed: number | null }>>({});
+  const [tick, setTick] = useState(0);
   const logEndRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const genStartedAtRef = useRef<number | null>(null);
 
   const addLog = useCallback((msg: string) => {
     const now = new Date();
     const time = now.toLocaleTimeString('en-GB', { hour12: false });
     setLog((prev) => [...prev, { time, message: msg }]);
+  }, []);
+
+  /* 1-second tick for live timers */
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
   }, []);
 
   /* Auto-scroll log */
@@ -156,6 +176,8 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         if (p.status === 'generating') {
           setStatuses((prev) => ({ ...prev, [p.contract_type]: 'generating' }));
           setLiveTokens((prev) => ({ ...prev, [p.contract_type]: { input: 0, output: 0 } }));
+          setContractTimers((prev) => ({ ...prev, [p.contract_type]: { startedAt: Date.now(), frozenElapsed: null } }));
+          if (!genStartedAtRef.current) genStartedAtRef.current = Date.now();
           addLog(`Generating ${label}...`);
         } else if (p.status === 'streaming') {
           /* Live token progress from streamed LLM response */
@@ -174,7 +196,17 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
           setStatuses((prev) => ({ ...prev, [p.contract_type]: 'done' }));
           const inTok = p.input_tokens ?? 0;
           const outTok = p.output_tokens ?? 0;
-          addLog(`✓ ${label} complete (${inTok.toLocaleString()} in / ${outTok.toLocaleString()} out)`);
+          const elapsed = p.elapsed_s ?? null;
+          /* Freeze the timer to the server-reported elapsed */
+          setContractTimers((prev) => ({
+            ...prev,
+            [p.contract_type]: {
+              startedAt: prev[p.contract_type]?.startedAt ?? Date.now(),
+              frozenElapsed: elapsed,
+            },
+          }));
+          const elapsedStr = elapsed != null ? ` — ${fmtTimer(elapsed)}` : '';
+          addLog(`✓ ${label} complete (${inTok.toLocaleString()} in / ${outTok.toLocaleString()} out${elapsedStr})`);
 
           /* Clear live tokens for this contract */
           setLiveTokens((prev) => {
@@ -280,6 +312,25 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
   const ctxPercent = Math.min(100, (totalTokens / contextWindow) * 100);
   const doneCount = Object.values(statuses).filter((s) => s === 'done').length;
 
+  /* Timer computations */
+  const totalElapsedS = (() => {
+    if (!genStartedAtRef.current) return 0;
+    /* Sum of frozen timers + live timers */
+    let total = 0;
+    for (const ct of ALL_CONTRACTS) {
+      const t = contractTimers[ct];
+      if (!t) continue;
+      if (t.frozenElapsed != null) {
+        total += t.frozenElapsed;
+      } else {
+        total += (Date.now() - t.startedAt) / 1000;
+      }
+    }
+    return total;
+  })();
+  const wallElapsedS = genStartedAtRef.current ? (Date.now() - genStartedAtRef.current) / 1000 : 0;
+  void tick; /* ensure tick triggers re-render */
+
   /* Color for context bar */
   const ctxColor = ctxPercent > 80 ? '#EF4444' : ctxPercent > 50 ? '#F59E0B' : '#22C55E';
 
@@ -290,6 +341,11 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
         <h4 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
           {allDone ? '✓ Contracts Ready' : `Generating Contracts… (${doneCount}/${ALL_CONTRACTS.length})`}
         </h4>
+        {(generating || allDone) && genStartedAtRef.current && (
+          <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: allDone ? '#22C55E' : '#94A3B8' }}>
+            ⏱ {fmtTimer(wallElapsedS)}
+          </span>
+        )}
       </div>
 
       {/* Context window meter */}
@@ -324,10 +380,27 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
           const icon = st === 'done' ? '✅' : st === 'generating' ? '⏳' : '○';
           const color = st === 'done' ? '#22C55E' : st === 'generating' ? '#F59E0B' : '#475569';
           const live = liveTokens[ct];
+          const timer = contractTimers[ct];
+          const timerStr = timer
+            ? timer.frozenElapsed != null
+              ? fmtTimer(timer.frozenElapsed)
+              : fmtTimer((Date.now() - timer.startedAt) / 1000)
+            : null;
           return (
             <div key={ct} style={stepRowStyle}>
               <span style={{ width: '20px', textAlign: 'center' }}>{icon}</span>
               <span style={{ flex: 1, color }}>{CONTRACT_LABELS[ct]}</span>
+              {timerStr && (
+                <span style={{
+                  fontSize: '0.7rem',
+                  fontFamily: 'monospace',
+                  color: st === 'done' ? '#22C55E' : '#F59E0B',
+                  minWidth: '38px',
+                  textAlign: 'right',
+                }}>
+                  {timerStr}
+                </span>
+              )}
               {st === 'generating' && live ? (
                 <span style={{ fontSize: '0.7rem', color: '#94A3B8', fontFamily: 'monospace', display: 'flex', gap: '8px' }}>
                   <span style={{ color: '#60A5FA' }}>↓{live.input.toLocaleString()}</span>

@@ -53,14 +53,17 @@ async def start_build(
     """Start a build for a project."""
     if not build_limiter.is_allowed(str(user["id"])):
         raise HTTPException(status_code=429, detail="Build rate limit exceeded")
-    return await build_service.start_build(
-        project_id,
-        user["id"],
-        target_type=body.target_type if body else None,
-        target_ref=body.target_ref if body else None,
-        branch=body.branch if body else "main",
-        contract_batch=body.contract_batch if body else None,
-    )
+    try:
+        return await build_service.start_build(
+            project_id,
+            user["id"],
+            target_type=body.target_type if body else None,
+            target_ref=body.target_ref if body else None,
+            branch=body.branch if body else "main",
+            contract_batch=body.contract_batch if body else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ── GET /projects/{project_id}/builds ─────────────────────────────────────

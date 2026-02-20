@@ -378,6 +378,7 @@ async def _generate_scout_contract_with_tools(
     model: str,
     provider: str,
     prior_contracts: dict[str, str],
+    on_turn_progress: "Any | None" = None,
 ) -> tuple[str, dict]:
     """Generate a single scout contract using the multi-turn tool-use loop.
 
@@ -406,6 +407,7 @@ async def _generate_scout_contract_with_tools(
         model=model,
         provider=provider,
         repo_name=repo_name,
+        on_turn_progress=on_turn_progress,
     )
 
 
@@ -596,6 +598,23 @@ async def generate_contracts_from_scout(
             })
 
             # ── Tool-use generation (replaces snowball text-injection) ─
+
+            # Callback for per-turn live token progress on the UI
+            async def _turn_progress(in_tok: int, out_tok: int, _ct=contract_type, _idx=idx) -> None:
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": _ct,
+                        "status": "streaming",
+                        "index": _idx,
+                        "total": total,
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "source": "scout",
+                    },
+                })
+
             llm_task = asyncio.ensure_future(
                 _generate_scout_contract_with_tools(
                     contract_type=contract_type,
@@ -605,6 +624,7 @@ async def generate_contracts_from_scout(
                     model=llm_model,
                     provider=provider,
                     prior_contracts=prior_contracts,
+                    on_turn_progress=_turn_progress,
                 )
             )
             cancel_task = asyncio.ensure_future(cancel_event.wait())

@@ -721,6 +721,23 @@ async def run_sub_agent(
                         if path and path not in result.files_written:
                             result.files_written.append(path)
 
+                    # Broadcast scratchpad writes to UI
+                    elif event.name == "forge_scratchpad":
+                        _sp_op = (event.input.get("operation") or "").lower()
+                        if _sp_op in ("write", "append"):
+                            _sp_key = event.input.get("key", "")
+                            _sp_val = event.input.get("value", "")
+                            await _state._broadcast_build_event(
+                                handoff.user_id, handoff.build_id, "scratchpad_write", {
+                                    "key": _sp_key,
+                                    "source": "opus" if handoff.role in (SubAgentRole.CODER, SubAgentRole.FIXER) else "sonnet",
+                                    "role": handoff.role.value,
+                                    "summary": f"{handoff.role.value.title()} wrote to scratchpad: {_sp_key}",
+                                    "content": str(_sp_val)[:2000],
+                                    "full_length": len(str(_sp_val)),
+                                },
+                            )
+
             # If no tool calls, the agent is done
             if not tool_calls_this_round:
                 break

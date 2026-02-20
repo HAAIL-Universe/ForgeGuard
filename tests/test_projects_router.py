@@ -239,9 +239,10 @@ def test_delete_project(mock_active, mock_delete, mock_project, mock_get_user):
 @patch("app.services.project.questionnaire.get_project_by_id", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.update_project_status", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.update_questionnaire_state", new_callable=AsyncMock)
+@patch("app.services.project.questionnaire.update_questionnaire_history", new_callable=AsyncMock)
 @patch("app.services.project.questionnaire.llm_chat", new_callable=AsyncMock)
 def test_questionnaire_message(
-    mock_llm, mock_update_qs, mock_update_status, mock_project, mock_get_user
+    mock_llm, mock_update_qh, mock_update_qs, mock_update_status, mock_project, mock_get_user
 ):
     mock_get_user.return_value = MOCK_USER
     mock_project.return_value = {
@@ -251,6 +252,7 @@ def test_questionnaire_message(
         "description": "A test",
         "status": "draft",
         "questionnaire_state": {},
+        "questionnaire_history": {},
     }
     mock_llm.return_value = {
         "text": '{"reply": "What does your product do?", "section": "product_intent", "section_complete": false, "extracted_data": null}',

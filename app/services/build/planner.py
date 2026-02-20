@@ -7,6 +7,7 @@ import os
 import re
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from . import _state
@@ -29,20 +30,39 @@ _CODE_EXTENSIONS = frozenset({
     ".toml", ".cfg", ".md", ".html", ".css",
 })
 
-# Contract relevance mapping — which contracts are useful for which file types
+# Contract relevance mapping — which contracts are useful for which file types.
+# Checked in order; a file may match MULTIPLE prefixes (no early break).
+# The map intentionally includes generic patterns (src/, backend/, server/,
+# routes/) so projects that don't follow the ForgeGuard layout still get
+# the right contracts.
 _CONTRACT_RELEVANCE: dict[str, list[str]] = {
-    "app/": ["blueprint", "schema", "stack", "boundaries", "builder_contract"],
-    "tests/": ["blueprint", "schema", "stack"],
+    # ── ForgeGuard-style layout ──
+    "app/api/": ["blueprint", "schema", "stack", "physics", "boundaries"],
+    "app/": ["blueprint", "schema", "stack", "boundaries"],
+    "tests/": ["blueprint", "schema", "stack", "physics", "boundaries"],
     "web/src/components/": ["ui", "blueprint", "stack"],
     "web/src/pages/": ["ui", "blueprint", "stack", "schema"],
+    "web/": ["ui", "blueprint", "stack"],
     "db/": ["schema"],
+    # ── Generic patterns for any project ──
+    "src/api/": ["blueprint", "schema", "stack", "physics", "boundaries"],
+    "src/routes/": ["blueprint", "schema", "stack", "physics", "boundaries"],
+    "src/pages/": ["ui", "blueprint", "stack", "schema"],
+    "src/components/": ["ui", "blueprint", "stack"],
+    "src/": ["blueprint", "schema", "stack", "boundaries"],
+    "backend/": ["blueprint", "schema", "stack", "physics", "boundaries"],
+    "server/": ["blueprint", "schema", "stack", "physics", "boundaries"],
+    "routes/": ["blueprint", "schema", "stack", "physics"],
+    "api/": ["blueprint", "schema", "stack", "physics", "boundaries"],
+    "frontend/": ["ui", "blueprint", "stack"],
+    "client/": ["ui", "blueprint", "stack"],
     "config": ["stack", "boundaries"],
     "doc": ["blueprint", "manifesto"],
 }
 
 # Planner build prompt template path
 _PLANNER_BUILD_PROMPT_PATH = (
-    Path(__file__).resolve().parent.parent / "templates" / "contracts" / "planner_build_prompt.md"
+    Path(__file__).resolve().parent.parent.parent / "templates" / "contracts" / "planner_build_prompt.md"
 )
 
 
@@ -367,20 +387,28 @@ def _select_contracts_for_file(
     file_path: str,
     contracts: list[dict],
 ) -> list[dict]:
-    """Select the subset of contracts relevant to a given file type."""
+    """Select the subset of contracts relevant to a given file type.
+
+    Checks ALL prefixes in ``_CONTRACT_RELEVANCE`` (no early break) so a
+    file like ``app/api/routers/users.py`` matches both ``app/api/`` and
+    ``app/``, accumulating all relevant contract types.
+    """
     relevant_types: set[str] = set()
 
     for prefix, types in _CONTRACT_RELEVANCE.items():
         if file_path.startswith(prefix):
             relevant_types.update(types)
-            break
+            # No break — keep checking for more specific matches
 
     if not relevant_types:
+        # Fallback for paths that match nothing
         relevant_types = {"blueprint", "stack"}
 
-    if file_path.startswith("tests/"):
+    # Test files always get boundaries for layer-checking context
+    if file_path.startswith("tests/") or "/tests/" in file_path:
         relevant_types.update(["blueprint", "schema", "stack", "boundaries"])
 
+    # SQL files only need schema
     if file_path.endswith(".sql"):
         relevant_types = {"schema"}
 
@@ -474,6 +502,257 @@ def _topological_sort(files: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Tier analysis — group manifest files by dependency depth
+# ---------------------------------------------------------------------------
+
+
+def _compute_tiers(files: list[dict]) -> list[list[dict]]:
+    """Group manifest files into dependency tiers for parallel execution.
+
+    Each tier contains files that depend ONLY on files in previous tiers,
+    meaning all files within a tier can be built concurrently.
+
+    Returns a list-of-lists: ``tiers[0]`` is the foundation tier (no deps),
+    ``tiers[1]`` depends only on tier 0, etc.
+
+    Falls back to single-file tiers (sequential) on circular deps.
+    """
+    path_to_entry = {f["path"]: f for f in files}
+    path_to_depth: dict[str, int] = {}
+    visited: set[str] = set()
+    temp_mark: set[str] = set()
+
+    def depth(path: str) -> int:
+        if path in path_to_depth:
+            return path_to_depth[path]
+        if path in temp_mark:
+            return 0  # cycle — treat as depth 0
+        if path not in path_to_entry:
+            return -1  # external dep
+        temp_mark.add(path)
+        entry = path_to_entry[path]
+        max_dep = -1
+        for dep in entry.get("depends_on", []):
+            if dep in path_to_entry:
+                max_dep = max(max_dep, depth(dep))
+        temp_mark.discard(path)
+        d = max_dep + 1
+        path_to_depth[path] = d
+        return d
+
+    for f in files:
+        depth(f["path"])
+
+    # Group by depth
+    max_depth = max(path_to_depth.values()) if path_to_depth else 0
+    tiers: list[list[dict]] = [[] for _ in range(max_depth + 1)]
+    for f in files:
+        d = path_to_depth.get(f["path"], 0)
+        tiers[d].append(f)
+
+    # Filter empty tiers
+    return [t for t in tiers if t]
+
+
+def _tier_summary(tiers: list[list[dict]]) -> str:
+    """Return a human-readable summary of tiers for logging/display."""
+    lines = []
+    for i, tier in enumerate(tiers):
+        paths = [f["path"] for f in tier]
+        lines.append(f"Tier {i} ({len(tier)} files): {', '.join(paths)}")
+    return "\n".join(lines)
+
+
+async def _plan_tier_interfaces(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    tier_index: int,
+    tier_files: list[dict],
+    prior_tier_interfaces: str,
+    contracts: list[dict],
+    phase_deliverables: str,
+    working_dir: str,
+) -> str:
+    """Have Sonnet produce an interface map for a tier before builders start.
+
+    Returns the interface map text (also written to scratchpad).
+    """
+    from app.clients.llm_client import chat as llm_chat
+    from app.services.tool_executor import _exec_forge_scratchpad
+
+    file_specs = []
+    for f in tier_files:
+        deps = ", ".join(f.get("depends_on", [])) or "none"
+        file_specs.append(
+            f"- **{f['path']}** ({f.get('language', 'python')}): "
+            f"{f.get('purpose', 'no description')}  "
+            f"[depends_on: {deps}]"
+        )
+
+    # Select relevant contracts for this tier
+    relevant_contract_types = set()
+    for f in tier_files:
+        for prefix, types in _CONTRACT_RELEVANCE.items():
+            if f["path"].startswith(prefix) or f["path"].replace("backend/", "").startswith(prefix):
+                relevant_contract_types.update(types)
+    # Always include core contracts
+    relevant_contract_types.update(["manifesto", "blueprint", "schema", "stack"])
+
+    contracts_text = ""
+    for c in contracts:
+        ctype = c.get("contract_type", "")
+        if ctype in relevant_contract_types:
+            contracts_text += f"\n### {ctype}\n{c.get('content', '')[:8000]}\n"
+
+    prompt = f"""You are Sonnet, the **planning** LLM in the Forge build system.
+
+Your job is to produce an **Interface Map** for Tier {tier_index} — a set of files that will be built in parallel by Opus sub-agents.
+
+The Interface Map ensures every file in this tier uses consistent imports, class names, function signatures, and conventions. Opus builders will follow this map exactly.
+
+## Prior Tier Interfaces (already built)
+{prior_tier_interfaces or "(This is the first tier — no prior interfaces.)"}
+
+## Phase Deliverables
+{phase_deliverables}
+
+## Relevant Contracts
+{contracts_text}
+
+## Files in Tier {tier_index}
+{chr(10).join(file_specs)}
+
+## Output Format
+Produce a YAML-like interface map. For each file, specify:
+- **exports**: exact class names, function signatures with type hints, constants
+- **imports_from**: which prior-tier files they should import from (with exact names)
+- **conventions**: naming patterns, error handling, or architectural patterns to follow
+
+Be PRECISE — use exact Python/TypeScript identifiers that the builders should use.
+Only output the interface map. No preamble, no explanation."""
+
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=_state.settings.LLM_PLANNER_MODEL,
+            system_prompt="You are a precise software architect. Output only the interface map.",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=8192,
+            provider="anthropic",
+        )
+
+        text = result["text"] if isinstance(result, dict) else result
+        usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+        # Record cost
+        input_t = usage.get("input_tokens", 0)
+        output_t = usage.get("output_tokens", 0)
+        model = _state.settings.LLM_PLANNER_MODEL
+        input_rate, output_rate = _get_token_rates(model)
+        cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+        await _state.build_repo.record_build_cost(
+            build_id, f"tier_plan:{tier_index}", input_t, output_t, model, cost,
+        )
+        from .cost import _accumulate_cost
+        await _accumulate_cost(build_id, input_t, output_t, model, cost)
+
+        # Write to scratchpad
+        scratchpad_key = f"tier_{tier_index}_interfaces"
+        _exec_forge_scratchpad(
+            {"operation": "write", "key": scratchpad_key, "value": text},
+            working_dir,
+        )
+
+        # Broadcast scratchpad event so the UI can display it
+        await _state._broadcast_build_event(user_id, build_id, "scratchpad_write", {
+            "key": scratchpad_key,
+            "source": "sonnet",
+            "role": "planner",
+            "summary": f"Interface map for Tier {tier_index} ({len(tier_files)} files)",
+            "content": text[:2000],  # Preview for UI
+            "full_length": len(text),
+        })
+
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Sonnet planned Tier {tier_index} interfaces ({len(tier_files)} files, {input_t + output_t} tokens)",
+            source="planner", level="info",
+        )
+
+        return text
+
+    except Exception as exc:
+        logger.error("Failed to plan tier %d interfaces: %s", tier_index, exc, exc_info=True)
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Tier {tier_index} interface planning failed: {exc} — builders will use manifest only",
+            source="planner", level="warn",
+        )
+        return ""
+
+
+async def _extract_tier_interfaces(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    tier_index: int,
+    written_files: dict[str, str],
+    working_dir: str,
+) -> str:
+    """After a tier is built, extract the actual interfaces from written code.
+
+    This provides accurate interface info for the next tier's builders,
+    rather than relying on the planned interfaces which may have diverged.
+    """
+    from app.services.tool_executor import _exec_forge_scratchpad
+
+    # Build a compact summary of exports from each file
+    parts = [f"# Tier {tier_index} — Actual Interfaces\n"]
+    for path, content in written_files.items():
+        parts.append(f"\n## {path}")
+        # Extract key definitions from code
+        lines = content.split("\n")
+        exports = []
+        for line in lines:
+            stripped = line.strip()
+            # Python: class/def/async def at top level
+            if (stripped.startswith("class ") or stripped.startswith("def ") or
+                    stripped.startswith("async def ")) and not line.startswith(" " * 4):
+                exports.append(stripped.split("(")[0].split(":")[0])
+            # Python: module-level constants (UPPER_CASE = ...)
+            elif "=" in stripped and stripped.split("=")[0].strip().isupper() and not line.startswith(" "):
+                exports.append(stripped.split("=")[0].strip())
+            # TypeScript/JS: export
+            elif stripped.startswith("export "):
+                exports.append(stripped[:100])
+        if exports:
+            parts.append("\n".join(f"- `{e}`" for e in exports[:30]))
+        else:
+            parts.append("(no top-level exports detected)")
+
+    text = "\n".join(parts)
+
+    # Write to scratchpad
+    scratchpad_key = f"tier_{tier_index}_actual"
+    _exec_forge_scratchpad(
+        {"operation": "write", "key": scratchpad_key, "value": text},
+        working_dir,
+    )
+
+    await _state._broadcast_build_event(user_id, build_id, "scratchpad_write", {
+        "key": scratchpad_key,
+        "source": "sonnet",
+        "role": "planner",
+        "summary": f"Extracted interfaces from Tier {tier_index} ({len(written_files)} files)",
+        "content": text[:2000],
+        "full_length": len(text),
+    })
+
+    return text
+
+
+# ---------------------------------------------------------------------------
 # File manifest generation
 # ---------------------------------------------------------------------------
 
@@ -554,7 +833,7 @@ async def _generate_file_manifest(
                 model=_state.settings.LLM_PLANNER_MODEL,
                 system_prompt=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
-                max_tokens=4096,
+                max_tokens=16384,
                 provider="anthropic",
             )
         except (ValueError, Exception) as exc:
@@ -575,7 +854,7 @@ async def _generate_file_manifest(
                     model=_state.settings.LLM_PLANNER_MODEL,
                     system_prompt=system_prompt,
                     messages=[{"role": "user", "content": truncated_msg}],
-                    max_tokens=4096,
+                    max_tokens=16384,
                     provider="anthropic",
                 )
             else:
@@ -654,6 +933,11 @@ async def _generate_file_manifest(
 
     except json.JSONDecodeError as exc:
         logger.warning("Manifest JSON parse failed: %s — retrying once", exc)
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Manifest JSON parse error: {exc}",
+            source="planner", level="warn",
+        )
         try:
             json_match = re.search(r"\{[\s\S]*\}", text)
             if json_match:
@@ -678,7 +962,15 @@ async def _generate_file_manifest(
             pass
         return None
     except Exception as exc:
-        logger.error("File manifest generation failed: %s", exc)
+        logger.error("File manifest generation failed: %s", exc, exc_info=True)
+        try:
+            await _state.build_repo.append_build_log(
+                build_id,
+                f"Manifest generation error: {type(exc).__name__}: {exc}",
+                source="planner", level="error",
+            )
+        except Exception:
+            pass  # Don't mask the original error
         return None
 
 
@@ -1037,3 +1329,231 @@ async def _generate_fix_manifest(
     except Exception as exc:
         logger.warning("Fix manifest generation failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Parallel tier execution — dispatch sub-agents per tier
+# ---------------------------------------------------------------------------
+
+_MAX_PARALLEL_AGENTS = 4  # configurable: max concurrent Opus sub-agents per tier
+
+
+def _batch_tier_files(
+    tier_files: list[dict],
+    max_agents: int = _MAX_PARALLEL_AGENTS,
+) -> list[list[dict]]:
+    """Split a tier's files into sub-agent batches (2-4 files each).
+
+    Groups closely related files (same directory) together.
+    Returns a list of batches, each being a list of file entries.
+    """
+    if len(tier_files) <= 2:
+        return [tier_files]
+
+    # Group by directory
+    dir_groups: dict[str, list[dict]] = {}
+    for f in tier_files:
+        d = str(Path(f["path"]).parent)
+        dir_groups.setdefault(d, []).append(f)
+
+    # Merge small groups into batches
+    batches: list[list[dict]] = []
+    current_batch: list[dict] = []
+    for _dir, group in sorted(dir_groups.items()):
+        if len(current_batch) + len(group) > 4:
+            if current_batch:
+                batches.append(current_batch)
+            # If group itself is big, split it
+            if len(group) > 4:
+                for j in range(0, len(group), 4):
+                    batches.append(group[j:j + 4])
+                current_batch = []
+            else:
+                current_batch = list(group)
+        else:
+            current_batch.extend(group)
+    if current_batch:
+        batches.append(current_batch)
+
+    # Cap to max_agents by merging smallest batches
+    while len(batches) > max_agents:
+        batches.sort(key=len)
+        smallest = batches.pop(0)
+        batches[0] = smallest + batches[0]
+
+    return batches
+
+
+async def execute_tier(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    tier_index: int,
+    tier_files: list[dict],
+    contracts: list[dict],
+    phase_deliverables: str,
+    working_dir: str,
+    interface_map: str,
+    all_files_written: dict[str, str],
+    *,
+    key_pool: Any | None = None,
+) -> dict[str, str]:
+    """Execute a tier using parallel Opus Coder sub-agents.
+
+    Each sub-agent batch receives:
+    - Relevant contracts
+    - The tier's interface map (from Sonnet planner)
+    - Already-written files from prior tiers (as context)
+    - Its assigned file entries
+
+    Returns dict of ``{path: content}`` for all files written.
+    """
+    from .subagent import (
+        SubAgentRole,
+        SubAgentHandoff,
+        SubAgentResult,
+        run_sub_agent,
+        build_context_pack,
+    )
+
+    batches = _batch_tier_files(tier_files)
+
+    await _state.build_repo.append_build_log(
+        build_id,
+        f"Tier {tier_index}: {len(tier_files)} files in {len(batches)} parallel batches",
+        source="planner", level="info",
+    )
+    await _state._broadcast_build_event(user_id, build_id, "tier_start", {
+        "tier": tier_index,
+        "file_count": len(tier_files),
+        "batch_count": len(batches),
+        "files": [f["path"] for f in tier_files],
+    })
+
+    # Build contracts text (filtered for relevance)
+    relevant_types = set()
+    for f in tier_files:
+        for prefix, types in _CONTRACT_RELEVANCE.items():
+            fp = f["path"]
+            if fp.startswith(prefix) or fp.replace("backend/", "").startswith(prefix):
+                relevant_types.update(types)
+    relevant_types.update(["manifesto", "blueprint", "stack"])
+
+    contracts_text = ""
+    for c in contracts:
+        if c.get("contract_type", "") in relevant_types:
+            contracts_text += f"\n### {c['contract_type']}\n{c.get('content', '')[:8000]}\n"
+
+    # Dispatch each batch as a sub-agent
+    async def run_batch(batch: list[dict], batch_idx: int) -> SubAgentResult:
+        batch_paths = [f["path"] for f in batch]
+
+        # Build context from already-written files (prior tiers)
+        context_files: dict[str, str] = {}
+        for f in batch:
+            for dep in f.get("depends_on", []):
+                if dep in all_files_written:
+                    context_files[dep] = all_files_written[dep]
+            for ctx in f.get("context_files", []):
+                if ctx in all_files_written:
+                    context_files[ctx] = all_files_written[ctx]
+
+        # Also get auto-detected context from disk
+        disk_context = build_context_pack(
+            working_dir, batch_paths,
+            max_context_files=8,
+            max_context_chars=40_000,
+        )
+        for k, v in disk_context.items():
+            if k not in context_files:
+                context_files[k] = v
+
+        # Build assignment text
+        file_specs = []
+        for f in batch:
+            deps = ", ".join(f.get("depends_on", [])) or "none"
+            file_specs.append(
+                f"### {f['path']} ({f.get('language', 'python')})\n"
+                f"Purpose: {f.get('purpose', '')}\n"
+                f"Dependencies: {deps}\n"
+                f"Estimated lines: {f.get('estimated_lines', 100)}"
+            )
+
+        assignment = (
+            f"## Interface Map (follow this exactly)\n{interface_map}\n\n"
+            f"## Your Assignment\n"
+            f"Create the following {len(batch)} file(s).\n"
+            f"Follow the interface map PRECISELY — use the exact class names, "
+            f"function signatures, and import paths specified.\n\n"
+            + "\n\n".join(file_specs)
+            + "\n\nFor each file: use `write_file` to create it, then `check_syntax` to verify."
+        )
+
+        handoff = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=build_id,
+            user_id=user_id,
+            assignment=assignment,
+            files=batch_paths,
+            context_files=context_files,
+            contracts_text=contracts_text,
+            phase_deliverables=phase_deliverables,
+            max_tokens=16_384,
+            timeout_seconds=300.0,
+        )
+
+        # Emit per-file generating events
+        for fp in batch_paths:
+            await _state._broadcast_build_event(user_id, build_id, "file_generating", {
+                "path": fp,
+                "batch_index": batch_idx,
+                "tier": tier_index,
+            })
+
+        return await run_sub_agent(handoff, working_dir, api_key, key_pool=key_pool)
+
+    # Run batches in parallel
+    tasks = [
+        asyncio.create_task(run_batch(batch, idx))
+        for idx, batch in enumerate(batches)
+    ]
+    results: list[SubAgentResult] = await asyncio.gather(*tasks, return_exceptions=False)
+
+    # Collect written files
+    tier_written: dict[str, str] = {}
+    for res in results:
+        if isinstance(res, SubAgentResult):
+            for fp in res.files_written:
+                full = Path(working_dir) / fp
+                if full.exists():
+                    try:
+                        tier_written[fp] = full.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+
+            # Accumulate cost
+            await _accumulate_cost(
+                build_id,
+                res.input_tokens, res.output_tokens,
+                res.model,
+                Decimal(str(res.cost_usd)),
+            )
+
+    # Emit file_generated events for each file
+    for fp, content in tier_written.items():
+        await _state._broadcast_build_event(user_id, build_id, "file_generated", {
+            "path": fp,
+            "size_bytes": len(content.encode("utf-8")),
+            "language": _state._detect_language(fp),
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "duration_ms": 0,
+        })
+
+    await _state._broadcast_build_event(user_id, build_id, "tier_complete", {
+        "tier": tier_index,
+        "files_written": list(tier_written.keys()),
+        "file_count": len(tier_written),
+    })
+
+    return tier_written
