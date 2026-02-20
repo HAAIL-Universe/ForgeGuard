@@ -3705,7 +3705,7 @@ async def build_chat(
             f"  Started: {latest.get('created_at', '?')}"
         )
 
-        # Phase plan from artifacts
+        # Phase plan + outcome from artifacts
         phase_lines: list[str] = []
         for ph_num in range(20):
             try:
@@ -3717,16 +3717,35 @@ async def build_chat(
                 name = c.get("phase_name", f"Phase {ph_num}")
                 file_count = c.get("file_count", 0)
                 files = c.get("files_written", [])
-                file_names = ", ".join(f.get("path", "?") for f in files[:10])
-                if len(files) > 10:
-                    file_names += f" (+{len(files) - 10} more)"
-                phase_lines.append(
-                    f"  Phase {ph_num} ({name}): {status} — {file_count} files [{file_names}]"
-                )
+                hdr = f"  Phase {ph_num} ({name}): {status} — {file_count} files"
+                if files:
+                    file_detail = "\n".join(
+                        f"    - {f.get('path', '?')} "
+                        f"({f.get('size_bytes', 0)} bytes"
+                        f"{', ' + f['language'] if f.get('language') else ''})"
+                        for f in files
+                    )
+                    hdr += "\n" + file_detail
+                phase_lines.append(hdr)
             except Exception:
                 continue
         if phase_lines:
             ctx_parts.append("COMPLETED PHASES:\n" + "\n".join(phase_lines))
+
+        # Persistent file list from DB (survives restarts)
+        try:
+            db_files = await build_repo.get_build_file_logs(bid)
+            if db_files:
+                file_lines = "\n".join(
+                    f"  - {f['path']} ({f['size_bytes']} bytes"
+                    f"{', ' + f['language'] if f.get('language') else ''})"
+                    for f in db_files
+                )
+                ctx_parts.append(
+                    f"ALL FILES CREATED IN BUILD ({len(db_files)}):\n{file_lines}"
+                )
+        except Exception:
+            pass
 
         # Recent build logs (last 30)
         try:
@@ -3792,7 +3811,8 @@ async def build_chat(
         "Answer the user's question concisely based on the build context below. "
         "Be direct and factual. Use short paragraphs. "
         "If asked about errors, explain what went wrong and suggest fixes. "
-        "If asked about phases/files, summarise what was built. "
+        "If asked about phases or files, list the ACTUAL file paths from the context — "
+        "check both COMPLETED PHASES and ALL FILES CREATED sections. "
         "If you don't have enough context to answer, say so honestly.\n\n"
         f"--- BUILD CONTEXT ---\n{context_block}\n--- END CONTEXT ---"
     )
