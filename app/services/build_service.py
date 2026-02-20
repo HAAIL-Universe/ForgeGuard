@@ -4572,6 +4572,61 @@ async def _run_build_plan_execute(
         touched_files: set[str] = set()
         # Use key 2 for auditor if available (separate rate limits)
         _audit_key = api_key_2.strip() if api_key_2.strip() else api_key
+        # Incremental commit counter (how many commits so far this phase)
+        _incr_commit_count = 0
+
+        # --- Incremental commit+push helper (saves work after each chunk) ---
+        async def _incremental_commit_push(label: str, file_count: int) -> str | None:
+            """Git add + commit + push for a chunk of audited files.
+
+            Returns the commit SHA if successful, None otherwise.
+            """
+            nonlocal _incr_commit_count
+            if not working_dir or not phase_files_written:
+                return None
+            try:
+                await git_client.add_all(working_dir)
+                _incr_commit_count += 1
+                _cm = f"forge: {phase_name} {label} ({file_count} files)"
+                sha = await git_client.commit(working_dir, _cm)
+                if not sha:
+                    return None  # nothing to commit (no changes)
+                _cmsg = f"Committed {label}: {sha[:8]} ({file_count} files)"
+                await build_repo.append_build_log(
+                    build_id, _cmsg, source="system", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _cmsg, "source": "system", "level": "info",
+                })
+            except Exception as _ce:
+                logger.warning("Incremental commit failed (%s): %s", label, _ce)
+                return None
+
+            # Push immediately to save remotely
+            if target_type in ("github_new", "github_existing") and access_token:
+                for _pa in range(1, settings.GIT_PUSH_MAX_RETRIES + 1):
+                    try:
+                        await git_client.push(
+                            working_dir, branch=branch, access_token=access_token,
+                        )
+                        await build_repo.append_build_log(
+                            build_id,
+                            f"Pushed {label} to GitHub",
+                            source="system", level="info",
+                        )
+                        await _broadcast_build_event(user_id, build_id, "build_log", {
+                            "message": f"Pushed {label} to GitHub",
+                            "source": "system", "level": "info",
+                        })
+                        break
+                    except Exception as _pe:
+                        logger.warning(
+                            "Incremental push attempt %d/%d failed (%s): %s",
+                            _pa, settings.GIT_PUSH_MAX_RETRIES, label, _pe,
+                        )
+                        if _pa < settings.GIT_PUSH_MAX_RETRIES:
+                            await asyncio.sleep(2 ** _pa)
+            return sha
 
         # ──────────────────────────────────────────────────────────────
         # 2a. Tier-based parallel generation
@@ -4810,8 +4865,10 @@ async def _run_build_plan_execute(
                         key_pool=key_pool,
                     )
 
-                    # Merge results
+                    # Merge results (also kicks off per-file audit tasks)
+                    _tier_audit_start = len(pending_file_audits)
                     await _merge_tier_results(tier_written, tier_files, tier_idx)
+                    _tier_audit_tasks = pending_file_audits[_tier_audit_start:]
 
                     # Extract interfaces + review written files in parallel
                     _extract_task = asyncio.create_task(_extract_tier_interfaces(
@@ -4838,6 +4895,64 @@ async def _run_build_plan_execute(
                             )
                     except Exception:
                         pass  # Review is advisory, not blocking
+
+                    # --- Await this tier's audits + commit+push (incremental save) ---
+                    if _tier_audit_tasks:
+                        await _set_build_activity(
+                            build_id, user_id,
+                            f"Tier {tier_idx}: Awaiting {len(_tier_audit_tasks)} audits...",
+                        )
+                        _tier_raw = await asyncio.gather(
+                            *_tier_audit_tasks, return_exceptions=True,
+                        )
+                        for _tr in _tier_raw:
+                            if isinstance(_tr, BaseException):
+                                logger.warning("Tier %d audit task error: %s", tier_idx, _tr)
+                                continue
+                            fpath, fverdict, ffindings = _tr
+                            if fverdict == "FAIL":
+                                blocking_files.append((fpath, ffindings))
+                            else:
+                                passed_files.append(fpath)
+
+                    # Drain fix queue for this tier's files
+                    if not _fix_queue.empty():
+                        _touch_progress(build_id)
+                        await _set_build_activity(
+                            build_id, user_id,
+                            f"Tier {tier_idx}: Builder fixing audit failures...",
+                            model="opus",
+                        )
+                        _tier_fixes = await _builder_drain_fix_queue(
+                            build_id, user_id, api_key, _audit_key,
+                            _fix_queue, working_dir, _manifest_cache_path,
+                            audit_llm_enabled,
+                        )
+                        for fpath, fverdict, ffindings in _tier_fixes:
+                            if fverdict == "PASS":
+                                blocking_files = [
+                                    (bp, bf) for bp, bf in blocking_files if bp != fpath
+                                ]
+                                if fpath not in passed_files:
+                                    passed_files.append(fpath)
+                                try:
+                                    _fp_full = Path(working_dir) / fpath
+                                    if _fp_full.exists():
+                                        _fc = _fp_full.read_text(encoding="utf-8")
+                                        phase_files_written[fpath] = _fc
+                                        all_files_written[fpath] = _fc
+                                        touched_files.add(fpath)
+                                except Exception:
+                                    pass
+                            elif not any(bp == fpath for bp, _ in blocking_files):
+                                blocking_files.append((fpath, ffindings))
+
+                    # Commit + push this tier's files
+                    if tier_written:
+                        await _incremental_commit_push(
+                            f"tier {tier_idx}",
+                            len(tier_written),
+                        )
 
                     await build_repo.append_build_log(
                         build_id,
@@ -4870,6 +4985,9 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _fb_msg, "source": "system", "level": "info",
             })
+
+        _seq_since_commit = 0  # files generated since last incremental commit
+        _seq_audit_start = len(pending_file_audits)  # track sequential audits
 
         for i, file_entry in enumerate(manifest):
             file_path = file_entry["path"]
@@ -5136,6 +5254,54 @@ async def _run_build_plan_execute(
                         fix_queue=_fix_queue,
                     )
                 ))
+                _seq_since_commit += 1
+
+                # Incremental commit every 3 sequential files
+                if _seq_since_commit >= 3:
+                    _seq_audits = pending_file_audits[_seq_audit_start:]
+                    if _seq_audits:
+                        _seq_raw = await asyncio.gather(
+                            *_seq_audits, return_exceptions=True,
+                        )
+                        for _sr in _seq_raw:
+                            if isinstance(_sr, BaseException):
+                                continue
+                            fpath, fverdict, ffindings = _sr
+                            if fverdict == "FAIL":
+                                blocking_files.append((fpath, ffindings))
+                            else:
+                                passed_files.append(fpath)
+                    # Drain fix queue
+                    if not _fix_queue.empty():
+                        _sq_fixes = await _builder_drain_fix_queue(
+                            build_id, user_id, api_key, _audit_key,
+                            _fix_queue, working_dir, _manifest_cache_path,
+                            audit_llm_enabled,
+                        )
+                        for fpath, fverdict, ffindings in _sq_fixes:
+                            if fverdict == "PASS":
+                                blocking_files = [
+                                    (bp, bf) for bp, bf in blocking_files if bp != fpath
+                                ]
+                                if fpath not in passed_files:
+                                    passed_files.append(fpath)
+                                try:
+                                    _fp_full = Path(working_dir) / fpath
+                                    if _fp_full.exists():
+                                        _fc = _fp_full.read_text(encoding="utf-8")
+                                        phase_files_written[fpath] = _fc
+                                        all_files_written[fpath] = _fc
+                                        touched_files.add(fpath)
+                                except Exception:
+                                    pass
+                            elif not any(bp == fpath for bp, _ in blocking_files):
+                                blocking_files.append((fpath, ffindings))
+                    await _incremental_commit_push(
+                        f"batch {_incr_commit_count + 1}",
+                        _seq_since_commit,
+                    )
+                    _seq_since_commit = 0
+                    _seq_audit_start = len(pending_file_audits)
 
             except Exception as exc:
                 _current_generating.pop(bid, None)
@@ -5174,17 +5340,63 @@ async def _run_build_plan_execute(
                     metadata={"file_path": file_path, "error": str(exc)},
                 )
 
-        # 3. Collect per-file audit results (streamed in parallel during generation)
-        _log_msg = f"All {len(phase_files_written)} files generated for {phase_name} â€” collecting audit results..."
-        await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
-        await _broadcast_build_event(user_id, build_id, "build_log", {
-            "message": _log_msg, "source": "system", "level": "info",
-        })
-        await _set_build_activity(build_id, user_id, "Collecting audit results...")
+        # Commit any remaining sequential files not yet committed
+        if _seq_since_commit > 0:
+            _remaining_audits = pending_file_audits[_seq_audit_start:]
+            if _remaining_audits:
+                _rem_raw = await asyncio.gather(
+                    *_remaining_audits, return_exceptions=True,
+                )
+                for _rr in _rem_raw:
+                    if isinstance(_rr, BaseException):
+                        continue
+                    fpath, fverdict, ffindings = _rr
+                    if fverdict == "FAIL":
+                        blocking_files.append((fpath, ffindings))
+                    else:
+                        passed_files.append(fpath)
+            if not _fix_queue.empty():
+                _rem_fixes = await _builder_drain_fix_queue(
+                    build_id, user_id, api_key, _audit_key,
+                    _fix_queue, working_dir, _manifest_cache_path,
+                    audit_llm_enabled,
+                )
+                for fpath, fverdict, ffindings in _rem_fixes:
+                    if fverdict == "PASS":
+                        blocking_files = [
+                            (bp, bf) for bp, bf in blocking_files if bp != fpath
+                        ]
+                        if fpath not in passed_files:
+                            passed_files.append(fpath)
+                        try:
+                            _fp_full = Path(working_dir) / fpath
+                            if _fp_full.exists():
+                                _fc = _fp_full.read_text(encoding="utf-8")
+                                phase_files_written[fpath] = _fc
+                                all_files_written[fpath] = _fc
+                                touched_files.add(fpath)
+                        except Exception:
+                            pass
+                    elif not any(bp == fpath for bp, _ in blocking_files):
+                        blocking_files.append((fpath, ffindings))
+            await _incremental_commit_push(
+                f"batch {_incr_commit_count + 1}",
+                _seq_since_commit,
+            )
+            _seq_audit_start = len(pending_file_audits)
 
-        if pending_file_audits:
+        # 3. Collect any remaining per-file audit results not yet gathered
+        _ungathered = pending_file_audits[_seq_audit_start:]
+        if _ungathered:
+            _log_msg = f"Collecting {len(_ungathered)} remaining audit results..."
+            await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
+            await _set_build_activity(build_id, user_id, "Collecting audit results...")
+
             raw_results = await asyncio.gather(
-                *pending_file_audits, return_exceptions=True,
+                *_ungathered, return_exceptions=True,
             )
             for raw in raw_results:
                 if isinstance(raw, BaseException):
@@ -5195,6 +5407,12 @@ async def _run_build_plan_execute(
                     blocking_files.append((fpath, ffindings))
                 else:
                     passed_files.append(fpath)
+        else:
+            _log_msg = f"All {len(phase_files_written)} files audited for {phase_name} (incremental)"
+            await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _log_msg, "source": "system", "level": "info",
+            })
 
         # 3b. Builder drains fix queue (files auditor couldn't fix)
         if not _fix_queue.empty():
@@ -5383,12 +5601,22 @@ async def _run_build_plan_execute(
                     except Exception as exc:
                         logger.warning("Fix generation failed for %s: %s", fix_path, exc)
 
-                # Re-commit fixes
+                # Re-commit fixes and push incrementally
                 try:
                     await git_client.add_all(working_dir)
-                    await git_client.commit(
+                    _fix_sha = await git_client.commit(
                         working_dir, f"forge: {phase_name} fixes (attempt {audit_attempts})",
                     )
+                    if _fix_sha:
+                        _incr_commit_count += 1
+                        # Push fix commit immediately
+                        if target_type in ("github_new", "github_existing") and access_token:
+                            try:
+                                await git_client.push(
+                                    working_dir, branch=branch, access_token=access_token,
+                                )
+                            except Exception:
+                                pass  # non-critical; final push will catch up
                 except Exception:
                     pass
 
@@ -5661,8 +5889,10 @@ async def _run_build_plan_execute(
                     source="governance", level="warn",
                 )
 
-        # 6. Commit after audit + verification + governance â€” never commit unverified code
-        _phase_committed = False
+        # 6. Final commit -- captures recovery fixes, verification fixes,
+        #    and governance fixes since the last incremental commit.
+        #    If incremental commits saved everything, this may be a no-op.
+        _phase_committed = _incr_commit_count > 0
         _phase_file_list: list[dict] = []
         if phase_files_written:
             try:
@@ -5677,7 +5907,7 @@ async def _run_build_plan_execute(
                 commit_msg = (
                     f"forge: {phase_name} complete"
                     if audit_attempts <= 1 and _fix_count == 0 and not _gov_tag
-                    else f"forge: {phase_name} complete (auditÃ—{audit_attempts}, {_fix_count} auto-fixes{_gov_tag})"
+                    else f"forge: {phase_name} complete (audit{audit_attempts}x, {_fix_count} auto-fixes{_gov_tag})"
                 )
                 sha = await git_client.commit(working_dir, commit_msg)
                 if sha:
