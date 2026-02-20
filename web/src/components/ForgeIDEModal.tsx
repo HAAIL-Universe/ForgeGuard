@@ -2650,18 +2650,38 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
         {/* ── Left Panel: Tasks / Narrator ── */}
+        {leftCollapsed ? (
+          <div style={{
+            width: '24px', flexShrink: 0,
+            background: '#0F172A', borderRight: '1px solid #1E293B',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <button
+              onClick={() => setLeftCollapsed(false)}
+              title="Expand sidebar"
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: '#475569', fontSize: '0.7rem', padding: '6px 2px',
+                lineHeight: 1, transition: 'color 0.15s',
+                writingMode: 'vertical-rl',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#F1F5F9')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
+            >
+              ▸
+            </button>
+          </div>
+        ) : (
         <div style={{
-          width: leftCollapsed ? '36px' : '280px', flexShrink: 0,
+          width: '280px', flexShrink: 0,
           background: '#0F172A', borderRight: '1px solid #1E293B',
           display: 'flex', flexDirection: 'column',
-          transition: 'width 0.2s ease',
-          overflow: 'hidden',
         }}>
           {/* Left tab switcher */}
           <div style={{
             display: 'flex', borderBottom: '1px solid #1E293B', flexShrink: 0,
           }}>
-            {!leftCollapsed && (['tasks', 'chat'] as const).map((tab) => (
+            {(['tasks', 'chat'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setLeftTab(tab)}
@@ -2677,8 +2697,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               </button>
             ))}
             <button
-              onClick={() => setLeftCollapsed(c => !c)}
-              title={leftCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              onClick={() => setLeftCollapsed(true)}
+              title="Collapse sidebar"
               style={{
                 background: 'transparent', border: 'none', cursor: 'pointer',
                 color: '#475569', fontSize: '0.75rem', padding: '4px 8px',
@@ -2688,7 +2708,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               onMouseEnter={e => (e.currentTarget.style.color = '#F1F5F9')}
               onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
             >
-              {leftCollapsed ? '▸' : '◂'}
+              ◂
             </button>
           </div>
 
@@ -2926,6 +2946,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             </div>
           )}
         </div>
+        )}
 
         {/* ── Right Panel: Activity Log + Changes ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0B1120' }}>
