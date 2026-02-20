@@ -356,6 +356,8 @@ function BuildProgress() {
   /* IDE setup collapse state */
   const [setupEndIndex, setSetupEndIndex] = useState<number>(0);
   const [setupCollapsed, setSetupCollapsed] = useState(true);
+  /* IDE ready gate — glowing input prompt for /start */
+  const [awaitingStart, setAwaitingStart] = useState(false);
   const [dagTasks, setDagTasks] = useState<DAGTask[]>([]);
   const [dagProgress, setDagProgress] = useState<DAGProgressData | null>(null);
   const [dagExpanded, setDagExpanded] = useState(false);
@@ -478,6 +480,16 @@ function BuildProgress() {
             );
             if (setupIdx > 0) {
               setSetupEndIndex(setupIdx + 1);
+
+              /* If the build is running but hasn't commenced (no post-welcome
+                 log lines about planning), it's still at the IDE ready gate */
+              const hasCommenced = mapped.some((e) =>
+                e.message.includes('Build commenced') || e.message.includes('planning phase'),
+              );
+              if (buildData && buildData.status === 'running' && !hasCommenced) {
+                setAwaitingStart(true);
+                setInterjectionText('/start');
+              }
             }
           }
 
@@ -641,11 +653,27 @@ function BuildProgress() {
           }
 
           case 'forge_ide_ready': {
-            /* Mark the end of setup logs so they can be collapsed */
+            /* Mark the end of setup logs so they can be collapsed.
+               We need the latest activity length (after all batched build_log
+               updates).  Using a setActivity updater gives us the up-to-date
+               `prev`.  We spread into a new array so React sees a changed
+               reference and commits the render — returning `prev` unchanged
+               can cause React to bail out, swallowing the nested setState. */
             setActivity((prev) => {
               setSetupEndIndex(prev.length);
-              return prev;
+              return [...prev];
             });
+            /* Activate glowing /start prompt */
+            setAwaitingStart(true);
+            setInterjectionText('/start');
+            /* Auto-focus the input */
+            setTimeout(() => interjRef.current?.focus(), 100);
+            break;
+          }
+
+          case 'build_commenced': {
+            setAwaitingStart(false);
+            addActivity('Build commenced — planning phase starting', 'system');
             break;
           }
 
@@ -1488,6 +1516,8 @@ function BuildProgress() {
             pulled: 'Pulled from GitHub — continuing build',
           };
           addToast(msgs[data.status] || data.message || 'Command sent', 'success');
+          // Clear glowing state when /start is sent
+          if (trimmed === '/start' || trimmed.startsWith('/start ')) setAwaitingStart(false);
           // Refresh build state after /stop or /start or /continue
           if (['stopped', 'started', 'resumed', 'cleared', 'continued', 'pulled'].includes(data.status)) {
             const bres = await fetch(`${API_BASE}/projects/${projectId}/build/status`, {
@@ -1583,6 +1613,10 @@ function BuildProgress() {
       <style>{`
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulseGreen {
+          0%, 100% { box-shadow: 0 0 4px rgba(34,197,94,0.3); border-color: #22C55E; }
+          50% { box-shadow: 0 0 16px rgba(34,197,94,0.5), 0 0 30px rgba(34,197,94,0.2); border-color: #4ADE80; }
+        }
       `}</style>
       <div style={pageStyle}>
         {/* ---- Header ---- */}
@@ -2709,19 +2743,21 @@ function BuildProgress() {
                 <input
                   ref={interjRef}
                   type="text"
-                  placeholder={isActive ? 'Type / for commands or send feedback...' : '/start to begin a new build...'}
+                  placeholder={awaitingStart ? 'Press Enter to start build...' : isActive ? 'Type / for commands or send feedback...' : '/start to begin a new build...'}
                   value={interjectionText}
                   onChange={(e) => { setInterjectionText(e.target.value); setSlashMenuIdx(0); }}
                   onKeyDown={handleSlashKey}
                   style={{
                     flex: 1,
-                    background: '#0F172A',
-                    border: `1px solid ${interjectionText.trim().startsWith('/') ? '#F59E0B' : '#334155'}`,
+                    background: awaitingStart ? '#0A1A0A' : '#0F172A',
+                    border: `1px solid ${awaitingStart ? '#22C55E' : interjectionText.trim().startsWith('/') ? '#F59E0B' : '#334155'}`,
                     borderRadius: '6px',
                     padding: '8px 12px',
-                    color: '#F8FAFC',
+                    color: awaitingStart ? '#4ADE80' : '#F8FAFC',
                     fontSize: '0.8rem',
+                    fontWeight: awaitingStart ? 700 : 400,
                     outline: 'none',
+                    animation: awaitingStart ? 'pulseGreen 2s ease-in-out infinite' : 'none',
                   }}
                 />
                 <button
