@@ -508,6 +508,18 @@ def _topological_sort(files: list[dict]) -> list[dict]:
 # Maximum files per chunk.  Keeps each builder invocation focused.
 _MAX_CHUNK_SIZE = 6
 
+# Config/boilerplate files that don't need full contracts context.
+# When a batch contains ONLY these files, contracts_text is omitted
+# to save 4-10K input tokens.
+_NO_CONTRACT_FILES = frozenset({
+    "package.json", "tsconfig.json", "pyproject.toml", "setup.py",
+    "setup.cfg", ".eslintrc.js", ".eslintrc.json", "jest.config.js",
+    ".prettierrc", ".prettierrc.json", "Dockerfile", "docker-compose.yml",
+    ".dockerignore", ".gitignore", ".env.example", "README.md",
+    "tailwind.config.js", "postcss.config.js", "vite.config.ts",
+    "vite.config.js", "next.config.js", "next.config.ts",
+})
+
 
 def _dependency_sort(files: list[dict]) -> list[dict]:
     """Sort files so dependencies come before dependents.
@@ -2393,6 +2405,9 @@ async def execute_tier(
         batch_paths = [f["path"] for f in batch]
         _test_count = sum(1 for p in batch_paths if _is_test_file(p))
         _batch_is_test_heavy = _test_count > len(batch_paths) / 2
+        _batch_is_config_only = all(
+            Path(p).name in _NO_CONTRACT_FILES for p in batch_paths
+        )
 
         # Build context from already-written files (prior tiers)
         # Cap each file at 3k chars and total at 15k to control Opus input cost.
@@ -2451,8 +2466,16 @@ async def execute_tier(
             f"Follow the interface map PRECISELY — use the exact class names, "
             f"function signatures, and import paths specified.\n\n"
             + "\n\n".join(file_specs)
-            + "\n\nFor each file: use `write_file` to create it, then `check_syntax` to verify."
+            + "\n\nOutput ALL files using <file path=\"...\"> tags (single-shot mode)."
         )
+
+        # Determine contracts: skip for config-only, slim for test-heavy
+        if _batch_is_config_only:
+            _contracts = ""
+        elif _batch_is_test_heavy:
+            _contracts = contracts_summary_slim
+        else:
+            _contracts = contracts_summary
 
         handoff = SubAgentHandoff(
             role=SubAgentRole.CODER,
@@ -2461,9 +2484,9 @@ async def execute_tier(
             assignment=assignment,
             files=batch_paths,
             context_files=context_files,
-            contracts_text=contracts_summary_slim if _batch_is_test_heavy else contracts_summary,
+            contracts_text=_contracts,
             phase_deliverables=phase_deliverables if not _batch_is_test_heavy else "",
-            max_tokens=16_384,
+            max_tokens=32_768,
             timeout_seconds=300.0,
         )
 

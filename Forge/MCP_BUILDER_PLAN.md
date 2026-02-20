@@ -2851,3 +2851,365 @@ at any time.
 - ❌ Version history of notes (single overwrite)
 - ❌ Note sharing between users on the same project
 - ❌ LLM-assisted note suggestions
+
+---
+
+## 41. Single-Shot CODER Mode — Eliminate Multi-Turn Tool Replay Tax
+
+> **Added**: 2026-02-20
+> **Priority**: HIGH — estimated 60-85% reduction in Opus input tokens per build
+> **Status**: PLANNED — ready for implementation
+
+### 41a. The Problem
+
+The CODER sub-agent currently uses a **multi-turn tool loop**: it calls
+`write_file` / `edit_file` / `check_syntax` one at a time, and each round
+replays the entire conversation history to the LLM.
+
+For a typical 2-file batch:
+
+| Round | What happens | Input tokens replayed |
+|------:|--------------|----------------------:|
+| 1 | LLM reads assignment (~18K context), calls `write_file` for file A | 18,000 |
+| 2 | LLM re-reads 18K + round 1 tool result (~3K), calls `check_syntax` | 21,000 |
+| 3 | LLM re-reads all above, calls `write_file` for file B | 24,000 |
+| 4 | LLM re-reads all above, calls `check_syntax` | 27,000 |
+| 5 | LLM re-reads all above, calls `forge_scratchpad` (action plan) | 30,000 |
+| 6 | LLM re-reads all above, outputs final summary text | 33,000 |
+| **Total input** | | **~153,000** |
+
+That's **~153K input tokens per 2-file batch** at Opus rates ($15/M input).
+With 10-12 batches per build, that's **~1.5M+ input tokens** just for the CODER
+role. The actual *useful work* (generating the code) happens in the output tokens
+(~30K total), but the input replay is 5× that.
+
+**Observed on timer build**: 800K+ Opus tokens across 21 files. The multi-turn
+replay tax is the single biggest cost driver.
+
+### 41b. The Solution — Single-Shot Output
+
+Strip tools from CODER entirely. Instead, the CODER outputs all files as
+**fenced code blocks** in a single response. We parse the output ourselves.
+
+**New flow**:
+```
+1. Build same context (contracts, deps, assignment)
+2. Send ONE message to Opus with zero tools
+3. LLM outputs all files as fenced blocks in one shot
+4. We parse the blocks, write files to disk, run syntax checks
+5. If syntax errors → one retry round with error feedback
+6. Done — 1-2 API calls instead of 6+
+```
+
+**Token math for the same 2-file batch**:
+| Round | What happens | Input tokens |
+|------:|--------------|-------------:|
+| 1 | LLM reads assignment (18K), outputs both files (~6K output) | 18,000 |
+| **Total input** | | **~18,000** |
+
+That's **88% fewer input tokens** (18K vs 153K). Even with a syntax-fix retry,
+it's 2 rounds max (~40K) — still 74% cheaper.
+
+### 41c. Output Format
+
+The CODER system prompt is updated to require this structured output:
+
+```
+<file path="src/db/connection.js">
+const Database = require('better-sqlite3');
+// ... file content ...
+module.exports = db;
+</file>
+
+<file path="src/services/timerService.js">
+const { v4: uuidv4 } = require('uuid');
+// ... file content ...
+module.exports = { createTimer, startTimer, stopTimer, getTimer };
+</file>
+```
+
+XML-style `<file path="...">` tags are unambiguous and easy to parse via regex.
+Falls back to fenced blocks with filename headers if the LLM drifts.
+
+### 41d. Parser (`_parse_coder_output`)
+
+New function in `subagent.py`:
+
+```python
+import re
+
+_FILE_TAG_RE = re.compile(
+    r'<file\s+path="([^"]+)">\s*\n(.*?)\n</file>',
+    re.DOTALL,
+)
+
+_FENCED_RE = re.compile(
+    r'###?\s*`?([^\n`]+)`?\s*\n```\w*\n(.*?)\n```',
+    re.DOTALL,
+)
+
+def _parse_coder_output(text: str) -> dict[str, str]:
+    """Parse LLM output into {filepath: content} dict.
+
+    Tries XML-style <file> tags first, falls back to fenced code blocks
+    with heading-based filenames.
+    """
+    files: dict[str, str] = {}
+
+    # Primary: <file path="...">...</file>
+    for m in _FILE_TAG_RE.finditer(text):
+        path = m.group(1).strip()
+        content = m.group(2)
+        files[path] = content
+
+    if files:
+        return files
+
+    # Fallback: ### path/to/file.ext\n```lang\n...\n```
+    for m in _FENCED_RE.finditer(text):
+        path = m.group(1).strip().strip("`")
+        content = m.group(2)
+        files[path] = content
+
+    return files
+```
+
+### 41e. Updated `run_sub_agent` — Single-Shot Branch
+
+When `role == CODER`, skip the tool loop entirely:
+
+```python
+if handoff.role == SubAgentRole.CODER:
+    return await _run_coder_single_shot(handoff, working_dir, api_key, key_pool=key_pool)
+```
+
+New function `_run_coder_single_shot`:
+
+```python
+async def _run_coder_single_shot(
+    handoff: SubAgentHandoff,
+    working_dir: str,
+    api_key: str,
+    *,
+    key_pool: Any | None = None,
+    max_retries: int = 1,
+) -> SubAgentResult:
+    """Single-shot CODER: one LLM call, parse file blocks, write to disk."""
+
+    model = handoff.model or _default_model_for_role(handoff.role)
+    sys_prompt = _SINGLE_SHOT_CODER_PROMPT  # see 41f below
+    user_message = _build_coder_user_message(handoff)
+    messages = [{"role": "user", "content": user_message}]
+
+    result = SubAgentResult(
+        handoff_id=handoff.handoff_id,
+        role=handoff.role,
+        status=HandoffStatus.RUNNING,
+        started_at=time.time(),
+        model=model,
+    )
+    usage = StreamUsage()
+
+    for attempt in range(1 + max_retries):
+        text_chunks: list[str] = []
+        async for event in stream_agent(
+            api_key=api_key,
+            model=model,
+            system_prompt=sys_prompt,
+            messages=messages,
+            max_tokens=handoff.max_tokens,
+            usage_out=usage,
+            tools=None,        # ← NO TOOLS
+            key_pool=key_pool,
+        ):
+            if isinstance(event, str):
+                text_chunks.append(event)
+
+        full_text = "".join(text_chunks)
+        parsed = _parse_coder_output(full_text)
+
+        if not parsed:
+            result.error = "CODER returned no parseable file blocks"
+            result.status = HandoffStatus.FAILED
+            break
+
+        # Write files to disk
+        syntax_errors: list[str] = []
+        for path, content in parsed.items():
+            full_path = Path(working_dir) / path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            result.files_written.append(path)
+
+            # Syntax check
+            err = _check_syntax(full_path)
+            if err:
+                syntax_errors.append(f"{path}: {err}")
+
+        if not syntax_errors or attempt >= max_retries:
+            break
+
+        # Retry: feed errors back
+        error_msg = (
+            "## Syntax Errors Found\nFix these and output ALL files again "
+            "(include the corrected files plus any unchanged files):\n\n"
+            + "\n".join(f"- {e}" for e in syntax_errors)
+        )
+        messages.append({"role": "assistant", "content": full_text})
+        messages.append({"role": "user", "content": error_msg})
+        result.files_written.clear()
+
+    # Finalise
+    result.text_output = full_text
+    if not result.error:
+        result.status = HandoffStatus.COMPLETED
+    result.finished_at = time.time()
+    result.duration_seconds = result.finished_at - result.started_at
+    result.input_tokens = usage.input_tokens
+    result.output_tokens = usage.output_tokens
+    input_rate, output_rate = _get_token_rates(model)
+    result.cost_usd = float(
+        Decimal(usage.input_tokens) * input_rate
+        + Decimal(usage.output_tokens) * output_rate
+    )
+    return result
+```
+
+### 41f. Single-Shot System Prompt
+
+```
+You are a **Coder** in the Forge build system.
+
+You write production-quality code for specific files assigned to you.
+You have NO tools — output all files directly in your response.
+
+## Output Format — MANDATORY
+
+For EACH file, use this exact format:
+
+<file path="relative/path/to/file.ext">
+// file content here
+</file>
+
+Output EVERY assigned file using <file> tags. No other format is accepted.
+
+## Rules
+- Write ONLY the files specified in your assignment
+- Follow the project contracts exactly
+- Respect layer boundaries (routers → services → repos → clients)
+- Include type hints and proper error handling
+- Output PURE CODE only — no prose, no tutorial text, no narrative
+- Docstrings: one-line only — NEVER multi-line explanatory docstrings
+- Comments: only where logic is non-obvious
+- Every token costs money — be maximally concise
+
+After all <file> blocks, output a brief JSON summary:
+{"files_written": [...], "decisions": "...", "known_issues": "..."}
+```
+
+~350 tokens vs the current ~500 token CODER prompt + ~600 tokens of tool
+definitions = saves ~750 tokens per round, compounding across rounds eliminated.
+
+### 41g. Eliminate `forge_scratchpad` Action Plan Step
+
+Currently the CODER wastes a full tool round calling `forge_scratchpad` with
+an "action plan" before writing any code. In single-shot mode this is
+unnecessary — the LLM can think internally before producing output.
+
+**Change**: Remove `forge_scratchpad` from `_ROLE_TOOLS[CODER]` entirely.
+It remains available for PLANNER, AUDITOR, and FIXER roles.
+
+### 41h. Skip Contracts for Config Files
+
+Certain files don't need the full contracts context:
+
+```python
+_NO_CONTRACT_FILES = {
+    "package.json", "tsconfig.json", "pyproject.toml", "setup.py",
+    "setup.cfg", ".eslintrc.js", ".eslintrc.json", "jest.config.js",
+    ".prettierrc", ".prettierrc.json", "Dockerfile", "docker-compose.yml",
+    ".dockerignore", ".gitignore", ".env.example", "README.md",
+    "tailwind.config.js", "postcss.config.js", "vite.config.ts",
+    "next.config.js", "next.config.ts",
+}
+```
+
+When a batch contains ONLY files from `_NO_CONTRACT_FILES`, set
+`contracts_text=""` on the handoff. Saves 4-10K tokens for config-only batches.
+
+### 41i. Broadcast Progress During Single-Shot
+
+Even though there's only 1 API call, we can broadcast:
+
+| Event | When | Content |
+|-------|------|---------|
+| `coder_generating` | Before the API call | "Generating N files in single-shot mode" |
+| `coder_file_written` | After each file is written to disk | File path + size |
+| `coder_syntax_check` | After syntax check | Pass/fail per file |
+| `coder_retry` | If syntax errors trigger retry | Error list |
+
+This eliminates the 20-40s silence users experience during CODER execution.
+
+### 41j. Expected Savings
+
+| Metric | Current (multi-turn) | Single-shot | Reduction |
+|--------|--------------------:|------------:|----------:|
+| API calls per 2-file batch | 6-8 | 1-2 | ~85% |
+| Input tokens per batch | ~153K | ~18-40K | ~75-88% |
+| Opus input per 21-file build | ~1.5M | ~200-400K | ~75% |
+| Estimated cost per build | ~$8 | ~$2-4 | ~50-70% |
+| Wall-clock time per batch | 40-60s | 15-25s | ~55% |
+
+**Timer build example**: The $8 Phase 0 build would cost ~$3-4 under
+single-shot. A full 2-phase build would be ~$6-8 instead of ~$16.
+
+### 41k. Implementation Order
+
+1. **Add `_parse_coder_output()`** — parser with both XML and fenced fallback
+2. **Add `_run_coder_single_shot()`** — new function in `subagent.py`
+3. **Add `_SINGLE_SHOT_CODER_PROMPT`** — new constant in `subagent.py`
+4. **Wire into `run_sub_agent()`** — branch on `role == CODER`
+5. **Add `_NO_CONTRACT_FILES`** set to `planner.py`, skip contracts when applicable
+6. **Remove `forge_scratchpad`** from `_ROLE_TOOLS[CODER]`
+7. **Add progress broadcasts** in `_run_coder_single_shot`
+8. **Update tests** — mock the single-shot path, verify parser
+9. **Smoke test** — run a real build and compare token usage
+
+### 41l. Risks & Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| LLM doesn't follow `<file>` format | Fallback parser for fenced blocks; retry with explicit format reminder |
+| Large files truncated by `max_tokens` | Increase `max_tokens` to 32K for batches with >3 files or >500 estimated lines |
+| Syntax errors not caught until after write | Post-write syntax check + 1 retry round (still cheaper than multi-turn) |
+| LLM "forgets" a file in the batch | Verify all assigned paths appear in parsed output; if missing, send a targeted follow-up asking for just the missing file(s) |
+| Quality regression vs multi-turn | The LLM still sees the same context (contracts, deps, interface map). Tool use doesn't improve code quality — it just adds I/O overhead |
+
+### 41m. Cross-Chunk Schema Coordination (Quality Fix)
+
+The timer audit revealed a **cross-chunk coordination failure**: two chunks
+produced conflicting database schemas (`db/init.js` with TEXT columns +
+timestamps vs `timerRepository.js` with INTEGER columns, no timestamps),
+causing a hard crash on app startup.
+
+**Root cause**: The interface map and chunk dependencies weren't enforcing
+schema consistency. File A defined a schema, file B defined its own schema
+independently, and the auditor didn't catch the mismatch.
+
+**Proposed fix** (separate from single-shot, but related to build quality):
+
+1. **Schema pinning in interface map**: When `schema.md` contract exists,
+   inject the canonical column types and table structure into every chunk's
+   context that touches DB operations. Currently `interface_map` only covers
+   function signatures — extend it to include table schemas.
+
+2. **Auditor cross-file check**: Add a specific audit question: "Does this
+   file define or assume a database schema? If so, does it match the schema
+   contract exactly?" Currently the auditor checks each file in isolation.
+
+3. **Single source of truth rule**: Add to CODER prompt: "Database schema
+   MUST be defined in exactly ONE file (the init/migration file). Repository
+   files MUST NOT contain CREATE TABLE statements — they depend on the schema
+   being created at startup."
+
+These are additive quality fixes that stack on top of single-shot mode.

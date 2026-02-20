@@ -29,7 +29,9 @@ from app.services.build.subagent import (
     SubAgentResult,
     SubAgentRole,
     _ROLE_TOOL_NAMES,
+    _SINGLE_SHOT_CODER_PROMPT,
     _extract_json_block,
+    _parse_coder_output,
     build_context_pack,
     ensure_forge_dir,
     load_progress,
@@ -638,10 +640,8 @@ class TestRunSubAgent:
         assert result.files_read == ["main.py"]
 
     @pytest.mark.asyncio
-    async def test_coder_tracks_files_written(self):
-        """Coder writing files should track them in result."""
-        from app.clients.agent_client import ToolCall
-
+    async def test_coder_routes_through_single_shot(self):
+        """CODER handoffs use single-shot mode (no tool loop)."""
         h = SubAgentHandoff(
             role=SubAgentRole.CODER,
             build_id=BUILD_ID,
@@ -650,30 +650,33 @@ class TestRunSubAgent:
             files=["app/config.py"],
         )
 
-        call_count = 0
+        file_output = (
+            '<file path="app/config.py">\n'
+            "settings = {}\n"
+            "</file>\n"
+            '\n{"files_written": ["app/config.py"]}'
+        )
 
         async def fake_stream(*args, **kwargs):
-            nonlocal call_count
             usage = kwargs.get("usage_out")
             if usage:
                 usage.input_tokens = 200
                 usage.output_tokens = 100
-            if call_count == 0:
-                call_count += 1
-                yield ToolCall(
-                    id="tc_1", name="write_file",
-                    input={"path": "app/config.py", "content": "settings = {}"},
-                )
-            else:
-                yield '{"files_written": ["app/config.py"]}'
+            # Single-shot: tools should be None
+            assert kwargs.get("tools") is None, "Single-shot CODER must not receive tools"
+            yield file_output
 
         with patch("app.services.build.subagent.stream_agent", fake_stream):
             with patch("app.services.build.subagent.execute_tool_async", new_callable=AsyncMock) as mock_exec:
-                mock_exec.return_value = "File written: app/config.py"
+                mock_exec.return_value = "No syntax errors in app/config.py"
                 result = await run_sub_agent(h, self.working_dir, self.api_key)
 
         assert "app/config.py" in result.files_written
         assert result.status == HandoffStatus.COMPLETED
+        # File should have been written to disk
+        fp = Path(self.working_dir) / "app" / "config.py"
+        assert fp.exists()
+        assert fp.read_text(encoding="utf-8") == "settings = {}"
 
     @pytest.mark.asyncio
     async def test_fixer_cannot_use_write_file(self):
@@ -784,9 +787,22 @@ class TestRunSubAgent:
             build_id=BUILD_ID,
             user_id=USER_ID,
             assignment="Code",
+            files=["app/x.py"],
         )
         assert h.handoff_id == ""
-        result = await self._run_with_stream(h, ["done"])
+        file_output = '<file path="app/x.py">\npass\n</file>'
+
+        async def fake_stream(*args, **kwargs):
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens = 100
+                usage.output_tokens = 50
+            yield file_output
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            with patch("app.services.build.subagent.execute_tool_async", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = "No syntax errors in app/x.py"
+                result = await run_sub_agent(h, self.working_dir, self.api_key)
         assert h.handoff_id != ""  # auto-assigned by runner
         assert result.handoff_id == h.handoff_id
 
@@ -813,8 +829,21 @@ class TestRunSubAgent:
             build_id=BUILD_ID,
             user_id=USER_ID,
             assignment="Code",
+            files=["app/x.py"],
         )
-        result = await self._run_with_stream(h, ["done"])
+        file_output = '<file path="app/x.py">\npass\n</file>'
+
+        async def fake_stream(*args, **kwargs):
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens = 100
+                usage.output_tokens = 50
+            yield file_output
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            with patch("app.services.build.subagent.execute_tool_async", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = "No syntax errors in app/x.py"
+                result = await run_sub_agent(h, self.working_dir, self.api_key)
         assert result.cost_usd >= 0  # will be small for 150 tokens
 
     @pytest.mark.asyncio
@@ -824,8 +853,21 @@ class TestRunSubAgent:
             build_id=BUILD_ID,
             user_id=USER_ID,
             assignment="Code",
+            files=["app/x.py"],
         )
-        result = await self._run_with_stream(h, ["done"])
+        file_output = '<file path="app/x.py">\npass\n</file>'
+
+        async def fake_stream(*args, **kwargs):
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens = 100
+                usage.output_tokens = 50
+            yield file_output
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            with patch("app.services.build.subagent.execute_tool_async", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = "No syntax errors in app/x.py"
+                result = await run_sub_agent(h, self.working_dir, self.api_key)
         assert result.model == "claude-opus-4-20250514"
 
     @pytest.mark.asyncio
@@ -883,3 +925,309 @@ class TestEdgeCases:
         (tmp_path / ".forge").mkdir()
         (tmp_path / ".forge" / "progress.json").write_text("{bad", encoding="utf-8")
         assert load_progress(str(tmp_path)) == {}
+
+
+# ===================================================================
+# _parse_coder_output tests
+# ===================================================================
+
+
+class TestParseCoderOutput:
+    """Test the single-shot CODER output parser."""
+
+    def test_xml_file_tags(self):
+        text = (
+            'Some preamble\n'
+            '<file path="src/main.py">\n'
+            'def main():\n'
+            '    print("hello")\n'
+            '</file>\n'
+            '<file path="src/utils.py">\n'
+            'def helper():\n'
+            '    return 42\n'
+            '</file>\n'
+        )
+        result = _parse_coder_output(text)
+        assert len(result) == 2
+        assert "src/main.py" in result
+        assert "src/utils.py" in result
+        assert 'print("hello")' in result["src/main.py"]
+        assert "return 42" in result["src/utils.py"]
+
+    def test_fenced_fallback(self):
+        text = (
+            '### src/config.py\n'
+            '```python\n'
+            'DB_URL = "sqlite:///test.db"\n'
+            '```\n'
+            '### src/app.py\n'
+            '```python\n'
+            'from flask import Flask\n'
+            '```\n'
+        )
+        result = _parse_coder_output(text)
+        assert len(result) == 2
+        assert "src/config.py" in result
+        assert "src/app.py" in result
+
+    def test_xml_takes_priority_over_fenced(self):
+        text = (
+            '<file path="a.py">\n'
+            'pass\n'
+            '</file>\n'
+            '### b.py\n'
+            '```python\n'
+            'pass\n'
+            '```\n'
+        )
+        result = _parse_coder_output(text)
+        # Only XML tags should be returned (primary path)
+        assert "a.py" in result
+        assert "b.py" not in result
+
+    def test_empty_input(self):
+        assert _parse_coder_output("") == {}
+
+    def test_no_matching_blocks(self):
+        assert _parse_coder_output("Just some random text") == {}
+
+    def test_backtick_stripped_from_fenced_path(self):
+        text = (
+            '### `src/main.py`\n'
+            '```js\n'
+            'const x = 1;\n'
+            '```\n'
+        )
+        result = _parse_coder_output(text)
+        assert "src/main.py" in result
+
+    def test_multiline_file_content(self):
+        content_lines = "\n".join(f"line_{i} = {i}" for i in range(50))
+        text = f'<file path="big.py">\n{content_lines}\n</file>'
+        result = _parse_coder_output(text)
+        assert "big.py" in result
+        assert "line_49 = 49" in result["big.py"]
+
+
+# ===================================================================
+# Single-shot CODER prompt tests
+# ===================================================================
+
+
+class TestSingleShotCoderPrompt:
+    """Verify the single-shot CODER prompt has required elements."""
+
+    def test_no_tools_mentioned(self):
+        assert "NO tools" in _SINGLE_SHOT_CODER_PROMPT
+
+    def test_file_tag_format_shown(self):
+        assert '<file path="' in _SINGLE_SHOT_CODER_PROMPT
+
+    def test_schema_rule_present(self):
+        """41m: single source of truth rule for DB schemas."""
+        assert "CREATE TABLE" in _SINGLE_SHOT_CODER_PROMPT
+
+    def test_concise_output_rule(self):
+        assert "PURE CODE" in _SINGLE_SHOT_CODER_PROMPT
+
+
+# ===================================================================
+# Single-shot CODER runner tests
+# ===================================================================
+
+
+class TestRunCoderSingleShot:
+    """Test _run_coder_single_shot with mocked LLM."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_deps(self, tmp_path):
+        self.working_dir = str(tmp_path)
+        self.api_key = "sk-test-key"
+
+        fake_settings = _make_fake_settings()
+        self.mock_repo = MagicMock()
+        self.mock_repo.append_build_log = AsyncMock()
+        self.mock_repo.record_build_cost = AsyncMock()
+        self.mock_manager = MagicMock()
+        self.mock_manager.broadcast_to_user = AsyncMock()
+
+        patches = [
+            patch("app.services.build._state.settings", fake_settings),
+            patch("app.services.build._state.build_repo", self.mock_repo),
+            patch("app.services.build._state.manager", self.mock_manager),
+            patch("app.services.build._state._broadcast_build_event", new_callable=AsyncMock),
+        ]
+        self._patch_objs = patches
+        for p in patches:
+            p.start()
+        yield
+        for p in patches:
+            p.stop()
+
+    @pytest.mark.asyncio
+    async def test_single_shot_success(self):
+        """Files parsed and written to disk from single-shot output."""
+        from app.services.build.subagent import _run_coder_single_shot
+
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=BUILD_ID,
+            user_id=USER_ID,
+            assignment="Write two files",
+            files=["app/a.py", "app/b.py"],
+        )
+
+        output = (
+            '<file path="app/a.py">\n'
+            'def hello(): pass\n'
+            '</file>\n'
+            '<file path="app/b.py">\n'
+            'def world(): pass\n'
+            '</file>\n'
+            '{"files_written": ["app/a.py", "app/b.py"]}'
+        )
+
+        async def fake_stream(*args, **kwargs):
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens = 500
+                usage.output_tokens = 200
+            assert kwargs.get("tools") is None
+            yield output
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            with patch("app.services.build.subagent.execute_tool_async", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = "No syntax errors in app/a.py"
+                result = await _run_coder_single_shot(h, self.working_dir, self.api_key)
+
+        assert result.status == HandoffStatus.COMPLETED
+        assert "app/a.py" in result.files_written
+        assert "app/b.py" in result.files_written
+        assert (Path(self.working_dir) / "app" / "a.py").exists()
+        assert (Path(self.working_dir) / "app" / "b.py").exists()
+        assert result.input_tokens == 500
+        assert result.output_tokens == 200
+
+    @pytest.mark.asyncio
+    async def test_single_shot_syntax_retry(self):
+        """Syntax errors trigger exactly one retry."""
+        from app.services.build.subagent import _run_coder_single_shot
+
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=BUILD_ID,
+            user_id=USER_ID,
+            assignment="Write file",
+            files=["app/x.py"],
+        )
+
+        call_count = 0
+
+        async def fake_stream(*args, **kwargs):
+            nonlocal call_count
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens += 300
+                usage.output_tokens += 100
+            call_count += 1
+            if call_count == 1:
+                yield '<file path="app/x.py">\ndef bad(:\n</file>'
+            else:
+                yield '<file path="app/x.py">\ndef good(): pass\n</file>'
+
+        exec_count = 0
+
+        async def fake_exec(name, inp, wd, **kw):
+            nonlocal exec_count
+            exec_count += 1
+            if exec_count <= 1:
+                return "Syntax error in app/x.py:1: invalid syntax"
+            return "No syntax errors in app/x.py"
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            with patch("app.services.build.subagent.execute_tool_async", fake_exec):
+                result = await _run_coder_single_shot(h, self.working_dir, self.api_key)
+
+        assert result.status == HandoffStatus.COMPLETED
+        assert call_count == 2, f"Expected 2 stream calls, got {call_count}, error={result.error!r}"
+        content = (Path(self.working_dir) / "app" / "x.py").read_text()
+        assert "def good" in content
+
+    @pytest.mark.asyncio
+    async def test_single_shot_no_parseable_output(self):
+        """Unparseable output marks result as FAILED."""
+        from app.services.build.subagent import _run_coder_single_shot
+
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=BUILD_ID,
+            user_id=USER_ID,
+            assignment="Write file",
+            files=["app/x.py"],
+        )
+
+        async def fake_stream(*args, **kwargs):
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens = 100
+                usage.output_tokens = 50
+            yield "I cannot do this task."
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            result = await _run_coder_single_shot(h, self.working_dir, self.api_key)
+
+        assert result.status == HandoffStatus.FAILED
+        assert "no parseable" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_single_shot_stream_error_marks_failed(self):
+        """If stream_agent raises, result status should be FAILED."""
+        from app.services.build.subagent import _run_coder_single_shot
+
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=BUILD_ID,
+            user_id=USER_ID,
+            assignment="Write file",
+            files=["app/x.py"],
+        )
+
+        async def exploding_stream(*args, **kwargs):
+            raise RuntimeError("API rate limit")
+            yield  # noqa
+
+        with patch("app.services.build.subagent.stream_agent", exploding_stream):
+            result = await _run_coder_single_shot(h, self.working_dir, self.api_key)
+
+        assert result.status == HandoffStatus.FAILED
+        assert "rate limit" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_single_shot_creates_parent_dirs(self):
+        """Files in nested paths should have their directories created."""
+        from app.services.build.subagent import _run_coder_single_shot
+
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=BUILD_ID,
+            user_id=USER_ID,
+            assignment="Write deeply nested file",
+            files=["src/db/migrations/001_init.py"],
+        )
+
+        output = '<file path="src/db/migrations/001_init.py">\nUP = "CREATE TABLE"\n</file>'
+
+        async def fake_stream(*args, **kwargs):
+            usage = kwargs.get("usage_out")
+            if usage:
+                usage.input_tokens = 100
+                usage.output_tokens = 50
+            yield output
+
+        with patch("app.services.build.subagent.stream_agent", fake_stream):
+            with patch("app.services.build.subagent.execute_tool_async", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = "No syntax errors"
+                result = await _run_coder_single_shot(h, self.working_dir, self.api_key)
+
+        assert result.status == HandoffStatus.COMPLETED
+        assert (Path(self.working_dir) / "src" / "db" / "migrations" / "001_init.py").exists()

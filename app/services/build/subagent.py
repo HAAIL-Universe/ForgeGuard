@@ -29,6 +29,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re as _re
 import time
 from dataclasses import dataclass, field, asdict
 from decimal import Decimal
@@ -91,16 +92,14 @@ _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
         "forge_list_project_contracts",
         "forge_get_project_contract",
     }),
-    # Coder — write new files + syntax check.  Contracts are pre-loaded
-    # in context; no need for contract-pull or discovery tools.
-    # Keeping the tool set minimal cuts ~600 tokens of tool definitions
-    # per API round — a significant cost saving across the tool loop.
+    # Coder — single-shot mode (no tools).  This tool set is kept for
+    # fallback / legacy purposes only.  The primary path bypasses the
+    # tool loop entirely and parses file blocks from LLM output.
     SubAgentRole.CODER: frozenset({
         "read_file",
         "write_file",
         "edit_file",
         "check_syntax",
-        "forge_scratchpad",
     }),
     # Auditor — read-only structural review, same surface as scout
     SubAgentRole.AUDITOR: frozenset({
@@ -643,7 +642,13 @@ async def run_sub_agent(
     except Exception as exc:
         logger.debug("Could not save handoff: %s", exc)
 
-    # 6. Stream with tool loop
+    # 6. Single-shot branch for CODER
+    if handoff.role == SubAgentRole.CODER:
+        return await _run_coder_single_shot(
+            handoff, working_dir, api_key, key_pool=key_pool,
+        )
+
+    # 7. Stream with tool loop (non-CODER roles)
     usage = StreamUsage()
     text_chunks: list[str] = []
     max_tool_rounds = 25  # safety limit
@@ -840,6 +845,326 @@ async def run_sub_agent(
 
     # Try to parse structured JSON from the tail of the output
     result.structured_output = _extract_json_block(result.text_output)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Single-shot CODER — output parser
+# ---------------------------------------------------------------------------
+
+_FILE_TAG_RE = _re.compile(
+    r'<file\s+path="([^"]+)"\s*>\s*\n(.*?)\n</file>',
+    _re.DOTALL,
+)
+
+_FENCED_RE = _re.compile(
+    r'###?\s*`?([^\n`]+)`?\s*\n```\w*\n(.*?)\n```',
+    _re.DOTALL,
+)
+
+
+def _parse_coder_output(text: str) -> dict[str, str]:
+    """Parse single-shot CODER output into {filepath: content}.
+
+    Tries XML-style ``<file path="...">`` tags first, falls back to
+    fenced code blocks with heading-based filenames.
+    """
+    files: dict[str, str] = {}
+
+    # Primary: <file path="...">...</file>
+    for m in _FILE_TAG_RE.finditer(text):
+        path = m.group(1).strip()
+        content = m.group(2)
+        files[path] = content
+
+    if files:
+        return files
+
+    # Fallback: ### path/to/file.ext\n```lang\n...\n```
+    for m in _FENCED_RE.finditer(text):
+        path = m.group(1).strip().strip("`")
+        content = m.group(2)
+        files[path] = content
+
+    return files
+
+
+# ---------------------------------------------------------------------------
+# Single-shot CODER prompt
+# ---------------------------------------------------------------------------
+
+_SINGLE_SHOT_CODER_PROMPT = (
+    "You are a **Coder** in the Forge build system.\n\n"
+    "You write production-quality code for specific files assigned to you.\n"
+    "You have NO tools \u2014 output all files directly in your response.\n\n"
+    "## Output Format \u2014 MANDATORY\n\n"
+    "For EACH file, use this exact format:\n\n"
+    '<file path="relative/path/to/file.ext">\n'
+    "// file content here\n"
+    "</file>\n\n"
+    "Output EVERY assigned file using <file> tags. No other format is accepted.\n\n"
+    "## Rules\n"
+    "- Write ONLY the files specified in your assignment\n"
+    "- Follow the project contracts exactly\n"
+    "- Respect layer boundaries (routers \u2192 services \u2192 repos \u2192 clients)\n"
+    "- Include type hints and proper error handling\n"
+    "- Output PURE CODE only \u2014 no prose, no tutorial text, no narrative\n"
+    "- Docstrings: one-line only \u2014 NEVER multi-line explanatory docstrings\n"
+    "- Comments: only where logic is non-obvious\n"
+    "- Database schema MUST be defined in exactly ONE file (the init/migration file). "
+    "Repository files MUST NOT contain CREATE TABLE statements.\n"
+    "- Every token costs money \u2014 be maximally concise\n\n"
+    "After all <file> blocks, output a brief JSON summary:\n"
+    '{"files_written": [...], "decisions": "...", "known_issues": "..."}\n'
+)
+
+
+# ---------------------------------------------------------------------------
+# Single-shot CODER runner
+# ---------------------------------------------------------------------------
+
+
+async def _run_coder_single_shot(
+    handoff: SubAgentHandoff,
+    working_dir: str,
+    api_key: str,
+    *,
+    key_pool: Any | None = None,
+    max_retries: int = 1,
+) -> SubAgentResult:
+    """Execute a CODER handoff in single-shot mode (no tools).
+
+    The LLM outputs all files as ``<file path="...">`` blocks in one
+    response.  We parse them, write to disk, run syntax checks, and
+    optionally retry once if there are syntax errors.  This eliminates
+    the multi-turn tool replay tax (~75-88% input token reduction).
+    """
+    import asyncio as _asyncio
+
+    if not handoff.handoff_id:
+        handoff.handoff_id = f"{handoff.role.value}_{handoff.build_id.hex[:8]}_{int(time.time())}"
+
+    model = handoff.model or _default_model_for_role(handoff.role)
+    sys_prompt = _SINGLE_SHOT_CODER_PROMPT
+
+    # Build user message (same structure as multi-turn)
+    parts: list[str] = []
+    if handoff.contracts_text:
+        parts.append(f"## Project Contracts\n{handoff.contracts_text}\n")
+    if handoff.phase_deliverables:
+        parts.append(f"## Phase Deliverables\n{handoff.phase_deliverables}\n")
+    if handoff.context_files:
+        parts.append("## Context Files\n")
+        for path, content in handoff.context_files.items():
+            parts.append(f"### {path}\n```\n{content}\n```\n")
+    parts.append(f"## Assignment\n{handoff.assignment}\n")
+    if handoff.files:
+        parts.append("## Target Files\n" + "\n".join(f"- `{f}`" for f in handoff.files) + "\n")
+    user_message = "\n".join(parts)
+    messages: list[dict] = [{"role": "user", "content": user_message}]
+
+    result = SubAgentResult(
+        handoff_id=handoff.handoff_id,
+        role=handoff.role,
+        status=HandoffStatus.RUNNING,
+        started_at=time.time(),
+        model=model,
+    )
+    usage = StreamUsage()
+
+    # Broadcast start
+    await _state._broadcast_build_event(
+        handoff.user_id, handoff.build_id, "subagent_start", {
+            "role": handoff.role.value,
+            "handoff_id": handoff.handoff_id,
+            "files": handoff.files,
+            "assignment": handoff.assignment[:200],
+            "mode": "single_shot",
+        },
+    )
+
+    # Save handoff to disk for debugging
+    try:
+        save_handoff(working_dir, handoff)
+    except Exception as exc:
+        logger.debug("Could not save handoff: %s", exc)
+
+    full_text = ""
+
+    try:
+        for attempt in range(1 + max_retries):
+            # Broadcast generating event
+            await _state._broadcast_build_event(
+                handoff.user_id, handoff.build_id, "coder_generating", {
+                    "attempt": attempt,
+                    "file_count": len(handoff.files),
+                    "mode": "single_shot",
+                    "message": f"Generating {len(handoff.files)} file(s) in single-shot mode"
+                    + (f" (retry {attempt})" if attempt > 0 else ""),
+                },
+            )
+
+            text_chunks: list[str] = []
+            async for event in stream_agent(
+                api_key=api_key,
+                model=model,
+                system_prompt=sys_prompt,
+                messages=messages,
+                max_tokens=handoff.max_tokens,
+                usage_out=usage,
+                tools=None,
+                key_pool=key_pool,
+            ):
+                if isinstance(event, str):
+                    text_chunks.append(event)
+
+            full_text = "".join(text_chunks)
+            parsed = _parse_coder_output(full_text)
+
+            if not parsed:
+                result.error = "CODER returned no parseable file blocks"
+                result.status = HandoffStatus.FAILED
+                break
+
+            # Check for missing files
+            missing = [f for f in handoff.files if f not in parsed]
+            if missing:
+                logger.warning(
+                    "Single-shot CODER missed %d file(s): %s",
+                    len(missing), missing,
+                )
+
+            # Write files to disk + syntax check
+            syntax_errors: list[str] = []
+            for path, content in parsed.items():
+                full_path = Path(working_dir) / path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding="utf-8")
+                if path not in result.files_written:
+                    result.files_written.append(path)
+
+                # Broadcast per-file written
+                await _state._broadcast_build_event(
+                    handoff.user_id, handoff.build_id, "coder_file_written", {
+                        "path": path,
+                        "size_bytes": len(content.encode("utf-8")),
+                    },
+                )
+
+                # Syntax check via tool executor
+                try:
+                    check_result = await execute_tool_async(
+                        "check_syntax", {"file_path": path}, working_dir,
+                        build_id=str(handoff.build_id),
+                    )
+                    _passed = "no syntax error" in str(check_result).lower() or "no error" in str(check_result).lower()
+                    await _state._broadcast_build_event(
+                        handoff.user_id, handoff.build_id, "coder_syntax_check", {
+                            "path": path,
+                            "passed": _passed,
+                            "detail": str(check_result)[:300],
+                        },
+                    )
+                    if not _passed:
+                        syntax_errors.append(f"{path}: {check_result}")
+                except Exception as exc:
+                    syntax_errors.append(f"{path}: check_syntax error: {exc}")
+
+            if not syntax_errors or attempt >= max_retries:
+                break
+
+            # Retry: feed errors back
+            await _state._broadcast_build_event(
+                handoff.user_id, handoff.build_id, "coder_retry", {
+                    "attempt": attempt + 1,
+                    "errors": syntax_errors[:10],
+                },
+            )
+            error_msg = (
+                "## Syntax Errors Found\nFix these and output ALL files again "
+                "(include the corrected files plus any unchanged files):\n\n"
+                + "\n".join(f"- {e}" for e in syntax_errors)
+            )
+            messages.append({"role": "assistant", "content": full_text})
+            messages.append({"role": "user", "content": error_msg})
+            result.files_written.clear()
+
+        # Finalise
+        result.text_output = full_text
+        if not result.error:
+            result.status = HandoffStatus.COMPLETED
+
+    except _asyncio.TimeoutError:
+        result.error = f"Single-shot CODER timed out after {handoff.timeout_seconds}s"
+        result.status = HandoffStatus.FAILED
+        logger.warning("Single-shot CODER timed out: %s", result.error)
+    except Exception as exc:
+        result.error = str(exc)
+        result.status = HandoffStatus.FAILED
+        logger.error("Single-shot CODER failed: %s", exc, exc_info=True)
+
+    # Timing + cost
+    result.finished_at = time.time()
+    result.duration_seconds = result.finished_at - result.started_at
+    result.input_tokens = usage.input_tokens
+    result.output_tokens = usage.output_tokens
+    input_rate, output_rate = _get_token_rates(model)
+    result.cost_usd = float(
+        Decimal(usage.input_tokens) * input_rate
+        + Decimal(usage.output_tokens) * output_rate
+    )
+
+    # Broadcast completion
+    await _state._broadcast_build_event(
+        handoff.user_id, handoff.build_id, "subagent_done", {
+            "role": handoff.role.value,
+            "handoff_id": handoff.handoff_id,
+            "status": result.status.value,
+            "files_written": result.files_written,
+            "duration_s": round(result.duration_seconds, 1),
+            "tokens": result.input_tokens + result.output_tokens,
+            "mode": "single_shot",
+            "error": result.error[:200] if result.error else "",
+        },
+    )
+
+    # Record cost
+    try:
+        await _state.build_repo.record_build_cost(
+            handoff.build_id,
+            result.input_tokens,
+            result.output_tokens,
+            model,
+            result.cost_usd,
+        )
+    except Exception:
+        pass
+
+    # Persist result + structured output
+    result.structured_output = _extract_json_block(result.text_output)
+    try:
+        save_result(working_dir, result)
+    except Exception:
+        pass
+
+    try:
+        await _state.build_repo.append_build_log(
+            handoff.build_id,
+            f"Single-shot CODER [{handoff.role.value}] {result.status.value} "
+            f"({result.duration_seconds:.1f}s, "
+            f"{result.input_tokens + result.output_tokens} tokens"
+            f"{', error: ' + result.error[:100] if result.error else ''})",
+            source="subagent",
+            level="info" if result.status == HandoffStatus.COMPLETED else "warn",
+        )
+    except Exception:
+        pass
 
     return result
 
