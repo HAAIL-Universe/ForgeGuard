@@ -5493,6 +5493,8 @@ async def _run_build_plan_execute(
                 )
 
         # 6. Commit after audit + verification + governance â€” never commit unverified code
+        _phase_committed = False
+        _phase_file_list: list[dict] = []
         if phase_files_written:
             try:
                 await _set_build_activity(build_id, user_id, f"Committing {phase_name}...")
@@ -5510,6 +5512,7 @@ async def _run_build_plan_execute(
                 )
                 sha = await git_client.commit(working_dir, commit_msg)
                 if sha:
+                    _phase_committed = True
                     _log_msg = f"Committed {phase_name}: {sha[:8]}"
                     await build_repo.append_build_log(
                         build_id, _log_msg,
@@ -5520,6 +5523,20 @@ async def _run_build_plan_execute(
                     })
             except Exception as exc:
                 logger.warning("Git commit failed for %s: %s", phase_name, exc)
+            # Build file list for sidebar regardless of commit success
+            _lang_map = {
+                ".py": "python", ".ts": "typescript", ".tsx": "typescript",
+                ".js": "javascript", ".jsx": "javascript", ".json": "json",
+                ".css": "css", ".scss": "scss", ".html": "html", ".md": "markdown",
+            }
+            for _fp, _fc in phase_files_written.items():
+                _ext = Path(_fp).suffix.lower()
+                _phase_file_list.append({
+                    "path": _fp,
+                    "size_bytes": len(_fc.encode("utf-8")) if isinstance(_fc, str) else None,
+                    "language": _lang_map.get(_ext),
+                    "committed": _phase_committed,
+                })
 
         # Determine final phase verdict: audit + verification + governance
         verification_clean = (

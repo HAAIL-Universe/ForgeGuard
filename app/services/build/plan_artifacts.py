@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -94,6 +95,11 @@ def store_phase_outcome(
     Called at the end of each phase (pass or partial) BEFORE the context
     reset so that the next phase's planner can inspect it.
     """
+    _lang_map = {
+        ".py": "python", ".ts": "typescript", ".tsx": "typescript",
+        ".js": "javascript", ".jsx": "javascript", ".json": "json",
+        ".css": "css", ".scss": "scss", ".html": "html", ".md": "markdown",
+    }
     file_list = []
     for p, c in files_written.items():
         size = 0
@@ -102,7 +108,12 @@ def store_phase_outcome(
                 size = len(c.encode("utf-8")) if isinstance(c, str) else len(str(c))
             except Exception:
                 pass
-        file_list.append({"path": p, "size_bytes": size})
+        _ext = Path(p).suffix.lower() if "." in p else ""
+        entry: dict[str, Any] = {"path": p, "size_bytes": size}
+        lang = _lang_map.get(_ext)
+        if lang:
+            entry["language"] = lang
+        file_list.append(entry)
 
     content = {
         "phase_number": phase["number"],
