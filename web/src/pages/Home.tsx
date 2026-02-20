@@ -34,8 +34,11 @@ function Home() {
 
       // Count active builds (running, pending, or paused)
       const activeBuilds = projectItems.filter(
-        (p: { latest_build_status?: string }) =>
-          p.latest_build_status === 'running' || p.latest_build_status === 'pending' || p.latest_build_status === 'paused',
+        (p: { status?: string; latest_build_status?: string }) =>
+          p.status === 'building' ||
+          p.latest_build_status === 'running' ||
+          p.latest_build_status === 'pending' ||
+          p.latest_build_status === 'paused',
       ).length;
 
       // Count repos that have been audited (have a last_audit_at timestamp)
