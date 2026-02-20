@@ -1377,6 +1377,16 @@ _SKELETON_SYSTEM_PROMPT = """You are a build planner. Output ONLY valid JSON —
 Produce a skeleton manifest: paths, purpose, and dependency edges only.
 Keep it FAST — one line per file, no essays."""
 
+_MINI_BUILD_CONSTRAINT = """
+## FILE BUDGET (MINI BUILD)
+This is a mini build. You MUST produce at most {max_files} files total.
+- Combine related logic into fewer files instead of splitting across many.
+- Merge models + schemas into one file, routes into one file, etc.
+- Prefer simplicity: a working app in {max_files} files beats a perfect architecture in 20.
+- Tests can share a single test file.
+- Skip optional files like separate config, migrations, or docs unless essential.
+"""
+
 _SKELETON_USER_TEMPLATE = """List every file needed for this phase.
 
 ## Contracts (summary)
@@ -1410,6 +1420,7 @@ async def _generate_skeleton_manifest(
     current_phase: dict,
     workspace_info: str,
     prior_phase_context: str = "",
+    max_files: int | None = None,
 ) -> list[dict] | None:
     """Fast skeleton manifest — paths + purpose + deps only (~5-10s).
 
@@ -1446,6 +1457,10 @@ async def _generate_skeleton_manifest(
         workspace_info=workspace_info,
         phase_num=current_phase["number"],
     )
+
+    # Inject file budget constraint for mini builds
+    if max_files is not None:
+        user_message = _MINI_BUILD_CONSTRAINT.format(max_files=max_files) + "\n" + user_message
 
     await _state.build_repo.append_build_log(
         build_id,
@@ -1531,6 +1546,19 @@ async def _generate_skeleton_manifest(
 
         sorted_files = _topological_sort(valid_files)
 
+        # Enforce hard cap for mini builds — keep the most depended-on files
+        if max_files is not None and len(sorted_files) > max_files:
+            logger.info(
+                "Mini build file cap: manifest had %d files, trimming to %d",
+                len(sorted_files), max_files,
+            )
+            await _state.build_repo.append_build_log(
+                build_id,
+                f"Mini build: trimming manifest from {len(sorted_files)} to {max_files} files",
+                source="planner", level="warn",
+            )
+            sorted_files = sorted_files[:max_files]
+
         await _state.build_repo.append_build_log(
             build_id,
             f"Skeleton manifest: {len(sorted_files)} files ({input_t + output_t} tokens)",
@@ -1575,6 +1603,7 @@ async def _generate_file_manifest(
     current_phase: dict,
     workspace_info: str,
     prior_phase_context: str = "",
+    max_files: int | None = None,
 ) -> list[dict] | None:
     """Generate a structured file manifest for a phase via Sonnet planner.
 
@@ -1594,6 +1623,7 @@ async def _generate_file_manifest(
         build_id, user_id, api_key,
         contracts, current_phase,
         workspace_info, prior_phase_context,
+        max_files=max_files,
     )
     if skeleton and len(skeleton) >= 2:
         await _state._broadcast_build_event(user_id, build_id, "file_manifest", {
@@ -1621,6 +1651,7 @@ async def _generate_file_manifest(
         build_id, user_id, api_key,
         contracts, current_phase,
         workspace_info, prior_phase_context,
+        max_files=max_files,
     )
 
 
@@ -1632,6 +1663,7 @@ async def _generate_full_manifest(
     current_phase: dict,
     workspace_info: str,
     prior_phase_context: str = "",
+    max_files: int | None = None,
 ) -> list[dict] | None:
     """Full manifest generation — original monolithic approach (fallback)."""
     from app.clients.llm_client import chat as llm_chat
@@ -1677,6 +1709,10 @@ async def _generate_full_manifest(
         f"## Existing Workspace\n\n{workspace_info}\n\n"
         f"Produce the JSON file manifest for this phase."
     )
+
+    # Inject file budget constraint for mini builds
+    if max_files is not None:
+        user_message = _MINI_BUILD_CONSTRAINT.format(max_files=max_files) + "\n" + user_message
 
     await _state.build_repo.append_build_log(
         build_id,
@@ -1776,6 +1812,19 @@ async def _generate_full_manifest(
             })
 
         sorted_files = _topological_sort(valid_files)
+
+        # Enforce hard cap for mini builds
+        if max_files is not None and len(sorted_files) > max_files:
+            logger.info(
+                "Mini build file cap: full manifest had %d files, trimming to %d",
+                len(sorted_files), max_files,
+            )
+            await _state.build_repo.append_build_log(
+                build_id,
+                f"Mini build: trimming manifest from {len(sorted_files)} to {max_files} files",
+                source="planner", level="warn",
+            )
+            sorted_files = sorted_files[:max_files]
 
         await _state.build_repo.append_build_log(
             build_id,

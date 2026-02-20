@@ -1359,6 +1359,21 @@ async def interject_build(
         if not project or str(project["user_id"]) != str(user_id):
             raise ValueError("Project not found")
         latest = await build_repo.get_latest_build_for_project(project_id)
+
+        # ── Check if the build is waiting at the IDE ready gate ──
+        if latest and latest["status"] == "running":
+            bid = str(latest["id"])
+            if bid in _ide_ready_events:
+                from app.services.build._state import resolve_ide_ready
+                resolve_ide_ready(bid, {"action": "commence"})
+                return {"status": "commenced", "build_id": bid, "message": "Build commenced \u2014 planning phase starting"}
+
+            # ── Check if the build is waiting at the plan review gate ──
+            if bid in _plan_review_events:
+                from app.services.build._state import resolve_plan_review
+                resolve_plan_review(bid, {"action": "approve"})
+                return {"status": "approved", "build_id": bid, "message": "Plan approved \u2014 builders starting"}
+
         if latest and latest["status"] == "paused":
             result = await resume_build(project_id, user_id, action="retry")
             return {"status": "resumed", "build_id": str(result["id"]), "message": "Build resumed via /start"}
@@ -4615,22 +4630,50 @@ async def _run_build_plan_execute(
     # Workspace is set up, recon is done, journal + invariants
     # initialised.  Pause here and let the user decide when to start
     # spending money on planners and builders.
-    _ready_msg = (
-        f"Forge IDE ready \u2014 workspace set up, "
-        f"{_ws_snapshot.total_files} files indexed, "
-        f"{_ws_snapshot.test_inventory.test_count} tests detected. "
-        f"Waiting for your go-ahead."
-    )
-    await build_repo.append_build_log(
-        build_id, _ready_msg, source="system", level="info",
+    _n_files = _ws_snapshot.total_files
+    _n_lines = _ws_snapshot.total_lines
+    _n_tests = _ws_snapshot.test_inventory.test_count
+    _n_tables = len(_ws_snapshot.schema_inventory.tables)
+    _n_symbols = len(_ws_snapshot.symbol_table)
+
+    # Each line is broadcast as a separate build_log so it renders as
+    # its own row in the Activity feed (no collapsed "Show more" block).
+    _welcome_lines: list[tuple[str, str]] = [
+        ("",                                                                     "system"),
+        ("==============================================",                        "system"),
+        ("   FORGE",                                                              "system"),
+        ("==============================================",                        "system"),
+        ("",                                                                     "system"),
+        (f"Workspace ready  --  {_n_files} files, {_n_lines:,} lines",           "info"),
+        (f"  {_n_tests} tests  |  {_n_tables} tables  |  {_n_symbols} symbols",  "info"),
+        ("",                                                                     "system"),
+        ("/start            Begin build (planning + execution)",                  "info"),
+        ("/start phase N    Resume from a specific phase",                        "info"),
+        ("/stop             Cancel the build",                                    "info"),
+        ("...or just type a message to ask a question",                           "info"),
+        ("",                                                                     "system"),
+    ]
+
+    for _wl_msg, _wl_level in _welcome_lines:
+        await build_repo.append_build_log(
+            build_id, _wl_msg, source="system", level=_wl_level,
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _wl_msg, "source": "system", "level": _wl_level,
+        })
+
+    _welcome_summary = (
+        f"Forge IDE ready -- {_n_files} files, {_n_lines:,} lines, "
+        f"{_n_tests} tests, {_n_tables} tables, {_n_symbols} symbols. "
+        "Use /start to begin."
     )
     await _broadcast_build_event(user_id, build_id, "forge_ide_ready", {
-        "message": _ready_msg,
-        "total_files": _ws_snapshot.total_files,
-        "total_lines": _ws_snapshot.total_lines,
-        "test_count": _ws_snapshot.test_inventory.test_count,
+        "message": _welcome_summary,
+        "total_files": _n_files,
+        "total_lines": _n_lines,
+        "test_count": _n_tests,
         "tables": list(_ws_snapshot.schema_inventory.tables),
-        "symbols_count": len(_ws_snapshot.symbol_table),
+        "symbols_count": _n_symbols,
         "options": ["commence", "cancel"],
     })
 
@@ -4824,6 +4867,7 @@ async def _run_build_plan_execute(
                 build_id, user_id, api_key,
                 contracts, phase, workspace_info,
                 prior_phase_context=_prior_ctx,
+                max_files=_manifest_max_files,
             )
 
         if manifest:
@@ -4863,6 +4907,7 @@ async def _run_build_plan_execute(
                 build_id, user_id, api_key,
                 contracts, phase, workspace_info,
                 prior_phase_context=_prior_ctx,
+                max_files=_manifest_max_files,
             )
             # Cache the retry result too
             if manifest:
