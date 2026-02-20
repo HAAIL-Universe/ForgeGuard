@@ -4695,7 +4695,7 @@ async def _run_build_plan_execute(
         "total_files": _n_files,
         "total_lines": _n_lines,
         "test_count": _n_tests,
-        "tables": list(_ws_snapshot.schema_inventory.tables),
+        "tables": list(_ws_snapshot.schema_inventory.tables) if _ws_snapshot is not None else [],
         "symbols_count": _n_symbols,
         "options": ["commence", "cancel"],
     })
