@@ -1003,6 +1003,86 @@ async def force_cancel_build(project_id: UUID, user_id: UUID) -> dict:
     return updated
 
 
+async def nuke_build(project_id: UUID, user_id: UUID) -> dict:
+    """Completely destroy a build — reverting all git changes and deleting the DB record.
+
+    1. Force-cancel if the build is still active.
+    2. Delete the remote branch (if non-default) **or** force-push the branch
+       back to its pre-build base commit (if default branch).
+    3. Delete the build record from the database.
+
+    Returns:
+        ``{"nuked": True, "build_id": "<id>", "branch_action": "..."}``
+
+    Raises:
+        ValueError: If project not found, not owned, or no build exists.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest:
+        raise ValueError("No build found to nuke")
+
+    build_id = latest["id"]
+    bid = str(build_id)
+    branch = latest.get("branch") or "main"
+    target_ref = latest.get("target_ref") or ""
+    base_sha = latest.get("base_commit_sha") or ""
+    working_dir = latest.get("working_dir") or ""
+
+    # ── 1. Force-cancel if still active ──────────────────────────────
+    if latest["status"] in ("pending", "running", "paused"):
+        try:
+            await force_cancel_build(project_id, user_id)
+        except Exception as exc:
+            logger.warning("Nuke: force-cancel failed (continuing): %s", exc)
+
+    # ── 2. Git branch cleanup ────────────────────────────────────────
+    user = await get_user_by_id(user_id)
+    access_token = (user or {}).get("access_token", "")
+    branch_action = "none"
+
+    protected = {"main", "master", "develop"}
+
+    if access_token and target_ref:
+        if branch not in protected:
+            # Non-default branch — delete it entirely
+            try:
+                await github_client.delete_branch(access_token, target_ref, branch)
+                branch_action = f"deleted branch '{branch}'"
+                logger.info("Nuke: deleted branch %s on %s", branch, target_ref)
+            except Exception as exc:
+                logger.warning("Nuke: branch delete failed: %s", exc)
+                branch_action = f"branch delete failed: {exc}"
+        elif base_sha and working_dir:
+            # Default branch — force-push back to pre-build commit
+            try:
+                await git_client.force_push_ref(
+                    working_dir, base_sha, branch, access_token,
+                )
+                branch_action = f"reverted '{branch}' to {base_sha[:8]}"
+                logger.info("Nuke: reverted %s to %s on %s", branch, base_sha[:8], target_ref)
+            except Exception as exc:
+                logger.warning("Nuke: force-push revert failed: %s", exc)
+                branch_action = f"revert failed: {exc}"
+        else:
+            branch_action = "skipped — no base SHA or working dir"
+
+    # ── 3. Delete DB record ──────────────────────────────────────────
+    await build_repo.delete_builds([build_id])
+    logger.info("Nuke: deleted build record %s", bid)
+
+    # ── 4. Broadcast ─────────────────────────────────────────────────
+    await _broadcast_build_event(user_id, build_id, "build_nuked", {
+        "id": bid,
+        "branch_action": branch_action,
+    })
+
+    return {"nuked": True, "build_id": bid, "branch_action": branch_action}
+
+
 async def resume_build(
     project_id: UUID,
     user_id: UUID,
@@ -2482,6 +2562,14 @@ async def _run_build_conversation(
                 except Exception as exc2:
                     await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
                     return
+
+        # Capture base commit SHA for nuke/revert capability
+        if working_dir and (Path(working_dir) / ".git").is_dir():
+            try:
+                _base_sha = await git_client.rev_parse_head(working_dir)
+                await build_repo.update_base_commit_sha(build_id, _base_sha)
+            except Exception:
+                pass  # Non-fatal — nuke will just skip revert
 
         # Create project-local virtual environment & stream setup to IDE log
         if working_dir:
@@ -4460,6 +4548,14 @@ async def _run_build_plan_execute(
                 except Exception as exc2:
                     await _fail_build(build_id, user_id, f"Failed to create/checkout branch '{branch}': {exc2}")
                     return
+
+        # Capture base commit SHA for nuke/revert capability
+        if working_dir and (Path(working_dir) / ".git").is_dir():
+            try:
+                _base_sha = await git_client.rev_parse_head(working_dir)
+                await build_repo.update_base_commit_sha(build_id, _base_sha)
+            except Exception:
+                pass  # Non-fatal — nuke will just skip revert
 
         # Create project-local virtual environment & stream setup to IDE log
         try:

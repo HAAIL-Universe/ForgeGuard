@@ -52,7 +52,7 @@ async def create_build(
         RETURNING id, project_id, phase, status, target_type, target_ref,
                   working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                   loop_count, error_detail, created_at,
-                  paused_at, pause_reason, pause_phase, completed_phases
+                  paused_at, pause_reason, pause_phase, completed_phases, base_commit_sha
         """,
         project_id,
         target_type,
@@ -73,7 +73,7 @@ async def get_build_by_id(build_id: UUID) -> dict | None:
         SELECT id, project_id, phase, status, target_type, target_ref,
                working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                loop_count, error_detail, created_at,
-               paused_at, pause_reason, pause_phase, completed_phases
+               paused_at, pause_reason, pause_phase, completed_phases, base_commit_sha
         FROM builds WHERE id = $1
         """,
         build_id,
@@ -89,7 +89,7 @@ async def get_latest_build_for_project(project_id: UUID) -> dict | None:
         SELECT id, project_id, phase, status, target_type, target_ref,
                working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                loop_count, error_detail, created_at,
-               paused_at, pause_reason, pause_phase, completed_phases
+               paused_at, pause_reason, pause_phase, completed_phases, base_commit_sha
         FROM builds WHERE project_id = $1
         ORDER BY created_at DESC LIMIT 1
         """,
@@ -106,7 +106,7 @@ async def get_builds_for_project(project_id: UUID) -> list[dict]:
         SELECT id, project_id, phase, status, target_type, target_ref,
                working_dir, branch, build_mode, contract_batch, started_at, completed_at,
                loop_count, error_detail, created_at,
-               paused_at, pause_reason, pause_phase, completed_phases
+               paused_at, pause_reason, pause_phase, completed_phases, base_commit_sha
         FROM builds WHERE project_id = $1
         ORDER BY created_at DESC
         """,
@@ -250,6 +250,16 @@ async def resume_build(build_id: UUID) -> bool:
         build_id,
     )
     return result == "UPDATE 1"
+
+
+async def update_base_commit_sha(build_id: UUID, sha: str) -> None:
+    """Store the base commit SHA captured right after branch setup."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE builds SET base_commit_sha = $2 WHERE id = $1",
+        build_id,
+        sha,
+    )
 
 
 # ---------------------------------------------------------------------------

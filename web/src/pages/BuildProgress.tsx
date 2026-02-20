@@ -311,6 +311,8 @@ function BuildProgress() {
   const [noBuild, setNoBuild] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showForceCancelConfirm, setShowForceCancelConfirm] = useState(false);
+  const [showNukeConfirm, setShowNukeConfirm] = useState(false);
+  const [nuking, setNuking] = useState(false);
 
   const [planTasks, setPlanTasks] = useState<PlanTask[]>([]);
   const [planExpanded, setPlanExpanded] = useState(true);
@@ -1334,6 +1336,28 @@ function BuildProgress() {
     setShowForceCancelConfirm(false);
   };
 
+  const handleNuke = async () => {
+    setNuking(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/nuke`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        addToast(`Build nuked — ${data.branch_action}`, 'info');
+        navigate(`/projects/${projectId}`);
+      } else {
+        const err = await res.json().catch(() => null);
+        addToast(err?.detail || 'Failed to nuke build');
+      }
+    } catch {
+      addToast('Network error nuking build');
+    }
+    setNuking(false);
+    setShowNukeConfirm(false);
+  };
+
   const handleCircuitBreak = async () => {
     setCircuitBreaking(true);
     try {
@@ -1734,6 +1758,27 @@ function BuildProgress() {
                 Force Cancel
               </button>
             )}</button>
+            )}
+            {build && (
+              <button
+                onClick={() => setShowNukeConfirm(true)}
+                disabled={nuking}
+                title="Nuke: completely destroy this build — reverts all git changes and deletes the record"
+                data-testid="nuke-build-btn"
+                style={{
+                  background: '#7F1D1D',
+                  color: '#FCA5A5',
+                  border: '1px solid #DC2626',
+                  borderRadius: '6px',
+                  padding: '6px 14px',
+                  cursor: nuking ? 'wait' : 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  opacity: nuking ? 0.5 : 1,
+                }}
+              >
+                {nuking ? 'Nuking…' : '☢ Nuke'}
+              </button>
             )}
           </div>
         </div>
@@ -2787,6 +2832,16 @@ function BuildProgress() {
           confirmLabel="Force Cancel"
           onConfirm={handleForceCancel}
           onCancel={() => setShowForceCancelConfirm(false)}
+        />
+      )}
+
+      {showNukeConfirm && (
+        <ConfirmDialog
+          title="☢ Nuke Build"
+          message={`This will permanently destroy the build, delete the remote branch (or revert the default branch to its pre-build state), and remove all build records. This CANNOT be undone.`}
+          confirmLabel="Nuke It"
+          onConfirm={handleNuke}
+          onCancel={() => setShowNukeConfirm(false)}
         />
       )}            return match ? `${match.icon} ${match.cmd.slice(1).charAt(0).toUpperCase()}${match.cmd.slice(2)}` : 'Interject';
                   })()}

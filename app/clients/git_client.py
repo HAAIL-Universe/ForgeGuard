@@ -336,6 +336,33 @@ async def diff_summary(
     return combined
 
 
+async def rev_parse_head(repo_path: str | Path) -> str:
+    """Return the current HEAD commit SHA."""
+    return await _run_git(["rev-parse", "HEAD"], cwd=repo_path)
+
+
+async def force_push_ref(
+    repo_path: str | Path,
+    ref_sha: str,
+    branch: str,
+    access_token: str,
+    *,
+    remote: str = "origin",
+) -> None:
+    """Force-push *branch* to a specific commit SHA.
+
+    Used by the nuke feature to revert a branch back to its base commit
+    when the branch is the default (main/master) and can't be deleted.
+    """
+    env = _make_askpass_env(access_token)
+    await _run_git(
+        ["push", "--force", remote, f"{ref_sha}:{branch}"],
+        cwd=repo_path,
+        env=env,
+    )
+    await _strip_token_from_remote(repo_path, remote)
+
+
 async def log_oneline(
     repo_path: str | Path,
     *,

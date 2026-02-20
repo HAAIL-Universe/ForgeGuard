@@ -136,6 +136,26 @@ async def force_cancel_build(
     return await build_service.force_cancel_build(project_id, user["id"])
 
 
+# ── POST /projects/{project_id}/build/nuke ────────────────────────────
+
+
+@router.post("/{project_id}/build/nuke")
+async def nuke_build(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Completely destroy a build — revert all git changes and delete the record.
+
+    This is the nuclear option: force-cancels the build, deletes the remote
+    branch (or force-pushes the default branch back to its pre-build state),
+    and removes the build from the database.
+    """
+    try:
+        return await build_service.nuke_build(project_id, user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 # ── POST /projects/{project_id}/build/resume ─────────────────────────────
 
 

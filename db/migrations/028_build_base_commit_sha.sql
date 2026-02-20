@@ -1,0 +1,1 @@
+ALTER TABLE builds ADD COLUMN IF NOT EXISTS base_commit_sha TEXT;
