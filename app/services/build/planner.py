@@ -502,9 +502,379 @@ def _topological_sort(files: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Tier analysis — group manifest files by dependency depth
+# Chunk planning — Sonnet breaks a phase into ordered build chunks
 # ---------------------------------------------------------------------------
 
+# Maximum files per chunk.  Keeps each builder invocation focused.
+_MAX_CHUNK_SIZE = 6
+
+
+def _dependency_sort(files: list[dict]) -> list[dict]:
+    """Sort files so dependencies come before dependents.
+
+    Returns the same files in a safe build order.  Does NOT group into tiers
+    — the LLM decides the grouping via ``_plan_phase_chunks``.
+    """
+    path_to_entry = {f["path"]: f for f in files}
+    path_to_depth: dict[str, int] = {}
+    temp_mark: set[str] = set()
+
+    def depth(path: str) -> int:
+        if path in path_to_depth:
+            return path_to_depth[path]
+        if path in temp_mark:
+            return 0
+        if path not in path_to_entry:
+            return -1
+        temp_mark.add(path)
+        entry = path_to_entry[path]
+        max_dep = -1
+        for dep in entry.get("depends_on", []):
+            if dep in path_to_entry:
+                max_dep = max(max_dep, depth(dep))
+        temp_mark.discard(path)
+        d = max_dep + 1
+        path_to_depth[path] = d
+        return d
+
+    for f in files:
+        depth(f["path"])
+
+    return sorted(files, key=lambda f: path_to_depth.get(f["path"], 0))
+
+
+async def _plan_phase_chunks(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    manifest: list[dict],
+    contracts: list[dict],
+    phase_deliverables: str,
+    working_dir: str,
+) -> list[dict]:
+    """Have Sonnet break a phase manifest into ordered build chunks.
+
+    Each chunk is a logical group of files that should be built together.
+    The planner considers dependencies, directory cohesion, and logical
+    ordering (foundation first, then data layer, then API, then UI).
+
+    Returns list of chunk dicts::
+
+        [
+            {
+                "name": "Foundation — config & env",
+                "files": ["config.py", "env.py", ...],
+                "builder_prompt": "Set up configuration...",
+            },
+            ...
+        ]
+
+    Falls back to algorithmic chunking if the LLM call fails.
+    """
+    from app.clients.llm_client import chat as llm_chat
+
+    # Build concise file list for the prompt
+    file_lines = []
+    for f in manifest:
+        deps = ", ".join(f.get("depends_on", [])) or "none"
+        file_lines.append(
+            f"  - {f['path']} ({f.get('language', 'python')}) "
+            f"| purpose: {f.get('purpose', '?')} | deps: {deps}"
+        )
+
+    # Include relevant contract summaries (keep brief)
+    contract_summaries = []
+    for c in contracts:
+        ctype = c.get("contract_type", "")
+        if ctype in ("stack", "blueprint", "boundaries"):
+            preview = (c.get("content", "") or "")[:300].replace("\n", " ").strip()
+            contract_summaries.append(f"  {ctype}: {preview}...")
+
+    prompt = f"""You are the Build Planner. You have a phase with {len(manifest)} files to build.
+
+Break them into ordered BUILD CHUNKS of 3-6 files each. Each chunk should be:
+- Logically cohesive (same layer, same feature area, or same directory)
+- Ordered so dependencies are built before dependents
+- Small enough for 1-2 agents to handle thoughtfully
+
+Files in this phase:
+{chr(10).join(file_lines)}
+
+Project context:
+{chr(10).join(contract_summaries) if contract_summaries else '(none)'}
+
+Phase deliverables:
+{phase_deliverables[:1000] if phase_deliverables else '(none)'}
+
+Output ONLY valid JSON — no markdown fences, no commentary:
+{{
+  "chunks": [
+    {{
+      "name": "short descriptive name",
+      "files": ["path/to/file1.py", "path/to/file2.py"],
+      "builder_prompt": "One paragraph telling the builder what this chunk is about and what to focus on"
+    }}
+  ]
+}}
+
+Rules:
+- Every file from the list above MUST appear in exactly one chunk
+- Foundation/config files first, then models/data, then services, then API/routes, then UI
+- Max {_MAX_CHUNK_SIZE} files per chunk
+- builder_prompt should be specific: mention key interfaces, patterns, dependencies
+- Keep the total output under 200 lines"""
+
+    _sys = "You are a build planner. Output ONLY the JSON. No preamble, no explanation."
+
+    await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
+        "model": "sonnet",
+        "purpose": f"Planning build chunks for {len(manifest)} files",
+        "system_prompt": _sys,
+        "user_message_preview": prompt[:600],
+        "user_message_length": len(prompt),
+    })
+
+    try:
+        result = await llm_chat(
+            api_key=api_key,
+            model=_state.settings.LLM_PLANNER_MODEL,
+            system_prompt=_sys,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4096,
+            provider="anthropic",
+        )
+
+        text = result["text"] if isinstance(result, dict) else result
+        usage = result.get("usage", {}) if isinstance(result, dict) else {}
+
+        # Record cost
+        input_t = usage.get("input_tokens", 0)
+        output_t = usage.get("output_tokens", 0)
+        model = _state.settings.LLM_PLANNER_MODEL
+        input_rate, output_rate = _get_token_rates(model)
+        cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
+        await _state.build_repo.record_build_cost(
+            build_id, "phase_chunk_plan", input_t, output_t, model, cost,
+        )
+        await _accumulate_cost(build_id, input_t, output_t, model, cost)
+
+        # Parse JSON — handle possible markdown fences
+        clean = text.strip()
+        if clean.startswith("```"):
+            clean = re.sub(r"^```(?:json)?\s*", "", clean)
+            clean = re.sub(r"\s*```\s*$", "", clean)
+        parsed = json.loads(clean)
+        chunks = parsed.get("chunks", [])
+
+        if not chunks:
+            raise ValueError("LLM returned empty chunks list")
+
+        # Validate: every manifest file must be in exactly one chunk
+        all_manifest_paths = {f["path"] for f in manifest}
+        seen: set[str] = set()
+        valid_chunks: list[dict] = []
+        path_to_entry = {f["path"]: f for f in manifest}
+
+        for chunk in chunks:
+            chunk_files = chunk.get("files", [])
+            # Filter to only files that exist in the manifest
+            valid_files = [p for p in chunk_files if p in all_manifest_paths and p not in seen]
+            if not valid_files:
+                continue
+            seen.update(valid_files)
+            valid_chunks.append({
+                "name": chunk.get("name", f"Chunk {len(valid_chunks)}"),
+                "files": valid_files,
+                "entries": [path_to_entry[p] for p in valid_files],
+                "builder_prompt": chunk.get("builder_prompt", ""),
+            })
+
+        # Add any missing files as a final chunk
+        missing = all_manifest_paths - seen
+        if missing:
+            missing_entries = [path_to_entry[p] for p in missing]
+            valid_chunks.append({
+                "name": "Remaining files",
+                "files": list(missing),
+                "entries": missing_entries,
+                "builder_prompt": "Build these remaining files following the same patterns as previous chunks.",
+            })
+
+        # Enforce max chunk size
+        final_chunks: list[dict] = []
+        for chunk in valid_chunks:
+            if len(chunk["files"]) <= _MAX_CHUNK_SIZE:
+                final_chunks.append(chunk)
+            else:
+                # Split oversized chunks
+                entries = chunk["entries"]
+                for j in range(0, len(entries), _MAX_CHUNK_SIZE):
+                    sub = entries[j:j + _MAX_CHUNK_SIZE]
+                    final_chunks.append({
+                        "name": f"{chunk['name']} (part {j // _MAX_CHUNK_SIZE + 1})",
+                        "files": [e["path"] for e in sub],
+                        "entries": sub,
+                        "builder_prompt": chunk["builder_prompt"],
+                    })
+
+        # Write plan to scratchpad
+        from app.services.tool_executor import _exec_forge_scratchpad
+        plan_text = "\n".join(
+            f"Chunk {i}: {c['name']} ({len(c['files'])} files) — {', '.join(c['files'])}"
+            for i, c in enumerate(final_chunks)
+        )
+        _exec_forge_scratchpad(
+            {"operation": "write", "key": "build_plan", "value": plan_text},
+            working_dir,
+        )
+
+        await _state._broadcast_build_event(user_id, build_id, "scratchpad_write", {
+            "key": "build_plan",
+            "source": "sonnet",
+            "role": "planner",
+            "summary": f"Build plan: {len(final_chunks)} chunks for {len(manifest)} files",
+            "content": plan_text[:1000],
+            "full_length": len(plan_text),
+        })
+
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Planner decided on {len(final_chunks)} chunks ({input_t + output_t} tok)",
+            source="planner", level="info",
+        )
+
+        return final_chunks
+
+    except Exception as exc:
+        logger.warning("LLM chunk planning failed: %s — falling back to algorithmic", exc)
+        await _state.build_repo.append_build_log(
+            build_id,
+            f"Chunk planning failed ({exc}) — using dependency-based grouping",
+            source="planner", level="warn",
+        )
+        return _algorithmic_chunks(manifest)
+
+
+def _algorithmic_chunks(manifest: list[dict]) -> list[dict]:
+    """Fallback: group by dependency depth + directory, respecting _MAX_CHUNK_SIZE."""
+    sorted_files = _dependency_sort(manifest)
+
+    # Group by directory for cohesion
+    dir_groups: dict[str, list[dict]] = {}
+    for f in sorted_files:
+        d = str(Path(f["path"]).parent)
+        dir_groups.setdefault(d, []).append(f)
+
+    chunks: list[dict] = []
+    current: list[dict] = []
+    for _d, group in sorted(dir_groups.items()):
+        if len(current) + len(group) > _MAX_CHUNK_SIZE:
+            if current:
+                chunks.append({
+                    "name": f"Chunk {len(chunks)}",
+                    "files": [f["path"] for f in current],
+                    "entries": current,
+                    "builder_prompt": "",
+                })
+            if len(group) > _MAX_CHUNK_SIZE:
+                for j in range(0, len(group), _MAX_CHUNK_SIZE):
+                    sub = group[j:j + _MAX_CHUNK_SIZE]
+                    chunks.append({
+                        "name": f"Chunk {len(chunks)}",
+                        "files": [f["path"] for f in sub],
+                        "entries": sub,
+                        "builder_prompt": "",
+                    })
+                current = []
+            else:
+                current = list(group)
+        else:
+            current.extend(group)
+    if current:
+        chunks.append({
+            "name": f"Chunk {len(chunks)}",
+            "files": [f["path"] for f in current],
+            "entries": current,
+            "builder_prompt": "",
+        })
+
+    return chunks
+
+
+async def _review_chunk_completion(
+    build_id: UUID,
+    user_id: UUID,
+    api_key: str,
+    chunk_idx: int,
+    chunk_name: str,
+    chunk_written: dict[str, str],
+    remaining_chunks: list[dict],
+    accumulated_interfaces: str,
+    working_dir: str,
+) -> str:
+    """After a chunk completes, Sonnet reviews what was built and preps the next.
+
+    Returns an interface summary of what was just built (for the next chunk's
+    context).  Also writes observations to the scratchpad.
+    """
+    from app.services.tool_executor import _exec_forge_scratchpad
+
+    # Extract actual exports from written files (cheap — no LLM)
+    parts = [f"# Chunk {chunk_idx}: {chunk_name}\n"]
+    for path, content in chunk_written.items():
+        parts.append(f"\n## {path}")
+        lines = content.split("\n")
+        exports = []
+        for line in lines:
+            stripped = line.strip()
+            if (stripped.startswith("class ") or stripped.startswith("def ") or
+                    stripped.startswith("async def ")) and not line.startswith(" " * 4):
+                exports.append(stripped.split("(")[0].split(":")[0])
+            elif "=" in stripped and stripped.split("=")[0].strip().isupper() and not line.startswith(" "):
+                exports.append(stripped.split("=")[0].strip())
+            elif stripped.startswith("export "):
+                exports.append(stripped[:100])
+        if exports:
+            parts.append("\n".join(f"- `{e}`" for e in exports[:20]))
+        else:
+            parts.append("(no top-level exports detected)")
+
+    interfaces_text = "\n".join(parts)
+
+    # Write to scratchpad
+    scratchpad_key = f"chunk_{chunk_idx}_done"
+    summary = (
+        f"Chunk {chunk_idx} ({chunk_name}) complete: "
+        f"{len(chunk_written)}/{len(chunk_written)} files written.\n"
+        f"Next: {len(remaining_chunks)} chunks remaining."
+    )
+    _exec_forge_scratchpad(
+        {"operation": "write", "key": scratchpad_key, "value": summary + "\n\n" + interfaces_text},
+        working_dir,
+    )
+
+    await _state._broadcast_build_event(user_id, build_id, "scratchpad_write", {
+        "key": scratchpad_key,
+        "source": "sonnet",
+        "role": "planner",
+        "summary": summary,
+        "content": interfaces_text[:500],
+        "full_length": len(interfaces_text),
+    })
+
+    await _state.build_repo.append_build_log(
+        build_id,
+        f"Chunk {chunk_idx} ({chunk_name}) done — "
+        f"{len(chunk_written)} files, {len(remaining_chunks)} chunks remaining",
+        source="planner", level="info",
+    )
+
+    return interfaces_text
+
+
+# ---------------------------------------------------------------------------
+# Legacy tier analysis — kept as algorithmic fallback
+# ---------------------------------------------------------------------------
 
 # Maximum files per tier.  Large tiers get split into sub-tiers so each
 # group is small enough for the agents to reason carefully about.

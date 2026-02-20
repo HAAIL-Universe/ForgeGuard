@@ -4969,29 +4969,39 @@ async def _run_build_plan_execute(
 
             if _pending_manifest:
                 from app.services.build.planner import (
-                    _compute_tiers, _tier_summary,
+                    _plan_phase_chunks, _review_chunk_completion,
                     _plan_tier_interfaces, _extract_tier_interfaces,
                     _review_written_files, execute_tier,
                 )
 
-                tiers = _compute_tiers(_pending_manifest)
-                _tier_log = f"Computed {len(tiers)} dependency tiers for {len(_pending_manifest)} pending files"
-                await build_repo.append_build_log(build_id, _tier_log, source="planner", level="info")
+                # ── Planner analyses the phase and decides on chunks ──
+                await _set_build_activity(
+                    build_id, user_id,
+                    f"Planner analysing {len(_pending_manifest)} files...",
+                    model="sonnet",
+                )
+                chunks = await _plan_phase_chunks(
+                    build_id, user_id, api_key,
+                    _pending_manifest, contracts,
+                    phase_deliverables, working_dir,
+                )
+                _chunk_log = f"Planner divided phase into {len(chunks)} chunks"
+                await build_repo.append_build_log(build_id, _chunk_log, source="planner", level="info")
                 await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": _tier_log, "source": "planner", "level": "info",
+                    "message": _chunk_log, "source": "planner", "level": "info",
                 })
                 await _broadcast_build_event(user_id, build_id, "tiers_computed", {
                     "phase": phase_name,
-                    "tier_count": len(tiers),
+                    "tier_count": len(chunks),
                     "tiers": [
-                        {"tier": ti, "files": [f["path"] for f in tf]}
-                        for ti, tf in enumerate(tiers)
+                        {"tier": ci, "name": c.get("name", ""), "files": c["files"]}
+                        for ci, c in enumerate(chunks)
                     ],
                 })
 
                 _accumulated_interfaces = ""
 
-                # Helper: merge tier results into tracking dicts
+                # Helper: merge chunk results into tracking dicts
                 async def _merge_tier_results(
                     tier_written: dict[str, str],
                     tier_files_ref: list[dict],
@@ -5042,8 +5052,12 @@ async def _run_build_plan_execute(
                             )
                         ))
 
-                for tier_idx, tier_files in enumerate(tiers):
-                    # Cancel / pause check between tiers
+                for chunk_idx, chunk in enumerate(chunks):
+                    chunk_name = chunk.get("name", f"Chunk {chunk_idx}")
+                    chunk_files = chunk.get("entries", [])
+                    builder_prompt = chunk.get("builder_prompt", "")
+
+                    # Cancel / pause check between chunks
                     bid = str(build_id)
                     if bid in _cancel_flags:
                         _cancel_flags.discard(bid)
@@ -5066,92 +5080,99 @@ async def _run_build_plan_execute(
                             await _fail_build(build_id, user_id, "Build aborted after /pause")
                             return
 
-                    # ── Get interface map ──
-                    # Tier 0: no dependencies → skip interface planning.
-                    # Later tiers: plan synchronously so we use real context
-                    # from the previous tier's actual output.
-                    if tier_idx == 0:
+                    # ── Step 1: Planner prepares interface map for this chunk ──
+                    if chunk_idx == 0:
+                        # First chunk — no prior interfaces to reference
                         interface_map = ""
                         await build_repo.append_build_log(
                             build_id,
-                            "Tier 0: foundation tier — skipping interface planning",
+                            f"Chunk 0 ({chunk_name}): foundation chunk — skipping interface planning",
                             source="planner", level="info",
                         )
                     else:
                         await _set_build_activity(
                             build_id, user_id,
-                            f"Tier {tier_idx}/{len(tiers)-1}: Planning interfaces...",
+                            f"Chunk {chunk_idx}/{len(chunks)-1} ({chunk_name}): Planning interfaces...",
                             model="sonnet",
                         )
                         interface_map = await _plan_tier_interfaces(
                             build_id, user_id, api_key,
-                            tier_idx, tier_files,
+                            chunk_idx, chunk_files,
                             _accumulated_interfaces,
                             contracts, phase_deliverables,
                             working_dir,
                         )
 
-                    # ── Sequential: plan → build → commit, one tier at a time ──
+                    # Inject the planner's builder_prompt into the interface map
+                    if builder_prompt:
+                        interface_map = (
+                            f"## Planner Instructions\n{builder_prompt}\n\n"
+                            + interface_map
+                        )
+
+                    # ── Step 2: Send chunk to Builder ──
                     await _set_build_activity(
                         build_id, user_id,
-                        f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files...",
+                        f"Chunk {chunk_idx}/{len(chunks)-1} ({chunk_name}): "
+                        f"Building {len(chunk_files)} files...",
                         model="opus",
                     )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": f"Sending chunk {chunk_idx} ({chunk_name}) to Builder — {len(chunk_files)} files",
+                        "source": "planner", "level": "info",
+                    })
 
-                    # Build current tier (no parallel pre-planning — we wait
-                    # for actual interfaces from THIS tier before planning the
-                    # next one, so each tier benefits from real context).
-                    tier_written = await execute_tier(
+                    chunk_written = await execute_tier(
                         build_id, user_id, api_key,
-                        tier_idx, tier_files, contracts,
+                        chunk_idx, chunk_files, contracts,
                         phase_deliverables, working_dir,
                         interface_map, all_files_written,
                         key_pool=key_pool,
                     )
 
-                    # Merge results (also kicks off per-file audit tasks)
-                    _tier_audit_start = len(pending_file_audits)
-                    await _merge_tier_results(tier_written, tier_files, tier_idx)
-                    _tier_audit_tasks = pending_file_audits[_tier_audit_start:]
+                    # ── Step 3: Merge results + audit ──
+                    _chunk_audit_start = len(pending_file_audits)
+                    await _merge_tier_results(chunk_written, chunk_files, chunk_idx)
+                    _chunk_audit_tasks = pending_file_audits[_chunk_audit_start:]
 
-                    # Extract interfaces + review written files in parallel
-                    _extract_task = asyncio.create_task(_extract_tier_interfaces(
+                    # ── Step 4: Planner reviews what was built ──
+                    remaining = chunks[chunk_idx + 1:]
+                    chunk_interfaces = await _review_chunk_completion(
                         build_id, user_id, api_key,
-                        tier_idx, tier_written, working_dir,
-                    ))
-                    _review_task = asyncio.create_task(_review_written_files(
-                        build_id, user_id, api_key,
-                        tier_written, interface_map, tier_idx,
-                    ))
+                        chunk_idx, chunk_name,
+                        chunk_written, remaining,
+                        _accumulated_interfaces, working_dir,
+                    )
+                    _accumulated_interfaces += f"\n\n{chunk_interfaces}"
 
-                    actual_interfaces = await _extract_task
-                    _accumulated_interfaces += f"\n\n{actual_interfaces}"
-
-                    # Await review — non-blocking (failures logged internally)
+                    # Quick Sonnet review (advisory, non-blocking)
                     try:
-                        _reviews = await _review_task
+                        _reviews = await _review_written_files(
+                            build_id, user_id, api_key,
+                            chunk_written, interface_map, chunk_idx,
+                        )
                         _warn_count = sum(1 for r in _reviews if r["verdict"] == "warn")
                         if _warn_count > 0:
                             await _set_build_activity(
                                 build_id, user_id,
-                                f"Sonnet found {_warn_count} warning(s) in tier {tier_idx}",
+                                f"Sonnet found {_warn_count} warning(s) in chunk {chunk_idx}",
                                 model="sonnet",
                             )
                     except Exception:
-                        pass  # Review is advisory, not blocking
+                        pass
 
-                    # --- Await this tier's audits + commit+push (incremental save) ---
-                    if _tier_audit_tasks:
+                    # ── Step 5: Await audits ──
+                    if _chunk_audit_tasks:
                         await _set_build_activity(
                             build_id, user_id,
-                            f"Tier {tier_idx}: Awaiting {len(_tier_audit_tasks)} audits...",
+                            f"Chunk {chunk_idx}: Awaiting {len(_chunk_audit_tasks)} audits...",
                         )
-                        _tier_raw = await asyncio.gather(
-                            *_tier_audit_tasks, return_exceptions=True,
+                        _chunk_raw = await asyncio.gather(
+                            *_chunk_audit_tasks, return_exceptions=True,
                         )
-                        for _tr in _tier_raw:
+                        for _tr in _chunk_raw:
                             if isinstance(_tr, BaseException):
-                                logger.warning("Tier %d audit task error: %s", tier_idx, _tr)
+                                logger.warning("Chunk %d audit error: %s", chunk_idx, _tr)
                                 continue
                             fpath, fverdict, ffindings = _tr
                             if fverdict == "FAIL":
@@ -5159,20 +5180,20 @@ async def _run_build_plan_execute(
                             else:
                                 passed_files.append(fpath)
 
-                    # Drain fix queue for this tier's files
+                    # ── Step 6: Fix any audit failures ──
                     if not _fix_queue.empty():
                         _touch_progress(build_id)
                         await _set_build_activity(
                             build_id, user_id,
-                            f"Tier {tier_idx}: Builder fixing audit failures...",
+                            f"Chunk {chunk_idx}: Builder fixing audit failures...",
                             model="opus",
                         )
-                        _tier_fixes = await _builder_drain_fix_queue(
+                        _chunk_fixes = await _builder_drain_fix_queue(
                             build_id, user_id, api_key, _audit_key,
                             _fix_queue, working_dir, _manifest_cache_path,
                             audit_llm_enabled,
                         )
-                        for fpath, fverdict, ffindings in _tier_fixes:
+                        for fpath, fverdict, ffindings in _chunk_fixes:
                             if fverdict == "PASS":
                                 blocking_files = [
                                     (bp, bf) for bp, bf in blocking_files if bp != fpath
@@ -5191,23 +5212,24 @@ async def _run_build_plan_execute(
                             elif not any(bp == fpath for bp, _ in blocking_files):
                                 blocking_files.append((fpath, ffindings))
 
-                    # Commit + push this tier's files
-                    if tier_written:
+                    # ── Step 7: Commit + push ──
+                    if chunk_written:
                         await _incremental_commit_push(
-                            f"tier {tier_idx}",
-                            len(tier_written),
+                            f"chunk {chunk_idx}: {chunk_name}",
+                            len(chunk_written),
                         )
 
                     await build_repo.append_build_log(
                         build_id,
-                        f"Tier {tier_idx} done: {len(tier_written)}/{len(tier_files)} files",
+                        f"Chunk {chunk_idx} ({chunk_name}) done: "
+                        f"{len(chunk_written)}/{len(chunk_files)} files — "
+                        f"Planner ready for next chunk",
                         source="planner", level="info",
                     )
 
-                # (No parallel planning tasks to wait for — sequential mode)
         except Exception as _tier_exc:
-            logger.error("Tier execution failed: %s — falling back to sequential", _tier_exc, exc_info=True)
-            _tier_err_msg = f"Tier system error: {_tier_exc} — remaining files will be generated sequentially"
+            logger.error("Chunk execution failed: %s — falling back to sequential", _tier_exc, exc_info=True)
+            _tier_err_msg = f"Chunk system error: {_tier_exc} — remaining files will be generated sequentially"
             await build_repo.append_build_log(
                 build_id, _tier_err_msg,
                 source="system", level="warn",
