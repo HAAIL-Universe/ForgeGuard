@@ -180,6 +180,19 @@ async def get_build_files(
     return {"items": files}
 
 
+# ── GET /projects/{project_id}/build/phase-files ──────────────────────────
+
+
+@router.get("/{project_id}/build/phase-files")
+async def get_build_phase_files(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Return files grouped by phase from stored phase outcomes."""
+    data = await build_service.get_phase_files(project_id, user["id"])
+    return data
+
+
 # ── GET /projects/{project_id}/build/files/{path} ─────────────────────────
 
 

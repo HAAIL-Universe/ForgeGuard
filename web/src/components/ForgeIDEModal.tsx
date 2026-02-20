@@ -970,6 +970,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [fileChecklist, setFileChecklist] = useState<ChecklistItem[]>([]);
   const [opusAgents, setOpusAgents] = useState<AgentInfo[]>([]);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
+  /* Per-phase file tracking for expandable sidebar */
+  const [phaseFiles, setPhaseFiles] = useState<Record<number, { path: string; size_bytes?: number; language?: string; committed: boolean }[]>>({});
+  const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -1100,7 +1103,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           setStatus('ready');
         }
 
-        // 3. Fetch live cost
+        // 3. Fetch per-phase file lists for resumed builds
+        try {
+          const pfRes = await fetch(`${API_BASE}/projects/${projectId}/build/phase-files`, { headers: hdr });
+          if (pfRes.ok) {
+            const pfData = await pfRes.json();
+            if (pfData.phases) {
+              const mapped: Record<number, { path: string; size_bytes?: number; language?: string; committed: boolean }[]> = {};
+              for (const [k, v] of Object.entries(pfData.phases)) {
+                mapped[parseInt(k, 10)] = v as any;
+              }
+              setPhaseFiles(mapped);
+            }
+          }
+        } catch { /* silent */ }
+
+        // 4. Fetch live cost
         try {
           const costRes = await fetch(`${API_BASE}/projects/${projectId}/build/live-cost`, { headers: hdr });
           if (costRes.ok) {
@@ -1329,6 +1347,13 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 t.id === `phase_${phNum}` ? { ...t, status: 'proposed' as const } : t
               ));
               setCompletedTasks((prev) => Math.max(prev, phNum + 1));
+              // Store per-phase file list for expandable sidebar
+              if (Array.isArray(p.files) && p.files.length > 0) {
+                setPhaseFiles((prev) => ({
+                  ...prev,
+                  [phNum]: (p.files as { path: string; size_bytes?: number; language?: string; committed: boolean }[]),
+                }));
+              }
               if (p.input_tokens && p.output_tokens) {
                 setTokenUsage((prev) => ({
                   ...prev,
@@ -2493,13 +2518,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 </div>
               )}
 
-              {tasks.map((task, i) => (
+              {tasks.map((task, i) => {
+                const phNum = parseInt(task.id.replace('phase_', ''), 10);
+                const hasFiles = (task.status === 'proposed' || task.status === 'skipped') && phaseFiles[phNum]?.length > 0;
+                const isExpanded = expandedPhase === phNum && hasFiles;
+                return (
                 <div
                   key={task.id}
                   style={{
                     display: 'flex', flexDirection: 'column', gap: '4px',
                     padding: '8px 10px', marginBottom: '4px',
-                    background: task.status === 'running' ? '#1E293B' : 'transparent',
+                    background: task.status === 'running' ? '#1E293B' : isExpanded ? '#0F172A' : 'transparent',
                     borderRadius: '6px',
                     borderLeft: `3px solid ${
                       task.status === 'running' ? '#3B82F6' :
@@ -2508,7 +2537,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       task.status === 'error' ? '#EF4444' : '#334155'
                     }`,
                     transition: 'all 0.3s ease',
+                    cursor: hasFiles ? 'pointer' : 'default',
                   }}
+                  onClick={() => { if (hasFiles) setExpandedPhase(prev => prev === phNum ? null : phNum); }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '0.85rem', flexShrink: 0 }}>
@@ -2550,7 +2581,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         </span>
                       </div>
                     </div>
-                    {task.changes_count != null && task.changes_count > 0 && (
+                    {hasFiles && (
+                      <span style={{
+                        fontSize: '0.6rem', color: '#64748B', fontFamily: 'monospace',
+                        marginRight: '2px', flexShrink: 0,
+                      }}>
+                        {phaseFiles[phNum].length} file{phaseFiles[phNum].length !== 1 ? 's' : ''} {isExpanded ? '▾' : '▸'}
+                      </span>
+                    )}
+                    {task.changes_count != null && task.changes_count > 0 && !hasFiles && (
                       <span style={{
                         fontSize: '0.6rem', color: '#22C55E', fontFamily: 'monospace',
                       }}>
@@ -2568,8 +2607,72 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       <span className="forge-ide-dots">Analyzing</span>
                     </div>
                   )}
+
+                  {/* Expanded file list for completed/skipped phases */}
+                  {isExpanded && (
+                    <div style={{
+                      marginTop: '6px', paddingTop: '6px',
+                      borderTop: '1px solid #1E293B',
+                    }}>
+                      {phaseFiles[phNum].map((f, fi) => {
+                        const fname = f.path.split('/').pop() || f.path;
+                        const dir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
+                        return (
+                          <div
+                            key={fi}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: '6px',
+                              padding: '3px 4px', borderRadius: '3px',
+                              fontSize: '0.65rem', fontFamily: 'monospace',
+                              color: '#CBD5E1',
+                            }}
+                            title={`${f.path}${f.size_bytes ? ` (${(f.size_bytes / 1024).toFixed(1)} KB)` : ''}${f.committed ? ' — committed' : ' — on disk'}`}
+                          >
+                            <span style={{
+                              flexShrink: 0, fontSize: '0.6rem',
+                              color: f.committed ? '#22C55E' : '#F59E0B',
+                            }}>
+                              {f.committed ? '●' : '○'}
+                            </span>
+                            <span style={{ color: '#64748B', flexShrink: 0 }}>
+                              {f.language === 'python' ? '🐍' :
+                               f.language === 'typescript' || f.language === 'javascript' ? '📜' :
+                               f.language === 'json' ? '📋' :
+                               f.language === 'css' || f.language === 'scss' ? '🎨' :
+                               f.language === 'html' ? '🌐' :
+                               f.language === 'markdown' ? '📝' : '📄'}
+                            </span>
+                            <span style={{
+                              overflow: 'hidden', textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap', flex: 1,
+                            }}>
+                              {fname}
+                            </span>
+                            {dir && (
+                              <span style={{
+                                fontSize: '0.55rem', color: '#475569',
+                                overflow: 'hidden', textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap', maxWidth: '90px',
+                                direction: 'rtl', textAlign: 'left',
+                              }}>
+                                {dir}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <div style={{
+                        display: 'flex', gap: '8px', marginTop: '4px',
+                        fontSize: '0.55rem', color: '#64748B', padding: '2px 4px',
+                      }}>
+                        <span style={{ color: '#22C55E' }}>● committed</span>
+                        <span style={{ color: '#F59E0B' }}>○ on disk</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

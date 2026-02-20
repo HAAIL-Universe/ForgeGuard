@@ -3623,6 +3623,45 @@ async def get_build_files(
     return await build_repo.get_build_file_logs(latest["id"])
 
 
+async def get_phase_files(
+    project_id: UUID, user_id: UUID
+) -> dict:
+    """Return files grouped by phase number from stored phase outcome artifacts.
+
+    Used by the frontend on load to populate the expandable phase file list
+    for builds that are already partially or fully complete.
+
+    Returns ``{"phases": {0: [{path, size_bytes, committed}], 1: [...], ...}}``.
+    """
+    from app.services.build.plan_artifacts import get_artifact
+
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if not latest:
+        raise ValueError("No builds found for this project")
+
+    bid = str(latest["id"])
+    result: dict[int, list[dict]] = {}
+    # Scan up to 20 phases (practical upper bound)
+    for ph_num in range(20):
+        try:
+            outcome = get_artifact(bid, "phase", f"outcome_phase_{ph_num}")
+            if not outcome or not outcome.get("content"):
+                continue
+            files = outcome["content"].get("files_written", [])
+            result[ph_num] = [
+                {**f, "committed": True}
+                for f in files
+            ]
+        except Exception:
+            continue
+
+    return {"phases": result}
+
+
 async def get_build_file_content(
     project_id: UUID, user_id: UUID, file_path: str
 ) -> dict:
@@ -4046,9 +4085,23 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _log_msg, "source": "system", "level": "info",
             })
+            # Retrieve files from stored phase outcome for the sidebar
+            _skip_files: list[dict] = []
+            try:
+                from app.services.build.plan_artifacts import get_artifact
+                _outcome = get_artifact(str(build_id), "phase", f"outcome_phase_{phase_num}")
+                if _outcome and _outcome.get("content"):
+                    _skip_files = [
+                        {**f, "committed": True}
+                        for f in _outcome["content"].get("files_written", [])
+                    ]
+            except Exception:
+                pass
             await _broadcast_build_event(user_id, build_id, "phase_complete", {
                 "phase": phase_name,
                 "status": "pass",
+                "files": _skip_files,
+                "committed": True,
             })
             # Auto-resolve errors for this phase
             try:
@@ -5491,6 +5544,8 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "phase_complete", {
                 "phase": phase_name,
                 "status": "pass",
+                "files": _phase_file_list,
+                "committed": _phase_committed,
             })
             # Auto-resolve errors for this phase
             try:
@@ -5558,6 +5613,8 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "phase_complete", {
                 "phase": phase_name,
                 "status": "partial",
+                "files": _phase_file_list,
+                "committed": _phase_committed,
                 "verification": verification,
                 "governance": governance_result,
             })
