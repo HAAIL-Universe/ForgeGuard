@@ -1895,20 +1895,36 @@ async def execute_tier(
         batch_paths = [f["path"] for f in batch]
 
         # Build context from already-written files (prior tiers)
+        # Cap each file at 3k chars and total at 15k to control Opus input cost.
+        _CTX_PER_FILE_CAP = 3_000
+        _CTX_TOTAL_CAP = 15_000
         context_files: dict[str, str] = {}
+        _ctx_total = 0
         for f in batch:
             for dep in f.get("depends_on", []):
-                if dep in all_files_written:
-                    context_files[dep] = all_files_written[dep]
+                if dep in all_files_written and dep not in context_files:
+                    _snippet = all_files_written[dep]
+                    if len(_snippet) > _CTX_PER_FILE_CAP:
+                        _snippet = _snippet[:_CTX_PER_FILE_CAP] + "\n# [truncated]\n"
+                    if _ctx_total + len(_snippet) > _CTX_TOTAL_CAP:
+                        break
+                    context_files[dep] = _snippet
+                    _ctx_total += len(_snippet)
             for ctx in f.get("context_files", []):
-                if ctx in all_files_written:
-                    context_files[ctx] = all_files_written[ctx]
+                if ctx in all_files_written and ctx not in context_files:
+                    _snippet = all_files_written[ctx]
+                    if len(_snippet) > _CTX_PER_FILE_CAP:
+                        _snippet = _snippet[:_CTX_PER_FILE_CAP] + "\n# [truncated]\n"
+                    if _ctx_total + len(_snippet) > _CTX_TOTAL_CAP:
+                        break
+                    context_files[ctx] = _snippet
+                    _ctx_total += len(_snippet)
 
         # Also get auto-detected context from disk (kept slim)
         disk_context = build_context_pack(
             working_dir, batch_paths,
             max_context_files=6,
-            max_context_chars=20_000,
+            max_context_chars=15_000,
         )
         for k, v in disk_context.items():
             if k not in context_files:
