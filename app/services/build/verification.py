@@ -1317,16 +1317,22 @@ async def _run_governance_checks(
     # --- G6: Rename / ghost file detection --------------------------------
     g6_issues: list[str] = []
     try:
-        # Use git diff --name-status to detect renames
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--cached", "--name-status", "--diff-filter=R",
-            cwd=working_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if stdout:
-            for line in stdout.decode("utf-8", errors="replace").splitlines():
+        # Use git diff --name-status to detect renames.
+        # Run via subprocess.run in a thread to avoid ProactorEventLoop
+        # limitations on Windows (create_subprocess_exec can trigger
+        # "can't run program" dialogs).
+        import subprocess as _g6_sp
+
+        def _g6_git() -> str:
+            r = _g6_sp.run(
+                ["git", "diff", "--cached", "--name-status", "--diff-filter=R"],
+                cwd=working_dir, capture_output=True, text=True,
+            )
+            return r.stdout or ""
+
+        _g6_out = await asyncio.to_thread(_g6_git)
+        if _g6_out:
+            for line in _g6_out.splitlines():
                 if line.startswith("R"):
                     g6_issues.append(f"rename detected: {line.strip()}")
     except Exception:

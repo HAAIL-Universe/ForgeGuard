@@ -408,6 +408,12 @@ async def _setup_project_environment(
         """
         await _log(f"$ {' '.join(cmd)}")
 
+        # On Windows, .cmd/.bat files (e.g. npm.cmd) are batch scripts that
+        # need cmd.exe to interpret them.  Without shell=True, Popen tries
+        # CreateProcess directly, which fails and triggers a Windows dialog
+        # ("Windows cannot run this program").
+        _use_shell = os.name == "nt"
+
         def _sync() -> tuple[int, list[str]]:
             lines: list[str] = []
             try:
@@ -415,6 +421,7 @@ async def _setup_project_environment(
                     cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT,
                     text=True, cwd=working_dir,
                     env=_venv_env(working_dir),
+                    shell=_use_shell,
                 )
                 assert proc.stdout is not None
                 for line in proc.stdout:
