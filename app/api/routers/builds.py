@@ -46,6 +46,16 @@ class ClarifyRequest(BaseModel):
     answer: str = Field(..., min_length=1, max_length=1000)
 
 
+class ApprovePlanRequest(BaseModel):
+    """Request body for approving or rejecting a build plan."""
+    action: str = "approve"  # "approve" | "reject"
+
+
+class CommenceBuildRequest(BaseModel):
+    """Request body for commencing a build after IDE warm-up."""
+    action: str = "commence"  # "commence" | "cancel"
+
+
 # ── POST /projects/{project_id}/build ────────────────────────────────────
 
 
@@ -188,6 +198,50 @@ async def clarify_build(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ── POST /projects/{project_id}/build/approve-plan ──────────────────
+
+
+@router.post("/{project_id}/build/approve-plan")
+async def approve_plan(
+    project_id: UUID,
+    body: ApprovePlanRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Approve or reject a pending build plan.
+
+    The build pauses after planning and waits for this call before
+    spending tokens on Opus builders.
+    """
+    try:
+        return await build_service.approve_plan(
+            project_id, user["id"], action=body.action
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# ── POST /projects/{project_id}/build/commence ──────────────────────────
+
+
+@router.post("/{project_id}/build/commence")
+async def commence_build(
+    project_id: UUID,
+    body: CommenceBuildRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Signal that the user is ready to start the build.
+
+    Called after the IDE has warmed up and the ``forge_ide_ready`` event
+    has been shown.  The build is paused until this endpoint is called.
+    """
+    try:
+        return await build_service.commence_build(
+            project_id, user["id"], action=body.action
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ── GET /projects/{project_id}/build/files ────────────────────────────────

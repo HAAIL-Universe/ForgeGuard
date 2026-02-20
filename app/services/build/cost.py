@@ -228,3 +228,80 @@ async def _record_phase_cost(
     usage.output_tokens = 0
     usage.cache_read_input_tokens = 0
     usage.cache_creation_input_tokens = 0
+
+
+def estimate_phase_cost(
+    manifest: list[dict],
+    chunks: list[dict],
+    *,
+    spent_so_far: float = 0.0,
+    spend_cap: float | None = None,
+) -> dict:
+    """Estimate execution cost for a phase before builders run.
+
+    Uses file count, estimated lines, and chunk count to project Opus
+    CODER costs plus Sonnet planning overhead.  Returns a dict suitable
+    for embedding in a ``plan_review`` WS payload.
+
+    The estimate is intentionally conservative (overestimates) so the user
+    is never surprised.
+    """
+    total_files = len(manifest)
+    total_lines = sum(f.get("estimated_lines", 80) for f in manifest)
+    num_chunks = len(chunks)
+
+    # Average ~1.5K output tokens per file (code + file tags) at Opus rates
+    # Plus ~500 input tokens per file for context assembly
+    opus_in_rate, opus_out_rate = _MODEL_PRICING.get(
+        "claude-opus-4", (_DEFAULT_INPUT_RATE, _DEFAULT_OUTPUT_RATE)
+    )
+    sonnet_in_rate, sonnet_out_rate = _MODEL_PRICING.get(
+        "claude-sonnet-4", (Decimal("0.000003"), Decimal("0.000015"))
+    )
+
+    # CODER cost: ~2K input + ~1.5K output per file (single-shot mode)
+    coder_input_tokens = total_files * 2000
+    coder_output_tokens = int(total_lines * 1.2)  # ~1.2 tokens per line of code
+    coder_cost = float(
+        Decimal(coder_input_tokens) * opus_in_rate
+        + Decimal(coder_output_tokens) * opus_out_rate
+    )
+
+    # Sonnet overhead: interface planning + reviews (~800 in + 400 out per chunk)
+    sonnet_input_tokens = num_chunks * 800
+    sonnet_output_tokens = num_chunks * 400
+    sonnet_cost = float(
+        Decimal(sonnet_input_tokens) * sonnet_in_rate
+        + Decimal(sonnet_output_tokens) * sonnet_out_rate
+    )
+
+    # Audit cost: ~1K in + 500 out per file (Sonnet)
+    audit_input_tokens = total_files * 1000
+    audit_output_tokens = total_files * 500
+    audit_cost = float(
+        Decimal(audit_input_tokens) * sonnet_in_rate
+        + Decimal(audit_output_tokens) * sonnet_out_rate
+    )
+
+    estimated_total = coder_cost + sonnet_cost + audit_cost
+    # Apply 1.3x safety margin for retries / fixes
+    estimated_high = estimated_total * 1.3
+
+    effective_cap = spend_cap or (_state.settings.BUILD_MAX_COST_USD or None)
+    remaining = (effective_cap - spent_so_far) if effective_cap else None
+
+    return {
+        "files": total_files,
+        "estimated_lines": total_lines,
+        "chunks": num_chunks,
+        "estimated_cost_low_usd": round(estimated_total, 4),
+        "estimated_cost_high_usd": round(estimated_high, 4),
+        "spent_so_far_usd": round(spent_so_far, 4),
+        "spend_cap_usd": effective_cap,
+        "remaining_budget_usd": round(remaining, 4) if remaining is not None else None,
+        "breakdown": {
+            "coder_opus": round(coder_cost, 4),
+            "planning_sonnet": round(sonnet_cost, 4),
+            "audit_sonnet": round(audit_cost, 4),
+        },
+    }

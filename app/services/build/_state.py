@@ -108,6 +108,14 @@ _clarification_events:  dict[str, asyncio.Event] = {}  # build_id → Event
 _clarification_answers: dict[str, str] = {}            # build_id → answer
 _clarification_counts:  dict[str, int] = {}            # build_id → # asked so far
 
+# Plan-review gate state (user must approve the plan before builders run)
+_plan_review_events:    dict[str, asyncio.Event] = {}  # build_id → Event
+_plan_review_responses: dict[str, dict] = {}           # build_id → {"action": "approve"|"reject"|"edit", ...}
+
+# IDE-ready gate state (user must confirm before planning starts)
+_ide_ready_events:      dict[str, asyncio.Event] = {}  # build_id → Event
+_ide_ready_responses:   dict[str, dict] = {}           # build_id → {"action": "commence"|"cancel"}
+
 
 # ---------------------------------------------------------------------------
 # Tiny helpers used by many sub-modules
@@ -172,6 +180,88 @@ def cleanup_clarification(build_id: str) -> None:
     _clarification_counts.pop(bid, None)
 
 
+# ---------------------------------------------------------------------------
+# Plan-review gate helpers
+# ---------------------------------------------------------------------------
+
+
+def register_plan_review(build_id: str) -> asyncio.Event:
+    """Create and register a plan-review wait event for a build."""
+    event = asyncio.Event()
+    _plan_review_events[str(build_id)] = event
+    return event
+
+
+def resolve_plan_review(build_id: str, response: dict) -> bool:
+    """Store user's plan decision and unblock the waiting build.
+
+    *response* should be ``{"action": "approve"|"reject"|"edit", ...}``.
+    Returns False if no pending review exists for *build_id*.
+    """
+    bid = str(build_id)
+    event = _plan_review_events.get(bid)
+    if not event:
+        return False
+    _plan_review_responses[bid] = response
+    event.set()
+    return True
+
+
+def pop_plan_review_response(build_id: str) -> dict | None:
+    """Consume the stored plan-review response and clear event state."""
+    bid = str(build_id)
+    _plan_review_events.pop(bid, None)
+    return _plan_review_responses.pop(bid, None)
+
+
+def cleanup_plan_review(build_id: str) -> None:
+    """Remove all plan-review state for a build."""
+    bid = str(build_id)
+    _plan_review_events.pop(bid, None)
+    _plan_review_responses.pop(bid, None)
+
+
+# ---------------------------------------------------------------------------
+# IDE-ready gate helpers
+# ---------------------------------------------------------------------------
+
+
+def register_ide_ready(build_id: str) -> asyncio.Event:
+    """Create and register an IDE-ready wait event for a build."""
+    event = asyncio.Event()
+    _ide_ready_events[str(build_id)] = event
+    return event
+
+
+def resolve_ide_ready(build_id: str, response: dict) -> bool:
+    """Store user's commence decision and unblock the waiting build.
+
+    *response* should be ``{"action": "commence"|"cancel"}``.
+    Returns False if no pending ready gate exists for *build_id*.
+    """
+    bid = str(build_id)
+    event = _ide_ready_events.get(bid)
+    if not event:
+        return False
+    _ide_ready_responses[bid] = response
+    event.set()
+    return True
+
+
+def pop_ide_ready_response(build_id: str) -> dict | None:
+    """Consume the stored IDE-ready response and clear event state."""
+    bid = str(build_id)
+    _ide_ready_events.pop(bid, None)
+    return _ide_ready_responses.pop(bid, None)
+
+
+def cleanup_ide_ready(build_id: str) -> None:
+    """Remove all IDE-ready state for a build."""
+    bid = str(build_id)
+    _ide_ready_events.pop(bid, None)
+    _ide_ready_responses.pop(bid, None)
+
+
 async def _set_build_activity(
     build_id: UUID, user_id: UUID, status: str,
     model: str = "",
@@ -203,6 +293,8 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     _current_generating.pop(bid, None)
     _build_activity_status.pop(bid, None)
     cleanup_clarification(bid)
+    cleanup_plan_review(bid)
+    cleanup_ide_ready(bid)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail

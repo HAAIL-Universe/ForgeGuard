@@ -717,8 +717,44 @@ async def run_sub_agent(
                         if path and path not in result.files_written:
                             result.files_written.append(path)
 
+                    # ── Broadcast sub-agent activity so UI can show live trace ──
+                    _activity_detail: dict = {
+                        "role": handoff.role.value,
+                        "handoff_id": handoff.handoff_id,
+                        "tool": event.name,
+                        "round": tool_rounds + 1,
+                    }
+                    if event.name == "read_file":
+                        _activity_detail["action"] = "read"
+                        _activity_detail["path"] = event.input.get("path", "")
+                    elif event.name == "list_directory":
+                        _activity_detail["action"] = "list"
+                        _activity_detail["path"] = event.input.get("path", "")
+                    elif event.name == "search_code":
+                        _activity_detail["action"] = "search"
+                        _activity_detail["query"] = event.input.get("pattern", event.input.get("query", ""))[:200]
+                        _activity_detail["path"] = event.input.get("path", "")
+                    elif event.name in ("write_file", "edit_file"):
+                        _activity_detail["action"] = "write" if event.name == "write_file" else "edit"
+                        _activity_detail["path"] = event.input.get("path", "")
+                    elif event.name == "check_syntax":
+                        _activity_detail["action"] = "syntax_check"
+                        _activity_detail["path"] = event.input.get("path", "")
+                    else:
+                        _activity_detail["action"] = event.name
+
+                    # Truncated result preview (for searches / reads)
+                    _result_str = str(tool_result) if tool_result else ""
+                    _activity_detail["result_preview"] = _result_str[:500]
+                    _activity_detail["result_length"] = len(_result_str)
+                    _activity_detail["success"] = not _result_str.startswith("Tool error:")
+
+                    await _state._broadcast_build_event(
+                        handoff.user_id, handoff.build_id, "subagent_activity", _activity_detail,
+                    )
+
                     # Broadcast scratchpad writes to UI
-                    elif event.name == "forge_scratchpad":
+                    if event.name == "forge_scratchpad":
                         _sp_op = (event.input.get("operation") or "").lower()
                         if _sp_op in ("write", "append"):
                             _sp_key = event.input.get("key", "")

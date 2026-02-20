@@ -290,6 +290,14 @@ from app.services.build._state import (  # noqa: E402
     _broadcast_build_event,
     _fail_build,
     _pause_build,
+    _plan_review_events,
+    register_plan_review,
+    pop_plan_review_response,
+    cleanup_plan_review,
+    _ide_ready_events,
+    register_ide_ready,
+    pop_ide_ready_response,
+    cleanup_ide_ready,
 )
 from app.services.build.cost import (  # noqa: E402
     CostCapExceeded,
@@ -304,6 +312,7 @@ from app.services.build.cost import (  # noqa: E402
     _cleanup_cost_tracking,
     get_build_cost_live,
     _record_phase_cost,
+    estimate_phase_cost,
     _build_running_cost,
     _build_api_calls,
     _build_total_input_tokens,
@@ -1195,6 +1204,91 @@ async def resume_clarification(
         raise ValueError("No pending clarification for this build")
 
     return {"ok": True, "build_id": build_id}
+
+
+async def approve_plan(
+    project_id: UUID,
+    user_id: UUID,
+    action: str = "approve",
+) -> dict:
+    """Submit user's decision on a pending plan review.
+
+    Args:
+        action: ``"approve"`` to proceed, ``"reject"`` to cancel the build.
+
+    Raises:
+        ValueError: If no active build or no pending plan review.
+    """
+    from app.services.build._state import resolve_plan_review
+
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project.get("user_id")) != str(user_id):
+        raise ValueError("Project not found")
+
+    build = await build_repo.get_latest_build_for_project(project_id)
+    if not build:
+        raise ValueError("No active build found")
+
+    build_id = str(build["id"])
+
+    if action not in ("approve", "reject"):
+        raise ValueError(f"Invalid action: {action}. Must be approve or reject.")
+
+    resolved = resolve_plan_review(build_id, {"action": action})
+    if not resolved:
+        raise ValueError("No pending plan review for this build")
+
+    await build_repo.append_build_log(
+        build["id"],
+        f"Plan {'approved' if action == 'approve' else 'rejected'} by user",
+        source="user", level="info",
+    )
+
+    return {"ok": True, "build_id": build_id, "action": action}
+
+
+async def commence_build(
+    project_id: UUID,
+    user_id: UUID,
+    action: str = "commence",
+) -> dict:
+    """Signal that the user is ready to start the build after IDE warm-up.
+
+    Called after the ``forge_ide_ready`` WS event.  The build background
+    task is waiting on this before it starts planning.
+
+    Args:
+        action: ``"commence"`` to start, ``"cancel"`` to abort.
+
+    Raises:
+        ValueError: If no active build or no pending ready gate.
+    """
+    from app.services.build._state import resolve_ide_ready
+
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project.get("user_id")) != str(user_id):
+        raise ValueError("Project not found")
+
+    build = await build_repo.get_latest_build_for_project(project_id)
+    if not build:
+        raise ValueError("No active build found")
+
+    build_id = str(build["id"])
+
+    if action not in ("commence", "cancel"):
+        raise ValueError(f"Invalid action: {action}. Must be commence or cancel.")
+
+    resolved = resolve_ide_ready(build_id, {"action": action})
+    if not resolved:
+        raise ValueError("No pending IDE ready gate for this build")
+
+    await build_repo.append_build_log(
+        build["id"],
+        f"Build {'commenced' if action == 'commence' else 'cancelled'} by user",
+        source="user", level="info",
+    )
+
+    return {"ok": True, "build_id": build_id, "action": action}
 
 
 async def interject_build(
@@ -4517,6 +4611,54 @@ async def _run_build_plan_execute(
     if resume_from_phase < 0:
         clear_build_artifacts(build_id)
 
+    # ── IDE ready gate ─────────────────────────────────────────
+    # Workspace is set up, recon is done, journal + invariants
+    # initialised.  Pause here and let the user decide when to start
+    # spending money on planners and builders.
+    _ready_msg = (
+        f"Forge IDE ready \u2014 workspace set up, "
+        f"{_ws_snapshot.total_files} files indexed, "
+        f"{_ws_snapshot.test_inventory.test_count} tests detected. "
+        f"Waiting for your go-ahead."
+    )
+    await build_repo.append_build_log(
+        build_id, _ready_msg, source="system", level="info",
+    )
+    await _broadcast_build_event(user_id, build_id, "forge_ide_ready", {
+        "message": _ready_msg,
+        "total_files": _ws_snapshot.total_files,
+        "total_lines": _ws_snapshot.total_lines,
+        "test_count": _ws_snapshot.test_inventory.test_count,
+        "tables": list(_ws_snapshot.schema_inventory.tables),
+        "symbols_count": len(_ws_snapshot.symbol_table),
+        "options": ["commence", "cancel"],
+    })
+
+    _ready_event = register_ide_ready(str(build_id))
+    try:
+        await asyncio.wait_for(
+            _ready_event.wait(),
+            timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+        )
+    except asyncio.TimeoutError:
+        await _fail_build(build_id, user_id, "IDE ready gate timed out \u2014 no response from user")
+        return
+
+    _ready_response = pop_ide_ready_response(str(build_id))
+    _ready_action = (_ready_response or {}).get("action", "commence")
+
+    if _ready_action == "cancel":
+        await _fail_build(build_id, user_id, "User cancelled before build commenced")
+        return
+
+    await build_repo.append_build_log(
+        build_id, "Build commenced by user", source="system", level="info",
+    )
+    await _broadcast_build_event(user_id, build_id, "build_commenced", {
+        "message": "Build commenced \u2014 planning phase starting",
+    })
+    # ── End IDE ready gate ──────────────────────────────────
+
     for phase in phases:
         phase_num = phase["number"]
         phase_name = f"Phase {phase_num}"
@@ -4998,6 +5140,100 @@ async def _run_build_plan_execute(
                         for ci, c in enumerate(chunks)
                     ],
                 })
+
+                # ── Plan confirmation gate ────────────────────────────
+                # Pause and show the plan to the user before spending
+                # money on Opus builders.  The user can approve, edit,
+                # or reject.  Mirrors the clarification wait pattern.
+                _cost_so_far = float(_build_running_cost.get(str(build_id), 0))
+                _cost_estimate = estimate_phase_cost(
+                    _pending_manifest, chunks,
+                    spent_so_far=_cost_so_far,
+                    spend_cap=_build_spend_caps.get(str(build_id)),
+                )
+
+                # Build human-readable plan summary
+                _plan_lines: list[str] = []
+                for _ci, _ch in enumerate(chunks):
+                    _ch_name = _ch.get("name", f"Chunk {_ci}")
+                    _ch_files = _ch.get("files", [])
+                    _plan_lines.append(f"**Chunk {_ci + 1}: {_ch_name}**")
+                    for _fp in _ch_files:
+                        _entry = next((f for f in _pending_manifest if f["path"] == _fp), {})
+                        _purpose = _entry.get("purpose", "")
+                        _est = _entry.get("estimated_lines", "?")
+                        _plan_lines.append(f"  - `{_fp}` — {_purpose} (~{_est} lines)")
+                    _plan_lines.append("")
+                _plan_text = "\n".join(_plan_lines)
+
+                await _broadcast_build_event(user_id, build_id, "plan_review", {
+                    "phase": phase_name,
+                    "phase_num": phase_num,
+                    "plan_text": _plan_text,
+                    "chunks": [
+                        {
+                            "index": ci,
+                            "name": c.get("name", f"Chunk {ci}"),
+                            "files": [
+                                {
+                                    "path": fp,
+                                    "purpose": next(
+                                        (f.get("purpose", "") for f in _pending_manifest if f["path"] == fp), ""
+                                    ),
+                                    "estimated_lines": next(
+                                        (f.get("estimated_lines", 0) for f in _pending_manifest if f["path"] == fp), 0
+                                    ),
+                                    "language": next(
+                                        (f.get("language", "") for f in _pending_manifest if f["path"] == fp), ""
+                                    ),
+                                }
+                                for fp in c.get("files", [])
+                            ],
+                        }
+                        for ci, c in enumerate(chunks)
+                    ],
+                    "cost_estimate": _cost_estimate,
+                    "options": ["approve", "reject"],
+                })
+
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Plan ready for review: {len(chunks)} chunks, "
+                    f"{len(_pending_manifest)} files, "
+                    f"estimated ${_cost_estimate['estimated_cost_low_usd']:.2f}"
+                    f"–${_cost_estimate['estimated_cost_high_usd']:.2f}",
+                    source="planner", level="info",
+                )
+
+                # Wait for user to approve/reject
+                _review_event = register_plan_review(str(build_id))
+                try:
+                    await asyncio.wait_for(
+                        _review_event.wait(),
+                        timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                    )
+                except asyncio.TimeoutError:
+                    await _fail_build(build_id, user_id, "Plan review timed out — no response from user")
+                    return
+
+                _review_response = pop_plan_review_response(str(build_id))
+                _review_action = (_review_response or {}).get("action", "approve")
+
+                if _review_action == "reject":
+                    await _fail_build(build_id, user_id, "User rejected the build plan")
+                    return
+
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Plan approved by user — executing {len(chunks)} chunks",
+                    source="system", level="info",
+                )
+                await _broadcast_build_event(user_id, build_id, "plan_approved", {
+                    "phase": phase_name,
+                    "chunks": len(chunks),
+                    "files": len(_pending_manifest),
+                })
+                # ── End plan confirmation gate ────────────────────────
 
                 _accumulated_interfaces = ""
 
