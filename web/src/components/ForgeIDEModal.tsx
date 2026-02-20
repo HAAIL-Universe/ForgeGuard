@@ -1007,6 +1007,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
   const [setupEndIndex, setSetupEndIndex] = useState(-1);
   const [setupCollapsed, setSetupCollapsed] = useState(true);
+  const autoCommenceRef = useRef(false);
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -1140,6 +1141,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 return t;
               }));
               setCompletedTasks(currentPhaseNum);
+            } else if (sd.status === 'pending') {
+              // Build exists but hasn't been commenced — still in setup/ready gate
+              setStatus('preparing');
             } else if (sd.status === 'paused') setStatus('paused');
             else if (sd.status === 'completed') { setStatus('completed'); setCompletedTasks(phases.length); }
             else if (sd.status === 'failed') setStatus('error');
@@ -1280,7 +1284,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           switch (data.type) {
             case 'build_started':
               setBuildId(p.id || '');
-              setStatus('running');
+              setStatus('preparing');
               break;
 
             case 'build_overview': {
@@ -1586,14 +1590,31 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
 
             case 'forge_ide_ready':
-              setStatus('ready');
               setSetupEndIndex(logs.length);
-              setLogs((prev) => [...prev, {
-                timestamp: new Date().toISOString(),
-                source: 'system', level: 'info',
-                message: '✔ IDE ready — type /start to begin the build',
-                worker: 'system',
-              }]);
+              if (autoCommenceRef.current) {
+                // Auto-commence: user already pressed /start, skip ready state
+                autoCommenceRef.current = false;
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system', level: 'info',
+                  message: '✔ IDE ready — commencing build…',
+                  worker: 'system',
+                }]);
+                // Fire commence in background
+                fetch(`${API_BASE}/projects/${projectId}/build/commence`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'commence' }),
+                }).catch(() => { /* WS build_commenced will confirm */ });
+              } else {
+                setStatus('ready');
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system', level: 'info',
+                  message: '✔ IDE ready — type /start to begin the build',
+                  worker: 'system',
+                }]);
+              }
               break;
 
             case 'build_commenced':
@@ -2197,12 +2218,29 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           if (res.ok) {
             const data = await res.json();
             setBuildId(data.id || '');
-            setStatus('running');
+            setStatus('preparing');
+            autoCommenceRef.current = true;
           } else {
             const err = await res.json().catch(() => ({ detail: 'Failed to start build' }));
             const detail = err.detail || 'Failed to start build';
             if (typeof detail === 'string' && (detail.toLowerCase().includes('already') || detail.toLowerCase().includes('running'))) {
-              setStatus('running');
+              // Build exists — if it's waiting at the ready gate, commence it
+              autoCommenceRef.current = true;
+              try {
+                const commRes = await fetch(`${API_BASE}/projects/${projectId}/build/commence`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'commence' }),
+                });
+                if (commRes.ok) {
+                  setStatus('running');
+                } else {
+                  // Already commenced / already running — just reflect status
+                  setStatus('running');
+                }
+              } catch {
+                setStatus('running');
+              }
               return;
             }
             setLogs((prev) => [...prev, {

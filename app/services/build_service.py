@@ -4646,13 +4646,12 @@ async def _run_build_plan_execute(
 
     # Emit build_started so the frontend initialises phase tracking
     now = datetime.now(timezone.utc)
-    await build_repo.update_build_status(build_id, "running", started_at=now)
     await build_repo.append_build_log(
         build_id, "Build started (plan-execute mode)", source="system", level="info",
     )
     await _broadcast_build_event(user_id, build_id, "build_started", {
         "id": str(build_id),
-        "status": "running",
+        "status": "pending",
         "phase": "Phase 0",
     })
 
@@ -4839,6 +4838,7 @@ async def _run_build_plan_execute(
         await _fail_build(build_id, user_id, "User cancelled before build commenced")
         return
 
+    await build_repo.update_build_status(build_id, "running", started_at=datetime.now(timezone.utc))
     await build_repo.append_build_log(
         build_id, "Build commenced by user", source="system", level="info",
     )
