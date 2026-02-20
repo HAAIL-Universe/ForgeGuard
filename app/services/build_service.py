@@ -3667,8 +3667,9 @@ async def build_chat(
 ) -> dict:
     """Answer a user's free-text question about the current build.
 
-    Gathers build context (status, phases, files, errors, recent logs) and
-    sends it + the user question to Haiku for a concise answer.
+    Uses Haiku with read-only tools so it can inspect git log, files,
+    build logs, and errors on demand rather than relying on a static
+    context snapshot.
 
     Returns ``{"reply": str, "usage": {input_tokens, output_tokens}}``.
     """
@@ -3687,25 +3688,28 @@ async def build_chat(
         or settings.ANTHROPIC_API_KEY
     )
     if not api_key:
-        raise ValueError("No API key configured — add an Anthropic key in Settings")
+        raise ValueError("No API key configured -- add an Anthropic key in Settings")
 
-    model = settings.LLM_NARRATOR_MODEL  # Haiku — cheap + fast
+    model = settings.LLM_NARRATOR_MODEL  # Haiku -- cheap + fast
 
-    # --- Gather build context ---
+    # --- Gather initial build context (lightweight summary) ---
     latest = await build_repo.get_latest_build_for_project(project_id)
     ctx_parts: list[str] = []
+    bid: UUID | None = None
+    working_dir: str | None = None
 
-    # Build status
     if latest:
         bid = latest["id"]
+        working_dir = latest.get("working_dir")
         ctx_parts.append(
             f"BUILD STATUS: {latest.get('status', 'unknown')}\n"
             f"  Phase: {latest.get('phase', '?')}\n"
             f"  Loop count: {latest.get('loop_count', 0)}\n"
-            f"  Started: {latest.get('created_at', '?')}"
+            f"  Started: {latest.get('created_at', '?')}\n"
+            f"  Working dir: {working_dir or '?'}"
         )
 
-        # Phase plan + outcome from artifacts
+        # Phase summary from artifacts (names only, no file lists)
         phase_lines: list[str] = []
         for ph_num in range(20):
             try:
@@ -3716,88 +3720,24 @@ async def build_chat(
                 status = c.get("status", "?")
                 name = c.get("phase_name", f"Phase {ph_num}")
                 file_count = c.get("file_count", 0)
-                files = c.get("files_written", [])
-                hdr = f"  Phase {ph_num} ({name}): {status} — {file_count} files"
-                if files:
-                    file_detail = "\n".join(
-                        f"    - {f.get('path', '?')} "
-                        f"({f.get('size_bytes', 0)} bytes"
-                        f"{', ' + f['language'] if f.get('language') else ''})"
-                        for f in files
-                    )
-                    hdr += "\n" + file_detail
-                phase_lines.append(hdr)
+                phase_lines.append(
+                    f"  Phase {ph_num} ({name}): {status} -- {file_count} files"
+                )
             except Exception:
                 continue
         if phase_lines:
             ctx_parts.append("COMPLETED PHASES:\n" + "\n".join(phase_lines))
 
-        # Persistent file list from DB (survives restarts)
-        try:
-            db_files = await build_repo.get_build_file_logs(bid)
-            if db_files:
-                file_lines = "\n".join(
-                    f"  - {f['path']} ({f['size_bytes']} bytes"
-                    f"{', ' + f['language'] if f.get('language') else ''})"
-                    for f in db_files
-                )
-                ctx_parts.append(
-                    f"ALL FILES CREATED IN BUILD ({len(db_files)}):\n{file_lines}"
-                )
-        except Exception:
-            pass
-
-        # Recent build logs (last 30)
-        try:
-            logs, _ = await build_repo.get_build_logs(bid, limit=30, offset=0)
-            if logs:
-                log_lines = "\n".join(
-                    f"  [{l.get('level', 'info')}] {l.get('message', '')[:120]}"
-                    for l in logs[-30:]
-                )
-                ctx_parts.append(f"RECENT LOGS (last {len(logs)}):\n{log_lines}")
-        except Exception:
-            pass
-
-        # Build errors (unresolved)
-        try:
-            errors = await build_repo.get_build_errors(bid, resolved_filter=False)
-            if errors:
-                err_lines = "\n".join(
-                    f"  [{e.get('severity', '?')}] {e.get('phase', '?')} / "
-                    f"{e.get('file_path', '?')}: {e.get('message', '')[:150]}"
-                    f" (seen {e.get('occurrence_count', 1)}x)"
-                    for e in errors[:15]
-                )
-                ctx_parts.append(
-                    f"UNRESOLVED ERRORS ({len(errors)}):\n{err_lines}"
-                )
-        except Exception:
-            pass
-
-        # Build errors (resolved — brief summary)
-        try:
-            resolved = await build_repo.get_build_errors(bid, resolved_filter=True)
-            if resolved:
-                ctx_parts.append(
-                    f"RESOLVED ERRORS: {len(resolved)} errors have been auto-fixed"
-                )
-        except Exception:
-            pass
-
-        # Live cost data if available
+        # Live cost
         try:
             cost = get_build_cost_live(str(bid))
             if cost and cost.get("total_cost"):
-                ctx_parts.append(
-                    f"COST SO FAR: ${cost['total_cost']:.4f}"
-                )
+                ctx_parts.append(f"COST SO FAR: ${cost['total_cost']:.4f}")
         except Exception:
             pass
     else:
         ctx_parts.append("BUILD STATUS: No builds yet for this project")
 
-    # Project info
     ctx_parts.insert(0,
         f"PROJECT: {project.get('name', '?')}\n"
         f"  Repo: {project.get('repo_full_name', '?')}\n"
@@ -3806,28 +3746,324 @@ async def build_chat(
 
     context_block = "\n\n".join(ctx_parts)
 
+    # --- Tool definitions (read-only) ---
+    tools = [
+        {
+            "name": "git_log",
+            "description": "Show recent git commits with hashes and messages. Use this to answer questions about commits, pushes, or git history.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "max_count": {
+                        "type": "integer",
+                        "description": "Max commits to return (default 20)",
+                        "default": 20,
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "git_diff",
+            "description": "Show a diff summary between two git refs (e.g. HEAD~1 vs HEAD).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "from_ref": {
+                        "type": "string",
+                        "description": "Start ref (default HEAD~1)",
+                        "default": "HEAD~1",
+                    },
+                    "to_ref": {
+                        "type": "string",
+                        "description": "End ref (default HEAD)",
+                        "default": "HEAD",
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "list_project_files",
+            "description": "List all files in the build working directory (tracked + untracked).",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "read_project_file",
+            "description": "Read the content of a specific file from the build working directory.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path within the project",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "search_build_logs",
+            "description": "Search build logs for a keyword. Returns matching log entries.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "Search term to find in logs",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["keyword"],
+            },
+        },
+        {
+            "name": "get_build_errors",
+            "description": "Get build errors. Can filter by resolved/unresolved status.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "resolved": {
+                        "type": "boolean",
+                        "description": "True=resolved only, False=unresolved only, omit=all",
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "get_phase_files",
+            "description": "Get the list of files written in a specific build phase.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "phase_number": {
+                        "type": "integer",
+                        "description": "Phase number (0, 1, 2, ...)",
+                    },
+                },
+                "required": ["phase_number"],
+            },
+        },
+    ]
+
+    # --- Tool execution ---
+    async def _exec_tool(name: str, inp: dict) -> str:
+        """Execute a read-only tool and return the result as a string."""
+        try:
+            if name == "git_log":
+                if not working_dir:
+                    return "No working directory available"
+                max_count = inp.get("max_count", 20)
+                raw = await git_client._run_git(
+                    ["log", f"--max-count={max_count}",
+                     "--format=%h %s (%cr)"],
+                    cwd=working_dir,
+                )
+                lines = [l.strip() for l in raw.splitlines() if l.strip()]
+                if not lines:
+                    return "No commits found"
+                return "\n".join(lines)
+
+            elif name == "git_diff":
+                if not working_dir:
+                    return "No working directory available"
+                from_ref = inp.get("from_ref", "HEAD~1")
+                to_ref = inp.get("to_ref", "HEAD")
+                return await git_client.diff_summary(
+                    working_dir, from_ref=from_ref, to_ref=to_ref,
+                    max_bytes=4000,
+                )
+
+            elif name == "list_project_files":
+                if not working_dir:
+                    return "No working directory available"
+                files = await git_client.get_file_list(working_dir)
+                if not files:
+                    return "No files found"
+                return f"{len(files)} files:\n" + "\n".join(files)
+
+            elif name == "read_project_file":
+                if not working_dir:
+                    return "No working directory available"
+                fpath = inp.get("path", "")
+                if not fpath:
+                    return "No path provided"
+                # Security: prevent path traversal
+                from pathlib import PurePosixPath
+                clean = PurePosixPath(fpath)
+                if ".." in clean.parts:
+                    return "Invalid path"
+                full = Path(working_dir) / str(clean)
+                if not full.exists():
+                    return f"File not found: {fpath}"
+                try:
+                    content = full.read_text(encoding="utf-8", errors="replace")
+                    if len(content) > 8000:
+                        return content[:8000] + f"\n... (truncated, {len(content)} chars total)"
+                    return content
+                except Exception as e:
+                    return f"Error reading file: {e}"
+
+            elif name == "search_build_logs":
+                if not bid:
+                    return "No active build"
+                keyword = inp.get("keyword", "")
+                limit = inp.get("limit", 20)
+                logs, total = await build_repo.get_build_logs(
+                    bid, search=keyword, limit=limit,
+                )
+                if not logs:
+                    return f"No logs matching '{keyword}'"
+                lines = []
+                for l in logs:
+                    lines.append(
+                        f"[{l.get('level', 'info')}] {l.get('source', '?')}: "
+                        f"{l.get('message', '')[:200]}"
+                    )
+                return f"{total} total matches, showing {len(logs)}:\n" + "\n".join(lines)
+
+            elif name == "get_build_errors":
+                if not bid:
+                    return "No active build"
+                resolved = inp.get("resolved")
+                errors = await build_repo.get_build_errors(
+                    bid, resolved_filter=resolved,
+                )
+                if not errors:
+                    qualifier = "resolved" if resolved else ("unresolved" if resolved is False else "")
+                    return f"No {qualifier} errors found"
+                lines = []
+                for e in errors[:20]:
+                    lines.append(
+                        f"[{e.get('severity', '?')}] {e.get('phase', '?')} / "
+                        f"{e.get('file_path', '?')}: {e.get('message', '')[:150]} "
+                        f"(seen {e.get('occurrence_count', 1)}x, "
+                        f"{'resolved' if e.get('resolved') else 'unresolved'})"
+                    )
+                return f"{len(errors)} errors:\n" + "\n".join(lines)
+
+            elif name == "get_phase_files":
+                if not bid:
+                    return "No active build"
+                ph = inp.get("phase_number", 0)
+                outcome = get_artifact(str(bid), "phase", f"outcome_phase_{ph}")
+                if not outcome or not outcome.get("content"):
+                    # Fallback: check DB file logs (can't distinguish phase)
+                    return f"No artifact data for Phase {ph}"
+                c = outcome["content"]
+                files = c.get("files_written", [])
+                name_str = c.get("phase_name", f"Phase {ph}")
+                status = c.get("status", "?")
+                if not files:
+                    return f"Phase {ph} ({name_str}): {status}, no files recorded"
+                lines = [f"Phase {ph} ({name_str}): {status}, {len(files)} files:"]
+                for f in files:
+                    lines.append(
+                        f"  - {f.get('path', '?')} "
+                        f"({f.get('size_bytes', 0)} bytes"
+                        f"{', ' + f['language'] if f.get('language') else ''})"
+                    )
+                return "\n".join(lines)
+
+            else:
+                return f"Unknown tool: {name}"
+        except Exception as e:
+            return f"Tool error ({name}): {e}"
+
+    # --- System prompt ---
     system_prompt = (
         "You are a build assistant for ForgeGuard, an AI-powered code build system. "
-        "Answer the user's question concisely based on the build context below. "
-        "Be direct and factual. Use short paragraphs. "
-        "If asked about errors, explain what went wrong and suggest fixes. "
-        "If asked about phases or files, list the ACTUAL file paths from the context — "
-        "check both COMPLETED PHASES and ALL FILES CREATED sections. "
-        "If you don't have enough context to answer, say so honestly.\n\n"
+        "Answer the user's question using the tools available to you. "
+        "Be direct and factual. Use short paragraphs.\n\n"
+        "Available tools let you: check git log/diff, list/read project files, "
+        "search build logs, get build errors, and get per-phase file lists.\n\n"
+        "ALWAYS use tools to look up information rather than guessing. "
+        "For example, use git_log to check commits, list_project_files to see "
+        "what was built, search_build_logs to find specific events.\n\n"
         f"--- BUILD CONTEXT ---\n{context_block}\n--- END CONTEXT ---"
     )
 
-    result = await llm_chat(
+    # --- Tool-use conversation loop (max 5 rounds) ---
+    messages: list[dict] = [{"role": "user", "content": message}]
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    MAX_TOOL_ROUNDS = 5
+
+    for _round in range(MAX_TOOL_ROUNDS):
+        resp = await llm_chat(
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            max_tokens=1024,
+            tools=tools,
+        )
+
+        # Accumulate usage
+        usage = resp.get("usage", {})
+        total_usage["input_tokens"] += usage.get("input_tokens", 0)
+        total_usage["output_tokens"] += usage.get("output_tokens", 0)
+
+        stop_reason = resp.get("stop_reason", "end_turn")
+        content_blocks = resp.get("content", [])
+
+        if stop_reason != "tool_use":
+            # Final response -- extract text
+            text_parts = [
+                b["text"] for b in content_blocks if b.get("type") == "text"
+            ]
+            return {
+                "reply": "\n".join(text_parts) if text_parts else "(no response)",
+                "usage": total_usage,
+            }
+
+        # Process tool calls
+        messages.append({"role": "assistant", "content": content_blocks})
+
+        tool_results = []
+        for block in content_blocks:
+            if block.get("type") != "tool_use":
+                continue
+            tool_name = block["name"]
+            tool_input = block.get("input", {})
+            tool_id = block["id"]
+
+            result_text = await _exec_tool(tool_name, tool_input)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "content": result_text[:6000],  # cap tool output
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    # Exhausted rounds -- ask for final answer
+    messages.append({
+        "role": "user",
+        "content": "Please provide your final answer based on the tool results above.",
+    })
+    resp = await llm_chat(
         api_key=api_key,
         model=model,
         system_prompt=system_prompt,
-        messages=[{"role": "user", "content": message}],
+        messages=messages,
         max_tokens=1024,
     )
+    usage = resp.get("usage", {})
+    total_usage["input_tokens"] += usage.get("input_tokens", 0)
+    total_usage["output_tokens"] += usage.get("output_tokens", 0)
 
     return {
-        "reply": result.get("text", ""),
-        "usage": result.get("usage", {}),
+        "reply": resp.get("text", "(no response)"),
+        "usage": total_usage,
     }
 
 
