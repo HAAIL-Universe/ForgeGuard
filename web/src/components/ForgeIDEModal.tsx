@@ -422,6 +422,25 @@ const AgentPanel = memo(function AgentPanel({
     }
   }, [agents.length]);
 
+  // Auto-expand the latest thinking entry, collapse the previous one.
+  // Flat log fallback uses plain index; agent view uses i+10000 offset.
+  const thinkingLogs = opusLogs.filter(l => !!l.thinking);
+  useEffect(() => {
+    if (agents.length === 0) {
+      // Flat log fallback — find latest thinking entry by scanning opusLogs
+      let latest = -1;
+      for (let j = opusLogs.length - 1; j >= 0; j--) {
+        if (opusLogs[j].thinking) { latest = j; break; }
+      }
+      if (latest >= 0) setExpandedThinking(new Set([latest]));
+    } else {
+      // Agent-based view — thinking entries use i+10000 offset
+      if (thinkingLogs.length > 0) {
+        setExpandedThinking(new Set([thinkingLogs.length - 1 + 10000]));
+      }
+    }
+  }, [opusLogs.length, thinkingLogs.length, agents.length]);
+
   const totalFiles = agents.reduce((n, a) => n + a.files.length, 0);
   const doneFiles = agents.reduce((n, a) => n + a.files.filter(f => f.status === 'done').length, 0);
   const activeAgents = agents.filter(a => a.status === 'running').length;
@@ -703,6 +722,20 @@ const LogPane = memo(function LogPane({
         });
       }
     }
+  }, [panelLogs.length]);
+
+  // Auto-expand the latest expandable (thinking/scratchpad) entry,
+  // collapsing any previously auto-expanded one.
+  useEffect(() => {
+    let latestThinking = -1;
+    let latestScratchpad = -1;
+    for (let j = panelLogs.length - 1; j >= 0; j--) {
+      if (latestThinking < 0 && panelLogs[j].thinking) latestThinking = j;
+      if (latestScratchpad < 0 && panelLogs[j].scratchpad) latestScratchpad = j;
+      if (latestThinking >= 0 && latestScratchpad >= 0) break;
+    }
+    if (latestThinking >= 0) setExpandedThinking(new Set([latestThinking]));
+    if (latestScratchpad >= 0) setExpandedScratchpads(new Set([latestScratchpad]));
   }, [panelLogs.length]);
 
   // Find last active thinking line per worker in THIS panel.
