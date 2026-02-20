@@ -85,15 +85,25 @@ def _get_workspace(working_dir: str) -> object:
     return _workspace_cache[working_dir]
 
 
+# Directories that must never be exposed to LLM tool calls
+_BLOCKED_PATH_SEGMENTS = {".git"}
+
+
 def _resolve_sandboxed(rel_path: str, working_dir: str) -> Path | None:
     """Resolve a relative path within working_dir, enforcing sandbox.
 
     Returns the resolved absolute Path if safe, or None if the path
-    would escape the sandbox (e.g. via `..` traversal or absolute paths).
+    would escape the sandbox (e.g. via `..` traversal or absolute paths)
+    or targets a blocked directory such as ``.git/``.
 
     Delegates to ``Workspace.resolve()`` for the actual enforcement logic.
     """
     if not rel_path or not working_dir:
+        return None
+
+    # Block access to .git/ internals (tokens, config, objects, etc.)
+    parts = Path(rel_path).parts
+    if any(p in _BLOCKED_PATH_SEGMENTS for p in parts):
         return None
 
     try:

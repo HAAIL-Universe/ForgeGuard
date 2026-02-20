@@ -2,12 +2,20 @@
 
 Handles clone, add, commit, push for build targets. No database access,
 no business logic, no HTTP framework imports.
+
+Credential strategy
+-------------------
+GitHub access tokens are **never** persisted in ``.git/config``.
+Instead they are injected via the ``GIT_ASKPASS`` env-var at push / pull
+time and stripped from remote URLs immediately after clone.
 """
 
 import asyncio
 import logging
 import os
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -41,6 +49,47 @@ async def _run_git(args: list[str], cwd: str | Path, env: dict | None = None) ->
     return out
 
 
+def _make_askpass_env(access_token: str) -> dict[str, str]:
+    """Build env-vars that inject *access_token* via ``GIT_ASKPASS``.
+
+    On Windows we write a tiny ``.cmd`` script; on Unix a shell script.
+    The script simply echoes the token when git prompts for a password.
+    The file is placed in the system temp dir and is reused across calls.
+
+    This avoids persisting the token in ``.git/config`` remote URLs.
+    """
+    if sys.platform == "win32":
+        script_path = Path(tempfile.gettempdir()) / "_forge_askpass.cmd"
+        if not script_path.exists() or access_token not in script_path.read_text():
+            script_path.write_text(f"@echo {access_token}\n")
+    else:
+        script_path = Path(tempfile.gettempdir()) / "_forge_askpass.sh"
+        if not script_path.exists() or access_token not in script_path.read_text():
+            script_path.write_text(f"#!/bin/sh\necho '{access_token}'\n")
+            script_path.chmod(0o700)
+
+    return {
+        "GIT_ASKPASS": str(script_path),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+async def _strip_token_from_remote(
+    repo_path: str | Path, remote: str = "origin"
+) -> None:
+    """Remove any embedded token from the remote URL in .git/config."""
+    try:
+        url = await _run_git(["remote", "get-url", remote], cwd=repo_path)
+        # Pattern: https://TOKEN@github.com/...
+        if "@github.com" in url:
+            clean = "https://github.com" + url.split("@github.com", 1)[1]
+            await _run_git(
+                ["remote", "set-url", remote, clean], cwd=repo_path
+            )
+    except RuntimeError:
+        pass
+
+
 async def clone_repo(
     clone_url: str,
     dest: str | Path,
@@ -54,9 +103,11 @@ async def clone_repo(
     For GitHub repos, inject the access token into the URL for auth.
     """
     url = clone_url
+    env: dict[str, str] = {}
     if access_token and "github.com" in clone_url:
-        # Inject token for HTTPS auth: https://TOKEN@github.com/owner/repo.git
-        url = clone_url.replace("https://", f"https://{access_token}@")
+        # Use ephemeral env-based auth so the token is never in .git/config
+        url = clone_url if clone_url.startswith("https://") else clone_url
+        env = _make_askpass_env(access_token)
 
     args = ["clone"]
     if shallow:
@@ -67,7 +118,10 @@ async def clone_repo(
 
     parent = Path(dest).parent
     parent.mkdir(parents=True, exist_ok=True)
-    await _run_git(args, cwd=str(parent))
+    await _run_git(args, cwd=str(parent), env=env or None)
+
+    # Belt-and-suspenders: ensure no token leaked into .git/config
+    await _strip_token_from_remote(dest)
     return str(dest)
 
 
@@ -176,27 +230,17 @@ async def push(
     force_with_lease: bool = False,
 ) -> None:
     """Push all commits to the remote."""
-    env = {}
+    env: dict[str, str] = {}
     if access_token:
-        # Use credential helper to inject token
-        env["GIT_ASKPASS"] = "echo"
-        # Set the remote URL with token for auth
-        try:
-            remote_url = await _run_git(["remote", "get-url", remote], cwd=repo_path)
-            if "github.com" in remote_url and "@" not in remote_url:
-                authed_url = remote_url.replace(
-                    "https://", f"https://{access_token}@"
-                )
-                await _run_git(
-                    ["remote", "set-url", remote, authed_url], cwd=repo_path
-                )
-        except RuntimeError:
-            pass
+        env = _make_askpass_env(access_token)
 
     cmd = ["push", "-u", remote, branch]
     if force_with_lease:
         cmd.insert(1, "--force-with-lease")
-    await _run_git(cmd, cwd=repo_path, env=env if env else None)
+    await _run_git(cmd, cwd=repo_path, env=env or None)
+
+    # Ensure no token leaked into .git/config after push
+    await _strip_token_from_remote(repo_path, remote)
 
 
 async def pull_rebase(
@@ -207,26 +251,18 @@ async def pull_rebase(
     access_token: str | None = None,
 ) -> None:
     """Pull with rebase to integrate remote changes before pushing."""
-    env = {}
+    env: dict[str, str] = {}
     if access_token:
-        env["GIT_ASKPASS"] = "echo"
-        try:
-            remote_url = await _run_git(["remote", "get-url", remote], cwd=repo_path)
-            if "github.com" in remote_url and "@" not in remote_url:
-                authed_url = remote_url.replace(
-                    "https://", f"https://{access_token}@"
-                )
-                await _run_git(
-                    ["remote", "set-url", remote, authed_url], cwd=repo_path
-                )
-        except RuntimeError:
-            pass
+        env = _make_askpass_env(access_token)
 
     await _run_git(
         ["pull", "--rebase", "--allow-unrelated-histories", remote, branch],
         cwd=repo_path,
-        env=env if env else None,
+        env=env or None,
     )
+
+    # Ensure no token leaked into .git/config after pull
+    await _strip_token_from_remote(repo_path, remote)
 
 
 async def set_remote(
