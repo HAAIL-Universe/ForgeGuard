@@ -1005,6 +1005,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   /* Per-phase file tracking for expandable sidebar */
   const [phaseFiles, setPhaseFiles] = useState<Record<number, { path: string; size_bytes?: number; language?: string; committed: boolean }[]>>({});
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
+  const [setupEndIndex, setSetupEndIndex] = useState(-1);
+  const [setupCollapsed, setSetupCollapsed] = useState(true);
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -1014,6 +1016,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
     '/pause':   'Pause after the current file finishes',
     '/resume':  'Resume a paused build',
     '/stop':    'Cancel the build immediately',
+    '/nuke':    'Nuke build — delete branch + record permanently',
     '/push':    'Commit and push to GitHub',
     '/compact': 'Compact context before next file',
     '/commit':  'Git add, commit, and push',
@@ -1065,10 +1068,23 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   useEffect(() => { logsLenRef.current = logs.length; }, [logs.length]);
 
   /* Derived: split logs by worker for three-panel display */
-  const systemLogs = useMemo(
+  const _rawSystemLogs = useMemo(
     () => logs.filter(l => l.worker !== 'sonnet' && l.worker !== 'opus'),
     [logs],
   );
+
+  /* Collapse setup logs (everything before forge_ide_ready) into a
+     single toggleable summary line when setupCollapsed is true. */
+  const systemLogs = useMemo(() => {
+    if (setupEndIndex < 0 || !setupCollapsed) return _rawSystemLogs;
+    // Count how many raw-system entries fall within the setup range
+    const setupSysLogs = logs.slice(0, setupEndIndex).filter(
+      l => l.worker !== 'sonnet' && l.worker !== 'opus',
+    );
+    if (setupSysLogs.length === 0) return _rawSystemLogs;
+    return _rawSystemLogs.slice(setupSysLogs.length);
+  }, [_rawSystemLogs, logs, setupEndIndex, setupCollapsed]);
+
   const sonnetLogs = useMemo(
     () => logs.filter(l => l.worker === 'sonnet'),
     [logs],
@@ -1557,6 +1573,31 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'build_cancelled':
               setStatus('stopped');
+              break;
+
+            case 'build_nuked':
+              setStatus('stopped');
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'warn',
+                message: `☢ Build nuked — ${p.message || 'branch deleted, build record finalized'}`,
+                worker: 'system',
+              }]);
+              break;
+
+            case 'forge_ide_ready':
+              setStatus('ready');
+              setSetupEndIndex(logs.length);
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'info',
+                message: '✔ IDE ready — type /start to begin the build',
+                worker: 'system',
+              }]);
+              break;
+
+            case 'build_commenced':
+              setStatus('running');
               break;
 
             case 'build_paused':
@@ -2263,7 +2304,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       const lower = trimmed.toLowerCase();
       try {
         let res: Response;
-        if (lower === '/stop') {
+        if (lower === '/nuke') {
+          if (!confirm('☢ NUKE BUILD — this will delete the branch, mark the build as nuked, and cannot be undone. Proceed?')) return;
+          res = await fetch(`${API_BASE}/projects/${projectId}/build/nuke`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(), source: 'system', level: 'warn',
+              message: '☢ Build nuked — branch deleted, record marked permanently.',
+            }]);
+            setStatus('stopped');
+            setTimeout(() => onClose(), 1500);
+            return;
+          }
+        } else if (lower === '/stop') {
           res = await fetch(`${API_BASE}/projects/${projectId}/build/cancel`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}` },
@@ -2882,6 +2938,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
               {/* System/command log — 40% */}
               <div style={{ width: '40%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {setupEndIndex >= 0 && (
+                  <button
+                    onClick={() => setSetupCollapsed(c => !c)}
+                    style={{
+                      background: '#1E293B', border: 'none', borderBottom: '1px solid #334155',
+                      color: '#94A3B8', fontSize: '0.7rem', padding: '4px 12px',
+                      cursor: 'pointer', textAlign: 'left', flexShrink: 0,
+                    }}
+                  >
+                    {setupCollapsed ? '▸ Setup logs collapsed — click to expand' : '▾ Setup logs expanded — click to collapse'}
+                  </button>
+                )}
                 <LogPane
                   logs={systemLogs}
                   status={status}

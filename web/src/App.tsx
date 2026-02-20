@@ -44,7 +44,6 @@ const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
 const CommitTimeline = lazyWithRetry(() => import('./pages/CommitTimeline'));
 const AuditDetailPage = lazyWithRetry(() => import('./pages/AuditDetail'));
 const ProjectDetail = lazyWithRetry(() => import('./pages/ProjectDetail'));
-const BuildProgress = lazyWithRetry(() => import('./pages/BuildProgress'));
 const BuildIDE = lazyWithRetry(() => import('./pages/BuildIDE'));
 const BuildComplete = lazyWithRetry(() => import('./pages/BuildComplete'));
 const BuildLanding = lazyWithRetry(() => import('./pages/Build'));
@@ -181,14 +180,6 @@ function App() {
               element={
                 <ProtectedRoute>
                   <BuildIDE />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/projects/:projectId/build/legacy"
-              element={
-                <ProtectedRoute>
-                  <BuildProgress />
                 </ProtectedRoute>
               }
             />
