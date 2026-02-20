@@ -4365,6 +4365,34 @@ async def _run_build_plan_execute(
                 "Working directory no longer exists â€” cannot continue. Use /start for a fresh build.",
             )
             return
+        # If .git exists but source files are missing (e.g. a prior failed
+        # resume wiped them via shutil.rmtree), restore from git HEAD.
+        _git_dir = Path(working_dir) / ".git"
+        if _git_dir.is_dir():
+            _src_count = sum(
+                1 for f in Path(working_dir).rglob("*")
+                if f.is_file() and ".git" not in f.parts
+                and ".venv" not in f.parts and "__pycache__" not in f.parts
+                and "node_modules" not in f.parts
+            )
+            if _src_count < 3:
+                try:
+                    from app.clients.git_client import _run_git as _git_run
+                    await _git_run(["checkout", "HEAD", "--", "."], cwd=working_dir)
+                    _restored = sum(
+                        1 for f in Path(working_dir).rglob("*")
+                        if f.is_file() and ".git" not in f.parts
+                        and ".venv" not in f.parts
+                    )
+                    _log_msg = f"Restored {_restored} files from git HEAD (workspace was damaged)"
+                    await build_repo.append_build_log(
+                        build_id, _log_msg, source="system", level="warn",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _log_msg, "source": "system", "level": "warn",
+                    })
+                except Exception as _git_exc:
+                    logger.warning("Failed to restore files from git HEAD: %s", _git_exc)
         _log_msg = f"Continuing build from Phase {resume_from_phase + 1} â€” workspace ready"
         await build_repo.append_build_log(
             build_id, _log_msg, source="system", level="info",
