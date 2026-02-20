@@ -353,6 +353,9 @@ function BuildProgress() {
   const [circuitBreaking, setCircuitBreaking] = useState(false);
   /* Phase 45: Cognitive Dashboard state */
   const [reconData, setReconData] = useState<ReconData | null>(null);
+  /* IDE setup collapse state */
+  const [setupEndIndex, setSetupEndIndex] = useState<number>(0);
+  const [setupCollapsed, setSetupCollapsed] = useState(true);
   const [dagTasks, setDagTasks] = useState<DAGTask[]>([]);
   const [dagProgress, setDagProgress] = useState<DAGProgressData | null>(null);
   const [dagExpanded, setDagExpanded] = useState(false);
@@ -454,8 +457,7 @@ function BuildProgress() {
               level: string;
               source?: string;
             }[];
-            setActivity(
-              items.map((l) => {
+            const mapped = items.map((l) => {
                 const src = l.source ?? '';
                 const cat: ActivityEntry['category'] =
                   src === 'file' || src === 'builder' ? 'output' : 'activity';
@@ -465,8 +467,18 @@ function BuildProgress() {
                   level: (l.level ?? 'info') as ActivityEntry['level'],
                   category: cat,
                 };
-              }),
+            });
+            setActivity(mapped);
+
+            /* Detect setup boundary from historical logs — look for the
+               welcome banner's last substantive line (the /stop command hint).
+               Everything up to and including that line is setup. */
+            const setupIdx = mapped.findIndex((e) =>
+              e.message.includes('/stop') && e.message.includes('Cancel'),
             );
+            if (setupIdx > 0) {
+              setSetupEndIndex(setupIdx + 1);
+            }
           }
 
           /* Seed token totals from cost summary */
@@ -625,6 +637,15 @@ function BuildProgress() {
                 message: msg,
               }]);
             }
+            break;
+          }
+
+          case 'forge_ide_ready': {
+            /* Mark the end of setup logs so they can be collapsed */
+            setActivity((prev) => {
+              setSetupEndIndex(prev.length);
+              return prev;
+            });
             break;
           }
 
@@ -2535,12 +2556,55 @@ function BuildProgress() {
                         : 'Waiting for build activity...'}
                   </div>
                 ) : (
-                  filteredActivity.map((entry, i) => {
-                    const isLong = entry.message.length > 300;
+                  (() => {
+                    /* Collapsible setup section: group entries [0..setupEndIndex) */
+                    const shouldCollapse = activityTab === 'activity' && setupEndIndex > 0 && !logSearch;
+                    const setupEntries = shouldCollapse ? filteredActivity.slice(0, setupEndIndex) : [];
+                    const restEntries = shouldCollapse ? filteredActivity.slice(setupEndIndex) : filteredActivity;
+
                     return (
-                      <ActivityLine key={i} entry={entry} isLong={isLong} />
+                      <>
+                        {shouldCollapse && setupEntries.length > 0 && (
+                          <div
+                            onClick={() => setSetupCollapsed(!setupCollapsed)}
+                            style={{
+                              cursor: 'pointer',
+                              userSelect: 'none',
+                              color: '#64748B',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '2px 0',
+                              borderBottom: setupCollapsed ? '1px solid #1E293B' : 'none',
+                              marginBottom: setupCollapsed ? '4px' : '0',
+                            }}
+                          >
+                            <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>
+                              {setupCollapsed ? '\u25B6' : '\u25BC'}
+                            </span>
+                            <span style={{ color: '#475569', fontSize: '0.7rem' }}>
+                              {setupEntries[0]?.time}
+                            </span>
+                            <span>
+                              {setupCollapsed
+                                ? `Workspace setup (${setupEntries.length} steps) \u2014 click to expand`
+                                : 'Workspace setup'}
+                            </span>
+                          </div>
+                        )}
+                        {shouldCollapse && !setupCollapsed && setupEntries.map((entry, i) => {
+                          const isLong = entry.message.length > 300;
+                          return <ActivityLine key={`setup-${i}`} entry={entry} isLong={isLong} />;
+                        })}
+                        {restEntries.map((entry, i) => {
+                          const isLong = entry.message.length > 300;
+                          return (
+                            <ActivityLine key={shouldCollapse ? `rest-${i}` : i} entry={entry} isLong={isLong} />
+                          );
+                        })}
+                      </>
                     );
-                  })
+                  })()
                 )}
                 <div ref={feedEndRef} />
               </div>
