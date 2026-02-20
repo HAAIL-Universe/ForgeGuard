@@ -4168,7 +4168,7 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _log_msg, "source": "system", "level": "info",
             })
-            await _set_build_activity(build_id, user_id, f"Planning {phase_name}...")
+            await _set_build_activity(build_id, user_id, f"Planning {phase_name}...", model="sonnet")
             # Retrieve prior-phase context for cross-phase awareness
             _prior_ctx = get_prior_phase_context(build_id, phase_num)
             manifest = await _generate_file_manifest(
@@ -4445,7 +4445,8 @@ async def _run_build_plan_execute(
 
                     await _set_build_activity(
                         build_id, user_id,
-                        f"Tier {tier_idx}/{len(tiers)-1}: Planning interfaces..."
+                        f"Tier {tier_idx}/{len(tiers)-1}: Planning interfaces...",
+                        model="sonnet",
                     )
 
                     # Sonnet plans interfaces for this tier
@@ -4459,7 +4460,8 @@ async def _run_build_plan_execute(
 
                     await _set_build_activity(
                         build_id, user_id,
-                        f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files in parallel..."
+                        f"Tier {tier_idx}/{len(tiers)-1}: Building {len(tier_files)} files in parallel...",
+                        model="opus",
                     )
 
                     # Opus sub-agents build files in parallel
@@ -4699,7 +4701,7 @@ async def _run_build_plan_execute(
             # Track which file is being generated (for audit trail on /stop etc.)
             _current_generating[bid] = file_path
             _touch_progress(build_id)
-            await _set_build_activity(build_id, user_id, f"Generating {file_path}")
+            await _set_build_activity(build_id, user_id, f"Generating {file_path}", model="opus")
 
             # DAG: mark task in-progress
             _dag_tid = _path_to_dag_id.get(file_path)
@@ -4865,7 +4867,7 @@ async def _run_build_plan_execute(
         # 3b. Builder drains fix queue (files auditor couldn't fix)
         if not _fix_queue.empty():
             _touch_progress(build_id)
-            await _set_build_activity(build_id, user_id, "Builder fixing audit failures...")
+            await _set_build_activity(build_id, user_id, "Builder fixing audit failures...", model="opus")
             builder_fix_results = await _builder_drain_fix_queue(
                 build_id, user_id, api_key, _audit_key,
                 _fix_queue, working_dir, _manifest_cache_path,

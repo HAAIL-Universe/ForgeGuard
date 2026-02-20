@@ -1139,7 +1139,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 timestamp: new Date().toISOString(),
                 source: 'system', level: 'thinking',
                 message: `${p.status}…`,
-                worker: 'opus',
+                worker: (p.model === 'sonnet' ? 'sonnet' : p.model === 'opus' ? 'opus' : 'system') as 'sonnet' | 'opus' | 'system',
               }]);
               break;
 

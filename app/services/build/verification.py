@@ -889,6 +889,7 @@ async def _verify_phase_output(
             })
             await _state._set_build_activity(
                 build_id, user_id, f"Fixing syntax error in {f['path']}...",
+                model="opus",
             )
             # Attempt targeted fix using _fix_single_file (preserves existing
             # code, only patches the syntax error — no full regeneration)

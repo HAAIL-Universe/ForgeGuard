@@ -173,15 +173,25 @@ def cleanup_clarification(build_id: str) -> None:
 
 
 async def _set_build_activity(
-    build_id: UUID, user_id: UUID, status: str
+    build_id: UUID, user_id: UUID, status: str,
+    model: str = "",
 ) -> None:
-    """Set the live activity status for a build and broadcast to the UI."""
+    """Set the live activity status for a build and broadcast to the UI.
+
+    Parameters
+    ----------
+    model : str
+        Which model bucket this activity belongs to ("opus", "sonnet", or
+        empty for system).  The frontend uses this to route the message to
+        the correct worker panel.
+    """
     bid = str(build_id)
     _build_activity_status[bid] = status
     _touch_progress(build_id)
-    await _broadcast_build_event(user_id, build_id, "build_activity_status", {
-        "status": status,
-    })
+    payload: dict = {"status": status}
+    if model:
+        payload["model"] = model
+    await _broadcast_build_event(user_id, build_id, "build_activity_status", payload)
 
 
 async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
