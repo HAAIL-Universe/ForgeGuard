@@ -3054,9 +3054,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           {activeTab === 'activity' && (
             <div style={{
               flexShrink: 0,
-              borderTop: pendingClarification ? '1px solid #FBBF2466' : pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : '1px solid #1E293B',
+              borderTop: pendingClarification ? '1px solid #FBBF2466' : pendingPrompt ? '1px solid #FBBF2466' : status === 'ready' ? '1px solid #22C55E33' : status === 'preparing' ? '1px solid #38BDF833' : '1px solid #1E293B',
               background: pendingClarification ? '#1C1A10' : pendingPrompt ? '#1C1510' : '#0F172A', padding: '0', position: 'relative',
-              boxShadow: pendingClarification ? '0 -2px 20px rgba(251,191,36,0.15)' : pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : 'none',
+              boxShadow: pendingClarification ? '0 -2px 20px rgba(251,191,36,0.15)' : pendingPrompt ? '0 -2px 20px rgba(251, 191, 36, 0.15)' : status === 'ready' ? '0 -2px 20px rgba(34, 197, 94, 0.12)' : status === 'preparing' ? '0 -2px 20px rgba(56, 189, 248, 0.12)' : 'none',
               transition: 'box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease',
             }}>
               {/* Clarification card — shown when builder asks a question */}
@@ -3139,9 +3139,10 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 padding: '8px 12px',
               }}>
                 <span style={{
-                  color: '#22C55E', fontFamily: 'monospace', fontSize: '0.8rem',
+                  color: status === 'preparing' ? '#38BDF8' : '#22C55E',
+                  fontFamily: 'monospace', fontSize: '0.8rem',
                   fontWeight: 700, flexShrink: 0,
-                  animation: status === 'ready' ? 'pulseGreen 2s ease-in-out infinite' : 'none',
+                  animation: status === 'ready' ? 'pulseGreen 2s ease-in-out infinite' : status === 'preparing' ? 'pulseBlue 1.5s ease-in-out infinite' : 'none',
                 }}>
                   ❯
                 </span>
@@ -3489,6 +3490,10 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         @keyframes pulseGreen {
           0%, 100% { opacity: 1; text-shadow: 0 0 8px rgba(34, 197, 94, 0.8); }
           50% { opacity: 0.6; text-shadow: 0 0 2px rgba(34, 197, 94, 0.3); }
+        }
+        @keyframes pulseBlue {
+          0%, 100% { opacity: 1; text-shadow: 0 0 8px rgba(56, 189, 248, 0.8); }
+          50% { opacity: 0.4; text-shadow: 0 0 2px rgba(56, 189, 248, 0.3); }
         }
         .forge-ide-dots::after {
           content: '';
