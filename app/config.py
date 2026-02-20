@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     LLM_QUESTIONNAIRE_MODEL: str = "claude-sonnet-4-5"
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODEL: str = "gpt-4o"  # voice transcription only — NOT used for builds/agents
     LLM_PROVIDER: str = ""  # "openai" | "anthropic" | auto
     LLM_BUILDER_MODEL: str = "claude-opus-4-6"
     LLM_PLANNER_MODEL: str = "claude-sonnet-4-5"

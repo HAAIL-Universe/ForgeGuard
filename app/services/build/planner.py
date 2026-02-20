@@ -1425,7 +1425,14 @@ async def _generate_single_file(
         "- Respect layer boundaries (routers, services, repos, clients, audit)\n"
         "- Use the context files to understand imports and interfaces\n"
         "- Write production-quality code with proper error handling\n"
-        "- Include docstrings and type hints\n"
+        "- Include type hints\n\n"
+        "Code Style — CRITICAL:\n"
+        "- Output PURE CODE only. Zero narrative prose or tutorial-style text.\n"
+        "- Docstrings: single-line only (e.g. `\"\"\"Fetch user by ID.\"\"\"`). "
+        "NEVER multi-line docstrings with Args/Returns/Yields sections.\n"
+        "- Comments: only where logic is non-obvious. No 'this function does X' comments.\n"
+        "- No module-level essays, no section separator comments with explanations.\n"
+        "- Every output token costs money — be maximally concise.\n"
     )
 
     system_prompt_tokens = len(system_prompt) // 4

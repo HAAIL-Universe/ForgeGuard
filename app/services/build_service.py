@@ -3590,8 +3590,13 @@ async def _write_file_block(
             level="info",
         )
 
-        # Broadcast file_created event
-        await _broadcast_build_event(user_id, build_id, "file_created", file_info)
+        # Broadcast file_created event with content preview for Changes tab
+        _preview_lines = content.split("\n")[:150]
+        _preview = "\n".join(_preview_lines)[:5000]
+        await _broadcast_build_event(user_id, build_id, "file_created", {
+            **file_info,
+            "after_snippet": _preview,
+        })
 
         logger.info("Wrote file: %s (%d bytes)", clean_path, size_bytes)
 
@@ -4962,8 +4967,12 @@ async def _run_build_plan_execute(
                             files_written_list.append(file_info)
 
                         # Broadcast file_created so the Changes tab updates
+                        _preview = "\n".join(content.split("\n")[:150])[:5000]
                         await _broadcast_build_event(
-                            user_id, build_id, "file_created", file_info,
+                            user_id, build_id, "file_created", {
+                                **file_info,
+                                "after_snippet": _preview,
+                            },
                         )
 
                         _journal.record(
@@ -5204,11 +5213,16 @@ async def _run_build_plan_execute(
                         pass  # Errors handled per-tier above
         except Exception as _tier_exc:
             logger.error("Tier execution failed: %s — falling back to sequential", _tier_exc, exc_info=True)
+            _tier_err_msg = f"Tier system error: {_tier_exc} — remaining files will be generated sequentially"
             await build_repo.append_build_log(
-                build_id,
-                f"Tier system error: {_tier_exc} — remaining files will be generated sequentially",
+                build_id, _tier_err_msg,
                 source="system", level="warn",
             )
+            await _broadcast_build_event(user_id, build_id, "build_error", {
+                "error_detail": _tier_err_msg,
+                "severity": "error",
+                "source": "tier_system",
+            })
 
         # ──────────────────────────────────────────────────────────────
         # 2b. Sequential fallback — generate any files NOT handled
@@ -5441,8 +5455,12 @@ async def _run_build_plan_execute(
                     files_written_list.append(file_info)
 
                 # Broadcast file_created so the Changes tab updates
+                _preview = "\n".join(content.split("\n")[:150])[:5000]
                 await _broadcast_build_event(
-                    user_id, build_id, "file_created", file_info,
+                    user_id, build_id, "file_created", {
+                        **file_info,
+                        "after_snippet": _preview,
+                    },
                 )
 
                 # Mark task done
@@ -5542,11 +5560,16 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 _current_generating.pop(bid, None)
                 logger.error("Failed to generate %s: %s", file_path, exc)
+                _file_err_msg = f"Failed to generate {file_path}: {exc}"
                 await build_repo.append_build_log(
-                    build_id,
-                    f"Failed to generate {file_path}: {exc}",
+                    build_id, _file_err_msg,
                     source="system", level="error",
                 )
+                await _broadcast_build_event(user_id, build_id, "build_error", {
+                    "error_detail": _file_err_msg,
+                    "severity": "error",
+                    "source": "file_generation",
+                })
 
                 # DAG: mark task failed + cascade blocks + emit progress
                 if _phase_dag is not None and _dag_tid:
@@ -5831,9 +5854,24 @@ async def _run_build_plan_execute(
                             phase_deliverables, working_dir,
                             error_context=error_ctx,
                         )
+                        # Capture before content for diff
+                        _before = existing.get(fix_path, "")
                         phase_files_written[fix_path] = fix_content
                         all_files_written[fix_path] = fix_content
                         touched_files.add(fix_path)
+
+                        # Broadcast file change so Changes tab updates
+                        _action = fix_entry.get("action", "modify")
+                        _before_preview = "\n".join(_before.split("\n")[:150])[:5000] if _before else ""
+                        _after_preview = "\n".join(fix_content.split("\n")[:150])[:5000]
+                        await _broadcast_build_event(user_id, build_id, "file_created", {
+                            "path": fix_path,
+                            "size_bytes": len(fix_content.encode("utf-8")),
+                            "language": _detect_language(fix_path),
+                            "action": _action,
+                            "before_snippet": _before_preview if _action == "modify" else "",
+                            "after_snippet": _after_preview,
+                        })
                     except Exception as exc:
                         logger.warning("Fix generation failed for %s: %s", fix_path, exc)
 

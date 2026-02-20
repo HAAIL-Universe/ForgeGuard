@@ -477,7 +477,7 @@ class TestExtractJsonBlock:
 def _make_fake_settings(**overrides):
     """Build a fake settings namespace."""
     defaults = {
-        "OPENAI_MODEL": "claude-opus-4-20250514",
+        "LLM_BUILDER_MODEL": "claude-opus-4-20250514",
         "LLM_QUESTIONNAIRE_MODEL": "claude-sonnet-4-20250514",
     }
     defaults.update(overrides)

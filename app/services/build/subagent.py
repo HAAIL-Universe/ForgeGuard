@@ -221,10 +221,16 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "- Write ONLY the files specified in your assignment\n"
         "- Follow the project contracts exactly\n"
         "- Respect layer boundaries (routers -> services -> repos -> clients)\n"
-        "- Include docstrings, type hints, and proper error handling\n"
+        "- Include type hints and proper error handling\n"
         "- Check syntax after writing each file\n"
         "- Use the context provided — do not re-read the whole project\n"
         "- Do NOT run tests (the test step handles that separately)\n\n"
+        "## Code Style — CRITICAL\n"
+        "- Output PURE CODE only. No tutorial prose, no narrative paragraphs between functions.\n"
+        "- Docstrings: one-line only (e.g. `\"\"\"Fetch user by ID.\"\"\"`) — NEVER multi-line explanatory docstrings.\n"
+        "- Comments: only where logic is non-obvious. No 'this function does X' comments.\n"
+        "- No module-level essays or section headers with long explanations.\n"
+        "- Every token of output costs money — be maximally concise.\n\n"
         "After writing all assigned files, output a brief summary:\n"
         "```json\n"
         '{\n  "files_written": [...],\n  "decisions": "...",\n'
@@ -867,7 +873,7 @@ def _default_model_for_role(role: SubAgentRole) -> str:
     * Scout / Auditor → use the lighter model (Sonnet-class)
     """
     if role in (SubAgentRole.CODER, SubAgentRole.FIXER):
-        return _state.settings.OPENAI_MODEL  # despite the name, this is the builder model
+        return _state.settings.LLM_BUILDER_MODEL
     # Scout and auditor use the cheaper/faster model
     return _state.settings.LLM_QUESTIONNAIRE_MODEL
 

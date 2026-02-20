@@ -1445,12 +1445,30 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
 
             case 'file_created':
-              setFileDiffs((prev) => [...prev, {
-                task_id: 'build',
-                file: p.path,
-                action: 'create',
-                description: `${p.size_bytes || 0} bytes · ${p.language || ''}`,
-              }]);
+              setFileDiffs((prev) => {
+                // If the file already exists (e.g. fix/modify), update it
+                const existing = prev.find((d) => d.file === p.path);
+                if (existing) {
+                  return prev.map((d) =>
+                    d.file === p.path
+                      ? {
+                          ...d,
+                          action: p.action || 'modify',
+                          description: `${p.size_bytes || 0} bytes · ${p.language || ''}`,
+                          before_snippet: p.before_snippet || d.after_snippet,
+                          after_snippet: p.after_snippet || d.after_snippet,
+                        }
+                      : d,
+                  );
+                }
+                return [...prev, {
+                  task_id: 'build',
+                  file: p.path,
+                  action: p.action || 'create',
+                  description: `${p.size_bytes || 0} bytes · ${p.language || ''}`,
+                  after_snippet: p.after_snippet,
+                }];
+              });
               break;
 
             case 'tool_use':
