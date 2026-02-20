@@ -35,6 +35,11 @@ class InterjectRequest(BaseModel):
     message: str
 
 
+class ChatRequest(BaseModel):
+    """Request body for build chat — free-text questions about the build."""
+    message: str = Field(..., min_length=1, max_length=2000)
+
+
 class ClarifyRequest(BaseModel):
     """Request body for answering a builder clarification question."""
     question_id: str
@@ -147,6 +152,24 @@ async def interject_build(
     return await build_service.interject_build(
         project_id, user["id"], body.message
     )
+
+
+# ── POST /projects/{project_id}/build/chat ───────────────────────────────
+
+
+@router.post("/{project_id}/build/chat")
+async def build_chat(
+    project_id: UUID,
+    body: ChatRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Ask a free-text question about the build — answered by Haiku."""
+    try:
+        return await build_service.build_chat(
+            project_id, user["id"], body.message
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ── POST /projects/{project_id}/build/clarify ────────────────────────────

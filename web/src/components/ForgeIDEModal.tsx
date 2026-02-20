@@ -984,10 +984,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [activeTab, setActiveTab] = useState<'activity' | 'changes' | 'errors'>('activity');
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([]);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKENS });
-  const [narratorEnabled, setNarratorEnabled] = useState(false);
-  const [narrations, setNarrations] = useState<{ text: string; timestamp: string }[]>([]);
-  const [leftTab, setLeftTab] = useState<'tasks' | 'narrator'>('tasks');
-  const [narratorLoading, setNarratorLoading] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
+  const [leftTab, setLeftTab] = useState<'tasks' | 'chat'>('tasks');
+  const [chatLoading, setChatLoading] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
@@ -1059,7 +1058,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
   /* Refs */
   const startedRef = useRef(false);
-  const lastNarratorWatching = useRef<boolean | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const logsLenRef = useRef(0);
 
   /* Keep logsLenRef in sync so polling closures see the latest count */
@@ -1856,11 +1855,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           case 'upgrade_started':
             setStatus('running');
             setTotalTasks(p.total_tasks || 0);
-            if (p.narrator_enabled != null) {
-              setNarratorEnabled(p.narrator_enabled);
-              // Auto-switch to narrator tab when available — commentary from the start
-              if (p.narrator_enabled) setLeftTab('narrator');
-            }
+            // narrator_enabled no longer used — chat replaces narrator
             if (Array.isArray(p.tasks)) {
               setTasks(p.tasks.map((t: any) => ({ ...t, status: 'pending', worker: t.worker })));
             }
@@ -2011,8 +2006,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             break;
 
           case 'upgrade_narration':
-            setNarrations((prev) => [...prev, { text: p.text, timestamp: p.timestamp }]);
-            setNarratorLoading(false);
+            // Legacy — narrations now handled via chat
             break;
 
           case 'upgrade_prompt':
@@ -2087,7 +2081,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               total: data.tokens.total || 0,
             });
           }
-          if (data.narrator_enabled != null) setNarratorEnabled(data.narrator_enabled);
+          // narrator_enabled no longer used
           if (data.status === 'paused') setStatus('paused');
           else if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
             setStatus(data.status as any);
@@ -2209,6 +2203,43 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       message: `> ${trimmed}`,
     }]);
 
+    // Non-slash input → route to build chat (Haiku Q&A)
+    if (!trimmed.startsWith('/')) {
+      const ts = new Date().toISOString();
+      setChatMessages((prev) => [...prev, { role: 'user', text: trimmed, timestamp: ts }]);
+      setLeftTab('chat');
+      setChatLoading(true);
+      try {
+        const chatRes = await fetch(`${API_BASE}/projects/${projectId}/build/chat`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: trimmed }),
+        });
+        if (chatRes.ok) {
+          const chatData = await chatRes.json();
+          setChatMessages((prev) => [...prev, {
+            role: 'assistant', text: chatData.reply || '(no response)',
+            timestamp: new Date().toISOString(),
+          }]);
+        } else {
+          const errBody = await chatRes.json().catch(() => ({ detail: 'Chat request failed' }));
+          setChatMessages((prev) => [...prev, {
+            role: 'assistant',
+            text: `Error: ${errBody.detail || errBody.message || 'Request failed'}`,
+            timestamp: new Date().toISOString(),
+          }]);
+        }
+      } catch {
+        setChatMessages((prev) => [...prev, {
+          role: 'assistant', text: 'Network error — could not reach the server.',
+          timestamp: new Date().toISOString(),
+        }]);
+      } finally {
+        setChatLoading(false);
+      }
+      return;
+    }
+
     if (isBuild) {
       // Build mode: route commands to build endpoints
       const lower = trimmed.toLowerCase();
@@ -2329,20 +2360,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
     }
   }, []);
 
-  /* Signal backend when narrator tab is toggled — deduplicated */
+  /* Auto-scroll chat when new messages arrive */
   useEffect(() => {
-    if (isBuild) return; // Narrator not available in build mode
-    const watching = leftTab === 'narrator';
-    if (lastNarratorWatching.current === watching) return;
-    lastNarratorWatching.current = watching;
-    if (watching) setNarratorLoading(true);
-    fetch(`${API_BASE}/scout/runs/${runId}/narrator`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ watching }),
-    }).catch(() => { /* silent */ });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leftTab, runId, token, isBuild]);
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages.length]);
 
   /* Progress percentage */
   const pct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
@@ -2525,7 +2548,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           <div style={{
             display: 'flex', borderBottom: '1px solid #1E293B', flexShrink: 0,
           }}>
-            {(['tasks', 'narrator'] as const).map((tab) => (
+            {(['tasks', 'chat'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setLeftTab(tab)}
@@ -2537,7 +2560,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   textTransform: 'uppercase', letterSpacing: '0.5px',
                 }}
               >
-                {tab === 'tasks' ? (isBuild ? `Phases (${tasks.length})` : `Tasks (${tasks.length})`) : `🎙️ Narrator${narratorEnabled ? '' : ' ⏻'}`}
+                {tab === 'tasks' ? (isBuild ? `Phases (${tasks.length})` : `Tasks (${tasks.length})`) : `💬 Chat${chatMessages.length > 0 ? ` (${chatMessages.length})` : ''}`}
               </button>
             ))}
           </div>
@@ -2709,69 +2732,68 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             </div>
           )}
 
-          {/* Narrator tab */}
-          {leftTab === 'narrator' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
-              {!narratorEnabled ? (
-                <div style={{ color: '#475569', fontSize: '0.75rem', padding: '8px', lineHeight: 1.6 }}>
-                  <div style={{ color: '#F59E0B', fontSize: '0.7rem', marginBottom: '8px' }}>⚠ Narrator unavailable</div>
-                  Add a second Anthropic API key in Settings to enable the Haiku narrator.
-                  It provides plain-English explanations of what's happening during the upgrade.
-                </div>
-              ) : narrations.length === 0 ? (
-                <div style={{ color: '#475569', fontSize: '0.75rem', padding: '8px', lineHeight: 1.6 }}>
-                  {narratorLoading ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F472B6' }}>
-                      <span className="forge-ide-dots">Loading narration</span>
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ color: '#F472B6', fontSize: '0.7rem', marginBottom: '8px' }}>🎙️ Narrator Ready</div>
-                      Narration will appear here as tasks are processed.
-                      Powered by Haiku — lightweight, fast, and cheap.
-                    </>
-                  )}
+          {/* Chat tab */}
+          {leftTab === 'chat' && (
+            <div ref={chatScrollRef} style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+              {chatMessages.length === 0 ? (
+                <div style={{ color: '#475569', fontSize: '0.7rem', padding: '8px', lineHeight: 1.6 }}>
+                  <div style={{ color: '#38BDF8', fontSize: '0.65rem', fontWeight: 700, marginBottom: '6px' }}>💬 BUILD CHAT</div>
+                  <div style={{ marginBottom: '6px' }}>Ask anything about your build — type in the command line below (no / prefix).</div>
+                  <div style={{ fontSize: '0.6rem', color: '#64748B' }}>
+                    Try: "What files are in phase 1?" · "What errors do we have?" · "What's the build status?"
+                  </div>
                 </div>
               ) : (
-                narrations.map((n, i) => {
-                  const ts = n.timestamp ? new Date(n.timestamp).toLocaleTimeString() : '';
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        padding: '10px 12px', marginBottom: '8px',
-                        background: '#1E293B', borderRadius: '8px',
-                        borderLeft: '3px solid #F472B6',
-                      }}
-                    >
+                chatMessages.map((m, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex',
+                      justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    <div style={{
+                      maxWidth: '90%',
+                      padding: '6px 10px',
+                      borderRadius: m.role === 'user' ? '8px 8px 2px 8px' : '8px 8px 8px 2px',
+                      background: m.role === 'user' ? '#1E3A5F' : '#1E293B',
+                      borderLeft: m.role === 'assistant' ? '2px solid #38BDF8' : 'none',
+                      borderRight: m.role === 'user' ? '2px solid #3B82F6' : 'none',
+                    }}>
                       <div style={{
-                        fontSize: '0.55rem', color: '#64748B', marginBottom: '4px',
-                        display: 'flex', alignItems: 'center', gap: '6px',
+                        fontSize: '0.5rem', color: '#64748B', marginBottom: '2px',
+                        display: 'flex', alignItems: 'center', gap: '4px',
                       }}>
-                        <span style={{
-                          fontSize: '0.5rem', fontWeight: 700, padding: '1px 5px',
-                          borderRadius: '3px', background: '#F472B622', color: '#F472B6',
-                        }}>
-                          HAIKU
-                        </span>
-                        <span>{ts}</span>
+                        {m.role === 'assistant' && (
+                          <span style={{
+                            fontSize: '0.45rem', fontWeight: 700, padding: '0 4px',
+                            borderRadius: '2px', background: '#38BDF822', color: '#38BDF8',
+                          }}>HAIKU</span>
+                        )}
+                        <span>{new Date(m.timestamp).toLocaleTimeString()}</span>
                       </div>
                       <div style={{
-                        fontSize: '0.8rem', color: '#E2E8F0', lineHeight: 1.5,
-                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        fontSize: '0.7rem', color: m.role === 'user' ? '#93C5FD' : '#CBD5E1',
+                        lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                       }}>
-                        {n.text}
+                        {m.text}
                       </div>
                     </div>
-                  );
-                })
+                  </div>
+                ))
               )}
-              {narratorLoading && narrations.length > 0 && (
+              {chatLoading && (
                 <div style={{
-                  padding: '8px 12px', color: '#F472B6', fontSize: '0.7rem',
-                  fontFamily: 'monospace',
+                  display: 'flex', justifyContent: 'flex-start', marginBottom: '6px',
                 }}>
-                  <span className="forge-ide-dots">Narrating</span>
+                  <div style={{
+                    padding: '6px 10px', borderRadius: '8px 8px 8px 2px',
+                    background: '#1E293B', borderLeft: '2px solid #38BDF8',
+                    color: '#38BDF8', fontSize: '0.65rem', fontFamily: 'monospace',
+                  }}>
+                    <span className="forge-ide-dots">Thinking</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -3048,7 +3070,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       setCmdSuggestions([]);
                     }
                   }}
-                  placeholder={pendingClarification ? 'Type your answer or choose an option above…' : pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : status === 'ready' ? (isBuild ? 'Press Enter to start build…' : 'Press Enter to start upgrade…') : 'Type / for commands…'}
+                  placeholder={pendingClarification ? 'Type your answer or choose an option above…' : pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : status === 'ready' ? (isBuild ? 'Press Enter to start build…' : 'Press Enter to start upgrade…') : 'Ask a question or type / for commands…'}
                   style={{
                     flex: 1, background: 'transparent', border: 'none', outline: 'none',
                     color: pendingPrompt ? '#FBBF24'

@@ -3662,6 +3662,155 @@ async def get_phase_files(
     return {"phases": result}
 
 
+async def build_chat(
+    project_id: UUID, user_id: UUID, message: str
+) -> dict:
+    """Answer a user's free-text question about the current build.
+
+    Gathers build context (status, phases, files, errors, recent logs) and
+    sends it + the user question to Haiku for a concise answer.
+
+    Returns ``{"reply": str, "usage": {input_tokens, output_tokens}}``.
+    """
+    from app.clients.llm_client import chat as llm_chat
+    from app.services.build.plan_artifacts import get_artifact
+
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project["user_id"]) != str(user_id):
+        raise ValueError("Project not found")
+
+    # --- Resolve API key (prefer key2, then key1, then env) ---
+    user = await get_user_by_id(user_id)
+    api_key = (
+        (user or {}).get("anthropic_api_key_2")
+        or (user or {}).get("anthropic_api_key")
+        or settings.ANTHROPIC_API_KEY
+    )
+    if not api_key:
+        raise ValueError("No API key configured — add an Anthropic key in Settings")
+
+    model = settings.LLM_NARRATOR_MODEL  # Haiku — cheap + fast
+
+    # --- Gather build context ---
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    ctx_parts: list[str] = []
+
+    # Build status
+    if latest:
+        bid = latest["id"]
+        ctx_parts.append(
+            f"BUILD STATUS: {latest.get('status', 'unknown')}\n"
+            f"  Phase: {latest.get('phase', '?')}\n"
+            f"  Loop count: {latest.get('loop_count', 0)}\n"
+            f"  Started: {latest.get('created_at', '?')}"
+        )
+
+        # Phase plan from artifacts
+        phase_lines: list[str] = []
+        for ph_num in range(20):
+            try:
+                outcome = get_artifact(str(bid), "phase", f"outcome_phase_{ph_num}")
+                if not outcome or not outcome.get("content"):
+                    continue
+                c = outcome["content"]
+                status = c.get("status", "?")
+                name = c.get("phase_name", f"Phase {ph_num}")
+                file_count = c.get("file_count", 0)
+                files = c.get("files_written", [])
+                file_names = ", ".join(f.get("path", "?") for f in files[:10])
+                if len(files) > 10:
+                    file_names += f" (+{len(files) - 10} more)"
+                phase_lines.append(
+                    f"  Phase {ph_num} ({name}): {status} — {file_count} files [{file_names}]"
+                )
+            except Exception:
+                continue
+        if phase_lines:
+            ctx_parts.append("COMPLETED PHASES:\n" + "\n".join(phase_lines))
+
+        # Recent build logs (last 30)
+        try:
+            logs, _ = await build_repo.get_build_logs(bid, limit=30, offset=0)
+            if logs:
+                log_lines = "\n".join(
+                    f"  [{l.get('level', 'info')}] {l.get('message', '')[:120]}"
+                    for l in logs[-30:]
+                )
+                ctx_parts.append(f"RECENT LOGS (last {len(logs)}):\n{log_lines}")
+        except Exception:
+            pass
+
+        # Build errors (unresolved)
+        try:
+            errors = await build_repo.get_build_errors(bid, resolved_filter=False)
+            if errors:
+                err_lines = "\n".join(
+                    f"  [{e.get('severity', '?')}] {e.get('phase', '?')} / "
+                    f"{e.get('file_path', '?')}: {e.get('message', '')[:150]}"
+                    f" (seen {e.get('occurrence_count', 1)}x)"
+                    for e in errors[:15]
+                )
+                ctx_parts.append(
+                    f"UNRESOLVED ERRORS ({len(errors)}):\n{err_lines}"
+                )
+        except Exception:
+            pass
+
+        # Build errors (resolved — brief summary)
+        try:
+            resolved = await build_repo.get_build_errors(bid, resolved_filter=True)
+            if resolved:
+                ctx_parts.append(
+                    f"RESOLVED ERRORS: {len(resolved)} errors have been auto-fixed"
+                )
+        except Exception:
+            pass
+
+        # Live cost data if available
+        try:
+            cost = get_build_cost_live(str(bid))
+            if cost and cost.get("total_cost"):
+                ctx_parts.append(
+                    f"COST SO FAR: ${cost['total_cost']:.4f}"
+                )
+        except Exception:
+            pass
+    else:
+        ctx_parts.append("BUILD STATUS: No builds yet for this project")
+
+    # Project info
+    ctx_parts.insert(0,
+        f"PROJECT: {project.get('name', '?')}\n"
+        f"  Repo: {project.get('repo_full_name', '?')}\n"
+        f"  Description: {(project.get('description') or 'N/A')[:200]}"
+    )
+
+    context_block = "\n\n".join(ctx_parts)
+
+    system_prompt = (
+        "You are a build assistant for ForgeGuard, an AI-powered code build system. "
+        "Answer the user's question concisely based on the build context below. "
+        "Be direct and factual. Use short paragraphs. "
+        "If asked about errors, explain what went wrong and suggest fixes. "
+        "If asked about phases/files, summarise what was built. "
+        "If you don't have enough context to answer, say so honestly.\n\n"
+        f"--- BUILD CONTEXT ---\n{context_block}\n--- END CONTEXT ---"
+    )
+
+    result = await llm_chat(
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        messages=[{"role": "user", "content": message}],
+        max_tokens=1024,
+    )
+
+    return {
+        "reply": result.get("text", ""),
+        "usage": result.get("usage", {}),
+    }
+
+
 async def get_build_file_content(
     project_id: UUID, user_id: UUID, file_path: str
 ) -> dict:
