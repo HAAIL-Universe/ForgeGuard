@@ -428,6 +428,29 @@ async def get_repo_metadata(
     return result
 
 
+async def delete_branch(
+    access_token: str,
+    full_name: str,
+    branch: str,
+) -> bool:
+    """Delete a branch from a GitHub repo via the Git refs API.
+
+    Returns True if the branch was deleted (or didn't exist), False on error.
+    Does NOT delete the default branch (main/master) — returns False instead.
+    """
+    # Safety: never delete common default branches
+    if branch in ("main", "master", "develop"):
+        return False
+    client = _get_client()
+    ref = f"heads/{branch}"
+    response = await client.delete(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/refs/{ref}",
+        headers=_auth_headers(access_token),
+    )
+    # 204 = deleted, 422 = ref not found (already gone) — both are fine
+    return response.status_code in (204, 422)
+
+
 async def list_commits(
     access_token: str,
     full_name: str,

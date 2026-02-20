@@ -615,7 +615,11 @@ async def delete_builds(
     project_id: UUID, user_id: UUID, build_ids: list[str]
 ) -> int:
     """Delete selected builds for a project.  Validates ownership and
-    prevents deleting currently running/pending builds."""
+    prevents deleting currently running/pending builds.
+
+    Also cleans up remote GitHub branches that were created by each build
+    (skips main/master/develop to protect default branches).
+    """
     project = await project_repo.get_project_by_id(project_id)
     if not project or str(project["user_id"]) != str(user_id):
         raise ValueError("Project not found")
@@ -624,21 +628,43 @@ async def delete_builds(
 
     # Fetch the builds to validate they belong to this project
     all_builds = await build_repo.get_builds_for_project(project_id)
-    project_build_ids = {str(b["id"]) for b in all_builds}
+    builds_by_id = {str(b["id"]): b for b in all_builds}
     active_build_ids = {
         str(b["id"]) for b in all_builds if b["status"] in ("running", "pending")
     }
 
     to_delete: list[UUID] = []
+    builds_to_cleanup: list[dict] = []
     for bid in build_ids:
-        if bid not in project_build_ids:
+        if bid not in builds_by_id:
             continue  # skip IDs that don't belong to this project
         if bid in active_build_ids:
             continue  # skip active builds
         to_delete.append(UUID(bid))
+        builds_to_cleanup.append(builds_by_id[bid])
 
     if not to_delete:
         raise ValueError("No eligible builds to delete (active builds cannot be deleted)")
+
+    # Clean up remote GitHub branches created by these builds
+    user = await get_user_by_id(user_id)
+    access_token = (user or {}).get("access_token", "")
+    if access_token:
+        # Collect unique (repo, branch) pairs — avoid deleting the same branch twice
+        seen_branches: set[tuple[str, str]] = set()
+        for build in builds_to_cleanup:
+            repo = build.get("target_ref") or ""
+            branch = build.get("branch") or ""
+            if repo and branch and (repo, branch) not in seen_branches:
+                seen_branches.add((repo, branch))
+                try:
+                    await github_client.delete_branch(access_token, repo, branch)
+                    logger.info("Deleted remote branch %s on %s", branch, repo)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete branch %s on %s: %s",
+                        branch, repo, exc,
+                    )
 
     deleted = await build_repo.delete_builds(to_delete)
     return deleted
