@@ -95,6 +95,7 @@ async def run_project_planner(
         try:
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": message, "source": "planner", "level": level,
+                "worker": "sonnet",
             })
         except Exception as _ws_exc:
             logger.warning("Planner log WS broadcast failed (non-fatal): %s", _ws_exc)
@@ -257,6 +258,7 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
         ws_fut = asyncio.run_coroutine_threadsafe(
             broadcast_fn(user_id, build_id, "build_log", {
                 "message": msg, "source": "planner", "level": "info",
+                "worker": "sonnet",
             }),
             loop,
         )
