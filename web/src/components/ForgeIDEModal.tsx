@@ -1100,7 +1100,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
   const SLASH_COMMANDS: Record<string, string> = isBuild ? {
     '/start':  'Start or resume the build',
-    '/prep':   'Preview build phases without starting',
+    '/plan':   'Plan the build — preview phases before starting',
     '/pause':  'Pause — waits for the current file to finish',
     '/resume': 'Resume after a pause or error',
     '/stop':   'Cancel the build now',
@@ -1749,7 +1749,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     {
                       timestamp: new Date().toISOString(),
                       source: 'system', level: 'info',
-                      message: 'Type /prep to preview the build plan · /start to begin building',
+                      message: '✔ IDE ready — type /plan to preview the build plan · /start to plan and build in one step',
                       worker: 'system',
                     },
                   ];
@@ -2994,7 +2994,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   textTransform: 'uppercase', letterSpacing: '0.5px',
                 }}
               >
-                {tab === 'tasks' ? (isBuild ? `Phases (${tasks.length})` : `Tasks (${tasks.length})`) : `💬 Chat${chatMessages.length > 0 ? ` (${chatMessages.length})` : ''}`}
+                {tab === 'tasks' ? (isBuild ? `Plan (${tasks.length})` : `Tasks (${tasks.length})`) : `💬 Chat${chatMessages.length > 0 ? ` (${chatMessages.length})` : ''}`}
               </button>
             ))}
             <button
@@ -3027,12 +3027,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   color: '#475569', fontSize: '0.75rem', padding: '10px 8px', lineHeight: '1.7',
                 }}>
                   <div style={{ color: '#64748B', fontWeight: 600, marginBottom: '8px' }}>
-                    No phases yet
+                    No plan yet
                   </div>
                   <div>
                     Type{' '}
                     <span style={{ color: '#94A3B8', fontFamily: 'monospace', background: '#1E293B', padding: '1px 5px', borderRadius: '3px' }}>
-                      /prep
+                      /plan
                     </span>
                     {' '}to run the planner and preview your build phases here before starting.
                   </div>
