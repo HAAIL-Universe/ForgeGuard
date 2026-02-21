@@ -378,13 +378,20 @@ async def _review_plan_with_thinking(
     extended reasoning about the plan structure. The plan itself is not
     modified — this is purely for UI visibility.
 
+    Uses AsyncAnthropic to avoid blocking the event loop during the call.
     Non-fatal: a failure here must never propagate or cancel the build.
     """
     import anthropic as _ant
     import json as _json
 
+    # Signal to the UI that thinking is starting so the pane doesn't go blank.
+    await broadcast_fn(user_id, build_id, "build_log", {
+        "message": f"💭 Plan review starting ({thinking_model})…",
+        "source": "planner", "level": "info", "worker": "sonnet",
+    })
+
     try:
-        client = _ant.Anthropic(api_key=api_key, timeout=90.0)
+        client = _ant.AsyncAnthropic(api_key=api_key, timeout=120.0)
         review_prompt = (
             "You are reviewing a build plan produced by a Forge Planner Agent. "
             "The plan was generated from the project's contracts (blueprint, stack, "
@@ -393,7 +400,7 @@ async def _review_plan_with_thinking(
             "ordering issues, or missing acceptance criteria?\n\n"
             f"PLAN:\n{_json.dumps(plan, indent=2)}"
         )
-        response = client.messages.create(
+        response = await client.messages.create(
             model=thinking_model,
             max_tokens=thinking_budget + 512,
             thinking={"type": "enabled", "budget_tokens": thinking_budget},
@@ -410,8 +417,16 @@ async def _review_plan_with_thinking(
                 "reasoning_length": len(text),
                 "is_actual_thinking": True,
             })
+        await broadcast_fn(user_id, build_id, "build_log", {
+            "message": "💭 Plan review complete",
+            "source": "planner", "level": "info", "worker": "sonnet",
+        })
     except Exception as exc:
         logger.warning("Plan thinking review failed (non-fatal): %s", exc)
+        await broadcast_fn(user_id, build_id, "build_log", {
+            "message": f"Plan thinking review skipped: {exc}",
+            "source": "planner", "level": "warn", "worker": "sonnet",
+        })
 
 
 def _call_planner_sync(
