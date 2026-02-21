@@ -1428,7 +1428,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 source: p.source || 'system',
                 level: logLevel,
                 message: msg,
-                worker: classifyWorker(msg),
+                worker: (p.worker as 'sonnet' | 'opus' | 'system') || classifyWorker(msg),
               }]);
               // Track errors in the errors panel
               if (logLevel === 'error') {

@@ -575,6 +575,7 @@ async def run_task(
 def make_ws_event_bridge(
     user_id: str,
     build_id: str,
+    worker: str = "sonnet",
 ) -> Callable[[AgentEvent], Any]:
     """Create an ``on_event`` callback that broadcasts agent events to the
     WebSocket activity feed.
@@ -630,6 +631,7 @@ def make_ws_event_bridge(
                     "message": event.text[:500],
                     "source": "agent",
                     "level": "info",
+                    "worker": worker,
                 },
             })
         elif isinstance(event, ContextCompactionEvent):

@@ -320,6 +320,7 @@ async def launch_build_agent(
     # Event handling
     on_event: Callable[[AgentEvent], Any] | None = None,
     broadcast_ws: bool = True,
+    ws_worker: str = "sonnet",
     # Observability — journal survives compaction; trace writes a JSONL debug log
     journal: SessionJournal | None = None,
     trace_log_path: str | None = None,
@@ -413,7 +414,7 @@ async def launch_build_agent(
 
     ws_handler = None
     if broadcast_ws and user_id and build_id:
-        ws_handler = make_ws_event_bridge(str(user_id), str(build_id))
+        ws_handler = make_ws_event_bridge(str(user_id), str(build_id), worker=ws_worker)
 
     composite_handler = _make_composite_handler(
         ws_handler=ws_handler,
