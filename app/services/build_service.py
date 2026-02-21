@@ -5044,6 +5044,7 @@ async def _run_build_plan_execute(
                         build_id=build_id,
                         user_id=user_id,
                         api_key=api_key,
+                        max_phases=3 if project and project.get("build_mode") == "mini" else None,
                     )
                     if _prep_result:
                         phases = [
@@ -5109,6 +5110,7 @@ async def _run_build_plan_execute(
                 build_id=build_id,
                 user_id=user_id,
                 api_key=api_key,
+                max_phases=3 if project and project.get("build_mode") == "mini" else None,
             )
             if _plan_result:
                 phases = [

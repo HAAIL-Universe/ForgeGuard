@@ -840,7 +840,7 @@ const LogPane = memo(function LogPane({
 
           return (
             <div key={i}>
-              <div
+              {!isReasoning && <div
                 style={{
                   color: isLLMThinking ? thinkingColor : isReasoning ? reasoningColor : color,
                   display: 'flex', flexDirection: 'column',
@@ -907,7 +907,7 @@ const LogPane = memo(function LogPane({
                     </span>
                   )}
                 </span>
-              </div>
+              </div>}
               {/* Expanded scratchpad content */}
               {isExpanded && log.scratchpad && (
                 <pre style={{
@@ -989,10 +989,10 @@ const LogPane = memo(function LogPane({
                   </div>
                 </div>
               )}
-              {/* Expanded extended-thinking reasoning content */}
-              {isExpanded && log.reasoning && (
+              {/* Extended-thinking reasoning content — always visible, no expand needed */}
+              {log.reasoning && (
                 <div style={{
-                  margin: '2px 0 6px 86px',
+                  margin: '2px 0 6px 0',
                   background: '#0F172A',
                   border: `1px solid ${reasoningColor}44`,
                   borderRadius: '4px',
@@ -1002,9 +1002,14 @@ const LogPane = memo(function LogPane({
                 }}>
                   <div style={{ padding: '4px 10px', borderBottom: `1px solid ${reasoningColor}22`,
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: reasoningColor, fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.5px' }}>
-                      EXTENDED THINKING — turn {log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                        {ts}
+                      </span>
+                      <span style={{ color: reasoningColor, fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.5px' }}>
+                        EXTENDED THINKING — turn {log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                      </span>
+                    </div>
                     <span style={{ color: '#64748B', fontSize: '0.6rem' }}>
                       {(log.reasoning.textLength / 1000).toFixed(1)}k chars
                       {log.reasoning.textLength > log.reasoning.text.length ? ' (truncated)' : ''}
@@ -1936,7 +1941,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: 'reasoning', level: 'thinking',
-                message: `💭 Reasoning (turn ${turn})${phase ? ` · ${phase}` : ''}: ${text.slice(0, 80)}${text.length > 80 ? '…' : ''}`,
+                message: `💭 Reasoning (turn ${turn})${phase ? ` · ${phase}` : ''}`,
                 worker: blockWorker,
                 reasoning: { text, textLength: length, turn, phase: phase || undefined },
               }]);

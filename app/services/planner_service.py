@@ -44,6 +44,7 @@ async def run_project_planner(
     build_id: UUID,
     user_id: UUID,
     api_key: str,
+    max_phases: int | None = None,
 ) -> dict | None:
     """Run the Forge Project Planner Agent for a build.
 
@@ -56,6 +57,8 @@ async def run_project_planner(
         build_id:   ForgeGuard build UUID (telemetry + WS).
         user_id:    Authenticated user UUID (WS target).
         api_key:    User's Anthropic API key (BYOK).
+        max_phases: Optional hard cap on the number of phases the planner may
+                    produce.  None = no limit (full build).  3 = mini-build.
 
     Returns:
         dict with keys:
@@ -95,7 +98,6 @@ async def run_project_planner(
         try:
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": message, "source": "planner", "level": level,
-                "worker": "sonnet",
             })
         except Exception as _ws_exc:
             logger.warning("Planner log WS broadcast failed (non-fatal): %s", _ws_exc)
@@ -135,6 +137,7 @@ async def run_project_planner(
                 turn_callback=turn_callback,
                 thinking_budget=_planner_thinking_budget,
                 thinking_model=_planner_thinking_model,
+                max_phases=max_phases,
             ),
         )
     except asyncio.CancelledError:
@@ -182,11 +185,17 @@ async def run_project_planner(
 def _contracts_to_request(contracts: list[dict]) -> str:
     """Build a project-request string from ForgeGuard contracts.
 
-    The standalone planner expects a natural-language project description.
-    We synthesise one from the project's highest-priority contracts so the
-    planner has full context without being passed every contract individually.
+    All contracts are fetched from the Neon DB and embedded directly into the
+    planner's initial user turn — the planner has no filesystem access.
+
+    Priority order controls the section sequence in the output.  intake briefs
+    come last so the model reads core contracts first, then any supplementary
+    requirements from the intake.
     """
-    priority = ["blueprint", "stack", "schema", "manifesto", "physics", "boundaries", "ui"]
+    priority = [
+        "blueprint", "stack", "schema", "manifesto",
+        "physics", "boundaries", "ui", "phases", "intake",
+    ]
     sections: list[str] = []
     seen: set[str] = set()
 
@@ -201,10 +210,7 @@ def _contracts_to_request(contracts: list[dict]) -> str:
     if not sections:
         return "No project contracts provided — produce a minimal plan."
 
-    return (
-        "Build the project described by the following contracts.\n\n"
-        + "\n\n---\n\n".join(sections)
-    )
+    return "\n\n---\n\n".join(sections)
 
 
 def _log_future_exc(fut, label: str) -> None:
@@ -258,13 +264,31 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
         ws_fut = asyncio.run_coroutine_threadsafe(
             broadcast_fn(user_id, build_id, "build_log", {
                 "message": msg, "source": "planner", "level": "info",
-                "worker": "sonnet",
             }),
             loop,
         )
         ws_fut.add_done_callback(lambda f: _log_future_exc(f, "broadcast"))
 
-        # Surface extended thinking blocks to the UI when present
+        # Surface each tool call as a Sonnet pane entry (shows what the planner is doing)
+        for tool in tools:
+            tool_name = tool.get("name", "?")
+            preview = tool.get("input_preview", {})
+            # Format: 🔧 read_file("app/auth.py") — use first value as display arg
+            first_val = next(iter(preview.values()), None) if preview else None
+            if first_val:
+                tool_display = f"🔧 {tool_name}({first_val})"
+            else:
+                tool_display = f"🔧 {tool_name}()"
+            tool_fut = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "build_log", {
+                    "message": tool_display, "source": "planner_tool", "level": "info",
+                    "worker": "sonnet",
+                }),
+                loop,
+            )
+            tool_fut.add_done_callback(lambda f: _log_future_exc(f, "tool_broadcast"))
+
+        # Surface extended thinking blocks to the UI when present (Sonnet/Opus only)
         thinking_text = turn_data.get("thinking_text")
         if thinking_text:
             think_fut = asyncio.run_coroutine_threadsafe(
@@ -277,6 +301,21 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
                 loop,
             )
             think_fut.add_done_callback(lambda f: _log_future_exc(f, "thinking_block"))
+
+        # Surface model text narration when no extended thinking is present (any model)
+        # This is the model's visible reasoning — what it writes between tool calls.
+        text_content = turn_data.get("text_content")
+        if text_content and not thinking_text:
+            text_fut = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "thinking_block", {
+                    "turn": turn,
+                    "source": "planner",
+                    "reasoning_text": text_content[:4000],
+                    "reasoning_length": len(text_content),
+                }),
+                loop,
+            )
+            text_fut.add_done_callback(lambda f: _log_future_exc(f, "text_content"))
 
     return callback
 
@@ -292,6 +331,7 @@ def _call_planner_sync(
     turn_callback=None,
     thinking_budget: int = 0,
     thinking_model: str | None = None,
+    max_phases: int | None = None,
 ) -> dict | None:
     """Synchronous wrapper — injects the BYOK key then calls run_planner().
 
@@ -309,6 +349,7 @@ def _call_planner_sync(
             turn_callback=turn_callback,
             thinking_budget=thinking_budget,
             thinking_model=thinking_model,
+            max_phases=max_phases,
         )
     except PlannerError as exc:
         logger.error("PlannerError: %s", exc)
