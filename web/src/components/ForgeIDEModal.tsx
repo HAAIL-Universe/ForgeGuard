@@ -111,6 +111,8 @@ interface LogEntry {
     phase?: string;
     /** True = real extended thinking (Sonnet/Opus); false = haiku text narration */
     isActualThinking?: boolean;
+    /** True while the block is still streaming in */
+    streaming?: boolean;
   };
   /** Present when this is a grouped planner tool call entry (multiple tools, one turn) */
   toolGroup?: {
@@ -1055,12 +1057,18 @@ const LogPane = memo(function LogPane({
                         {ts}
                       </span>
                       <span style={{ color: reasoningColor, fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.5px' }}>
-                        {log.reasoning.isActualThinking !== false ? 'EXTENDED THINKING' : 'PLANNER NARRATION'} — turn {log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                        {log.reasoning.streaming
+                          ? 'EXTENDED THINKING'
+                          : log.reasoning.isActualThinking !== false ? 'EXTENDED THINKING' : 'PLANNER NARRATION'
+                        }{' — turn '}{log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                        {log.reasoning.streaming && (
+                          <span style={{ marginLeft: '6px', opacity: 0.6, animation: 'none' }}>●</span>
+                        )}
                       </span>
                     </div>
                     <span style={{ color: '#64748B', fontSize: '0.6rem' }}>
                       {(log.reasoning.textLength / 1000).toFixed(1)}k chars
-                      {log.reasoning.textLength > log.reasoning.text.length ? ' (truncated)' : ''}
+                      {log.reasoning.streaming ? ' streaming…' : log.reasoning.textLength > log.reasoning.text.length ? ' (truncated)' : ''}
                     </span>
                   </div>
                   <pre style={{
@@ -1069,7 +1077,10 @@ const LogPane = memo(function LogPane({
                     wordBreak: 'break-word', maxHeight: '400px', overflowY: 'auto',
                   }}>
                     <code>{log.reasoning.text}</code>
-                    {log.reasoning.textLength > log.reasoning.text.length && (
+                    {log.reasoning.streaming && (
+                      <span style={{ color: '#A78BFA', animation: 'none' }}>▌</span>
+                    )}
+                    {!log.reasoning.streaming && log.reasoning.textLength > log.reasoning.text.length && (
                       <span style={{ color: '#64748B', fontStyle: 'italic' }}>
                         {'\n'}... truncated ({log.reasoning.textLength - log.reasoning.text.length} more chars)
                       </span>
@@ -1118,6 +1129,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const [planReady, setPlanReady] = useState(false);          // plan_complete received
+  const [streamingThinking, setStreamingThinking] = useState<{
+    text: string;
+    turn: number;
+    source: string;
+  } | null>(null);
   const [pendingClarification, setPendingClarification] = useState<{
     questionId: string;
     question: string;
@@ -1225,10 +1241,24 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
     return _rawSystemLogs.slice(setupSysLogs.length);
   }, [_rawSystemLogs, logs, setupEndIndex, setupCollapsed]);
 
-  const sonnetLogs = useMemo(
-    () => logs.filter(l => l.worker === 'sonnet'),
-    [logs],
-  );
+  const sonnetLogs = useMemo(() => {
+    const base = logs.filter(l => l.worker === 'sonnet');
+    if (!streamingThinking) return base;
+    const liveEntry: LogEntry = {
+      timestamp: new Date().toISOString(),
+      source: 'reasoning', level: 'thinking',
+      message: `💭 Thinking… (${(streamingThinking.text.length / 1000).toFixed(1)}k)`,
+      worker: 'sonnet',
+      reasoning: {
+        text: streamingThinking.text,
+        textLength: streamingThinking.text.length,
+        turn: streamingThinking.turn,
+        isActualThinking: true,
+        streaming: true,
+      },
+    };
+    return [...base, liveEntry];
+  }, [logs, streamingThinking]);
   const opusLogs = useMemo(
     () => logs.filter(l => l.worker === 'opus'),
     [logs],
@@ -2040,6 +2070,41 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   isActualThinking: (p.is_actual_thinking as boolean) ?? true,
                 },
               }]);
+              break;
+            }
+
+            case 'thinking_stream_start': {
+              setStreamingThinking({
+                text: '',
+                turn: (p.turn as number) || 0,
+                source: (p.source as string) || 'planner',
+              });
+              break;
+            }
+
+            case 'thinking_stream_delta': {
+              const chunk = (p.chunk as string) || '';
+              setStreamingThinking((prev) => prev ? { ...prev, text: prev.text + chunk } : prev);
+              break;
+            }
+
+            case 'thinking_stream_end': {
+              const fullText = (p.full_text as string) || '';
+              const fullLength = (p.full_length as number) || fullText.length;
+              const turn = (p.turn as number) || 0;
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'reasoning', level: 'thinking',
+                message: `💭 Reasoning (turn ${turn})`,
+                worker: 'sonnet' as const,
+                reasoning: {
+                  text: fullText,
+                  textLength: fullLength,
+                  turn,
+                  isActualThinking: (p.is_actual_thinking as boolean) ?? true,
+                },
+              }]);
+              setStreamingThinking(null);
               break;
             }
 

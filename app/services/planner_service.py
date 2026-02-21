@@ -400,27 +400,50 @@ async def _review_plan_with_thinking(
             "ordering issues, or missing acceptance criteria?\n\n"
             f"PLAN:\n{_json.dumps(plan, indent=2)}"
         )
-        response = await client.messages.create(
+        async with client.messages.stream(
             model=thinking_model,
-            max_tokens=thinking_budget + 512,
+            max_tokens=thinking_budget + 1024,
             thinking={"type": "enabled", "budget_tokens": thinking_budget},
             messages=[{"role": "user", "content": review_prompt}],
-        )
-        for i, block in enumerate(response.content):
-            if block.type != "thinking":
-                continue
-            text = block.thinking
-            await broadcast_fn(user_id, build_id, "thinking_block", {
-                "turn": i + 1,
-                "source": "planner",
-                "reasoning_text": text[:6000],
-                "reasoning_length": len(text),
-                "is_actual_thinking": True,
-            })
-        await broadcast_fn(user_id, build_id, "build_log", {
-            "message": "💭 Plan review complete",
-            "source": "planner", "level": "info", "worker": "sonnet",
-        })
+        ) as stream:
+            thinking_index = 0
+            in_thinking = False
+            accumulated = ""
+
+            async for event in stream:
+                etype = event.type
+
+                if etype == "content_block_start":
+                    if event.content_block.type == "thinking":
+                        in_thinking = True
+                        accumulated = ""
+                        thinking_index += 1
+                        await broadcast_fn(user_id, build_id, "thinking_stream_start", {
+                            "turn": thinking_index,
+                            "source": "planner",
+                            "is_actual_thinking": True,
+                        })
+
+                elif etype == "content_block_delta" and in_thinking:
+                    if event.delta.type == "thinking_delta":
+                        chunk = event.delta.thinking
+                        accumulated += chunk
+                        await broadcast_fn(user_id, build_id, "thinking_stream_delta", {
+                            "turn": thinking_index,
+                            "chunk": chunk,
+                            "accumulated_length": len(accumulated),
+                        })
+
+                elif etype == "content_block_stop" and in_thinking:
+                    in_thinking = False
+                    await broadcast_fn(user_id, build_id, "thinking_stream_end", {
+                        "turn": thinking_index,
+                        "full_text": accumulated[:6000],
+                        "full_length": len(accumulated),
+                        "is_actual_thinking": True,
+                    })
+                    accumulated = ""
+
     except Exception as exc:
         logger.warning("Plan thinking review failed (non-fatal): %s", exc)
         await broadcast_fn(user_id, build_id, "build_log", {
