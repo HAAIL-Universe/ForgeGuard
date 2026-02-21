@@ -348,12 +348,16 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
         # This is the model's visible reasoning — what it writes between tool calls.
         text_content = turn_data.get("text_content")
         if text_content and not thinking_text:
+            # Strip trailing colon (model often ends narration with ":") and replace with "…"
+            display_text = text_content.rstrip()
+            if display_text.endswith(":"):
+                display_text = display_text[:-1].rstrip() + "…"
             text_fut = asyncio.run_coroutine_threadsafe(
                 broadcast_fn(user_id, build_id, "thinking_block", {
                     "turn": turn,
                     "source": "planner",
-                    "reasoning_text": text_content[:4000],
-                    "reasoning_length": len(text_content),
+                    "reasoning_text": display_text[:4000],
+                    "reasoning_length": len(display_text),
                     "is_actual_thinking": False,
                 }),
                 loop,
@@ -400,13 +404,13 @@ async def _review_plan_with_thinking(
             "ordering issues, or missing acceptance criteria?\n\n"
             f"PLAN:\n{_json.dumps(plan, indent=2)}"
         )
+        thinking_index = 0
         async with client.messages.stream(
             model=thinking_model,
             max_tokens=thinking_budget + 1024,
             thinking={"type": "enabled", "budget_tokens": thinking_budget},
             messages=[{"role": "user", "content": review_prompt}],
         ) as stream:
-            thinking_index = 0
             in_thinking = False
             accumulated = ""
 
@@ -414,7 +418,8 @@ async def _review_plan_with_thinking(
                 etype = event.type
 
                 if etype == "content_block_start":
-                    if event.content_block.type == "thinking":
+                    cb = getattr(event, "content_block", None)
+                    if cb and getattr(cb, "type", None) == "thinking":
                         in_thinking = True
                         accumulated = ""
                         thinking_index += 1
@@ -425,8 +430,9 @@ async def _review_plan_with_thinking(
                         })
 
                 elif etype == "content_block_delta" and in_thinking:
-                    if event.delta.type == "thinking_delta":
-                        chunk = event.delta.thinking
+                    delta = getattr(event, "delta", None)
+                    if delta and getattr(delta, "type", None) == "thinking_delta":
+                        chunk = getattr(delta, "thinking", "")
                         accumulated += chunk
                         await broadcast_fn(user_id, build_id, "thinking_stream_delta", {
                             "turn": thinking_index,
@@ -443,6 +449,37 @@ async def _review_plan_with_thinking(
                         "is_actual_thinking": True,
                     })
                     accumulated = ""
+
+            # Fallback: if streaming events didn't surface any thinking blocks,
+            # pull them from the fully-accumulated final message.
+            if thinking_index == 0:
+                logger.info("Thinking stream yielded no blocks — falling back to final message")
+                try:
+                    final = await stream.get_final_message()
+                    for blk in final.content:
+                        if getattr(blk, "type", None) == "thinking":
+                            text = getattr(blk, "thinking", "")
+                            thinking_index += 1
+                            # Emit start → chunked deltas → end for progressive feel
+                            await broadcast_fn(user_id, build_id, "thinking_stream_start", {
+                                "turn": thinking_index, "source": "planner",
+                                "is_actual_thinking": True,
+                            })
+                            chunk_size = 300
+                            for j in range(0, len(text), chunk_size):
+                                chunk = text[j:j + chunk_size]
+                                await broadcast_fn(user_id, build_id, "thinking_stream_delta", {
+                                    "turn": thinking_index, "chunk": chunk,
+                                    "accumulated_length": j + len(chunk),
+                                })
+                                await asyncio.sleep(0.02)
+                            await broadcast_fn(user_id, build_id, "thinking_stream_end", {
+                                "turn": thinking_index,
+                                "full_text": text[:6000], "full_length": len(text),
+                                "is_actual_thinking": True,
+                            })
+                except Exception as fb_exc:
+                    logger.warning("Thinking fallback also failed: %s", fb_exc)
 
     except Exception as exc:
         logger.warning("Plan thinking review failed (non-fatal): %s", exc)

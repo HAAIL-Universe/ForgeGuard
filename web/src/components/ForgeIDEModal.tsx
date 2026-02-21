@@ -1056,15 +1056,23 @@ const LogPane = memo(function LogPane({
                       <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
                         {ts}
                       </span>
-                      <span style={{ color: reasoningColor, fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.5px' }}>
-                        {log.reasoning.streaming
-                          ? 'EXTENDED THINKING'
-                          : log.reasoning.isActualThinking !== false ? 'EXTENDED THINKING' : 'PLANNER NARRATION'
-                        }{' — turn '}{log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
-                        {log.reasoning.streaming && (
-                          <span style={{ marginLeft: '6px', opacity: 0.6, animation: 'none' }}>●</span>
-                        )}
+                      {log.reasoning.isActualThinking !== false ? (
+                      <span style={{
+                        background: '#4C1D95', color: '#DDD6FE',
+                        fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.6px',
+                        padding: '1px 6px', borderRadius: '3px',
+                        border: '1px solid #7C3AED66',
+                      }}>
+                        EXTENDED THINKING{log.reasoning.streaming ? ' ●' : ''}
                       </span>
+                    ) : (
+                      <span style={{ color: '#475569', fontSize: '0.6rem', fontWeight: 600, letterSpacing: '0.4px' }}>
+                        PLANNER NARRATION
+                      </span>
+                    )}
+                    <span style={{ color: '#334155', fontSize: '0.6rem' }}>
+                      {' — turn '}{log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                    </span>
                     </div>
                     <span style={{ color: '#64748B', fontSize: '0.6rem' }}>
                       {(log.reasoning.textLength / 1000).toFixed(1)}k chars
