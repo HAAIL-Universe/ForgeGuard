@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 # Path to the standalone planner package
 # ---------------------------------------------------------------------------
 # __file__ = Z:/ForgeCollection/ForgeGuard/app/services/planner_service.py
-# parents:   services → app → ForgeGuard → ForgeCollection
-_PLANNER_DIR = Path(__file__).resolve().parent.parent.parent.parent / "planner"
+# parents:   services → app → ForgeGuard
+_PLANNER_DIR = Path(__file__).resolve().parent.parent.parent / "planner"
 
 # Register the planner package on sys.path once at import time so that
 # workers can `from planner_agent import run_planner` without path gymnastics.
