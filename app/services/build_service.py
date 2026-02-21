@@ -654,11 +654,17 @@ async def delete_builds(
     access_token = (user or {}).get("access_token", "")
     if access_token:
         # Collect unique (repo, branch) pairs — avoid deleting the same branch twice
+        _PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "dev", "trunk"})
         seen_branches: set[tuple[str, str]] = set()
         for build in builds_to_cleanup:
             repo = build.get("target_ref") or ""
             branch = build.get("branch") or ""
-            if repo and branch and (repo, branch) not in seen_branches:
+            if not repo or not branch:
+                continue
+            if branch in _PROTECTED_BRANCHES:
+                logger.info("Skipping deletion of protected branch %s on %s", branch, repo)
+                continue
+            if (repo, branch) not in seen_branches:
                 seen_branches.add((repo, branch))
                 try:
                     await github_client.delete_branch(access_token, repo, branch)

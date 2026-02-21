@@ -255,6 +255,21 @@ if (-not $SkipFrontend -and (Test-Path $webDir)) {
 }
 
 Info "Starting backend server on port 8000..."
+
+# -- Port conflict check -------------------------------------------------
+$conflictPids = @(netstat -ano 2>$null |
+  Select-String '^\s+TCP\s+\S+:8000\s+\S+\s+LISTENING\s+(\d+)' |
+  ForEach-Object { $_.Matches[0].Groups[1].Value } |
+  Sort-Object -Unique)
+
+if ($conflictPids.Count -gt 0) {
+  Warn "Port 8000 is already in use by PID(s): $($conflictPids -join ', ')"
+  Warn "This usually means a previous server session is still running."
+  Warn "Run: taskkill /PID $($conflictPids -join ' /PID ') /F"
+  Warn "Then re-run boot.ps1, or the new server may not respond to requests."
+}
+# ------------------------------------------------------------------------
+
 Info "Press Ctrl+C to stop."
 
 # Open the frontend in the default browser after a short delay
