@@ -240,7 +240,7 @@ const LEVEL_ICONS: Record<string, string> = {
 /** Format a timestamp string as MM:SS (minutes:seconds only). */
 const fmtTs = (ts: string) => {
   const d = new Date(ts);
-  return `${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
 /* ---------- File checklist (Opus progress) ---------- */
