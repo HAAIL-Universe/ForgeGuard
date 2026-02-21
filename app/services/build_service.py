@@ -781,8 +781,11 @@ async def start_build(
         # /continue — reuse previous build's working directory
         working_dir = working_dir_override
     elif target_type in ("github_new", "github_existing"):
-        # Use a temp directory; clone/init happens in _run_build
-        working_dir = tempfile.mkdtemp(prefix="forgeguard_build_")
+        # Use a stable, project-scoped directory so the venv, cloned repo,
+        # and installed deps persist across builds for the same project.
+        _ws_base = Path(tempfile.gettempdir()) / "forgeguard_workspaces"
+        _ws_base.mkdir(parents=True, exist_ok=True)
+        working_dir = str(_ws_base / str(project_id))
 
     # Create build record
     build = await build_repo.create_build(
