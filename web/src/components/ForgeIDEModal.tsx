@@ -2452,6 +2452,13 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           } else {
             const err = await res.json().catch(() => ({ detail: 'Failed to start build' }));
             const detail = err.detail || 'Failed to start build';
+            if (typeof detail === 'string' && detail.toLowerCase().includes('previous build')) {
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(), source: 'system', level: 'warn',
+                message: '⚠ ' + detail,
+              }]);
+              return;
+            }
             if (typeof detail === 'string' && (detail.toLowerCase().includes('already') || detail.toLowerCase().includes('running'))) {
               // Build exists — if it's waiting at the ready gate, commence it
               autoCommenceRef.current = true;

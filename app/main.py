@@ -49,12 +49,18 @@ async def lifespan(application: FastAPI):
                     ADD COLUMN IF NOT EXISTS cached_plan_json  JSONB,
                     ADD COLUMN IF NOT EXISTS plan_cached_at    TIMESTAMPTZ
             """)
-            from app.repos.build_repo import interrupt_stale_builds
+            from app.repos.build_repo import interrupt_stale_builds, delete_all_zombie_builds
             _interrupted = await interrupt_stale_builds()
             if _interrupted:
                 logger.warning(
                     "Interrupted %d stale build(s) left over from previous server session.",
                     _interrupted,
+                )
+            _zombies = await delete_all_zombie_builds()
+            if _zombies:
+                logger.info(
+                    "Startup: cleared %d zombie build(s) with no phase progress.",
+                    _zombies,
                 )
         except Exception as _db_exc:
             # Neon auto-pauses on the free tier — the first request will

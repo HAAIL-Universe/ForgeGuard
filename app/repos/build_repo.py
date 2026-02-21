@@ -181,6 +181,49 @@ async def delete_builds(build_ids: list[UUID]) -> int:
     return int(parts[1]) if len(parts) == 2 else 0
 
 
+async def delete_zombie_builds_for_project(project_id: UUID) -> int:
+    """Delete terminal builds that completed no phases for a given project.
+
+    A "zombie" build is one that reached a terminal state (failed, cancelled,
+    completed) without ever completing a phase (completed_phases == -1).
+    These are abandoned or immediately-failed builds with no useful progress.
+
+    Returns the count deleted.
+    """
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        DELETE FROM builds
+        WHERE project_id = $1
+          AND completed_phases = -1
+          AND status IN ('failed', 'cancelled', 'completed')
+        """,
+        project_id,
+    )
+    parts = result.split()
+    return int(parts[1]) if len(parts) == 2 else 0
+
+
+async def delete_all_zombie_builds() -> int:
+    """Delete ALL zombie builds across all projects.
+
+    Called at server startup to clean up builds abandoned when the previous
+    server instance was killed before they could fail gracefully.
+
+    Returns the total count deleted.
+    """
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        DELETE FROM builds
+        WHERE completed_phases = -1
+          AND status IN ('failed', 'cancelled', 'completed')
+        """
+    )
+    parts = result.split()
+    return int(parts[1]) if len(parts) == 2 else 0
+
+
 async def interrupt_stale_builds() -> int:
     """Mark any 'pending' or 'running' builds as 'failed' on server startup.
 

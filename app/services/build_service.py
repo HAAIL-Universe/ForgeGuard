@@ -736,6 +736,23 @@ async def start_build(
     if latest and latest["status"] in ("pending", "running", "paused"):
         raise ValueError("A build is already in progress for this project")
 
+    # Auto-clean zombie builds (terminal, completed no phases — abandoned/failed early)
+    zombies = await build_repo.delete_zombie_builds_for_project(project_id)
+    if zombies:
+        logger.info(
+            "Auto-deleted %d zombie build(s) for project %s (no phase progress)",
+            zombies, project_id,
+        )
+
+    # Block new build if a meaningful historical build exists (completed >= 1 phase).
+    # The user must continue it or explicitly delete it via Build History first.
+    latest = await build_repo.get_latest_build_for_project(project_id)
+    if latest and latest["completed_phases"] >= 0:
+        raise ValueError(
+            "A previous build with progress exists. "
+            "Open Build History to delete it, or continue it from where it left off."
+        )
+
     # BYOK: user must supply their own Anthropic API key for builds
     user = await get_user_by_id(user_id)
     user_api_key = (user or {}).get("anthropic_api_key") or ""
