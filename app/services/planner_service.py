@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 # Path to the standalone planner package
 # ---------------------------------------------------------------------------
 # __file__ = Z:/ForgeCollection/ForgeGuard/app/services/planner_service.py
-# parents:   services → app → ForgeGuard
-_PLANNER_DIR = Path(__file__).resolve().parent.parent.parent / "planner"
+# parents:   services → app → ForgeGuard → ForgeCollection
+_PLANNER_DIR = Path(__file__).resolve().parent.parent.parent.parent / "planner"
 
 # Register the planner package on sys.path once at import time so that
 # workers can `from planner_agent import run_planner` without path gymnastics.
@@ -85,7 +85,8 @@ async def run_project_planner(
         await build_repo.append_build_log(build_id, msg, source="planner", level="error")
         return None
 
-    project_request = _contracts_to_request(contracts)
+    project_manifest = _contracts_to_manifest(contracts)
+    contract_fetcher = _make_contract_fetcher(contracts)
 
     # -- helpers ----------------------------------------------------------
     async def _log(message: str, level: str = "info") -> None:
@@ -130,7 +131,7 @@ async def run_project_planner(
             lambda: _call_planner_sync(
                 run_planner_fn=run_planner,
                 PlannerError=PlannerError,
-                project_request=project_request,
+                project_request=project_manifest,
                 api_key=api_key,
                 stop_event=_stop_event,
                 model=_planner_model,
@@ -138,6 +139,7 @@ async def run_project_planner(
                 thinking_budget=_planner_thinking_budget,
                 thinking_model=_planner_thinking_model,
                 max_phases=max_phases,
+                contract_fetcher=contract_fetcher,
             ),
         )
     except asyncio.CancelledError:
@@ -153,6 +155,21 @@ async def run_project_planner(
 
     # -- success -----------------------------------------------------------
     plan = result["plan"]
+
+    # Post-synthesis thinking review — one Sonnet+thinking call (non-fatal).
+    # Haiku can't do extended thinking, so we run a review pass with the
+    # thinking_model so the user sees real reasoning in the Sonnet pane.
+    if "haiku" in _planner_model.lower() and _planner_thinking_model:
+        await _review_plan_with_thinking(
+            plan=plan,
+            build_id=build_id,
+            user_id=user_id,
+            api_key=api_key,
+            thinking_model=_planner_thinking_model,
+            thinking_budget=8000,
+            broadcast_fn=_broadcast_build_event,
+        )
+
     phases = plan.get("phases", [])
     phase_summary = " → ".join(
         f"Phase {p['number']} ({p['name']})" for p in phases
@@ -182,35 +199,44 @@ async def run_project_planner(
 # ---------------------------------------------------------------------------
 
 
-def _contracts_to_request(contracts: list[dict]) -> str:
-    """Build a project-request string from ForgeGuard contracts.
+_CONTRACT_PRIORITY = [
+    "blueprint", "stack", "schema", "manifesto",
+    "physics", "boundaries", "ui", "phases", "intake",
+]
 
-    All contracts are fetched from the Neon DB and embedded directly into the
-    planner's initial user turn — the planner has no filesystem access.
 
-    Priority order controls the section sequence in the output.  intake briefs
-    come last so the model reads core contracts first, then any supplementary
-    requirements from the intake.
+def _contracts_to_manifest(contracts: list[dict]) -> str:
+    """Build a lightweight contract manifest (~200 tokens, no content).
+
+    Lists available contract types and their sizes so the planner knows what
+    to fetch. Content is NOT pushed — the planner pulls via forge_get_project_contract.
     """
-    priority = [
-        "blueprint", "stack", "schema", "manifesto",
-        "physics", "boundaries", "ui", "phases", "intake",
-    ]
-    sections: list[str] = []
-    seen: set[str] = set()
+    if not contracts:
+        return "No project contracts available."
 
-    for ctype in priority:
-        for c in contracts:
-            if c.get("contract_type") == ctype and ctype not in seen:
-                seen.add(ctype)
-                label = ctype.upper()
-                sections.append(f"## {label} CONTRACT\n\n{c['content'].strip()}")
-                break
+    type_map = {c["contract_type"]: len(c.get("content", "")) for c in contracts}
+    ordered = [t for t in _CONTRACT_PRIORITY if t in type_map]
+    ordered += sorted(t for t in type_map if t not in _CONTRACT_PRIORITY)
 
-    if not sections:
-        return "No project contracts provided — produce a minimal plan."
+    lines = ["Available project contracts:"]
+    for ctype in ordered:
+        lines.append(f"  - {ctype} (~{type_map[ctype]:,} chars)")
+    return "\n".join(lines)
 
-    return "\n\n---\n\n".join(sections)
+
+def _make_contract_fetcher(contracts: list[dict]):
+    """Return a sync callable that fetches contract content by type.
+
+    The planner runs in a thread-pool executor (sync), so this is a plain
+    dict lookup against the contracts list already fetched from the DB by
+    the async build pipeline. No DB calls happen in the thread.
+    """
+    index = {c["contract_type"]: c["content"] for c in contracts}
+
+    def fetch(contract_type: str) -> str | None:
+        return index.get(contract_type)
+
+    return fetch
 
 
 def _log_future_exc(fut, label: str) -> None:
@@ -269,20 +295,35 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
         )
         ws_fut.add_done_callback(lambda f: _log_future_exc(f, "broadcast"))
 
-        # Surface each tool call as a Sonnet pane entry (shows what the planner is doing)
-        for tool in tools:
+        # Surface tool calls as Sonnet pane entries.
+        # Single tool → individual entry; multiple tools in one turn → grouped collapsible entry.
+        if len(tools) == 1:
+            tool = tools[0]
             tool_name = tool.get("name", "?")
             preview = tool.get("input_preview", {})
-            # Format: 🔧 read_file("app/auth.py") — use first value as display arg
             first_val = next(iter(preview.values()), None) if preview else None
-            if first_val:
-                tool_display = f"🔧 {tool_name}({first_val})"
-            else:
-                tool_display = f"🔧 {tool_name}()"
+            tool_display = f"🔧 {tool_name}({first_val})" if first_val else f"🔧 {tool_name}()"
             tool_fut = asyncio.run_coroutine_threadsafe(
                 broadcast_fn(user_id, build_id, "build_log", {
                     "message": tool_display, "source": "planner_tool", "level": "info",
                     "worker": "sonnet",
+                }),
+                loop,
+            )
+            tool_fut.add_done_callback(lambda f: _log_future_exc(f, "tool_broadcast"))
+        elif tools:
+            # Multiple tools in the same turn — group into one collapsible entry.
+            tool_entries = []
+            for t in tools:
+                t_name = t.get("name", "?")
+                preview = t.get("input_preview", {})
+                first_val = next(iter(preview.values()), None) if preview else None
+                tool_entries.append({"name": t_name, "arg": first_val or ""})
+            group_msg = f"🔧 {len(tools)} tools — turn {turn}"
+            tool_fut = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "build_log", {
+                    "message": group_msg, "source": "planner_tool_group", "level": "info",
+                    "worker": "sonnet", "tool_calls": tool_entries, "turn": turn,
                 }),
                 loop,
             )
@@ -297,6 +338,7 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
                     "source": "planner",
                     "reasoning_text": thinking_text[:4000],
                     "reasoning_length": len(thinking_text),
+                    "is_actual_thinking": True,
                 }),
                 loop,
             )
@@ -312,12 +354,64 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
                     "source": "planner",
                     "reasoning_text": text_content[:4000],
                     "reasoning_length": len(text_content),
+                    "is_actual_thinking": False,
                 }),
                 loop,
             )
             text_fut.add_done_callback(lambda f: _log_future_exc(f, "text_content"))
 
     return callback
+
+
+async def _review_plan_with_thinking(
+    plan: dict,
+    build_id: "UUID",
+    user_id: "UUID",
+    api_key: str,
+    thinking_model: str,
+    thinking_budget: int,
+    broadcast_fn: "callable",
+) -> None:
+    """Make one Sonnet+thinking call to review the completed plan.
+
+    Broadcasts thinking blocks to the UI so the user can see real
+    extended reasoning about the plan structure. The plan itself is not
+    modified — this is purely for UI visibility.
+
+    Non-fatal: a failure here must never propagate or cancel the build.
+    """
+    import anthropic as _ant
+    import json as _json
+
+    try:
+        client = _ant.Anthropic(api_key=api_key, timeout=90.0)
+        review_prompt = (
+            "You are reviewing a build plan produced by a Forge Planner Agent. "
+            "The plan was generated from the project's contracts (blueprint, stack, "
+            "schema, phases, etc.). Think through: Is the phase structure logical? "
+            "Are the deliverables complete and correctly scoped? Are there gaps, "
+            "ordering issues, or missing acceptance criteria?\n\n"
+            f"PLAN:\n{_json.dumps(plan, indent=2)}"
+        )
+        response = client.messages.create(
+            model=thinking_model,
+            max_tokens=thinking_budget + 512,
+            thinking={"type": "enabled", "budget_tokens": thinking_budget},
+            messages=[{"role": "user", "content": review_prompt}],
+        )
+        for i, block in enumerate(response.content):
+            if block.type != "thinking":
+                continue
+            text = block.thinking
+            await broadcast_fn(user_id, build_id, "thinking_block", {
+                "turn": i + 1,
+                "source": "planner",
+                "reasoning_text": text[:6000],
+                "reasoning_length": len(text),
+                "is_actual_thinking": True,
+            })
+    except Exception as exc:
+        logger.warning("Plan thinking review failed (non-fatal): %s", exc)
 
 
 def _call_planner_sync(
@@ -332,6 +426,7 @@ def _call_planner_sync(
     thinking_budget: int = 0,
     thinking_model: str | None = None,
     max_phases: int | None = None,
+    contract_fetcher=None,
 ) -> dict | None:
     """Synchronous wrapper — injects the BYOK key then calls run_planner().
 
@@ -350,6 +445,7 @@ def _call_planner_sync(
             thinking_budget=thinking_budget,
             thinking_model=thinking_model,
             max_phases=max_phases,
+            contract_fetcher=contract_fetcher,
         )
     except PlannerError as exc:
         logger.error("PlannerError: %s", exc)

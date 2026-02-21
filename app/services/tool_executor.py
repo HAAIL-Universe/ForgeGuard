@@ -136,11 +136,6 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
         "search_code": _exec_search_code,
         "write_file": _exec_write_file,
         "edit_file": _exec_edit_file,
-        # Forge governance tools (Phase 55)
-        "forge_get_contract": _exec_forge_get_contract,
-        "forge_get_phase_window": _exec_forge_get_phase_window,
-        "forge_list_contracts": _exec_forge_list_contracts,
-        "forge_get_summary": _exec_forge_get_summary,
         "forge_scratchpad": _exec_forge_scratchpad,
     }
     handler = sync_handlers.get(tool_name)
@@ -153,7 +148,8 @@ def execute_tool(tool_name: str, tool_input: dict, working_dir: str) -> str:
 
 
 async def execute_tool_async(
-    tool_name: str, tool_input: dict, working_dir: str, **kwargs: object
+    tool_name: str, tool_input: dict, working_dir: str,
+    project_id: str = "", **kwargs: object
 ) -> str:
     """Dispatch a tool call -- supports both sync and async handlers.
 
@@ -166,7 +162,8 @@ async def execute_tool_async(
         tool_name: Name of the tool to execute.
         tool_input: Input parameters for the tool.
         working_dir: Absolute path to the build working directory.
-        **kwargs: Extra keyword arguments (e.g. build_id) accepted but unused here.
+        project_id: UUID string of the current project (required for forge DB tools).
+        **kwargs: Extra keyword arguments accepted but unused.
 
     Returns:
         String result of the tool execution.
@@ -177,18 +174,22 @@ async def execute_tool_async(
         "search_code": _exec_search_code,
         "write_file": _exec_write_file,
         "edit_file": _exec_edit_file,
-        # Forge governance tools (Phase 55)
-        "forge_get_contract": _exec_forge_get_contract,
-        "forge_get_phase_window": _exec_forge_get_phase_window,
-        "forge_list_contracts": _exec_forge_list_contracts,
-        "forge_get_summary": _exec_forge_get_summary,
         "forge_scratchpad": _exec_forge_scratchpad,
+    }
+    # DB-backed forge governance tools — read from Neon DB instead of disk.
+    # project_id is threaded from the build loop so these work without any
+    # disk writes.
+    forge_db_handlers = {
+        "forge_get_contract": _exec_forge_get_contract_db,
+        "forge_get_phase_window": _exec_forge_get_phase_window_db,
+        "forge_list_contracts": _exec_forge_list_contracts_db,
+        "forge_get_summary": _exec_forge_get_summary_db,
     }
     async_handlers = {
         "run_tests": _exec_run_tests,
         "check_syntax": _exec_check_syntax,
         "run_command": _exec_run_command,
-        # Project-scoped forge tools (Phase F) — proxy to MCP dispatch → ForgeGuard API
+        # Project-scoped forge tools — proxy to MCP dispatch → ForgeGuard API
         "forge_get_project_context": _exec_forge_get_project_context,
         "forge_list_project_contracts": _exec_forge_list_project_contracts,
         "forge_get_project_contract": _exec_forge_get_project_contract,
@@ -209,6 +210,12 @@ async def execute_tool_async(
                 result = f"{result}\n\n{install_msg}"
 
         return result
+
+    if tool_name in forge_db_handlers:
+        try:
+            return await forge_db_handlers[tool_name](tool_input, project_id)
+        except Exception as exc:
+            return f"Error executing {tool_name}: {exc}"
 
     if tool_name in async_handlers:
         try:
@@ -709,19 +716,22 @@ async def _exec_run_command(inp: dict, working_dir: str) -> str:
     return "\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# Forge governance tool handlers (Phase 55)
-# ---------------------------------------------------------------------------
-
 # In-memory scratchpad store: keyed by working_dir (one per build)
 _scratchpads: dict[str, dict[str, str]] = {}
 
 
-def _exec_forge_get_contract(inp: dict, working_dir: str) -> str:
-    """Read a governance contract from the build's working directory.
+# ---------------------------------------------------------------------------
+# Forge governance tool handlers — DB-backed
+# These replace the disk-based handlers. They fetch from Neon DB via
+# project_repo so no contracts need to be written to disk.
+# ---------------------------------------------------------------------------
+
+
+async def _exec_forge_get_contract_db(inp: dict, project_id: str) -> str:
+    """Read a project contract from the database.
 
     Input: { "name": "blueprint" }
-    Blocks "phases" (too large) -- directs to forge_get_phase_window.
+    Blocks "phases" — directs to forge_get_phase_window.
     """
     name = (inp.get("name") or "").strip()
     if not name:
@@ -734,49 +744,47 @@ def _exec_forge_get_contract(inp: dict, working_dir: str) -> str:
             "next phase deliverables instead."
         )
 
-    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
-    if not contracts_dir.is_dir():
-        return f"Error: Forge/Contracts/ directory not found in working directory"
-
-    # Extension map — same as forge_ide/mcp/config.py CONTRACT_MAP
-    ext_map: dict[str, str] = {
-        "boundaries": "boundaries.json",
-        "physics": "physics.yaml",
-    }
-    filename = ext_map.get(name, f"{name}.md")
-    path = contracts_dir / filename
-
-    if not path.exists():
-        # List available files to help the builder
-        available = [f.stem for f in contracts_dir.iterdir() if f.is_file()]
-        return f"Error: Contract '{name}' not found. Available: {', '.join(sorted(available))}"
+    if not project_id:
+        return "Error: No project_id in build context — cannot fetch contract from database"
 
     try:
-        content = path.read_text(encoding="utf-8")
-        # Cap at 50KB to avoid blowing up context
-        if len(content) > 50_000:
-            content = content[:50_000] + "\n\n[... truncated at 50KB ...]"
-        return content
+        from uuid import UUID
+        from app.repos import project_repo
+        row = await project_repo.get_contract_by_type(UUID(project_id), name)
     except Exception as exc:
-        return f"Error reading contract '{name}': {exc}"
+        return f"Error fetching contract '{name}' from database: {exc}"
+
+    if not row:
+        return f"Error: Contract '{name}' not found for this project"
+
+    content = row.get("content", "")
+    if len(content) > 50_000:
+        content = content[:50_000] + "\n\n[... truncated at 50KB ...]"
+    return content
 
 
-def _exec_forge_get_phase_window(inp: dict, working_dir: str) -> str:
-    """Extract current + next phase from phases.md in the working directory.
+async def _exec_forge_get_phase_window_db(inp: dict, project_id: str) -> str:
+    """Extract current + next phase from the phases contract in the database.
 
     Input: { "phase_number": 0 }
-    Returns ~1-3K tokens of phase deliverables instead of the full 230K phases file.
+    Returns ~1-3K tokens of phase deliverables instead of the full phases file.
     """
     phase_num = int(inp.get("phase_number", 0))
 
-    phases_path = Path(working_dir) / "Forge" / "Contracts" / "phases.md"
-    if not phases_path.exists():
-        return "Error: Forge/Contracts/phases.md not found in working directory"
+    if not project_id:
+        return "Error: No project_id in build context — cannot fetch phases from database"
 
     try:
-        content = phases_path.read_text(encoding="utf-8")
+        from uuid import UUID
+        from app.repos import project_repo
+        row = await project_repo.get_contract_by_type(UUID(project_id), "phases")
     except Exception as exc:
-        return f"Error reading phases.md: {exc}"
+        return f"Error fetching phases contract: {exc}"
+
+    if not row:
+        return "Error: 'phases' contract not found for this project"
+
+    content = row["content"]
 
     # Split on ## Phase headers and extract current + next
     phase_blocks = re.split(r"(?=^## Phase )", content, flags=re.MULTILINE)
@@ -797,7 +805,7 @@ def _exec_forge_get_phase_window(inp: dict, working_dir: str) -> str:
     if not selected:
         if max_phase >= 0:
             return f"Error: Phase {phase_num} not found. Phases range from 0 to {max_phase}."
-        return "Error: No phases found in phases.md"
+        return "Error: No phases found in phases contract"
 
     return (
         f"## Phase Window (Phase {phase_num}"
@@ -807,50 +815,57 @@ def _exec_forge_get_phase_window(inp: dict, working_dir: str) -> str:
     )
 
 
-def _exec_forge_list_contracts(inp: dict, working_dir: str) -> str:
-    """List available governance contracts in the working directory.
+async def _exec_forge_list_contracts_db(inp: dict, project_id: str) -> str:
+    """List available project contracts from the database.
 
     Input: {} (no parameters required)
-    Returns JSON array of contract names and filenames.
+    Returns JSON array of contract types and sizes.
     """
-    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
-    if not contracts_dir.is_dir():
-        return json.dumps({"error": "Forge/Contracts/ directory not found", "contracts": []})
+    if not project_id:
+        return json.dumps({"error": "No project_id in build context", "contracts": []})
 
-    items = []
-    for f in sorted(contracts_dir.iterdir()):
-        if not f.is_file():
-            continue
-        items.append({
-            "name": f.stem,
-            "filename": f.name,
-            "size_kb": round(f.stat().st_size / 1024, 1),
-        })
+    try:
+        from uuid import UUID
+        from app.repos import project_repo
+        rows = await project_repo.get_contracts_by_project(UUID(project_id))
+    except Exception as exc:
+        return json.dumps({"error": f"Failed to list contracts: {exc}", "contracts": []})
 
+    items = [
+        {
+            "name": r["contract_type"],
+            "size_chars": len(r.get("content", "")),
+            "updated_at": str(r.get("updated_at", "")),
+        }
+        for r in rows
+    ]
     return json.dumps({"contracts": items, "total": len(items)}, indent=2)
 
 
-def _exec_forge_get_summary(inp: dict, working_dir: str) -> str:
+async def _exec_forge_get_summary_db(inp: dict, project_id: str) -> str:
     """Return a compact governance framework overview.
 
     Input: {} (no parameters required)
-    Summarises available contracts, architecture layers, and key rules
-    without loading any full contract content.
+    Reads contract list and boundaries from the DB to build the summary.
     """
-    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
     contract_names: list[str] = []
-    if contracts_dir.is_dir():
-        contract_names = sorted(
-            f.stem for f in contracts_dir.iterdir() if f.is_file()
-        )
-
-    # Try to extract layer names from boundaries.json
     layers: list[str] = []
-    boundaries_path = contracts_dir / "boundaries.json" if contracts_dir.is_dir() else None
-    if boundaries_path and boundaries_path.exists():
+
+    if project_id:
         try:
-            data = json.loads(boundaries_path.read_text(encoding="utf-8"))
-            layers = [layer.get("name", "") for layer in data.get("layers", [])]
+            from uuid import UUID
+            from app.repos import project_repo
+            rows = await project_repo.get_contracts_by_project(UUID(project_id))
+            contract_names = [r["contract_type"] for r in rows]
+            boundaries_row = await project_repo.get_contract_by_type(
+                UUID(project_id), "boundaries"
+            )
+            if boundaries_row:
+                try:
+                    data = json.loads(boundaries_row["content"])
+                    layers = [layer.get("name", "") for layer in data.get("layers", [])]
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -864,9 +879,9 @@ def _exec_forge_get_summary(inp: dict, working_dir: str) -> str:
         "available_contracts": contract_names,
         "architectural_layers": layers,
         "key_tools": [
-            "forge_get_contract(name) — read a specific contract",
+            "forge_get_contract(name) — read a specific project contract",
             "forge_get_phase_window(phase_number) — current + next phase deliverables",
-            "forge_list_contracts() — list all contracts",
+            "forge_list_contracts() — list all project contracts",
             "forge_scratchpad(op, key?, value?) — persistent notes across phases",
         ],
         "critical_rules": [
@@ -1230,7 +1245,7 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_contract",
         "description": (
-            "Read a specific governance contract from the Forge/Contracts/ directory. "
+            "Fetch a project contract from the database. "
             "Returns the full content of the requested contract. "
             "Use this to fetch project specifications (blueprint, stack, schema, physics, "
             "boundaries, manifesto, ui, builder_directive, builder_contract). "
@@ -1274,8 +1289,8 @@ FORGE_TOOLS = [
     {
         "name": "forge_list_contracts",
         "description": (
-            "List all available governance contracts in the Forge/Contracts/ directory. "
-            "Returns names, filenames, and sizes. Use this to discover what contracts exist "
+            "List all available project contracts from the database. "
+            "Returns names and sizes. Use this to discover what contracts exist "
             "before fetching specific ones."
         ),
         "input_schema": {

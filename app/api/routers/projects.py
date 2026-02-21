@@ -48,9 +48,6 @@ class CreateProjectRequest(BaseModel):
     repo_id: str | None = Field(
         None, description="Connected ForgeGuard repo UUID to link"
     )
-    local_path: str | None = Field(
-        None, max_length=1000, description="Local filesystem path for local projects"
-    )
     build_mode: str = Field(
         "full", description="Build mode: 'mini' (2 phases) or 'full' (6-12 phases)"
     )
@@ -86,7 +83,6 @@ async def create_project(
         name=body.name,
         description=body.description,
         repo_id=repo_id,
-        local_path=body.local_path,
         build_mode=bm,
     )
     return {

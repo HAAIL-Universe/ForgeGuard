@@ -16,15 +16,14 @@ async def create_project(
     name: str,
     description: str | None = None,
     repo_id: UUID | None = None,
-    local_path: str | None = None,
     build_mode: str = "full",
 ) -> dict:
     """Insert a new project. Returns the created row as a dict."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO projects (user_id, name, description, repo_id, local_path, build_mode)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO projects (user_id, name, description, repo_id, build_mode)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id, user_id, name, description, status, repo_id,
                   local_path, build_mode, questionnaire_state, questionnaire_history,
                   created_at, updated_at
@@ -33,7 +32,6 @@ async def create_project(
         name,
         description,
         repo_id,
-        local_path,
         build_mode,
     )
     return _project_to_dict(row)

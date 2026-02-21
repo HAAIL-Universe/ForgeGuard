@@ -326,7 +326,6 @@ from app.services.build.context import (  # noqa: E402
     _strip_code_fence,
     _compact_conversation,
     _build_directive,
-    _write_contracts_to_workdir,
     write_forge_config_to_workdir,
     _extract_phase_window,
     inject_forge_gitignore,
@@ -2748,15 +2747,7 @@ async def _run_build_conversation(
 
         phase_start_time = datetime.now(timezone.utc)  # Phase timeout tracking
 
-        # Write contracts to the working directory as a backup reference.
-        # The builder has them in-prompt, but after context compaction it
-        # can re-read them from disk via read_file if needed.
         if working_dir:
-            try:
-                _write_contracts_to_workdir(working_dir, contracts)
-            except Exception as exc:
-                logger.warning("Failed to write contracts to workdir: %s", exc)
-
             try:
                 _proj = await project_repo.get_project_by_id(project_id)
                 if _proj:
@@ -2771,9 +2762,7 @@ async def _run_build_conversation(
             except Exception as exc:
                 logger.warning("Failed to inject Forge .gitignore rules: %s", exc)
 
-        # Commit + push contracts so the GitHub repo is populated before
-        # the builder starts coding.  This ensures the user can see the
-        # Forge/Contracts/ folder in their repo immediately.
+        # Commit + push initial workspace setup (e.g. .gitignore) to GitHub.
         if (
             working_dir
             and target_type in ("github_new", "github_existing")
@@ -2782,7 +2771,7 @@ async def _run_build_conversation(
             try:
                 await git_client.add_all(working_dir, include_contracts=True)
                 sha = await git_client.commit(
-                    working_dir, "forge: seed Forge/Contracts/",
+                    working_dir, "forge: init workspace",
                     include_contracts=True,
                 )
                 if sha:
@@ -2791,11 +2780,11 @@ async def _run_build_conversation(
                     )
                     await build_repo.append_build_log(
                         build_id,
-                        "Pushed Forge/Contracts/ to GitHub",
+                        "Pushed workspace init commit to GitHub",
                         source="system", level="info",
                     )
             except Exception as exc:
-                logger.warning("Initial contracts push failed (non-fatal): %s", exc)
+                logger.warning("Initial workspace push failed (non-fatal): %s", exc)
 
         # Signal the frontend that the workspace is ready (repo cloned,
         # branch checked out, contracts written).  The UI waits for this
@@ -2943,8 +2932,8 @@ async def _run_build_conversation(
                 "## Phase Workflow\n"
                 "Your **current phase + next phase** are shown in the Phase Window section.\n"
                 "When you finish a phase, a new message will provide the next phase window\n"
-                "and a diff summary of what was built.  Contracts are also saved in\n"
-                "`Forge/Contracts/` if you need to re-read one after context compaction.\n\n"
+                "and a diff summary of what was built.  Use forge_get_contract(name) if you\n"
+                "need to re-read a contract (blueprint, stack, schema, etc.) at any point.\n\n"
                 "At the start of EACH PHASE, emit a structured plan covering only that phase's deliverables:\n"
                 "=== PLAN ===\n"
                 "1. First task for this phase\n"
@@ -3134,7 +3123,7 @@ async def _run_build_conversation(
                     if item.name == "forge_ask_clarification":
                         tool_result = await _handle_clarification(build_id, user_id, item.input)
                     else:
-                        tool_result = await execute_tool_async(item.name, item.input, working_dir or "")
+                        tool_result = await execute_tool_async(item.name, item.input, working_dir or "", project_id=str(project_id))
 
                     # Log the tool call
                     input_summary = json.dumps(item.input)[:200]
@@ -3538,6 +3527,24 @@ async def _run_build_conversation(
                         except Exception as exc:
                             logger.warning("Git commit failed for %s: %s", current_phase, exc)
 
+                        # Phase push — non-fatal; final push at build end is the safety net.
+                        if target_type in ("github_new", "github_existing") and access_token:
+                            try:
+                                await git_client.push(
+                                    working_dir, branch=branch, access_token=access_token,
+                                )
+                                await build_repo.append_build_log(
+                                    build_id, f"↑ Pushed {current_phase} to GitHub",
+                                    source="system", level="info",
+                                )
+                            except Exception as _push_exc:
+                                logger.warning("Phase push failed (non-fatal): %s", _push_exc)
+                                await build_repo.append_build_log(
+                                    build_id,
+                                    f"Phase push failed — will retry at build end: {_push_exc}",
+                                    source="system", level="warning",
+                                )
+
                     # --- Phase advancement: sliding window + diff log ---
                     current_phase_num += 1
 
@@ -3599,8 +3606,8 @@ async def _run_build_conversation(
                         )
                     else:
                         advance_parts.append(
-                            "\nRead any contracts you need from `Forge/Contracts/` "
-                            "for this phase, then emit your === PLAN === and start building."
+                            "\nUse forge_get_contract(name) to re-read any contracts "
+                            "you need for this phase, then emit your === PLAN === and start building."
                         )
                     messages.append({
                         "role": "user",
@@ -4667,11 +4674,7 @@ async def _run_build_plan_execute(
     # so the user has a chance to load the IDE before any LLM spend begins.
     # For resume builds, phases are passed in as a parameter and this is skipped.
 
-    # Mini build cap for the resume case (phases already known from parameter).
     project = await project_repo.get_project_by_id(project_id)
-    if phases and project and project.get("build_mode") == "mini" and len(phases) > 2:
-        logger.info("Mini build — capping phases from %d to 2", len(phases))
-        phases = phases[:2]
 
     # --- Workspace setup (git clone, branch, contracts) ---
     # --- Workspace setup (skip if continuing from a prior build) ---
@@ -4741,12 +4744,6 @@ async def _run_build_plan_execute(
         except Exception as exc:
             logger.warning("Failed to set up project environment (non-fatal): %s", exc)
 
-        # Write contracts to working directory
-        try:
-            _write_contracts_to_workdir(working_dir, contracts)
-        except Exception as exc:
-            logger.warning("Failed to write contracts to workdir: %s", exc)
-
         try:
             _project = await project_repo.get_project_by_id(project_id)
             if _project:
@@ -4760,22 +4757,22 @@ async def _run_build_plan_execute(
         except Exception as exc:
             logger.warning("Failed to inject Forge .gitignore rules: %s", exc)
 
-        # Commit + push contracts seed
+        # Commit + push initial workspace setup (e.g. .gitignore) to GitHub
         if target_type in ("github_new", "github_existing") and access_token:
             try:
                 await git_client.add_all(working_dir, include_contracts=True)
                 sha = await git_client.commit(
-                    working_dir, "forge: seed Forge/Contracts/",
+                    working_dir, "forge: init workspace",
                     include_contracts=True,
                 )
                 if sha:
                     await git_client.push(working_dir, branch=branch, access_token=access_token)
                     await build_repo.append_build_log(
-                        build_id, "Pushed Forge/Contracts/ to GitHub",
+                        build_id, "Pushed workspace init commit to GitHub",
                         source="system", level="info",
                     )
             except Exception as exc:
-                logger.warning("Initial contracts push failed (non-fatal): %s", exc)
+                logger.warning("Initial workspace push failed (non-fatal): %s", exc)
     else:
         # Continuing from a prior build — verify workspace exists
         if not Path(working_dir).exists():
@@ -5044,7 +5041,7 @@ async def _run_build_plan_execute(
                         build_id=build_id,
                         user_id=user_id,
                         api_key=api_key,
-                        max_phases=3 if project and project.get("build_mode") == "mini" else None,
+                        max_phases=None,
                     )
                     if _prep_result:
                         phases = [
@@ -5056,6 +5053,11 @@ async def _run_build_plan_execute(
                             }
                             for p in _prep_result["plan"].get("phases", [])
                         ]
+                        # Save plan to DB — source of truth for resume after server restart.
+                        # 'paused' is skipped by interrupt_stale_builds() + zombie cleanup.
+                        from app.repos.project_repo import set_cached_plan
+                        await set_cached_plan(project_id, _prep_result["plan"])
+                        await build_repo.update_build_status(build_id, "paused")
                 except Exception as _prep_exc:
                     logger.warning("Prep planner failed (%s) \u2014 trying legacy fallback", _prep_exc)
                 # Legacy fallback: parse phases contract directly
@@ -5065,9 +5067,6 @@ async def _run_build_plan_execute(
                             phases = _parse_phases_contract(c["content"])
                             break
             if phases:
-                # Apply mini cap for the preview too
-                if project and project.get("build_mode") == "mini" and len(phases) > 2:
-                    phases = phases[:2]
                 await _broadcast_build_event(user_id, build_id, "build_overview", {
                     "phases": [
                         {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
@@ -5110,7 +5109,7 @@ async def _run_build_plan_execute(
                 build_id=build_id,
                 user_id=user_id,
                 api_key=api_key,
-                max_phases=3 if project and project.get("build_mode") == "mini" else None,
+                max_phases=None,
             )
             if _plan_result:
                 phases = [
@@ -5122,6 +5121,9 @@ async def _run_build_plan_execute(
                     }
                     for p in _plan_result["plan"].get("phases", [])
                 ]
+                # Save plan to DB — allows orphaned builds to recover the plan.
+                from app.repos.project_repo import set_cached_plan
+                await set_cached_plan(project_id, _plan_result["plan"])
         except Exception as _planner_exc:
             logger.warning(
                 "Project planner failed (%s) — falling back to phases contract",
@@ -5141,11 +5143,6 @@ async def _run_build_plan_execute(
             "No phases found: project planner failed and no phases contract exists",
         )
         return
-
-    # Mini build cap (fresh-start — resume cap was applied above).
-    if resume_from_phase < 0 and project and project.get("build_mode") == "mini" and len(phases) > 2:
-        logger.info("Mini build — capping phases from %d to 2", len(phases))
-        phases = phases[:2]
 
     # Build overview (fresh-start — resume already broadcast above).
     if resume_from_phase < 0:

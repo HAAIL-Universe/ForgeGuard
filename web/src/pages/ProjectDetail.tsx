@@ -481,7 +481,8 @@ function ProjectDetail() {
     );
   }
 
-  const buildActive = project.latest_build && ['pending', 'running'].includes(project.latest_build.status);
+  const buildActive = project.latest_build && ['pending', 'running', 'paused'].includes(project.latest_build.status);
+  const activeBuild = buildHistory.find((b) => ['running', 'paused', 'pending'].includes(b.status)) ?? null;
 
   return (
     <AppShell>
@@ -900,21 +901,33 @@ function ProjectDetail() {
           )}
           {buildActive && (
             <>
-              <button
-                onClick={() => navigate(`/projects/${projectId}/build`)}
-                style={{
-                  background: '#2563EB',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '10px 20px',
-                  cursor: 'pointer',
-                  fontSize: '0.875rem',
-                  fontWeight: 600,
-                }}
-              >
-                View Build
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {activeBuild?.status === 'paused' && (
+                  <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>
+                    ⏸ Plan ready
+                  </span>
+                )}
+                {activeBuild?.status === 'running' && (
+                  <span style={{ color: '#3B82F6', fontSize: '0.8rem', fontWeight: 500 }}>
+                    🔄 In progress
+                  </span>
+                )}
+                <button
+                  onClick={() => navigate(`/projects/${projectId}/build`)}
+                  style={{
+                    background: activeBuild?.status === 'paused' ? '#581C87' : '#2563EB',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '10px 20px',
+                    cursor: 'pointer',
+                    fontSize: '0.875rem',
+                    fontWeight: 600,
+                  }}
+                >
+                  {activeBuild?.status === 'paused' ? 'Continue Build' : 'Open Build'}
+                </button>
+              </div>
               <button
                 onClick={() => setShowCancelConfirm(true)}
                 style={{

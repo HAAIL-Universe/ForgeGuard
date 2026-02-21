@@ -17,7 +17,6 @@ __all__ = [
     "_strip_code_fence",
     "_compact_conversation",
     "_build_directive",
-    "_write_contracts_to_workdir",
     "write_forge_config_to_workdir",
     "_extract_phase_window",
     "inject_forge_gitignore",
@@ -276,27 +275,6 @@ def inject_forge_gitignore(working_dir: str | Path) -> bool:
     gi_path.write_text("\n".join(_FORGE_GITIGNORE_RULES) + "\n", encoding="utf-8")
     logger.info("Created .gitignore with Forge exclusion rules in %s", working_dir)
     return True
-
-
-def _write_contracts_to_workdir(
-    working_dir: str, contracts: list[dict],
-) -> list[str]:
-    """Write per-project contract files into ``Forge/Contracts/`` in the repo."""
-    contracts_dir = Path(working_dir) / "Forge" / "Contracts"
-    contracts_dir.mkdir(parents=True, exist_ok=True)
-    written: list[str] = []
-    for contract in contracts:
-        ctype = contract["contract_type"]
-        content = contract["content"]
-        ext = ".md"
-        if ctype == "boundaries":
-            ext = ".json"
-        elif ctype == "physics":
-            ext = ".yaml"
-        path = contracts_dir / f"{ctype}{ext}"
-        path.write_text(content, encoding="utf-8")
-        written.append(f"Forge/Contracts/{ctype}{ext}")
-    return written
 
 
 def write_forge_config_to_workdir(

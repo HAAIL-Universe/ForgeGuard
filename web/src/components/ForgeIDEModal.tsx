@@ -109,6 +109,13 @@ interface LogEntry {
     textLength: number;
     turn: number;
     phase?: string;
+    /** True = real extended thinking (Sonnet/Opus); false = haiku text narration */
+    isActualThinking?: boolean;
+  };
+  /** Present when this is a grouped planner tool call entry (multiple tools, one turn) */
+  toolGroup?: {
+    tools: { name: string; arg: string }[];
+    turn: number;
   };
 }
 
@@ -716,6 +723,7 @@ const LogPane = memo(function LogPane({
   const [expandedScratchpads, setExpandedScratchpads] = useState<Set<number>>(new Set());
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -827,16 +835,20 @@ const LogPane = memo(function LogPane({
           const isLLMThinking = !!log.thinking;
           const isReasoning = !!log.reasoning;
           const isTier = !!log.tier;
-          const isExpandable = isScratchpad || isLLMThinking || isReasoning;
+          const isToolGroup = !!log.toolGroup;
+          const isExpandable = isScratchpad || isLLMThinking || isReasoning || isToolGroup;
           const isExpanded = isScratchpad
             ? expandedScratchpads.has(i)
             : isLLMThinking ? expandedThinking.has(i)
-            : isReasoning ? expandedReasoning.has(i) : false;
+            : isReasoning ? expandedReasoning.has(i)
+            : isToolGroup ? expandedToolGroups.has(i) : false;
 
           const thinkingColor = isLLMThinking
             ? (log.worker === 'opus' ? '#D946EF' : '#38BDF8')
             : undefined;
-          const reasoningColor = '#A78BFA'; // violet for extended thinking output
+          const reasoningColor = log.reasoning?.isActualThinking !== false
+            ? '#A78BFA'   // violet — real extended thinking (Sonnet/Opus)
+            : '#475569';  // slate  — haiku text narration
 
           return (
             <div key={i}>
@@ -850,6 +862,7 @@ const LogPane = memo(function LogPane({
                     : isReasoning ? `2px solid ${reasoningColor}55`
                     : isThinkingLevel ? '2px solid #7C3AED33'
                     : isScratchpad ? '2px solid #F59E0B44'
+                    : isToolGroup ? '2px solid #22D3EE33'
                     : isTier ? '2px solid #3B82F644'
                     : 'none',
                   opacity: log.level === 'debug' ? 0.5 : 1,
@@ -857,6 +870,7 @@ const LogPane = memo(function LogPane({
                   background: isLLMThinking ? `${thinkingColor}0A`
                     : isReasoning ? `${reasoningColor}08`
                     : isScratchpad ? '#F59E0B08'
+                    : isToolGroup ? '#22D3EE05'
                     : isTier ? '#3B82F608' : undefined,
                   borderRadius: isExpandable || isTier ? '2px' : undefined,
                 }}
@@ -875,6 +889,12 @@ const LogPane = memo(function LogPane({
                     });
                   } else if (isReasoning) {
                     setExpandedReasoning((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(i)) next.delete(i); else next.add(i);
+                      return next;
+                    });
+                  } else if (isToolGroup) {
+                    setExpandedToolGroups((prev) => {
                       const next = new Set(prev);
                       if (next.has(i)) next.delete(i); else next.add(i);
                       return next;
@@ -904,6 +924,11 @@ const LogPane = memo(function LogPane({
                   {isReasoning && (
                     <span style={{ color: reasoningColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
                       {isExpanded ? '▼' : '▶'} {(log.reasoning!.textLength / 1000).toFixed(1)}k chars
+                    </span>
+                  )}
+                  {isToolGroup && (
+                    <span style={{ color: '#22D3EE', fontSize: '0.6rem', marginLeft: '6px', opacity: 0.8 }}>
+                      {isExpanded ? '▼' : '▶'} {log.toolGroup!.tools.length} calls
                     </span>
                   )}
                 </span>
@@ -989,6 +1014,29 @@ const LogPane = memo(function LogPane({
                   </div>
                 </div>
               )}
+              {/* Expanded tool group — list of individual tool calls */}
+              {isExpanded && log.toolGroup && (
+                <div style={{
+                  margin: '2px 0 4px 0',
+                  background: '#060F1E',
+                  border: '1px solid #22D3EE22',
+                  borderRadius: '4px',
+                  overflow: 'hidden',
+                }}>
+                  {log.toolGroup.tools.map((t, ti) => (
+                    <div key={ti} style={{
+                      padding: '3px 10px',
+                      borderBottom: ti < log.toolGroup!.tools.length - 1 ? '1px solid #0F172A' : 'none',
+                      display: 'flex', gap: '6px', alignItems: 'baseline',
+                      fontSize: '0.7rem',
+                    }}>
+                      <span style={{ color: '#22D3EE', flexShrink: 0 }}>🔧</span>
+                      <span style={{ color: '#38BDF8' }}>{t.name}</span>
+                      {t.arg && <span style={{ color: '#94A3B8', wordBreak: 'break-all' }}>({t.arg})</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
               {/* Extended-thinking reasoning content — always visible, no expand needed */}
               {log.reasoning && (
                 <div style={{
@@ -1007,7 +1055,7 @@ const LogPane = memo(function LogPane({
                         {ts}
                       </span>
                       <span style={{ color: reasoningColor, fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.5px' }}>
-                        EXTENDED THINKING — turn {log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                        {log.reasoning.isActualThinking !== false ? 'EXTENDED THINKING' : 'PLANNER NARRATION'} — turn {log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
                       </span>
                     </div>
                     <span style={{ color: '#64748B', fontSize: '0.6rem' }}>
@@ -1069,6 +1117,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
+  const [planReady, setPlanReady] = useState(false);          // plan_complete received
   const [pendingClarification, setPendingClarification] = useState<{
     questionId: string;
     question: string;
@@ -1246,7 +1295,16 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 // Still warming up — wait for forge_ide_ready via WS
                 setStatus('preparing');
               }
-            } else if (sd.status === 'paused') setStatus('paused');
+            } else if (sd.status === 'paused') {
+              if (sd.completed_phases < 0) {
+                // Plan-ready pause: planning done, phases not yet executing.
+                // Show REVIEW + PUSH instead of the mid-build Resume button.
+                setStatus('ready');
+                setPlanReady(true);
+              } else {
+                setStatus('paused');
+              }
+            }
             else if (sd.status === 'completed') { setStatus('completed'); setCompletedTasks(phases.length); }
             else if (sd.status === 'failed') setStatus('error');
             else setStatus('ready');
@@ -1428,13 +1486,20 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               if (!msg) break;
               const logLevel = (p.level || 'info') as string;
               logCountRef.current += 1;
-              setLogs((prev) => [...prev, {
+              const entry: LogEntry = {
                 timestamp: p.timestamp || new Date().toISOString(),
                 source: p.source || 'system',
                 level: logLevel,
                 message: msg,
                 worker: (p.worker as 'sonnet' | 'opus' | 'system') || classifyWorker(msg),
-              }]);
+              };
+              if (p.source === 'planner_tool_group' && Array.isArray(p.tool_calls)) {
+                entry.toolGroup = {
+                  tools: p.tool_calls as { name: string; arg: string }[],
+                  turn: (p.turn as number) || 0,
+                };
+              }
+              setLogs((prev) => [...prev, entry]);
               // Track errors in the errors panel
               if (logLevel === 'error') {
                 const fp = errorFingerprint(p.source || 'system', 'error', msg);
@@ -1764,8 +1829,35 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             }
 
             case 'build_commenced':
+              setPlanReady(false);
               setStatus('running');
               break;
+
+            case 'plan_complete': {
+              const planPhaseList = (p.phases as { number: number; name: string; objective?: string }[]) || [];
+              if (planPhaseList.length > 0) {
+                setPhases(planPhaseList as any);
+                setTasks(planPhaseList.map((ph) => ({
+                  id: `phase_${ph.number}`,
+                  name: `Phase ${ph.number}: ${ph.name}`,
+                  priority: 'high' as const,
+                  effort: 'large' as const,
+                  forge_automatable: true,
+                  category: ph.objective?.substring(0, 50) || 'Build phase',
+                  status: 'pending' as const,
+                })));
+                setTotalTasks(planPhaseList.length);
+              }
+              setPlanReady(true);
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system',
+                level: 'system',
+                message: '✅ Plan complete — click PUSH to begin building, or REVIEW to inspect the plan',
+                worker: 'system',
+              }]);
+              break;
+            }
 
             case 'plan_review': {
               const AUTO_APPROVE_SECS = 15;
@@ -1943,7 +2035,10 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 source: 'reasoning', level: 'thinking',
                 message: `💭 Reasoning (turn ${turn})${phase ? ` · ${phase}` : ''}`,
                 worker: blockWorker,
-                reasoning: { text, textLength: length, turn, phase: phase || undefined },
+                reasoning: {
+                  text, textLength: length, turn, phase: phase || undefined,
+                  isActualThinking: (p.is_actual_thinking as boolean) ?? true,
+                },
               }]);
               break;
             }
@@ -3674,7 +3769,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   spellCheck={false}
                   autoFocus={status === 'ready'}
                 />
-                {status === 'ready' && (
+                {status === 'ready' && !planReady && (
                   <button
                     onClick={() => sendCmd('/start')}
                     style={{
@@ -3687,6 +3782,42 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   >
                     ▶ START
                   </button>
+                )}
+                {planReady && (
+                  <>
+                    <button
+                      onClick={() => {
+                        const phaseList = phases.length > 0 ? phases : [];
+                        setLogs((prev) => [...prev, {
+                          timestamp: new Date().toISOString(),
+                          source: 'system',
+                          level: 'system',
+                          message: `📋 Build Plan — ${phaseList.length} phase${phaseList.length !== 1 ? 's' : ''}:\n${phaseList.map((ph: any) => `  Phase ${ph.number}: ${ph.name}${ph.objective ? ` — ${ph.objective}` : ''}`).join('\n')}`,
+                          worker: 'system',
+                        }]);
+                      }}
+                      style={{
+                        background: '#0F1A2E', color: '#38BDF8',
+                        border: '1px solid #38BDF844', borderRadius: '4px',
+                        padding: '3px 10px', cursor: 'pointer',
+                        fontSize: '0.7rem', fontWeight: 600,
+                      }}
+                    >
+                      📋 REVIEW
+                    </button>
+                    <button
+                      onClick={() => { sendCmd('/start'); setPlanReady(false); }}
+                      style={{
+                        background: '#14532D', color: '#22C55E',
+                        border: '1px solid #22C55E44', borderRadius: '4px',
+                        padding: '3px 12px', cursor: 'pointer',
+                        fontSize: '0.7rem', fontWeight: 700,
+                        animation: 'pulseGreen 2s ease-in-out infinite',
+                      }}
+                    >
+                      ▶ PUSH
+                    </button>
+                  </>
                 )}
                 {/* Quick action buttons */}
                 {status === 'running' && (

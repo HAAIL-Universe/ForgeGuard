@@ -292,7 +292,7 @@ paths:
       summary: "Start a build (validates contracts exist, spawns builder)"
       auth: bearer
       request:
-        target_type: string (required, enum: github_new, github_existing, local_path)
+        target_type: string (required, enum: github_new, github_existing)
         target_ref: string (required, repo name / full_name / absolute path)
       response:
         id: uuid
