@@ -5,7 +5,7 @@ import logging
 from uuid import UUID
 
 from app.clients.llm_client import chat as llm_chat
-from app.config import settings
+from app.config import settings, get_model_for_role
 from app.repos.project_repo import (
     get_project_by_id,
     update_project_status,
@@ -293,7 +293,7 @@ async def process_questionnaire_message(
         llm_model = settings.OPENAI_MODEL
     else:
         llm_api_key = settings.ANTHROPIC_API_KEY
-        llm_model = settings.LLM_QUESTIONNAIRE_MODEL
+        llm_model = get_model_for_role("questionnaire")
 
     # Build dynamic system prompt with project context
     dynamic_system = (

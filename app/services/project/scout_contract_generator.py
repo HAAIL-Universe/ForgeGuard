@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from app.clients.llm_client import chat_streaming as llm_chat_streaming
-from app.config import settings
+from app.config import settings, get_model_for_role
 from app.repos.project_repo import (
     get_contracts_by_project,
     get_project_by_id,
@@ -501,7 +501,7 @@ async def generate_contracts_from_scout(
         llm_model = settings.OPENAI_MODEL
     else:
         llm_api_key = settings.ANTHROPIC_API_KEY
-        llm_model = settings.LLM_QUESTIONNAIRE_MODEL
+        llm_model = get_model_for_role("questionnaire")
 
     pid = str(project_id)
 

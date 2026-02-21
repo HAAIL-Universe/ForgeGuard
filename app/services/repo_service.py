@@ -29,6 +29,11 @@ from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
+# Per-user in-flight guard: prevents concurrent health check tasks from
+# racing when two GET /repos requests arrive faster than the first task
+# can write its result back to the DB.
+_health_check_running: set[str] = set()
+
 
 async def create_and_connect_repo(
     user_id: UUID,
@@ -261,14 +266,21 @@ async def _check_single_repo(user: dict, repo: dict) -> None:
 
 async def run_repo_health_check(user_id: UUID) -> None:
     """Background task: check all repos for a user and emit WS update on completion."""
-    user = await get_user_by_id(user_id)
-    if not user:
-        return
-    repos = await get_repos_by_user(user_id)
-    await asyncio.gather(
-        *[_check_single_repo(user, r) for r in repos],
-        return_exceptions=True,
-    )
+    uid_str = str(user_id)
+    if uid_str in _health_check_running:
+        return  # another task is already checking this user's repos
+    _health_check_running.add(uid_str)
+    try:
+        user = await get_user_by_id(user_id)
+        if not user:
+            return
+        repos = await get_repos_by_user(user_id)
+        await asyncio.gather(
+            *[_check_single_repo(user, r) for r in repos],
+            return_exceptions=True,
+        )
+    finally:
+        _health_check_running.discard(uid_str)
     await manager.send_to_user(str(user_id), {
         "type": "repos_health_updated",
         "payload": {"checked": len(repos)},

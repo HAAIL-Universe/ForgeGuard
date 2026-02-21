@@ -103,6 +103,13 @@ interface LogEntry {
     contextFiles?: string[];
     files?: string[];
   };
+  /** Present when this is an extended-thinking reasoning block from the API */
+  reasoning?: {
+    text: string;
+    textLength: number;
+    turn: number;
+    phase?: string;
+  };
 }
 
 function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
@@ -221,6 +228,12 @@ const LEVEL_ICONS: Record<string, string> = {
   error: '✗',
   system: '▸',
   thinking: '◉',
+};
+
+/** Format a timestamp string as MM:SS (minutes:seconds only). */
+const fmtTs = (ts: string) => {
+  const d = new Date(ts);
+  return `${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 };
 
 /* ---------- File checklist (Opus progress) ---------- */
@@ -486,14 +499,15 @@ const AgentPanel = memo(function AgentPanel({
             /* Fall back to flat log display when no agent events yet */
             opusLogs.map((log, i) => {
               const color = LEVEL_COLORS[log.level] ?? LEVEL_COLORS.info;
-              const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+              const ts = log.timestamp ? fmtTs(log.timestamp) : '';
               const isLLMThinking = !!log.thinking;
               const isExpanded = isLLMThinking && expandedThinking.has(i);
               return (
                 <div key={i}>
                   <div
                     style={{
-                      display: 'flex', gap: '8px', padding: isLLMThinking ? '3px 0 3px 12px' : '1px 0',
+                      display: 'flex', flexDirection: 'column',
+                      padding: isLLMThinking ? '2px 0 4px 12px' : '2px 0 4px 0',
                       color: isLLMThinking ? labelColor : color,
                       borderLeft: isLLMThinking ? `2px solid ${labelColor}66` : 'none',
                       background: isLLMThinking ? `${labelColor}0A` : undefined,
@@ -508,7 +522,7 @@ const AgentPanel = memo(function AgentPanel({
                       });
                     } : undefined}
                   >
-                    <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem' }}>{ts}</span>
+                    <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>{ts}</span>
                     <span style={{ wordBreak: 'break-word' }}>
                       {log.message}
                       {isLLMThinking && (
@@ -553,13 +567,13 @@ const AgentPanel = memo(function AgentPanel({
           <>
             {/* Show Opus thinking entries above agent sections */}
             {opusLogs.filter(l => !!l.thinking).map((log, i) => {
-              const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+              const ts = log.timestamp ? fmtTs(log.timestamp) : '';
               const isExpanded = expandedThinking.has(i + 10000);
               return (
                 <div key={`think-${i}`} style={{ marginBottom: '4px' }}>
                   <div
                     style={{
-                      display: 'flex', gap: '8px', padding: '3px 0 3px 12px',
+                      display: 'flex', flexDirection: 'column', padding: '2px 0 4px 12px',
                       color: labelColor, borderLeft: `2px solid ${labelColor}66`,
                       background: `${labelColor}0A`, cursor: 'pointer', borderRadius: '2px',
                     }}
@@ -572,7 +586,7 @@ const AgentPanel = memo(function AgentPanel({
                       });
                     }}
                   >
-                    <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem' }}>{ts}</span>
+                    <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>{ts}</span>
                     <span style={{ wordBreak: 'break-word' }}>
                       {log.message}
                       <span style={{ color: labelColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
@@ -648,7 +662,7 @@ const ActiveLogLine = memo(function ActiveLogLine({
     return () => clearInterval(id);
   }, [log.timestamp]);
 
-  const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+  const ts = log.timestamp ? fmtTs(log.timestamp) : '';
   const elapsedLabel = elapsed >= 3 ? `${elapsed}s` : '';
 
   return (
@@ -656,23 +670,24 @@ const ActiveLogLine = memo(function ActiveLogLine({
       style={{
         color,
         display: 'flex',
-        padding: '1px 0 1px 12px',
+        flexDirection: 'column',
+        padding: '2px 0 4px 12px',
         borderLeft: `2px solid ${accentColor}88`,
         background: `${accentColor}0A`,
       }}
     >
-      <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
-        {ts}
-      </span>
-      <span style={{ color: accentColor, flexShrink: 0, width: '28px', fontSize: '0.65rem', paddingTop: '2px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
-        {elapsedLabel}
-      </span>
-      {icon && (
-        <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem', marginLeft: '8px' }}>
-          {icon}
+      <div style={{ display: 'flex', gap: '6px', alignItems: 'baseline' }}>
+        <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
+          {ts}
         </span>
-      )}
-      <span style={{ wordBreak: 'break-word', marginLeft: icon ? '8px' : '30px' }}>
+        {elapsedLabel && (
+          <span style={{ color: accentColor, fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+            {elapsedLabel}
+          </span>
+        )}
+      </div>
+      <span style={{ wordBreak: 'break-word' }}>
+        {icon && <span style={{ marginRight: '6px' }}>{icon}</span>}
         {log.message.replace(/…$/, '')}
         <span className="forge-ide-dots" />
       </span>
@@ -700,6 +715,7 @@ const LogPane = memo(function LogPane({
   const prevLogCount = useRef(panelLogs.length);
   const [expandedScratchpads, setExpandedScratchpads] = useState<Set<number>>(new Set());
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
+  const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -726,18 +742,21 @@ const LogPane = memo(function LogPane({
     }
   }, [panelLogs.length]);
 
-  // Auto-expand the latest expandable (thinking/scratchpad) entry,
+  // Auto-expand the latest expandable (thinking/scratchpad/reasoning) entry,
   // collapsing any previously auto-expanded one.
   useEffect(() => {
     let latestThinking = -1;
     let latestScratchpad = -1;
+    let latestReasoning = -1;
     for (let j = panelLogs.length - 1; j >= 0; j--) {
       if (latestThinking < 0 && panelLogs[j].thinking) latestThinking = j;
       if (latestScratchpad < 0 && panelLogs[j].scratchpad) latestScratchpad = j;
-      if (latestThinking >= 0 && latestScratchpad >= 0) break;
+      if (latestReasoning < 0 && panelLogs[j].reasoning) latestReasoning = j;
+      if (latestThinking >= 0 && latestScratchpad >= 0 && latestReasoning >= 0) break;
     }
     if (latestThinking >= 0) setExpandedThinking(new Set([latestThinking]));
     if (latestScratchpad >= 0) setExpandedScratchpads(new Set([latestScratchpad]));
+    if (latestReasoning >= 0) setExpandedReasoning(new Set([latestReasoning]));
   }, [panelLogs.length]);
 
   // Find last active thinking line per worker in THIS panel.
@@ -802,29 +821,33 @@ const LogPane = memo(function LogPane({
             return <ActiveLogLine key={i} log={log} color={color} icon={icon} accentColor={labelColor} />;
           }
 
-          const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+          const ts = log.timestamp ? fmtTs(log.timestamp) : '';
           const isThinkingLevel = log.level === 'thinking';
           const isScratchpad = !!log.scratchpad;
           const isLLMThinking = !!log.thinking;
+          const isReasoning = !!log.reasoning;
           const isTier = !!log.tier;
-          const isExpandable = isScratchpad || isLLMThinking;
+          const isExpandable = isScratchpad || isLLMThinking || isReasoning;
           const isExpanded = isScratchpad
             ? expandedScratchpads.has(i)
-            : isLLMThinking ? expandedThinking.has(i) : false;
+            : isLLMThinking ? expandedThinking.has(i)
+            : isReasoning ? expandedReasoning.has(i) : false;
 
           const thinkingColor = isLLMThinking
             ? (log.worker === 'opus' ? '#D946EF' : '#38BDF8')
             : undefined;
+          const reasoningColor = '#A78BFA'; // violet for extended thinking output
 
           return (
             <div key={i}>
               <div
                 style={{
-                  color: isLLMThinking ? thinkingColor : color,
-                  display: 'flex', gap: '8px',
-                  padding: isThinkingLevel ? '1px 0 1px 12px'
-                    : isLLMThinking ? '3px 0 3px 12px' : '1px 0',
+                  color: isLLMThinking ? thinkingColor : isReasoning ? reasoningColor : color,
+                  display: 'flex', flexDirection: 'column',
+                  padding: isThinkingLevel ? '2px 0 4px 12px'
+                    : (isLLMThinking || isReasoning) ? '2px 0 4px 12px' : '2px 0 4px 0',
                   borderLeft: isLLMThinking ? `2px solid ${thinkingColor}66`
+                    : isReasoning ? `2px solid ${reasoningColor}55`
                     : isThinkingLevel ? '2px solid #7C3AED33'
                     : isScratchpad ? '2px solid #F59E0B44'
                     : isTier ? '2px solid #3B82F644'
@@ -832,6 +855,7 @@ const LogPane = memo(function LogPane({
                   opacity: log.level === 'debug' ? 0.5 : 1,
                   cursor: isExpandable ? 'pointer' : undefined,
                   background: isLLMThinking ? `${thinkingColor}0A`
+                    : isReasoning ? `${reasoningColor}08`
                     : isScratchpad ? '#F59E0B08'
                     : isTier ? '#3B82F608' : undefined,
                   borderRadius: isExpandable || isTier ? '2px' : undefined,
@@ -849,19 +873,23 @@ const LogPane = memo(function LogPane({
                       if (next.has(i)) next.delete(i); else next.add(i);
                       return next;
                     });
+                  } else if (isReasoning) {
+                    setExpandedReasoning((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(i)) next.delete(i); else next.add(i);
+                      return next;
+                    });
                   }
                 } : undefined}
                 title={isExpandable ? 'Click to expand' : undefined}
               >
-                <span style={{ color: '#334155', flexShrink: 0, width: '70px', fontSize: '0.65rem', paddingTop: '2px' }}>
+                <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
                   {ts}
                 </span>
-                {icon && !isLLMThinking && (
-                  <span style={{ flexShrink: 0, width: '14px', textAlign: 'center', fontSize: '0.7rem' }}>
-                    {icon}
-                  </span>
-                )}
                 <span style={{ wordBreak: 'break-word' }}>
+                  {icon && !isLLMThinking && (
+                    <span style={{ marginRight: '5px', fontSize: '0.7rem' }}>{icon}</span>
+                  )}
                   {log.message}
                   {isScratchpad && (
                     <span style={{ color: '#F59E0B', fontSize: '0.6rem', marginLeft: '6px' }}>
@@ -871,6 +899,11 @@ const LogPane = memo(function LogPane({
                   {isLLMThinking && (
                     <span style={{ color: thinkingColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
                       {isExpanded ? '▼' : '▶'} {(log.thinking!.userMessageLength / 1000).toFixed(1)}k chars
+                    </span>
+                  )}
+                  {isReasoning && (
+                    <span style={{ color: reasoningColor, fontSize: '0.6rem', marginLeft: '6px', opacity: 0.7 }}>
+                      {isExpanded ? '▼' : '▶'} {(log.reasoning!.textLength / 1000).toFixed(1)}k chars
                     </span>
                   )}
                 </span>
@@ -956,6 +989,41 @@ const LogPane = memo(function LogPane({
                   </div>
                 </div>
               )}
+              {/* Expanded extended-thinking reasoning content */}
+              {isExpanded && log.reasoning && (
+                <div style={{
+                  margin: '2px 0 6px 86px',
+                  background: '#0F172A',
+                  border: `1px solid ${reasoningColor}44`,
+                  borderRadius: '4px',
+                  fontSize: '0.7rem',
+                  lineHeight: 1.5,
+                  overflow: 'hidden',
+                }}>
+                  <div style={{ padding: '4px 10px', borderBottom: `1px solid ${reasoningColor}22`,
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: reasoningColor, fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.5px' }}>
+                      EXTENDED THINKING — turn {log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                    </span>
+                    <span style={{ color: '#64748B', fontSize: '0.6rem' }}>
+                      {(log.reasoning.textLength / 1000).toFixed(1)}k chars
+                      {log.reasoning.textLength > log.reasoning.text.length ? ' (truncated)' : ''}
+                    </span>
+                  </div>
+                  <pre style={{
+                    margin: 0, padding: '6px 10px',
+                    color: '#C4B5FD', whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word', maxHeight: '400px', overflowY: 'auto',
+                  }}>
+                    <code>{log.reasoning.text}</code>
+                    {log.reasoning.textLength > log.reasoning.text.length && (
+                      <span style={{ color: '#64748B', fontStyle: 'italic' }}>
+                        {'\n'}... truncated ({log.reasoning.textLength - log.reasoning.text.length} more chars)
+                      </span>
+                    )}
+                  </pre>
+                </div>
+              )}
             </div>
           );
         })}
@@ -992,6 +1060,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [chatLoading, setChatLoading] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
+  const [suggestionIdx, setSuggestionIdx] = useState(-1);
   const [cmdHistoryArr, setCmdHistoryArr] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
@@ -1019,22 +1088,27 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [setupEndIndex, setSetupEndIndex] = useState(-1);
   const [setupCollapsed, setSetupCollapsed] = useState(true);
   const autoCommenceRef = useRef(false);
+  // Tracks the intended log count synchronously — used by forge_ide_ready to set
+  // setupEndIndex correctly.  logs.length is stale inside the WS handler closure
+  // because React batches the preceding setLogs(prev=>) functional updates and
+  // hasn't committed them yet when forge_ide_ready fires.
+  const logCountRef = useRef(0);
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const rightColRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  const suggestionListRef = useRef<HTMLDivElement>(null);
 
   const SLASH_COMMANDS: Record<string, string> = isBuild ? {
-    '/start':   'Start or resume the build',
-    '/pause':   'Pause after the current file finishes',
-    '/resume':  'Resume a paused build',
-    '/stop':    'Cancel the build immediately',
-    '/nuke':    'Nuke build — delete branch + record permanently',
-    '/push':    'Commit and push to GitHub',
-    '/compact': 'Compact context before next file',
-    '/commit':  'Git add, commit, and push',
-    '/status':  'Print current progress summary',
-    '/clear':   'Clear the activity log',
-    '/verify':  'Run verification (syntax + tests)',
+    '/start':  'Start or resume the build',
+    '/prep':   'Preview build phases without starting',
+    '/pause':  'Pause — waits for the current file to finish',
+    '/resume': 'Resume after a pause or error',
+    '/stop':   'Cancel the build now',
+    '/push':   'Commit all changes and push to GitHub',
+    '/verify': 'Run syntax checks and tests',
+    '/status': 'Show current build progress',
+    '/clear':  'Clear the activity log',
+    '/nuke':   '⚠ Permanent — delete branch and all build records',
   } : {
     '/start':  'Begin the upgrade execution',
     '/pause':  'Pause execution after current task finishes',
@@ -1115,6 +1189,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       /* ── Build mode init ── */
       const prepareBuild = async () => {
         const hdr = { Authorization: `Bearer ${token}` };
+        // Track ide_gate_pending so setupEndIndex is set AFTER seed load
+        // (setting it to 0 before seeds arrive leaves the setup section empty)
+        let _pendingGate = false;
         // 1. Fetch phases → map to tasks
         try {
           const phasesRes = await fetch(`${API_BASE}/projects/${projectId}/build/phases`, { headers: hdr });
@@ -1153,8 +1230,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               }));
               setCompletedTasks(currentPhaseNum);
             } else if (sd.status === 'pending') {
-              // Build exists but hasn't been commenced — still in setup/ready gate
-              setStatus('preparing');
+              if (sd.ide_gate_pending) {
+                // IDE warm-up is done and the gate is open — restore ready state.
+                // Don't set setupEndIndex or add the welcome log here; defer
+                // both to after step-4 seed load so setupEndIndex == seedLogs.length
+                // instead of 0 (which would leave the setup section empty).
+                setStatus('ready');
+                _pendingGate = true;
+              } else {
+                // Still warming up — wait for forge_ide_ready via WS
+                setStatus('preparing');
+              }
             } else if (sd.status === 'paused') setStatus('paused');
             else if (sd.status === 'completed') { setStatus('completed'); setCompletedTasks(phases.length); }
             else if (sd.status === 'failed') setStatus('error');
@@ -1215,13 +1301,30 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           if (logsRes.ok) {
             const logData = await logsRes.json();
             const items = (logData.items ?? []) as { timestamp: string; message: string; level: string; source?: string }[];
-            setLogs(items.map((l) => ({
+            const seedLogs = items.map((l) => ({
               timestamp: l.timestamp,
               source: l.source || 'system',
               level: l.level || 'info',
               message: l.message,
               worker: classifyWorker(l.message || ''),
-            })));
+            }));
+            setLogs(seedLogs);
+            // Sync the ref so forge_ide_ready can set the correct setupEndIndex.
+            // This is a direct setLogs replacement (not a functional append), so
+            // logCountRef must be updated here — it won't be incremented by the
+            // build_log WS handler for logs that were already in the DB.
+            logCountRef.current = seedLogs.length;
+            // If we restored from ide_gate_pending, now that seeds are loaded
+            // we know the correct index — everything before this point is setup.
+            if (_pendingGate) {
+              setSetupEndIndex(seedLogs.length);
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'info',
+                message: '✔ IDE ready — type /start to begin the build',
+                worker: 'system',
+              }]);
+            }
           }
         } catch { /* silent */ }
 
@@ -1319,6 +1422,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               const msg = (p.message ?? p.msg ?? '') as string;
               if (!msg) break;
               const logLevel = (p.level || 'info') as string;
+              logCountRef.current += 1;
               setLogs((prev) => [...prev, {
                 timestamp: p.timestamp || new Date().toISOString(),
                 source: p.source || 'system',
@@ -1600,17 +1704,31 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               }]);
               break;
 
-            case 'forge_ide_ready':
-              setSetupEndIndex(logs.length);
+            case 'forge_ide_ready': {
+              // Everything up to this point is setup noise — collapse it.
+              // Use a functional setLogs update so setupEndIndex captures
+              // prev.length atomically (avoids stale-closure race with seed load).
+              const _files = p.total_files ?? 0;
+              const _lines = p.total_lines ?? 0;
+              const _tests = p.test_count ?? 0;
+              const _syms  = p.symbols_count ?? 0;
+              const _tbls  = (p.tables as string[] | undefined)?.length ?? 0;
+              const _statsLine = `✔ Workspace ready — ${_files} files, ${_lines.toLocaleString()} lines`
+                + (_tests  ? `, ${_tests} tests`  : '')
+                + (_syms   ? `, ${_syms} symbols`  : '')
+                + (_tbls   ? `, ${_tbls} tables`   : '');
               if (autoCommenceRef.current) {
-                // Auto-commence: user already pressed /start, skip ready state
+                // Auto-commence: build starts immediately — no command hints needed.
                 autoCommenceRef.current = false;
-                setLogs((prev) => [...prev, {
-                  timestamp: new Date().toISOString(),
-                  source: 'system', level: 'info',
-                  message: '✔ IDE ready — commencing build…',
-                  worker: 'system',
-                }]);
+                setLogs((prev) => {
+                  setSetupEndIndex(prev.length);
+                  return [...prev, {
+                    timestamp: new Date().toISOString(),
+                    source: 'system', level: 'info',
+                    message: _statsLine + ' · commencing build…',
+                    worker: 'system',
+                  }];
+                });
                 // Fire commence in background
                 fetch(`${API_BASE}/projects/${projectId}/build/commence`, {
                   method: 'POST',
@@ -1619,14 +1737,26 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 }).catch(() => { /* WS build_commenced will confirm */ });
               } else {
                 setStatus('ready');
-                setLogs((prev) => [...prev, {
-                  timestamp: new Date().toISOString(),
-                  source: 'system', level: 'info',
-                  message: '✔ IDE ready — type /start to begin the build',
-                  worker: 'system',
-                }]);
+                setLogs((prev) => {
+                  setSetupEndIndex(prev.length);
+                  return [...prev,
+                    {
+                      timestamp: new Date().toISOString(),
+                      source: 'system', level: 'info',
+                      message: _statsLine,
+                      worker: 'system',
+                    },
+                    {
+                      timestamp: new Date().toISOString(),
+                      source: 'system', level: 'info',
+                      message: 'Type /prep to preview the build plan · /start to begin building',
+                      worker: 'system',
+                    },
+                  ];
+                });
               }
               break;
+            }
 
             case 'build_commenced':
               setStatus('running');
@@ -1791,6 +1921,24 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   fullLength: (p.full_length as number) || 0,
                   role: (p.role as string) || 'agent',
                 },
+              }]);
+              break;
+            }
+
+            /* ---- Extended thinking reasoning output (fires after API call) ---- */
+            case 'thinking_block': {
+              const turn = (p.turn as number) || 0;
+              const text = (p.reasoning_text as string) || '';
+              const length = (p.reasoning_length as number) || text.length;
+              const phase = (p.phase as string) || '';
+              const src = (p.source as string) || 'planner';
+              const blockWorker: 'sonnet' | 'opus' = src === 'opus' ? 'opus' : 'sonnet';
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'reasoning', level: 'thinking',
+                message: `💭 Reasoning (turn ${turn})${phase ? ` · ${phase}` : ''}: ${text.slice(0, 80)}${text.length > 80 ? '…' : ''}`,
+                worker: blockWorker,
+                reasoning: { text, textLength: length, turn, phase: phase || undefined },
               }]);
               break;
             }
@@ -2391,7 +2539,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         const chatRes = await fetch(`${API_BASE}/projects/${projectId}/build/chat`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: trimmed }),
+          body: JSON.stringify({
+            message: trimmed,
+            // chatMessages captured here is the state BEFORE the setChatMessages above
+            // (React batches state updates), so it contains the prior conversation only.
+            history: chatMessages.map((m) => ({ role: m.role, content: m.text })),
+          }),
         });
         if (chatRes.ok) {
           const chatData = await chatRes.json();
@@ -2545,13 +2698,26 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const handleCmdChange = useCallback((val: string) => {
     setCmdInput(val);
     setHistoryIdx(-1);
-    if (val.startsWith('/') && val.length > 0) {
+    setSuggestionIdx(-1);
+    if (val === '?') {
+      // ? opens the full command picker
+      setCmdSuggestions(Object.keys(SLASH_COMMANDS));
+    } else if (val.startsWith('/') && val.length > 1) {
+      // /s, /st, /start etc. → filter as you type (/ alone shows nothing)
       const matches = Object.keys(SLASH_COMMANDS).filter((c) => c.startsWith(val.toLowerCase()));
       setCmdSuggestions(matches);
     } else {
       setCmdSuggestions([]);
     }
-  }, []);
+  }, [SLASH_COMMANDS]);
+
+  /* Keep highlighted suggestion item visible when navigating with arrow keys */
+  useEffect(() => {
+    if (suggestionIdx >= 0 && suggestionListRef.current) {
+      const items = suggestionListRef.current.querySelectorAll<HTMLElement>('[data-suggestion-item]');
+      items[suggestionIdx]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [suggestionIdx]);
 
   /* Auto-scroll chat when new messages arrive */
   useEffect(() => {
@@ -2713,21 +2879,69 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
         <div style={{ flex: 1 }} />
 
-        {/* Close button */}
+        {/* Close button — cancels the build server-side if still active */}
         <button
-          onClick={onClose}
+          onClick={async () => {
+            if (isBuild && (status === 'running' || status === 'preparing' || status === 'paused') && projectId && token) {
+              try {
+                await fetch(`${API_BASE}/projects/${projectId}/build/cancel`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+              } catch { /* ignore — navigate away regardless */ }
+            }
+            onClose();
+          }}
           style={{
             background: status === 'running' ? '#334155' : '#1E293B',
             color: '#94A3B8', border: '1px solid #334155', borderRadius: '6px',
             padding: '4px 14px', cursor: 'pointer', fontSize: '0.75rem',
           }}
         >
-          {status === 'running' ? '⏹ Close' : status === 'paused' ? '⏸ Close' : '✕ Close'}
+          {status === 'running' ? '⏹ Stop & Close' : status === 'preparing' ? '⏹ Stop & Close' : status === 'paused' ? '⏸ Close' : '✕ Close'}
         </button>
       </div>
 
       {/* ── Main Content ── */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+
+        {/* ── Build Error Overlay ── */}
+        {status === 'error' && isBuild && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 10,
+            background: 'rgba(15,23,42,0.92)', backdropFilter: 'blur(6px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              background: '#1E293B', border: '1px solid #EF4444',
+              borderRadius: '12px', padding: '40px 48px',
+              textAlign: 'center', maxWidth: '420px',
+            }}>
+              <div style={{ fontSize: '2.5rem', marginBottom: '16px' }}>&#9888;</div>
+              <div style={{ color: '#EF4444', fontSize: '1.1rem', fontWeight: 700, marginBottom: '8px' }}>
+                Build Failed or Interrupted
+              </div>
+              <div style={{ color: '#94A3B8', fontSize: '0.85rem', lineHeight: 1.6, marginBottom: '28px' }}>
+                The build stopped unexpectedly — likely because the server was restarted
+                mid-build. Your project files are safe. You can start a fresh build from
+                the project page.
+              </div>
+              <button
+                onClick={onClose}
+                style={{
+                  background: '#3B82F6', color: '#F1F5F9',
+                  border: 'none', borderRadius: '8px',
+                  padding: '10px 28px', fontSize: '0.9rem',
+                  fontWeight: 600, cursor: 'pointer',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#2563EB')}
+                onMouseLeave={e => (e.currentTarget.style.background = '#3B82F6')}
+              >
+                Back to Project
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Left Panel: Tasks / Narrator ── */}
         {leftCollapsed ? (
@@ -2798,6 +3012,30 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               {tasks.length === 0 && status === 'preparing' && (
                 <div style={{ color: '#475569', fontSize: '0.75rem', padding: '8px' }}>
                   Initializing…
+                </div>
+              )}
+
+              {tasks.length === 0 && status === 'ready' && (
+                <div style={{
+                  color: '#475569', fontSize: '0.75rem', padding: '10px 8px', lineHeight: '1.7',
+                }}>
+                  <div style={{ color: '#64748B', fontWeight: 600, marginBottom: '8px' }}>
+                    No phases yet
+                  </div>
+                  <div>
+                    Type{' '}
+                    <span style={{ color: '#94A3B8', fontFamily: 'monospace', background: '#1E293B', padding: '1px 5px', borderRadius: '3px' }}>
+                      /prep
+                    </span>
+                    {' '}to run the planner and preview your build phases here before starting.
+                  </div>
+                  <div style={{ marginTop: '8px', color: '#334155' }}>
+                    Or type{' '}
+                    <span style={{ color: '#94A3B8', fontFamily: 'monospace', background: '#1E293B', padding: '1px 5px', borderRadius: '3px' }}>
+                      /start
+                    </span>
+                    {' '}to plan and build in one step.
+                  </div>
                 </div>
               )}
 
@@ -3040,7 +3278,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               title="Copy activity log to clipboard"
               onClick={() => {
                 const text = logs.map(l => {
-                  const ts = l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : '';
+                  const ts = l.timestamp ? fmtTs(l.timestamp) : '';
                   return `${ts}  ${l.message}`;
                 }).join('\n');
                 navigator.clipboard.writeText(text).then(() => {
@@ -3293,24 +3531,30 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 </div>
               )}
               {/* Autocomplete dropdown */}
-              {cmdSuggestions.length > 0 && status !== 'ready' && (
-                <div style={{
+              {cmdSuggestions.length > 0 && (
+                <div ref={suggestionListRef} style={{
                   position: 'absolute', bottom: '100%', left: 0, right: 0,
                   background: '#1E293B', border: '1px solid #334155',
                   borderBottom: 'none', borderRadius: '6px 6px 0 0',
-                  maxHeight: '200px', overflowY: 'auto', zIndex: 10,
+                  maxHeight: '220px', overflowY: 'auto', zIndex: 10,
                 }}>
-                  {cmdSuggestions.map((cmd) => (
+                  {cmdInput === '?' && (
+                    <div style={{ padding: '4px 12px', fontSize: '0.6rem', color: '#475569', borderBottom: '1px solid #334155', background: '#0F172A' }}>
+                      ↑↓ navigate · Enter or click to run · Esc to close
+                    </div>
+                  )}
+                  {cmdSuggestions.map((cmd, idx) => (
                     <div
                       key={cmd}
-                      onClick={() => { setCmdInput(cmd + ' '); setCmdSuggestions([]); cmdInputRef.current?.focus(); }}
+                      data-suggestion-item
+                      onClick={() => { sendCmd(cmd); setSuggestionIdx(-1); cmdInputRef.current?.focus(); }}
+                      onMouseEnter={() => setSuggestionIdx(idx)}
                       style={{
                         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                         padding: '6px 12px', cursor: 'pointer',
                         borderBottom: '1px solid #334155',
+                        background: idx === suggestionIdx ? '#1E3A5F' : 'transparent',
                       }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#334155'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
                     >
                       <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#22C55E', fontWeight: 600 }}>
                         {cmd}
@@ -3343,13 +3587,26 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      // If a clarification is pending, treat input as the answer
+                      // Clarification takes priority
                       if (pendingClarification && cmdInput.trim()) {
                         submitClarification(cmdInput.trim());
                         setCmdInput('');
                         return;
                       }
-                      // If suggestions visible and only 1, auto-pick it
+                      // Arrow-key highlighted suggestion → pick it
+                      if (suggestionIdx >= 0 && cmdSuggestions[suggestionIdx]) {
+                        sendCmd(cmdSuggestions[suggestionIdx]);
+                        setSuggestionIdx(-1);
+                        return;
+                      }
+                      // ? with picker open → clear (don't send '?' as chat)
+                      if (cmdInput === '?' && cmdSuggestions.length > 0) {
+                        setCmdInput('');
+                        setCmdSuggestions([]);
+                        setSuggestionIdx(-1);
+                        return;
+                      }
+                      // Single match → auto-pick
                       if (cmdSuggestions.length === 1 && cmdInput.startsWith('/') && !cmdInput.includes(' ')) {
                         sendCmd(cmdSuggestions[0]);
                       } else {
@@ -3357,32 +3614,41 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       }
                     } else if (e.key === 'Escape') {
                       setCmdSuggestions([]);
+                      setSuggestionIdx(-1);
                     } else if (e.key === 'Tab' && cmdSuggestions.length > 0) {
                       e.preventDefault();
-                      setCmdInput(cmdSuggestions[0]);
+                      const pick = suggestionIdx >= 0 ? cmdSuggestions[suggestionIdx] : cmdSuggestions[0];
+                      setCmdInput(pick);
                       setCmdSuggestions([]);
+                      setSuggestionIdx(-1);
                     } else if (e.key === 'ArrowUp') {
                       e.preventDefault();
-                      if (cmdHistoryArr.length > 0) {
+                      if (cmdSuggestions.length > 0) {
+                        // Navigate suggestion picker upward
+                        setSuggestionIdx((prev) => Math.max(0, prev <= 0 ? 0 : prev - 1));
+                      } else if (cmdHistoryArr.length > 0) {
                         const next = Math.min(historyIdx + 1, cmdHistoryArr.length - 1);
                         setHistoryIdx(next);
                         setCmdInput(cmdHistoryArr[next]);
-                        setCmdSuggestions([]);
                       }
                     } else if (e.key === 'ArrowDown') {
                       e.preventDefault();
-                      if (historyIdx > 0) {
+                      if (cmdSuggestions.length > 0) {
+                        // Navigate suggestion picker downward
+                        setSuggestionIdx((prev) => Math.min(cmdSuggestions.length - 1, prev + 1));
+                      } else if (historyIdx > 0) {
                         const next = historyIdx - 1;
                         setHistoryIdx(next);
                         setCmdInput(cmdHistoryArr[next]);
+                        setCmdSuggestions([]);
                       } else {
                         setHistoryIdx(-1);
                         setCmdInput('');
+                        setCmdSuggestions([]);
                       }
-                      setCmdSuggestions([]);
                     }
                   }}
-                  placeholder={pendingClarification ? 'Type your answer or choose an option above…' : pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : status === 'ready' ? (isBuild ? 'Press Enter to start build…' : 'Press Enter to start upgrade…') : 'Ask a question or type / for commands…'}
+                  placeholder={pendingClarification ? 'Type your answer or choose an option above…' : pendingPrompt ? (isBuild ? 'Type retry, skip, abort, or edit…' : 'Type Y or N…') : 'Ask a question, or type / for commands (? to browse all)…'}
                   style={{
                     flex: 1, background: 'transparent', border: 'none', outline: 'none',
                     color: pendingPrompt ? '#FBBF24'
@@ -3599,6 +3865,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 setBuildErrors((prev) => prev.map((e) =>
                   e.id === errorId ? { ...e, resolved: true, resolved_at: new Date().toISOString(), resolution_method: 'dismissed' } : e,
                 ));
+                // Frontend-generated errors (id starts with "fe-") have no DB record.
+                // The optimistic update above is sufficient — skip the backend call.
+                if (errorId.startsWith('fe-')) return;
                 // Persist to backend
                 try {
                   await fetch(`${API_BASE}/projects/${projectId}/build/errors/dismiss`, {

@@ -75,7 +75,7 @@ async def generate_contract_readme(
     Called after contracts are finalised. Returns Markdown string or None
     if LLM is unavailable.
     """
-    from app.config import settings
+    from app.config import settings, get_model_for_role
 
     api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
@@ -100,7 +100,7 @@ async def generate_contract_readme(
     )
 
     try:
-        model = settings.LLM_PLANNER_MODEL
+        model = get_model_for_role("planner")
         result = await chat(
             api_key=api_key,
             model=model,
@@ -153,7 +153,7 @@ async def generate_project_readme(
     Called after build completes, before Seal. Returns Markdown string or
     None if LLM is unavailable.
     """
-    from app.config import settings
+    from app.config import settings, get_model_for_role
 
     api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
@@ -186,7 +186,7 @@ async def generate_project_readme(
     )
 
     try:
-        model = settings.LLM_PLANNER_MODEL
+        model = get_model_for_role("planner")
         result = await chat(
             api_key=api_key,
             model=model,

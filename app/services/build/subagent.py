@@ -180,16 +180,43 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "- Identify key interfaces, imports, and patterns\n"
         "- Read relevant contracts (blueprint, stack, schema, boundaries)\n"
         "- Summarise what the coder needs to know\n\n"
-        "Output a structured JSON object with your findings:\n"
+        "## Output Format — STRICT (truncate to fit, never exceed)\n"
+        "Output exactly this JSON structure. Truncate field values to their limits — "
+        "do NOT add extra fields or exceed the caps below.\n\n"
         "```json\n"
-        '{\n  "directory_tree": "...",\n  "key_interfaces": [...],\n'
-        '  "patterns": {...},\n  "imports_map": {...},\n'
-        '  "recommendations": "..."\n}\n```\n\n'
+        '{\n'
+        '  "directory_tree": "<compact tree — MAX 500 chars>",\n'
+        '  "key_interfaces": [\n'
+        '    {"file": "path/to/file.py", "exports": "ClassName(args), funcName(args) — MAX 150 chars each"}\n'
+        '  ],\n'
+        '  "patterns": {\n'
+        '    "auth": "<how auth is wired — MAX 150 chars>",\n'
+        '    "db": "<how DB is accessed — MAX 150 chars>",\n'
+        '    "api": "<request/response shape patterns — MAX 150 chars>"\n'
+        '  },\n'
+        '  "imports_map": {\n'
+        '    "module.path": ["ExportA", "ExportB"]\n'
+        '  },\n'
+        '  "recommendations": "<what the coder must know — MAX 400 chars>"\n'
+        '}\n```\n\n'
+        "Hard limits (truncate, never expand):\n"
+        "- directory_tree: max 500 chars\n"
+        "- key_interfaces: max 6 entries, exports max 150 chars each\n"
+        "- patterns: max 4 keys, values max 150 chars each\n"
+        "- imports_map: max 6 entries\n"
+        "- recommendations: max 400 chars\n\n"
         "Rules:\n"
         "- Do NOT create, modify, or delete any files\n"
         "- Do NOT run tests or commands\n"
         "- Focus on accuracy over speed\n"
-        "- Keep your summary under 4000 tokens\n"
+        "- Truncate any value that would exceed its limit — do not pad\n\n"
+        "## Scratchpad Protocol\n"
+        "After completing your analysis, write key findings to scratchpad so future\n"
+        "phase agents can skip re-scanning:\n"
+        "  forge_scratchpad(\"write\", \"scout_patterns\", \"<auth: ..., db: ..., api: ...>\")\n"
+        "  forge_scratchpad(\"write\", \"scout_interfaces\", \"<file: export1, export2>\")\n"
+        "Keep each entry under 500 chars. Write to scratchpad BEFORE your JSON output.\n"
+        "Phase coders read these keys to understand the codebase without re-reading files.\n"
     ),
     SubAgentRole.CODER: (
         "You are a **Coder** sub-agent in the Forge build system.\n\n"
@@ -207,6 +234,13 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "- Check syntax after writing each file\n"
         "- Use the context provided — do not re-read the whole project\n"
         "- Do NOT run tests (the test step handles that separately)\n\n"
+        "## Scratchpad Protocol\n"
+        "Only write to scratchpad if you made a non-obvious implementation decision:\n"
+        "  forge_scratchpad(\"write\", \"decision_<topic>\", \"<brief note, max 200 chars>\")\n"
+        "Do NOT write file content to scratchpad — files are already on disk.\n"
+        "Do NOT write obvious decisions (e.g. 'used FastAPI for routes').\n"
+        "Good example: \"decision_auth: JWT extracted in middleware not per-route, "
+        "reuse get_current_user dep\"\n\n"
         "## Code Style — CRITICAL\n"
         "- Output PURE CODE only. No tutorial prose, no narrative paragraphs between functions.\n"
         "- Docstrings: one-line only (e.g. `\"\"\"Fetch user by ID.\"\"\"`) — NEVER multi-line explanatory docstrings.\n"
@@ -242,7 +276,11 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         '{\n  "path": "...",\n  "verdict": "PASS|FAIL",\n'
         '  "findings": [\n    {"line": 42, "severity": "error", "message": "..."}\n'
         "  ]\n}\n```\n\n"
-        "If the file is structurally sound, set verdict to PASS with empty findings.\n"
+        "If the file is structurally sound, set verdict to PASS with empty findings.\n\n"
+        "## Scratchpad Protocol\n"
+        "Only write to scratchpad if you found issues that need tracking:\n"
+        "  forge_scratchpad(\"write\", \"audit_issues\", \"<path:line — issue description>\")\n"
+        "If all files pass: do NOT write to scratchpad — no noise.\n"
     ),
     SubAgentRole.FIXER: (
         "You are a **Fixer** sub-agent in the Forge build system.\n\n"
@@ -265,7 +303,11 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "After fixing, output:\n"
         "```json\n"
         '{\n  "files_fixed": [...],\n  "edits_applied": 3,\n'
-        '  "remaining_issues": "none|..."\n}\n```\n'
+        '  "remaining_issues": "none|..."\n}\n```\n\n'
+        "## Scratchpad Protocol\n"
+        "After fixing, record what was changed:\n"
+        "  forge_scratchpad(\"write\", \"fixes_applied\", \"<path:line — what was fixed>\")\n"
+        "Keep under 300 chars total.\n"
     ),
 }
 
@@ -884,12 +926,57 @@ async def run_sub_agent(
     # Try to parse structured JSON from the tail of the output
     result.structured_output = _extract_json_block(result.text_output)
 
+    # Hard-enforce Scout output limits so its summary never bloats downstream handoffs
+    if handoff.role == SubAgentRole.SCOUT and result.structured_output:
+        result.structured_output = _trim_scout_output(result.structured_output)
+
     return result
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _trim_scout_output(data: dict) -> dict:
+    """Enforce hard character limits on Scout structured output.
+
+    Prevents Scout from returning bloated summaries that inflate the
+    context of every downstream CODER and AUDITOR handoff.
+    """
+    _MAX_TREE = 500
+    _MAX_INTERFACES = 6
+    _MAX_INTERFACE_EXPORTS = 150
+    _MAX_PATTERN_KEYS = 4
+    _MAX_PATTERN_VALUE = 150
+    _MAX_IMPORTS = 6
+    _MAX_RECOMMENDATIONS = 400
+
+    out: dict = {}
+    if "directory_tree" in data:
+        out["directory_tree"] = str(data["directory_tree"])[:_MAX_TREE]
+    if "key_interfaces" in data:
+        ifaces = (data["key_interfaces"] or [])[:_MAX_INTERFACES]
+        out["key_interfaces"] = [
+            {
+                "file": str(i.get("file", "")),
+                "exports": str(i.get("exports", ""))[:_MAX_INTERFACE_EXPORTS],
+            }
+            for i in ifaces
+            if isinstance(i, dict)
+        ]
+    if "patterns" in data:
+        pats = data.get("patterns") or {}
+        trimmed: dict = {}
+        for k, v in list(pats.items())[:_MAX_PATTERN_KEYS]:
+            trimmed[str(k)] = str(v)[:_MAX_PATTERN_VALUE]
+        out["patterns"] = trimmed
+    if "imports_map" in data:
+        imap = data.get("imports_map") or {}
+        out["imports_map"] = dict(list(imap.items())[:_MAX_IMPORTS])
+    if "recommendations" in data:
+        out["recommendations"] = str(data["recommendations"])[:_MAX_RECOMMENDATIONS]
+    return out
 
 
 # ---------------------------------------------------------------------------

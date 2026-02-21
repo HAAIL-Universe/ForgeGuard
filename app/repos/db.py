@@ -24,7 +24,20 @@ _RETRY_EXCEPTIONS = (
     OSError,
 )
 
-_MAX_RETRIES = 2  # one retry (= two total attempts)
+_MAX_RETRIES = 4  # 5 total attempts — gives Neon time to cold-start (~5–10 s)
+
+
+def _invalidate_pool() -> None:
+    """Mark the current pool as dead so the next get_pool() call recreates it.
+
+    Called when all retries are exhausted, meaning the pool itself is poisoned
+    (e.g. full Neon compute restart). Clearing the module-level references
+    ensures the next caller gets a freshly created pool rather than continuing
+    to hand out dead connections.
+    """
+    global _pool, _wrapper
+    _pool = None
+    _wrapper = None
 
 
 class _ResilientPool:
@@ -65,12 +78,18 @@ class _ResilientPool:
             except _RETRY_EXCEPTIONS as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:
+                    # Exponential backoff: 0.5 s, 1 s, 2 s, 4 s (capped at 10 s)
+                    # Gives Neon enough time to complete a cold-start between attempts.
+                    wait = min(0.5 * (2 ** attempt), 10.0)
                     logger.warning(
-                        "DB connection lost (attempt %d/%d): %s — retrying",
-                        attempt + 1, _MAX_RETRIES + 1, exc,
+                        "DB connection lost (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, _MAX_RETRIES + 1, exc, wait,
                     )
-                    await asyncio.sleep(0.1 * (attempt + 1))
+                    await asyncio.sleep(wait)
                 else:
+                    # All retries exhausted — invalidate the pool so the next
+                    # caller gets a freshly created one instead of a dead one.
+                    _invalidate_pool()
                     raise
         raise last_exc  # type: ignore[misc]  # unreachable but keeps mypy happy
 
@@ -110,13 +129,13 @@ async def get_pool() -> _ResilientPool:  # type: ignore[override]
                 min_size=2,
                 max_size=10,
                 command_timeout=60,
-                max_inactive_connection_lifetime=60.0,     # expire idle conns after 1 min
+                max_inactive_connection_lifetime=300.0,    # 5 min — survives long planner runs
                 server_settings={
                     "statement_timeout": "30000",                    # 30s max query
                     "idle_in_transaction_session_timeout": "60000",  # 60s
                 },
             ),
-            timeout=15,  # fail fast if DB unreachable
+            timeout=20,  # outer asyncio timeout (Neon cold-start can take ~10s)
         )
         _pool_loop = loop
         _wrapper = _ResilientPool(_pool)

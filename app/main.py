@@ -39,7 +39,27 @@ async def lifespan(application: FastAPI):
         format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
     )
     if "pytest" not in sys.modules:
-        await get_pool()  # fail-fast if DB unreachable
+        try:
+            pool = await get_pool()
+            logger.info("Database pool initialised.")
+            # Apply any additive schema changes that don't have a formal migration runner.
+            # Using IF NOT EXISTS / DO NOTHING so these are safe to re-run on every restart.
+            await pool.execute("""
+                ALTER TABLE projects
+                    ADD COLUMN IF NOT EXISTS cached_plan_json  JSONB,
+                    ADD COLUMN IF NOT EXISTS plan_cached_at    TIMESTAMPTZ
+            """)
+            from app.repos.build_repo import interrupt_stale_builds
+            _interrupted = await interrupt_stale_builds()
+            if _interrupted:
+                logger.warning(
+                    "Interrupted %d stale build(s) left over from previous server session.",
+                    _interrupted,
+                )
+        except Exception as _db_exc:
+            # Neon auto-pauses on the free tier — the first request will
+            # reconnect.  Log a warning but don't crash startup.
+            logger.warning("DB unavailable at startup (%s) — will retry on first request.", _db_exc)
     await ws_manager.start_heartbeat()
     yield
     # Shutdown sequence — order matters:

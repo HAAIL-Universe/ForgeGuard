@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 from app.clients.llm_client import chat as llm_chat, chat_streaming as llm_chat_streaming
-from app.config import settings
+from app.config import settings, get_model_for_role
 from app.repos import build_repo
 from app.repos.project_repo import (
     get_contracts_by_project,
@@ -116,124 +116,94 @@ def _load_generic_template(contract_type: str) -> str | None:
 # Per-contract generation instructions
 _CONTRACT_INSTRUCTIONS: dict[str, str] = {
     "blueprint": """\
-Generate a comprehensive project blueprint. Include:
-1) Product intent — what it does, who it's for, why it exists (2-3 paragraphs)
-2) Core interaction invariants — 5-7 MUST-hold rules (bullet list)
-3) MVP scope — Must-ship features (numbered, with sub-details) AND explicitly-not-MVP list
-4) Hard boundaries — anti-godfile rules per architectural layer (Routers, Services, Repos, Clients, etc.)
-5) Deployment target — where it runs, scale expectations
+Generate a project blueprint. Include:
+1) Product intent — 3-4 bullets: what it does, who it's for, why it exists
+2) Core interaction invariants — 5-7 MUST-hold rules (one line each)
+3) MVP scope — must-ship features (one-liner per feature) AND not-MVP list
+4) Hard boundaries — one line per architectural layer (Routers, Services, Repos, Clients, etc.)
+5) Deployment target — one line
 
-Use specific, concrete language. No vagueness. Every feature must be described precisely enough
-that a developer could implement it without asking questions.""",
+Facts only. One line per item. No prose paragraphs.""",
 
     "manifesto": """\
-Generate a project manifesto defining 5-7 non-negotiable principles.
-Each principle should have:
-- A descriptive title (e.g. "Contract-first, schema-first")
-- 3-5 bullet points elaborating the rule
-- Project-specific details (not generic platitudes)
-
-Include a "Confirm-before-write" section listing what requires user confirmation
-and what is exempt. Include any privacy or security principles relevant to this project.""",
+Generate a project manifesto with 4-5 non-negotiable principles.
+Each principle: title + 2-3 bullets (facts only, no elaboration).
+Include a "Confirm-before-write" list (what needs user confirmation vs. exempt).
+Project-specific — no generic platitudes.""",
 
     "stack": """\
-Generate a technology stack document. Include sections for:
+Generate a technology stack document. Sections:
 - Backend (language, framework, version, key libraries)
 - Database (engine, version, connection method)
 - Auth (method, provider, flow)
 - Frontend (framework, bundler, key libraries)
-- Testing (framework, coverage requirements)
-- Deployment (platform, expected scale)
+- Testing (framework, coverage target)
+- Deployment (platform, scale)
 - Environment Variables table (name, description, required/optional)
-- forge.json schema (JSON block showing project metadata structure)
+- forge.json schema (JSON block)
 
-For each technology choice, briefly explain WHY it was chosen.""",
+Facts only — no rationale or justification prose.""",
 
     "schema": """\
-Generate a complete database schema document. Include:
-- Schema version header
-- Conventions section (naming patterns, common columns like id/created_at/updated_at)
-- Full CREATE TABLE SQL for EVERY table, including:
-  - Column definitions with types and constraints
-  - PRIMARY KEY, FOREIGN KEY, UNIQUE constraints
-  - Indexes
-  - ENUM descriptions where applicable
-- Schema-to-Phase traceability matrix (which table is built in which phase)
+Generate a database schema. Include:
+- Conventions: 3 bullets (naming, common columns, key patterns)
+- CREATE TABLE SQL for every table (types, constraints, indexes, ENUMs)
 
-Use PostgreSQL syntax. Be thorough — every column the app needs must be defined.""",
+Use PostgreSQL syntax. Every column the app needs must be defined. No traceability matrix.""",
 
     "phases": """\
-Generate a detailed phase breakdown document with 6-12 phases.
-Each phase MUST include:
+Generate a phase breakdown with 6-12 phases.
+Each phase MUST include exactly these 4 fields:
 - Phase number and name (e.g. "Phase 0 — Genesis")
-- Objective (1-2 sentences)
-- Deliverables (detailed bullet list of what gets built)
-- Schema coverage (which tables/columns are created or modified)
-- Exit criteria (bullet list of concrete, testable conditions)
+- Objective: 1 sentence
+- Deliverables: bullet list (each item is one line — no sub-bullets)
+- Schema coverage: table names only
+- Exit criteria: bullet list (concrete, testable — one line each)
 
-Phase 0 is always Genesis (project scaffold, config, tooling).
-The final phase should be Ship & Deploy, and MUST include a deliverable to generate a comprehensive
-README.md covering: project description, features, tech stack, setup/install instructions,
-environment variables, usage examples, and API reference (if applicable).
-Phases should be ordered by dependency — earlier phases provide foundations for later ones.""",
+Phase 0 is always Genesis. Final phase must include README.md deliverable.
+Phases ordered by dependency.""",
 
     "phases_mini": """\
-This is a MINI BUILD — generate EXACTLY 2 phases. No more, no fewer.
+MINI BUILD — EXACTLY 2 phases. No more, no fewer.
 IGNORE any structural reference that has more phases — output only these two.
 
-Phase 0 — Backend Scaffold:
-  Build the ENTIRE backend from scratch in a single phase: project scaffold,
-  configuration, database schema & migrations, models, ALL API endpoints,
-  authentication, middleware, and a boot/setup script.
-  Include everything needed for the server to start and respond to every request
-  defined in the physics contract.
+Phase 0 — Backend Scaffold: entire backend (scaffold, DB, migrations, all API endpoints, auth, boot script).
+Phase 1 — Frontend & Ship: entire frontend (all pages, components, API integration, README.md).
 
-Phase 1 — Frontend & Ship:
-  Build the ENTIRE frontend from scratch and ship: project scaffold, ALL
-  pages/routes, components, API integration with the backend, styling, and
-  a comprehensive README.md covering: project description, features, tech stack,
-  setup/install instructions, environment variables, and usage examples.
-  Include everything needed for the user to see and interact with the full app.
+Each phase uses exactly these 4 fields:
+- Phase number and name
+- Objective: 1 sentence
+- Deliverables: bullet list (one line each — exhaustive, every feature in one of these 2 phases)
+- Schema coverage: table names
+- Exit criteria: bullet list (concrete, testable)
 
-Each phase MUST include:
-- Phase number and name ("Phase 0 — Backend Scaffold", "Phase 1 — Frontend & Ship")
-- Objective (1-2 sentences)
-- Deliverables (detailed bullet list — be exhaustive, every feature goes in one of these 2 phases)
-- Schema coverage (which tables/columns)
-- Exit criteria (concrete, testable conditions)
-
-CRITICAL: Do NOT add phases beyond 0 and 1. Do NOT split into more granular phases.
-Every deliverable must fit into one of these two phases. The output must contain
-exactly Phase 0 and Phase 1, nothing else.""",
+CRITICAL: Exactly Phase 0 and Phase 1. Nothing else.""",
 
     # ── Mini-specific instructions for other contract types ────────────
     "blueprint_mini": """\
-Generate a concise project blueprint for a mini/proof-of-concept build.
-Keep scope tight — this will be built in exactly 2 phases (backend + frontend).
-Include:
-1) Product intent — what it does and for whom (1 paragraph)
-2) Core invariants — 3-5 MUST-hold rules
-3) MVP scope — features that fit in 2 build phases AND explicit not-in-scope list
-4) Layer boundaries — basic separation (routes → services → repos)
+Generate a concise blueprint for a 2-phase mini build:
+1) Product intent — 2-3 bullets (what it does, who it's for)
+2) Core invariants — 3-5 MUST-hold rules (one line each)
+3) MVP scope — features that fit in 2 phases AND not-in-scope list
+4) Layer boundaries — one line per layer (routes → services → repos)
 5) Deployment — Docker-ready local dev
 
-Be specific but concise. No sprawling feature lists — just what's buildable in 2 phases.""",
+One line per item. No prose paragraphs.""",
 
     "manifesto_mini": """\
-Generate a brief manifesto with 3-5 non-negotiable principles.
-This is a mini build (2 phases) — keep principles focused on what matters
-for a working proof-of-concept. Each principle: title + 2-3 bullets.
-Skip ceremony — no confirm-before-write section needed for a mini build.""",
+Generate a manifesto with 3-5 principles for a 2-phase build.
+Each principle: title + 2-3 bullets. Facts only, no ceremony.
+No confirm-before-write section needed.""",
 
     "stack_mini": """\
-Generate a technology stack document. Include:
+Generate a tech stack for a 2-phase proof-of-concept:
 - Backend (language, framework, version, key libraries)
 - Database (engine, version)
 - Frontend (framework, bundler, key libraries)
-- Deployment (Docker, single-compose)
+- Deployment (Docker Compose)
 - Environment Variables table (name, description, required/optional)
 
-Keep it focused — this is a 2-phase proof-of-concept, not an enterprise deployment.""",
+Facts only — no rationale.""",
 
     "schema_mini": """\
 Generate a database schema. Include:
@@ -293,16 +263,15 @@ CRITICAL: There are exactly 2 phases. The builder must execute both to completio
 Keep it concise — this is a mini build.""",
 
     "ui": """\
-Generate a UI/UX blueprint document. Include:
-1) App Shell & Layout — device priority, shell structure, navigation model
-2) Screens/Views — detailed spec for each page (what it shows, key interactions, empty states)
-3) Component Inventory — table of reusable components
-4) Visual Style — color palette, typography, visual density, tone
-5) Interaction Patterns — data loading, empty states, error states, confirmation dialogs, responsive behavior
-6) User Flows — 3-4 key user journeys described step by step
-7) What This Is NOT — explicit list of out-of-scope UI features
+Generate a UI/UX blueprint. Include:
+1) App Shell & Layout — device priority, shell structure, navigation
+2) Screens/Views — each screen: what it shows, key interactions, empty state
+3) Component Inventory — table of reusable components (name + one-line description)
+4) Visual Style — palette (hex values), typography (font, size), density (one line each)
+5) Key User Flows — 3-4 primary journeys (one line per step)
+6) What This Is NOT — explicit out-of-scope UI list
 
-Be specific about layout, data displayed, and interaction triggers.""",
+No "Interaction Patterns" section.""",
 
     "physics": """\
 Generate an API physics specification in YAML format. Structure:
@@ -341,17 +310,274 @@ Each layer has forbidden imports/patterns that enforce separation of concerns.
 Output MUST be valid JSON.""",
 
     "builder_directive": """\
-Generate a builder directive — the operational instructions for an AI builder.
+Generate a builder directive — operational instructions for the AI builder.
 Include:
 - AEM status (enabled/disabled) and auto-authorize setting
 - Step-by-step instructions (read contracts → execute phases → run audit → commit)
 - Autonomy rules (when to auto-commit, when to stop and ask)
 - Phase list with phase numbers and names
-- Project summary (one paragraph)
+- Project summary (one sentence)
 - boot_script flag
 
-Keep it concise but complete — this is the builder's startup instructions.""",
+Keep it concise.""",
 }
+
+
+# ---------------------------------------------------------------------------
+# Template contract generators — zero LLM calls for pure-format contracts
+# ---------------------------------------------------------------------------
+
+# Standard Python/FastAPI layer boundaries (used for ~90% of ForgeGuard projects)
+_PYTHON_FASTAPI_BOUNDARIES: dict = {
+    "description": "",
+    "layers": [
+        {
+            "name": "routers",
+            "glob": "app/routers/**/*.py",
+            "forbidden": [
+                {"pattern": "from app.repos", "reason": "Routers must not import repos directly — use services"},
+                {"pattern": "asyncpg|psycopg|sqlalchemy", "reason": "No DB drivers in routers"},
+            ],
+        },
+        {
+            "name": "services",
+            "glob": "app/services/**/*.py",
+            "forbidden": [
+                {"pattern": "from fastapi import Request|Response", "reason": "Services must not be HTTP-aware"},
+                {"pattern": "from app.routers", "reason": "Services must not import routers"},
+            ],
+        },
+        {
+            "name": "repos",
+            "glob": "app/repos/**/*.py",
+            "forbidden": [
+                {"pattern": "from app.services", "reason": "Repos must not import services — data access only"},
+                {"pattern": "from fastapi", "reason": "Repos are HTTP-unaware"},
+            ],
+        },
+        {
+            "name": "clients",
+            "glob": "app/clients/**/*.py",
+            "forbidden": [
+                {"pattern": "from app.repos", "reason": "Clients must not access DB directly"},
+                {"pattern": "from app.services", "reason": "Clients are thin external API wrappers only"},
+            ],
+        },
+    ],
+    "known_violations": [],
+}
+
+# Node/Express variant
+_NODE_BOUNDARIES: dict = {
+    "description": "",
+    "layers": [
+        {
+            "name": "routes",
+            "glob": "src/routes/**/*.{js,ts}",
+            "forbidden": [
+                {"pattern": "require.*db|import.*db", "reason": "Routes must not access DB directly — use services"},
+            ],
+        },
+        {
+            "name": "services",
+            "glob": "src/services/**/*.{js,ts}",
+            "forbidden": [
+                {"pattern": "req\\.body|res\\.json|express", "reason": "Services must not be HTTP-aware"},
+            ],
+        },
+        {
+            "name": "repositories",
+            "glob": "src/repos/**/*.{js,ts}",
+            "forbidden": [
+                {"pattern": "from.*services|require.*services", "reason": "Repos are data access only"},
+            ],
+        },
+    ],
+    "known_violations": [],
+}
+
+# Contracts generated from templates instead of LLM calls
+_TEMPLATE_CONTRACTS: frozenset[str] = frozenset({"stack", "boundaries", "builder_directive"})
+
+
+def _template_stack(project: dict, answers_data: dict) -> tuple[str, dict]:
+    """Generate stack contract from questionnaire answers. Returns (content, forge_config).
+
+    forge_config is the machine-readable dict that gets written as forge.json
+    at build start — it holds test commands, venv path, entry module, etc.
+    """
+    name = project.get("name", "Unnamed Project")
+    tech = answers_data.get("tech_stack") or {}
+    deployment = answers_data.get("deployment_target") or {}
+
+    backend = str(tech.get("backend") or "Python 3.12+ / FastAPI")
+    frontend = str(tech.get("frontend") or "React + TypeScript")
+    database = str(tech.get("database") or "PostgreSQL")
+    auth = str(tech.get("auth") or "JWT bearer tokens")
+    testing = str(tech.get("testing") or "pytest (backend), Vitest (frontend)")
+    deploy_platform = str(tech.get("deployment") or deployment.get("platform") or "Docker Compose")
+    scale = str(deployment.get("scale") or "<100 concurrent users")
+
+    # Determine backend runtime for forge.json
+    b = backend.lower()
+    if any(x in b for x in ("python", "fastapi", "django", "flask")):
+        lang, test_fw, dep_file, venv, test_cmd, entry = (
+            "python", "pytest", "requirements.txt", ".venv", "pytest -x", "app.main"
+        )
+    elif any(x in b for x in ("node", "express", "fastify", "nest")):
+        lang, test_fw, dep_file, venv, test_cmd, entry = (
+            "node", "jest", "package.json", "node_modules", "npm test", "src/index.js"
+        )
+    else:
+        lang, test_fw, dep_file, venv, test_cmd, entry = (
+            "python", "pytest", "requirements.txt", ".venv", "pytest -x", "app.main"
+        )
+
+    f = frontend.lower()
+    fe_enabled = bool(frontend) and "none" not in f and "no frontend" not in f
+    fe_dir = "web" if fe_enabled else ""
+    fe_build = "npm run build" if fe_enabled else ""
+    fe_test = "npm test" if fe_enabled else ""
+
+    forge_config = {
+        "project_name": name,
+        "backend": {
+            "language": lang,
+            "entry_module": entry,
+            "test_framework": test_fw,
+            "test_command": test_cmd,
+            "dependency_file": dep_file,
+            "venv_path": venv,
+        },
+        "frontend": {
+            "enabled": fe_enabled,
+            "dir": fe_dir,
+            "build_cmd": fe_build,
+            "test_cmd": fe_test,
+        },
+    }
+
+    fe_section = (
+        f"\n## Frontend\n- **Framework:** {frontend}\n"
+        if fe_enabled
+        else "\n## Frontend\n- Not applicable\n"
+    )
+
+    forge_json_str = json.dumps(forge_config, indent=2)
+
+    content = f"""# {name} — Technology Stack
+
+## Backend
+- **Stack:** {backend}
+
+## Database
+- **Engine:** {database}
+
+## Auth
+- **Method:** {auth}
+{fe_section}
+## Testing
+- **Framework:** {testing}
+
+## Deployment
+- **Platform:** {deploy_platform}
+- **Scale:** {scale}
+
+## Environment Variables
+
+| Name | Description | Required |
+|------|-------------|----------|
+| DATABASE_URL | Database connection string | Yes |
+| JWT_SECRET | Secret key for token signing | Yes |
+| CORS_ORIGINS | Allowed CORS origins | Yes |
+
+## forge.json
+
+```json
+{forge_json_str}
+```
+"""
+    return content, forge_config
+
+
+def _template_boundaries(project: dict, answers_data: dict) -> str:
+    """Generate boundaries contract JSON from detected stack type."""
+    import copy
+    name = project.get("name", "project")
+    tech = answers_data.get("tech_stack") or {}
+    b = str(tech.get("backend") or "").lower()
+
+    if any(x in b for x in ("node", "express", "fastify", "nest")):
+        tmpl = copy.deepcopy(_NODE_BOUNDARIES)
+    else:
+        tmpl = copy.deepcopy(_PYTHON_FASTAPI_BOUNDARIES)
+
+    tmpl["description"] = f"Layer boundary rules for {name}"
+    return json.dumps(tmpl, indent=2)
+
+
+def _template_builder_directive(
+    project: dict,
+    answers_data: dict,
+    prior_contracts: dict,
+) -> str:
+    """Generate builder_directive from phases contract + fixed operational template."""
+    import re as _re
+    name = project.get("name", "Unnamed Project")
+
+    # Extract phase list from the already-generated phases contract
+    phases_text = prior_contracts.get("phases", "")
+    phase_lines = _re.findall(r"^## (Phase \d+[^\n]+)", phases_text, _re.MULTILINE)
+    if not phase_lines:
+        phase_lines = ["Phase 0 — Genesis", "Phase 1 — Ship"]
+    phase_list = "\n".join(f"- {p}" for p in phase_lines)
+
+    return f"""# {name} — Builder Directive
+
+## AEM
+- status: enabled
+- auto_authorize: true
+
+## Instructions
+1. Read all Forge/Contracts/ files before writing any code
+2. Execute phases in order — do not skip or merge phases
+3. After each phase: run tests, verify exit criteria, commit
+4. Final phase: run audit, write README.md, final commit
+
+## Autonomy Rules
+- Auto-commit on successful phase completion (all exit criteria met)
+- Stop and request clarification if requirements are ambiguous
+- If tests fail: attempt up to 3 self-correction cycles before stopping
+- Do not modify files outside the current phase scope
+
+## Phase List
+{phase_list}
+
+## Project Summary
+{name}
+
+## Config
+- boot_script: true
+- forge_config: forge.json
+"""
+
+
+async def _store_forge_config(project_id: UUID, forge_config: dict) -> None:
+    """Persist forge_config inside questionnaire_state JSONB (no schema migration needed)."""
+    from app.repos.db import get_pool
+    pool = await get_pool()
+    await pool.execute(
+        """UPDATE projects
+           SET questionnaire_state = jsonb_set(
+               COALESCE(questionnaire_state, '{}'),
+               '{forge_config}',
+               $2::jsonb
+           ),
+           updated_at = now()
+           WHERE id = $1""",
+        project_id,
+        json.dumps(forge_config),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +624,7 @@ async def generate_contracts(
         llm_model = settings.OPENAI_MODEL
     else:
         llm_api_key = settings.ANTHROPIC_API_KEY
-        llm_model = settings.LLM_QUESTIONNAIRE_MODEL
+        llm_model = get_model_for_role("questionnaire")
 
     pid = str(project_id)
 
@@ -494,6 +720,49 @@ async def generate_contracts(
             # Race the LLM call against the cancel event so cancellation
             # takes effect immediately, even mid-generation.
             answers_data = _extract_answers_data(project, answers)
+
+            # ── Template contracts: skip LLM entirely ────────────────────
+            if contract_type in _TEMPLATE_CONTRACTS:
+                t0 = time.monotonic()
+                if contract_type == "stack":
+                    content, forge_config = _template_stack(project, answers_data)
+                    try:
+                        await _store_forge_config(project_id, forge_config)
+                    except Exception as _fc_exc:
+                        logger.warning("Failed to store forge_config: %s", _fc_exc)
+                elif contract_type == "boundaries":
+                    content = _template_boundaries(project, answers_data)
+                else:  # builder_directive
+                    content = _template_builder_directive(project, answers_data, prior_contracts)
+
+                elapsed_s = round(time.monotonic() - t0, 4)
+                generation_timing[contract_type] = elapsed_s
+                prior_contracts[contract_type] = content
+                row = await upsert_contract(project_id, contract_type, content)
+                generated.append({
+                    "id": str(row["id"]),
+                    "project_id": str(row["project_id"]),
+                    "contract_type": row["contract_type"],
+                    "version": row["version"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                })
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_progress",
+                    "payload": {
+                        "project_id": pid,
+                        "contract_type": contract_type,
+                        "status": "done",
+                        "index": idx,
+                        "total": total,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "elapsed_s": elapsed_s,
+                        "templated": True,
+                    },
+                })
+                continue  # skip LLM path
+            # ─────────────────────────────────────────────────────────────
 
             # Callback for per-turn live token progress on the UI
             async def _turn_progress(in_tok: int, out_tok: int, _ct=contract_type, _idx=idx) -> None:
@@ -648,7 +917,7 @@ async def _run_consistency_check(
 
         resp = await llm_chat(
             api_key=settings.ANTHROPIC_API_KEY,
-            model=settings.LLM_PLANNER_MODEL,
+            model=get_model_for_role("planner"),
             system_prompt=_CONSISTENCY_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=2048,
@@ -933,28 +1202,26 @@ async def _generate_contract_content(
             "The entire project will be built in exactly 2 phases "
             "(Phase 0: backend scaffold, Phase 1: frontend & ship). "
             "Scope ALL deliverables to fit within those 2 phases. "
-            "Be thorough within that scope but do not expand beyond it.\n"
+            "Be concise within that scope but do not expand beyond it.\n"
         )
 
     system_parts = [
-        f"You are a Forge contract generator. You produce detailed, production-quality "
+        f"You are a Forge contract generator. You produce concise, structured "
         f"project specification documents for the Forge autonomous build system.\n\n"
         f"You are generating the **{contract_type}** contract for the project "
         f'"{project["name"]}".{mini_note}\n\n'
         f"INSTRUCTIONS:\n{instructions}\n\n"
         f"RULES:\n"
         f"- Output ONLY the contract content. No preamble, no 'Here is...', no explanations.\n"
-        f"- Be thorough and detailed. Each contract should be comprehensive enough that a "
-        f"developer can build from it without asking questions.\n"
-        f"- Use the project information provided to fill in ALL sections with real, "
-        f"project-specific content.\n"
-        f"- Do NOT leave any section empty or with placeholder text.\n"
-        f"- Match the structural depth and detail level of the reference example.\n"
+        f"- Be concise and structured. Bullet points over prose. No filler words or rationale.\n"
+        f"- Every line must carry information. No explanatory paragraphs.\n"
+        f"- Fill all required fields with project-specific facts.\n"
+        f"- Match the FORMAT of the reference — not its verbosity. Do not exceed it.\n"
     ]
 
     if example:
         system_parts.append(
-            f"\n--- STRUCTURAL REFERENCE (match this level of detail and format) ---\n"
+            f"\n--- STRUCTURAL REFERENCE (follow this format — do NOT write more than this) ---\n"
             f"{example}\n"
             f"--- END REFERENCE ---\n"
         )

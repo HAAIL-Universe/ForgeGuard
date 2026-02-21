@@ -93,6 +93,44 @@ async def update_project_status(project_id: UUID, status: str) -> None:
     )
 
 
+async def get_cached_plan(project_id: UUID) -> dict | None:
+    """Return the cached plan dict for a project, or None if not set."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT cached_plan_json FROM projects WHERE id = $1",
+        project_id,
+    )
+    if row and row["cached_plan_json"]:
+        raw = row["cached_plan_json"]
+        return dict(raw) if not isinstance(raw, dict) else raw
+    return None
+
+
+async def set_cached_plan(project_id: UUID, plan: dict) -> None:
+    """Store the planner output on the project so retried builds skip replanning."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE projects
+           SET cached_plan_json = $2::jsonb,
+               plan_cached_at   = now(),
+               updated_at       = now()
+         WHERE id = $1
+        """,
+        project_id,
+        json.dumps(plan),
+    )
+
+
+async def clear_cached_plan(project_id: UUID) -> None:
+    """Invalidate the cached plan (e.g. when contracts are updated)."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE projects SET cached_plan_json = NULL, plan_cached_at = NULL WHERE id = $1",
+        project_id,
+    )
+
+
 async def save_generation_metrics(
     project_id: UUID,
     metrics: dict,
@@ -200,6 +238,11 @@ async def upsert_contract(
         contract_type,
         content,
         version,
+    )
+    # Invalidate any cached plan — contracts changed so the plan may be stale.
+    await pool.execute(
+        "UPDATE projects SET cached_plan_json = NULL, plan_cached_at = NULL WHERE id = $1",
+        project_id,
     )
     return dict(row)
 

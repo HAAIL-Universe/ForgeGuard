@@ -331,6 +331,221 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+def register_forge_tools(registry: "Registry", working_dir: str | None = None) -> None:
+    """Register 5 Forge governance tools as in-process handlers.
+
+    These are thin disk-reading wrappers that give the agent structured
+    access to Forge contracts, phase windows, and scratchpad state —
+    without requiring the MCP stdio server to be running.
+
+    Registers: forge_get_contract, forge_list_contracts,
+    forge_get_phase_window, forge_get_summary, forge_scratchpad.
+    """
+    import json as _json
+    import re as _re
+    from pathlib import Path as _Path
+    from pydantic import BaseModel as _BM, Field as _F
+
+    # --- forge_get_contract ---
+
+    class _GetContractRequest(_BM):
+        name: str = _F(..., description=(
+            "Contract name (e.g. 'builder_contract', 'phases', 'boundaries', "
+            "'blueprint', 'stack', 'physics', 'schema')"
+        ))
+
+    def _handle_get_contract(req: _GetContractRequest, wd: str) -> ToolResponse:
+        contracts_dir = _Path(wd) / "Forge" / "Contracts"
+        if not contracts_dir.exists():
+            return ToolResponse.fail(f"Forge/Contracts/ not found in working dir: {wd}")
+        # Match by base name (case-insensitive)
+        name_lower = req.name.lower().replace(" ", "_")
+        candidates = [
+            f for f in contracts_dir.iterdir()
+            if f.is_file() and f.stem.lower().replace(" ", "_") == name_lower
+        ]
+        if not candidates:
+            # Fallback: partial match
+            candidates = [f for f in contracts_dir.iterdir() if name_lower in f.stem.lower()]
+        if not candidates:
+            available = [f.stem for f in contracts_dir.iterdir() if f.is_file()]
+            return ToolResponse.fail(
+                f"Contract '{req.name}' not found. Available: {', '.join(sorted(available))}"
+            )
+        target = candidates[0]
+        try:
+            content = target.read_text(encoding="utf-8")
+            return ToolResponse.ok({"name": req.name, "filename": target.name, "content": content})
+        except Exception as exc:
+            return ToolResponse.fail(f"Cannot read '{target.name}': {exc}")
+
+    registry.register(
+        "forge_get_contract",
+        _handle_get_contract,
+        _GetContractRequest,
+        "Read a Forge governance contract from Forge/Contracts/. "
+        "Use names like 'builder_contract', 'phases', 'boundaries', 'blueprint', "
+        "'stack', 'physics', 'schema', 'manifesto'. "
+        "Returns the full contract text for reading governance rules.",
+    )
+
+    # --- forge_list_contracts ---
+
+    class _ListContractsRequest(_BM):
+        pass  # no params
+
+    def _handle_list_contracts(req: _ListContractsRequest, wd: str) -> ToolResponse:
+        contracts_dir = _Path(wd) / "Forge" / "Contracts"
+        if not contracts_dir.exists():
+            return ToolResponse.fail(f"Forge/Contracts/ not found in {wd}")
+        files = sorted(f.name for f in contracts_dir.iterdir() if f.is_file())
+        return ToolResponse.ok({"contracts": files, "total": len(files)})
+
+    registry.register(
+        "forge_list_contracts",
+        _handle_list_contracts,
+        _ListContractsRequest,
+        "List all available Forge governance contracts in Forge/Contracts/. "
+        "Returns filenames and total count. Call this first to discover "
+        "what contracts are available before calling forge_get_contract.",
+    )
+
+    # --- forge_get_phase_window ---
+
+    class _GetPhaseWindowRequest(_BM):
+        phase: int = _F(..., ge=0, description="Current phase number (0-based)")
+
+    def _handle_get_phase_window(req: _GetPhaseWindowRequest, wd: str) -> ToolResponse:
+        phases_path = _Path(wd) / "Forge" / "Contracts" / "phases.md"
+        if not phases_path.exists():
+            return ToolResponse.fail("Forge/Contracts/phases.md not found")
+        try:
+            content = phases_path.read_text(encoding="utf-8")
+            pattern = _re.compile(
+                r"(?m)^#{1,3}\s+Phase\s+(\d+)\b(.+?)(?=^#{1,3}\s+Phase\s+\d+|\Z)",
+                _re.DOTALL,
+            )
+            phases = {int(m.group(1)): m.group(0).strip() for m in pattern.finditer(content)}
+            current = phases.get(req.phase, "")
+            nxt = phases.get(req.phase + 1, "")
+            if not current and not nxt:
+                # Return raw content if structure not matched
+                return ToolResponse.ok({"phase": req.phase, "content": content[:3000]})
+            return ToolResponse.ok({
+                "phase": req.phase,
+                "current": current[:3000],
+                "next": nxt[:2000],
+                "total_phases": len(phases),
+            })
+        except Exception as exc:
+            return ToolResponse.fail(f"Error reading phases.md: {exc}")
+
+    registry.register(
+        "forge_get_phase_window",
+        _handle_get_phase_window,
+        _GetPhaseWindowRequest,
+        "Get the current and next phase deliverables from Forge/Contracts/phases.md. "
+        "Provide the current phase number (0-based). Returns phase window context "
+        "for understanding what must be built and what comes next.",
+    )
+
+    # --- forge_get_summary ---
+
+    class _GetSummaryRequest(_BM):
+        pass  # no params
+
+    def _handle_get_summary(req: _GetSummaryRequest, wd: str) -> ToolResponse:
+        contracts_dir = _Path(wd) / "Forge" / "Contracts"
+        try:
+            contracts = (
+                sorted(f.name for f in contracts_dir.iterdir() if f.is_file())
+                if contracts_dir.exists() else []
+            )
+            bc_path = contracts_dir / "builder_contract.md"
+            bc_preview = ""
+            if bc_path.exists():
+                text = bc_path.read_text(encoding="utf-8")
+                bc_preview = text[:1500] + "..." if len(text) > 1500 else text
+
+            evidence_dir = _Path(wd) / "Forge" / "evidence"
+            latest_status = ""
+            latest_path = evidence_dir / "test_runs_latest.md"
+            if latest_path.exists():
+                first_line = latest_path.read_text(encoding="utf-8").splitlines()
+                latest_status = first_line[0] if first_line else ""
+
+            return ToolResponse.ok({
+                "framework": "Forge",
+                "working_dir": wd,
+                "contracts": contracts,
+                "builder_contract_preview": bc_preview,
+                "last_test_status": latest_status,
+            })
+        except Exception as exc:
+            return ToolResponse.fail(f"Error building summary: {exc}")
+
+    registry.register(
+        "forge_get_summary",
+        _handle_get_summary,
+        _GetSummaryRequest,
+        "Get a Forge governance overview: list of contracts, builder contract preview, "
+        "and last test run status. Use this at the start of a build session to "
+        "understand the governance structure without reading every contract.",
+    )
+
+    # --- forge_scratchpad ---
+
+    class _ScratchpadRequest(_BM):
+        action: str = _F(..., description="Action: 'read' | 'write' | 'append'")
+        key: str = _F(default="", description=(
+            "Key to read/write. Leave empty to list all keys (read action only)."
+        ))
+        value: str = _F(default="", description="Value to write or append (write/append only)")
+
+    def _handle_scratchpad(req: _ScratchpadRequest, wd: str) -> ToolResponse:
+        pad_path = _Path(wd) / "Forge" / "evidence" / "scratchpad.json"
+        pad_path.parent.mkdir(parents=True, exist_ok=True)
+
+        data: dict[str, str] = {}
+        if pad_path.exists():
+            try:
+                data = _json.loads(pad_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+
+        if req.action == "read":
+            if not req.key:
+                return ToolResponse.ok({"keys": list(data.keys()), "total": len(data), "data": data})
+            val = data.get(req.key)
+            return ToolResponse.ok({"key": req.key, "value": val, "found": val is not None})
+
+        elif req.action == "write":
+            data[req.key] = req.value
+            pad_path.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            return ToolResponse.ok({"key": req.key, "action": "written"})
+
+        elif req.action == "append":
+            existing = data.get(req.key, "")
+            data[req.key] = (existing + "\n" + req.value).strip() if existing else req.value
+            pad_path.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            return ToolResponse.ok({"key": req.key, "action": "appended"})
+
+        else:
+            return ToolResponse.fail(
+                f"Unknown action '{req.action}'. Use 'read', 'write', or 'append'."
+            )
+
+    registry.register(
+        "forge_scratchpad",
+        _handle_scratchpad,
+        _ScratchpadRequest,
+        "Read, write, or append key-value notes to Forge/evidence/scratchpad.json. "
+        "Persists across context compaction — the only storage that survives a "
+        "compaction event. Use 'read' (key='' for all), 'write', or 'append'. "
+        "Store: current phase, audit results, key decisions, invariant values.",
+    )
+
+
 def register_builtin_tools(registry: Registry) -> None:
     """Register all 7 existing tool_executor tools with a ``Registry``."""
     registry.register(

@@ -67,6 +67,7 @@ from forge_ide.agent import (
     run_agent,
     make_ws_event_bridge,
 )
+from forge_ide.journal import SessionJournal
 from forge_ide.registry import Registry
 
 logger = logging.getLogger(__name__)
@@ -304,7 +305,7 @@ async def launch_build_agent(
     *,
     api_key: str,
     working_dir: str,
-    model: str = "claude-sonnet-4-5-20250514",
+    model: str = "claude-sonnet-4-6",
     system_prompt: str = "",
     max_turns: int = 50,
     max_tokens: int = 16384,
@@ -319,6 +320,9 @@ async def launch_build_agent(
     # Event handling
     on_event: Callable[[AgentEvent], Any] | None = None,
     broadcast_ws: bool = True,
+    # Observability — journal survives compaction; trace writes a JSONL debug log
+    journal: SessionJournal | None = None,
+    trace_log_path: str | None = None,
 ) -> BuildAgentResult:
     """Launch the IDE+MCP agent for a build phase.
 
@@ -362,18 +366,47 @@ async def launch_build_agent(
     broadcast_ws : bool
         If True (and user_id + build_id are set), broadcasts agent events
         to the build progress WebSocket for the frontend.
+    journal : SessionJournal | None
+        Pre-created journal to track build events across context compaction.
+        If None and ``build_id`` is set, a new journal is created automatically.
+        The journal summary replaces the generic ``[CONTEXT COMPACTION]``
+        header so the agent retains Forge framework state after compaction.
+    trace_log_path : str | None
+        Path for the JSONL per-turn trace log (one line per llm_call /
+        tool_call / tool_result / compaction / done event).  If None and
+        ``build_id`` is set, defaults to
+        ``{working_dir}/../logs/build_{build_id}_trace.jsonl``.
+        Pass ``""`` to disable tracing explicitly.
 
     Returns
     -------
     BuildAgentResult
         Final result with text, usage stats, and tracked side-effects.
     """
+    from pathlib import Path as _Path
+
     # ── Setup MCP session ──
     _setup_mcp_session(project_id, build_id, user_id)
 
     # ── Create registry if not provided ──
     if registry is None:
         registry = create_build_registry()
+
+    # ── Journal — create if not supplied and we have a build_id ──
+    effective_journal: SessionJournal | None = journal
+    if effective_journal is None and build_id:
+        effective_journal = SessionJournal(build_id, phase="Build Start")
+
+    # ── Trace log path — derive from working_dir if not supplied ──
+    effective_trace: str
+    if trace_log_path is not None:
+        effective_trace = trace_log_path
+    elif build_id:
+        effective_trace = str(
+            _Path(working_dir).parent / "logs" / f"build_{build_id}_trace.jsonl"
+        )
+    else:
+        effective_trace = ""
 
     # ── Event handler composition ──
     tracker = _BuildEventTracker()
@@ -398,11 +431,17 @@ async def launch_build_agent(
         working_dir=working_dir,
         context_window_limit=context_window_limit,
         compaction_target=compaction_target,
+        journal=effective_journal,
+        trace_log_path=effective_trace,
     )
 
     logger.info(
-        "[ide_launcher] Launching agent: model=%s  turns=%d  tools=%d  working_dir=%s",
-        model, max_turns, len(registry.tool_names()), working_dir,
+        "[ide_launcher] Launching agent: model=%s  turns=%d  tools=%d  "
+        "journal=%s  trace=%s  working_dir=%s",
+        model, max_turns, len(registry.tool_names()),
+        "yes" if effective_journal else "no",
+        effective_trace or "disabled",
+        working_dir,
     )
 
     # ── Run the agent ──

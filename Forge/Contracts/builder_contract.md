@@ -20,6 +20,7 @@ ProjectRoot/              ← git root, builder's working directory
 ├── Forge/                ← governance toolkit (deletable after build)
 │   ├── Contracts/        ← project specifications
 │   ├── evidence/         ← diff logs, audit ledger, test run logs
+│   ├── scratch.md        ← active reasoning state (cleared each phase)
 │   └── scripts/          ← run_tests.ps1, run_audit.ps1, etc.
 ├── app/                  ← project source code (built here)
 ├── tests/                ← project tests (built here)
@@ -116,6 +117,11 @@ The orchestrator broadcasts plan updates to the UI in real time.
 
 ## 1) Contract read gate (mandatory)
 
+**Session resume — read scratch first:** If `Forge/scratch.md` exists, read it
+before anything else. If `Status: IN-PROGRESS`, continue the in-progress task
+directly (skip to the relevant phase). If `Status: COMPLETE` or file missing,
+proceed through the full gate below.
+
 Before making changes, the builder must read (in this order):
 
 1) `Forge/Contracts/blueprint.md`
@@ -131,6 +137,9 @@ Before making changes, the builder must read (in this order):
    - Summarize: last signed-off phase, last outcome (`AUTHORIZED`/`FAIL`/`SIGNED-OFF`), and any outstanding FAIL items.
    - If the last entry's outcome is `FAIL` or `SIGNED-OFF (awaiting AUTHORIZED)`, the builder MUST NOT begin new work until that state is resolved (either the user issues `AUTHORIZED`, or the builder re-enters the loopback protocol per §10.3).
    - If the file does not exist, note `"No audit ledger found"` and proceed normally.
+11) `Forge/scratch.md` (session resume — already read above if present)
+   - If the scratchpad status was IN-PROGRESS, resume the active task now.
+   - If COMPLETE or missing, this item is a no-op.
 
 If any file in items 1–7 is missing or not found (where applicable), STOP with: `EVIDENCE_MISSING`.
 
@@ -304,7 +313,7 @@ When a reliable, maintained component exists (auth, storage, ingestion, UI widge
 - The test runner must be updated whenever new tests are added or test layout changes.
 - The test runner must run the full deterministic suite used for "bulk" verification.
 - Each invocation of `Forge/scripts/run_tests.ps1` must append a timestamped entry to `Forge/evidence/test_runs.md` capturing start/end time (UTC), runtime path, branch/HEAD (or "git unavailable"), git status/diff stat, and exit codes/summaries for each test phase. The log MUST append (never overwrite) even when a step fails.
-- At the end of every implementation cycle marked COMPLETE, the builder MUST run `.\Forge\scripts\run_tests.ps1` and include results in verification.
+- At the end of every implementation cycle marked COMPLETE, the builder MUST run `python Forge/scripts/run_tests.py` (or `.\Forge\scripts\run_tests.ps1` in PowerShell) and include results in verification.
 - `Forge/scripts/run_tests.ps1` must also overwrite `Forge/evidence/test_runs_latest.md` on every run; the first line must be `Status: PASS|FAIL` and, if failing, include a brief failing-tests section.
 
 Minimum required behavior for `Forge/scripts/run_tests.ps1`:
@@ -433,9 +442,11 @@ When AEM is enabled, the builder MUST ensure **exactly one instance** of the aud
 1. Read contracts (§1 read gate).
 2. Read and summarize prior diff log and audit ledger.
 3. **Launch the watcher** (once, before any phase work):
-   ```powershell
-   pwsh -File .\Forge\scripts\watch_audit.ps1
+   ```bash
+   python Forge/scripts/watch_audit.py
    ```
+   > **PowerShell alternative (CLI/Windows):** `pwsh -File .\Forge\scripts\watch_audit.ps1`
+
    If the watcher fails to start, STOP with `ENVIRONMENT_LIMITATION`.
 4. Begin Phase 0.
 
@@ -475,13 +486,15 @@ When `watch_audit.ps1` is running (per §10.1.1), the builder triggers the audit
 
 If `watch_audit.ps1` is NOT running (e.g., terminal was closed, environment limitation), the builder MUST invoke the audit script directly:
 
-```powershell
-pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "<comma-separated list>" -Phase "<phase identifier>"
+```bash
+python Forge/scripts/run_audit.py --claimed-files "<comma-separated list>" --phase "<phase identifier>"
 ```
 
-The `-ClaimedFiles` parameter MUST list every file the builder modified in this cycle (exact relative paths, no invented paths).
+> **PowerShell alternative (CLI/Windows):** `pwsh -File .\Forge\scripts\run_audit.ps1 -ClaimedFiles "<comma-separated list>" -Phase "<phase identifier>"`
 
-5. **If `scripts/run_audit.ps1` does not exist or fails to execute:** STOP with `ENVIRONMENT_LIMITATION`. Report: `"run_audit.ps1 not found or not executable; cannot complete AEM audit gate."` Do NOT fall back to self-audit. Do NOT proceed.
+The `--claimed-files` parameter MUST list every file the builder modified in this cycle (exact relative paths, no invented paths).
+
+5. **If `scripts/run_audit.py` does not exist or fails to execute:** STOP with `ENVIRONMENT_LIMITATION`. Report: `"run_audit.py not found or not executable; cannot complete AEM audit gate."` Do NOT fall back to self-audit. Do NOT proceed.
 
 ### 10.3 Loopback Protocol (Audit FAIL → Fix → Re-audit)
 
@@ -687,10 +700,10 @@ Mandatory per-cycle diff log sequence:
 2) Plan scope/files/tests.
 3) Only after planning, run `scripts/overwrite_diff_log.ps1` to regenerate the scaffold.
 4) Immediately replace placeholders with Status=IN_PROCESS, planned summary, planned files, notes, and next steps (no TODOs left).
-5) **Launch the watch audit watcher** per §10.1.1. Run `pwsh -File .\Forge\scripts\watch_audit.ps1`. This is safe to call every phase -- the lock file prevents duplicates. No implementation work may begin until this step completes.
+5) **Launch the watch audit watcher** per §10.1.1. Run `python Forge/scripts/watch_audit.py`. This is safe to call every phase -- the lock file prevents duplicates. No implementation work may begin until this step completes.
 6) Do the work.
 7) End-of-cycle: re-run the helper, then manually finalize Status=COMPLETE, Summary, Verification (static → runtime → behavior → contract), Notes, and Next Steps.
-8) After manual edits, run `pwsh -File .\Forge\scripts\overwrite_diff_log.ps1 -Finalize`; if it reports TODO placeholders or missing log, treat as CONTRACT_CONFLICT and stop.
+8) After manual edits, run `python Forge/scripts/overwrite_diff_log.py --finalize`; if it reports TODO placeholders or missing log, treat as CONTRACT_CONFLICT and stop.
 
 Non-negotiable rule:
 - Overwriting before summarizing the prior cycle or leaving TODO placeholders is a CONTRACT_CONFLICT (work incomplete).
@@ -706,5 +719,85 @@ If diff log is not updated, work is incomplete.
 - Before asking for `AUTHORIZED` (the commit/push gate), again print those status lines. Treat `OVERWRITE` and `AUTHORIZED` as distinct tokens authorizing different actions.
 - Only `evidence/diff_log.md` is authoritative for approvals.
 - Stick to the allowed file set, do not invent files, and keep evidence ready before requesting tokens.
+
+## 13) Scratchpad Protocol (mandatory)
+
+**File:** `Forge/scratch.md`
+
+The scratchpad is the builder's active reasoning state — the equivalent of thinking
+out loud before acting. Unlike the audit ledger (past) and plan.json (future),
+scratch.md captures what the builder is reasoning about *right now*, within the
+current task. Without it, any interruption resets the builder to "I know what the
+plan says, but not what I was in the middle of doing."
+
+### 13.1 Write before acting (mandatory)
+
+BEFORE implementing any task within a phase, write reasoning to `Forge/scratch.md`:
+
+```
+## Phase N — Task: [what you are about to implement]
+
+**Reading context:**
+- plan.json says: [relevant task description]
+- audit_ledger: [what is complete so far this phase]
+- Key constraints: [relevant manifesto/physics/stack rules]
+
+**My approach:**
+1. [First concrete step]
+2. [Second concrete step]
+3. Risk/uncertainty: [specific concern and how you will handle it]
+
+**Status:** IN-PROGRESS
+```
+
+This write MUST happen before calling any file-creation or code-writing tool.
+It is not optional even when the task seems simple.
+
+### 13.2 Update on task completion
+
+When a task within a phase completes, update the status line:
+
+```
+**Status:** COMPLETE
+```
+
+When starting the next task within the same phase, overwrite the file with a
+fresh reasoning block for the new task.
+
+### 13.3 Phase boundary — clear the scratchpad
+
+At the START of each new phase, overwrite `Forge/scratch.md` with:
+
+```
+## Phase N — [Phase name] — STARTING
+```
+
+Do not carry reasoning from the previous phase — that context is now in
+`audit_ledger.md`. The scratchpad is only for the current active task.
+
+### 13.4 Session resume — read scratchpad first
+
+If resuming after any interruption (crash, timeout, new session):
+
+1. Read `Forge/scratch.md` BEFORE the §1 read gate (before any other file).
+2. If `Status: IN-PROGRESS`: identify the exact task in progress and continue
+   from that point. Do not repeat work that was already written to disk.
+3. If `Status: COMPLETE` or file does not exist: proceed through the normal
+   §1 read gate from the beginning.
+
+### 13.5 Stuck state
+
+When halting with a STOP reason, record it in the scratchpad before stopping:
+
+```
+**Status:** STUCK
+**Stuck reason:** [exact blocker — what decision or information is missing]
+**STOP reason:** [one of the typed STOP reasons from §8]
+```
+
+The next session reads this and immediately knows why the build halted without
+re-reading the full audit ledger history.
+
+---
 
 --- End of Builder Contract ---

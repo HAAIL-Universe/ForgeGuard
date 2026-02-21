@@ -380,18 +380,27 @@ function ProjectDetail() {
 
   const handleCancelBuild = async () => {
     try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}/build/cancel`, {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/nuke`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
-        addToast('Build cancelled', 'info');
+        addToast('Build cancelled and cleaned up', 'info');
         setShowCancelConfirm(false);
-        // Refresh project data
-        const updated = await fetch(`${API_BASE}/projects/${projectId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (updated.ok) setProject(await updated.json());
+        // Refresh project data (nuke removes the build record entirely)
+        const [updatedProject, updatedHistory] = await Promise.all([
+          fetch(`${API_BASE}/projects/${projectId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          fetch(`${API_BASE}/projects/${projectId}/builds`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        ]);
+        if (updatedProject.ok) setProject(await updatedProject.json());
+        if (updatedHistory.ok) {
+          const data = await updatedHistory.json();
+          setBuildHistory(data.items || []);
+        }
       } else {
         addToast('Failed to cancel build');
       }

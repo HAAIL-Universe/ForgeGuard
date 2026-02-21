@@ -25,12 +25,14 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from app.clients.llm_client import chat_anthropic
 from forge_ide.context_pack import estimate_tokens
 from forge_ide.contracts import ToolResponse
+from forge_ide.journal import SessionJournal
 from forge_ide.redactor import redact
 from forge_ide.registry import Registry
 
@@ -54,7 +56,7 @@ class AgentConfig:
     """Configuration for an agent loop invocation."""
 
     api_key: str
-    model: str = "claude-sonnet-4-5-20250514"
+    model: str = "claude-sonnet-4-6"
     system_prompt: str = ""
     max_turns: int = DEFAULT_MAX_TURNS
     max_tokens: int = DEFAULT_MAX_TOKENS
@@ -64,6 +66,10 @@ class AgentConfig:
     compaction_target: int = COMPACTION_TARGET
     tool_retry_max: int = TOOL_RETRY_MAX
     tool_retry_delay: float = TOOL_RETRY_DELAY
+    # Forge-aware state tracking — journal survives context compaction
+    journal: SessionJournal | None = field(default=None, hash=False, compare=False)
+    # JSONL trace log path — one JSON line per turn/tool/event for debugging
+    trace_log_path: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +133,41 @@ class ContextCompactionEvent(AgentEvent):
     messages_after: int
     tokens_before: int
     tokens_after: int
+
+
+# ---------------------------------------------------------------------------
+# Structured turn trace — JSONL log for debugging
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TurnTrace:
+    """One event in the per-build JSONL trace log.
+
+    Written to ``{trace_log_path}`` (one JSON line per event).
+    Open the JSONL file after a failed build to replay exactly:
+    turn N → model said X → called tool Y → got result Z → did what?
+    """
+    turn: int
+    timestamp: str
+    event_type: str   # "llm_call" | "tool_call" | "tool_result" | "compaction" | "done" | "error"
+    model: str
+    data: dict        # event-specific payload
+    elapsed_ms: int
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+
+def _write_trace(trace_log_path: str, trace: TurnTrace) -> None:
+    """Append one TurnTrace JSON line to the trace log file (best-effort)."""
+    if not trace_log_path:
+        return
+    try:
+        path = Path(trace_log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(trace), default=str) + "\n")
+    except Exception:
+        pass  # Trace failures must never crash the agent loop
 
 
 # ---------------------------------------------------------------------------
@@ -221,13 +262,24 @@ async def run_agent(
         content_blocks = response.get("content", [])
         llm_ms = int((time.perf_counter() - llm_start) * 1000)
         resp_usage = response.get("usage", {})
+        tokens_in = resp_usage.get("input_tokens", 0)
+        tokens_out = resp_usage.get("output_tokens", 0)
         logger.info(
             "[agent:llm] turn=%d model=%s  stop=%s  in=%d out=%d (%dms)",
-            turn, config.model, stop_reason,
-            resp_usage.get("input_tokens", 0),
-            resp_usage.get("output_tokens", 0),
-            llm_ms,
+            turn, config.model, stop_reason, tokens_in, tokens_out, llm_ms,
         )
+
+        # Trace: LLM call
+        _write_trace(config.trace_log_path, TurnTrace(
+            turn=turn,
+            timestamp=_now_iso(),
+            event_type="llm_call",
+            model=config.model,
+            data={"stop_reason": stop_reason},
+            elapsed_ms=llm_ms,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        ))
 
         # ── Append assistant message to conversation ──────────────
         messages.append({"role": "assistant", "content": content_blocks})
@@ -259,6 +311,15 @@ async def run_agent(
                     tool_input=block["input"],
                     tool_use_id=block["id"],
                 ))
+                # Trace: tool call
+                _write_trace(config.trace_log_path, TurnTrace(
+                    turn=turn,
+                    timestamp=_now_iso(),
+                    event_type="tool_call",
+                    model=config.model,
+                    data={"tool": block["name"], "input": block["input"]},
+                    elapsed_ms=_elapsed_ms(loop_start),
+                ))
 
         # Capture text for potential final response
         if text_parts:
@@ -280,6 +341,21 @@ async def run_agent(
                 usage.output_tokens, done.elapsed_ms, config.model,
             )
             await _emit(on_event, done)
+            # Trace: done
+            _write_trace(config.trace_log_path, TurnTrace(
+                turn=turn,
+                timestamp=_now_iso(),
+                event_type="done",
+                model=config.model,
+                data={
+                    "turns": turn,
+                    "tool_calls": usage.tool_calls,
+                    "stop": "end_turn",
+                },
+                elapsed_ms=done.elapsed_ms,
+                tokens_in=usage.input_tokens,
+                tokens_out=usage.output_tokens,
+            ))
             return done
 
         # ── Execute tool calls with error recovery ────────────────
@@ -311,6 +387,47 @@ async def run_agent(
                     turn, tool_name, status, result.duration_ms,
                 )
 
+                # Journal: record tool completion / errors / file writes
+                if config.journal is not None:
+                    if result.success:
+                        # Record a file_written entry so the journal tracks the
+                        # files_written list and the compaction summary is accurate.
+                        if tool_name in ("write_file", "apply_patch"):
+                            file_path = (result.data or {}).get("path", "")
+                            if file_path:
+                                config.journal.record(
+                                    "file_written",
+                                    f"Wrote {file_path}",
+                                    metadata={"file_path": file_path, "tool": tool_name, "turn": turn},
+                                )
+                        else:
+                            config.journal.record(
+                                "task_completed",
+                                f"Tool {tool_name} succeeded",
+                                metadata={"tool": tool_name, "turn": turn},
+                            )
+                    else:
+                        config.journal.record(
+                            "error",
+                            f"Tool {tool_name} failed: {(result.error or '')[:200]}",
+                            metadata={"tool": tool_name, "turn": turn, "error": result.error},
+                        )
+
+                # Trace: tool result
+                _write_trace(config.trace_log_path, TurnTrace(
+                    turn=turn,
+                    timestamp=_now_iso(),
+                    event_type="tool_result",
+                    model=config.model,
+                    data={
+                        "tool": tool_name,
+                        "success": result.success,
+                        "duration_ms": result.duration_ms,
+                        "error": result.error,
+                    },
+                    elapsed_ms=_elapsed_ms(loop_start),
+                ))
+
                 # Format result for the API
                 result_text = _format_tool_result(result, config.redact_secrets)
                 tool_results.append({
@@ -337,6 +454,21 @@ async def run_agent(
         usage.output_tokens, done.elapsed_ms, config.model,
     )
     await _emit(on_event, done)
+    # Trace: max-turns exhausted
+    _write_trace(config.trace_log_path, TurnTrace(
+        turn=config.max_turns,
+        timestamp=_now_iso(),
+        event_type="done",
+        model=config.model,
+        data={
+            "turns": config.max_turns,
+            "tool_calls": usage.tool_calls,
+            "stop": "max_turns_exhausted",
+        },
+        elapsed_ms=done.elapsed_ms,
+        tokens_in=usage.input_tokens,
+        tokens_out=usage.output_tokens,
+    ))
     return done
 
 
@@ -403,7 +535,7 @@ async def run_task(
     *,
     api_key: str,
     working_dir: str,
-    model: str = "claude-sonnet-4-5-20250514",
+    model: str = "claude-sonnet-4-6",
     system_prompt: str = "",
     max_turns: int = DEFAULT_MAX_TURNS,
     on_event: Callable[[AgentEvent], Any] | None = None,
@@ -631,6 +763,12 @@ def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
 
 
+def _now_iso() -> str:
+    """Return current UTC time as ISO-8601 string."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _format_tool_result(result: ToolResponse, redact_secrets: bool) -> str:
     """Serialize a ToolResponse into a string for the API.
 
@@ -759,6 +897,7 @@ def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
 def _compact_messages(
     messages: list[dict[str, Any]],
     target_tokens: int,
+    journal: SessionJournal | None = None,
 ) -> list[dict[str, Any]]:
     """Compact conversation history to fit within *target_tokens*.
 
@@ -766,6 +905,11 @@ def _compact_messages(
     1. Always keep the first message (the original task).
     2. Always keep the last 6 messages (recent context the LLM needs).
     3. Summarize everything in between into a single condensed message.
+
+    If a ``journal`` is provided, the compaction header is replaced with
+    the journal's structured summary (current phase, files written, last
+    audit result). This ensures the agent retains Forge framework state
+    across compaction events.
 
     This preserves the task context and recent working memory while
     discarding verbose intermediate tool results.
@@ -780,7 +924,12 @@ def _compact_messages(
 
     # Build a compressed summary of the middle section
     summary_parts: list[str] = []
-    summary_parts.append("[CONTEXT COMPACTION — the following summarizes earlier conversation turns]")
+    if journal is not None:
+        # Forge-aware compaction header: journal summary replaces generic placeholder
+        journal.record("context_compacted", "Context compacted — journal summary injected")
+        summary_parts.append(journal.get_summary(max_tokens=1000))
+    else:
+        summary_parts.append("[CONTEXT COMPACTION — the following summarizes earlier conversation turns]")
 
     tool_calls_seen: list[str] = []
     files_modified: set[str] = set()
@@ -878,7 +1027,7 @@ async def _maybe_compact(
     messages_before = len(messages)
     tokens_before = tokens
 
-    compacted = _compact_messages(messages, config.compaction_target)
+    compacted = _compact_messages(messages, config.compaction_target, journal=config.journal)
 
     tokens_after = _estimate_messages_tokens(compacted)
     logger.info(
@@ -893,6 +1042,21 @@ async def _maybe_compact(
         messages_after=len(compacted),
         tokens_before=tokens_before,
         tokens_after=tokens_after,
+    ))
+    # Trace: compaction event
+    _write_trace(config.trace_log_path, TurnTrace(
+        turn=turn,
+        timestamp=_now_iso(),
+        event_type="compaction",
+        model=config.model,
+        data={
+            "messages_before": messages_before,
+            "messages_after": len(compacted),
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+            "journal_injected": config.journal is not None,
+        },
+        elapsed_ms=_elapsed_ms(loop_start),
     ))
 
     return compacted

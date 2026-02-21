@@ -181,6 +181,35 @@ async def delete_builds(build_ids: list[UUID]) -> int:
     return int(parts[1]) if len(parts) == 2 else 0
 
 
+async def interrupt_stale_builds() -> int:
+    """Mark any 'pending' or 'running' builds as 'failed' on server startup.
+
+    Called once during lifespan startup to clear builds that were left in an
+    active state by a previous server instance (crash, SIGTERM, restart).
+    Without this, start_build() refuses to create a fresh build and the IDE
+    shows stale logs with no live background task behind them.
+
+    Returns the number of builds interrupted.
+    """
+    pool = await get_pool()
+    now = datetime.now(timezone.utc)
+    result = await pool.execute(
+        """
+        UPDATE builds
+           SET status       = 'failed',
+               completed_at = $1,
+               error_detail = 'Interrupted by server restart'
+         WHERE status IN ('pending', 'running')
+        """,
+        now,
+    )
+    # asyncpg returns "UPDATE N" as a string
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 async def has_active_builds(project_id: UUID) -> bool:
     """Return True if the project has any pending/running/paused builds."""
     pool = await get_pool()

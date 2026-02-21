@@ -18,7 +18,9 @@ def _get_client() -> httpx.AsyncClient:
     """Return (or create) the shared httpx client for LLM API calls."""
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=300.0)
+        # 60s timeout — generous enough for large responses, short enough to
+        # fail fast instead of bleeding for 5 minutes on a hung connection.
+        _client = httpx.AsyncClient(timeout=60.0)
     return _client
 
 
@@ -33,8 +35,8 @@ async def close_client() -> None:
 # Retry configuration
 # ---------------------------------------------------------------------------
 
-MAX_RETRIES = 6
-RETRY_BACKOFF_BASE = 2.0  # seconds — exponential: 2, 4, 8, 16, 32, 64
+MAX_RETRIES = 2  # was 6 — 6 retries = up to 126s of backoff per call, too expensive
+RETRY_BACKOFF_BASE = 2.0  # seconds — exponential: 2, 4 (capped at 3 attempts total)
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 529})
 
 

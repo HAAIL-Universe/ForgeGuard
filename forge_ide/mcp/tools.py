@@ -41,6 +41,9 @@ _ARTIFACT_TOOLS = frozenset(
     {"forge_store_artifact", "forge_get_artifact", "forge_list_artifacts", "forge_clear_artifacts"}
 )
 
+# Planner tools always run in-process against the local planner package
+_PLANNER_TOOLS = frozenset({"forge_run_planner"})
+
 # Project-scoped tools always proxy to ForgeGuard API (DB contracts)
 _PROJECT_TOOLS = frozenset(
     {
@@ -375,6 +378,32 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
+    # ── Planner tool ───────────────────────────────────────────────────────
+    {
+        "name": "forge_run_planner",
+        "description": (
+            "Run the Forge Project Planner Agent. Analyses the project "
+            "request and generates a complete build plan (plan.json) covering "
+            "all phases. Returns the plan path, phase list, token usage, and a "
+            "turn-by-turn trace of the planning loop so you can follow the "
+            "planner's reasoning in real time."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_request": {
+                    "type": "string",
+                    "description": (
+                        "Natural-language description of what to build — "
+                        "stack, features, constraints. Include everything "
+                        "the planner needs to produce a complete, "
+                        "unambiguous plan."
+                    ),
+                },
+            },
+            "required": ["project_request"],
+        },
+    },
 ]
 
 
@@ -393,6 +422,11 @@ async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     # Project-scoped tools always proxy to ForgeGuard API
     if name in _PROJECT_TOOLS:
         result = await _dispatch_project(name, arguments)
+        _log_result(name, result, start)
+        return result
+    # Planner tools always run in-process (local planner package)
+    if name in _PLANNER_TOOLS:
+        result = await _dispatch_planner(name, arguments)
         _log_result(name, result, start)
         return result
     if LOCAL_MODE:
@@ -528,6 +562,89 @@ def _dispatch_local(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return load_contract("stack")
         case _:
             return {"error": f"Unknown tool: {name}"}
+
+
+# ── Planner dispatch ──────────────────────────────────────────────────────
+
+
+async def _dispatch_planner(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    match name:
+        case "forge_run_planner":
+            return await _run_planner(arguments)
+        case _:
+            return {"error": f"Unknown planner tool: {name}"}
+
+
+async def _run_planner(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Run the standalone planner agent and return a turn-by-turn trace."""
+    import asyncio as _asyncio
+    import sys
+
+    from .config import FORGEGUARD_ROOT
+
+    project_request = arguments.get("project_request", "").strip()
+    if not project_request:
+        return {"error": "Missing required parameter: project_request"}
+
+    planner_dir = FORGEGUARD_ROOT.parent / "planner"
+    if not planner_dir.exists():
+        return {"error": f"Planner directory not found: {planner_dir}"}
+
+    planner_str = str(planner_dir)
+    if planner_str not in sys.path:
+        sys.path.insert(0, planner_str)
+
+    try:
+        from planner_agent import PlannerError, run_planner  # type: ignore[import]
+    except ImportError as exc:
+        return {"error": f"Cannot import planner_agent: {exc}"}
+
+    import threading as _threading
+
+    # Collect per-turn data from the planner loop via callback.
+    # The callback fires in the executor thread — list.append is GIL-safe.
+    turns: list[dict] = []
+    _stop_event = _threading.Event()
+
+    def _turn_callback(turn_data: dict) -> None:
+        turns.append(turn_data)
+
+    loop = _asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: run_planner(
+                project_request=project_request,
+                verbose=False,
+                turn_callback=_turn_callback,
+                stop_event=_stop_event,
+            ),
+        )
+    except _asyncio.CancelledError:
+        _stop_event.set()
+        raise
+    except PlannerError as exc:
+        return {
+            "error": str(exc),
+            "turns_completed": len(turns),
+            "turns": turns,
+        }
+    except Exception as exc:
+        return {"error": f"Planner crashed: {exc}", "turns": turns}
+
+    u = result["token_usage"]
+    savings_pct = u["cache_read_input_tokens"] / max(u["input_tokens"], 1) * 100
+
+    return {
+        "plan_path": result["plan_path"],
+        "iterations": result["iterations"],
+        "phases": [
+            {"number": p["number"], "name": p["name"]}
+            for p in result["plan"].get("phases", [])
+        ],
+        "token_usage": {**u, "cache_savings_pct": round(savings_pct, 1)},
+        "turns": turns,
+    }
 
 
 # Sentinel returned by _dispatch_local when an async DB fetch is needed

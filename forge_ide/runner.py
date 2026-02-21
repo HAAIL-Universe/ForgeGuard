@@ -48,6 +48,7 @@ RUN_COMMAND_PREFIXES: tuple[str, ...] = (
     "pip install", "pip3 install",
     "npm install", "npx ",
     "python -m ", "python3 -m ",
+    "python forge/scripts/", "python3 forge/scripts/",  # Forge governance scripts
     "cat ", "head ", "tail ", "wc ", "find ", "ls ",
     "dir ",   # Windows
     "type ",  # Windows cat equivalent

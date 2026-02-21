@@ -18,6 +18,7 @@ __all__ = [
     "_compact_conversation",
     "_build_directive",
     "_write_contracts_to_workdir",
+    "write_forge_config_to_workdir",
     "_extract_phase_window",
     "inject_forge_gitignore",
 ]
@@ -224,6 +225,7 @@ def _build_directive(contracts: list[dict]) -> str:
 _FORGE_GITIGNORE_RULES = [
     "# Forge contracts (server-side only — do not push)",
     "Forge/",
+    "forge.json",
     "*.forge-contract",
     ".forge/",
     "",
@@ -295,6 +297,31 @@ def _write_contracts_to_workdir(
         path.write_text(content, encoding="utf-8")
         written.append(f"Forge/Contracts/{ctype}{ext}")
     return written
+
+
+def write_forge_config_to_workdir(
+    working_dir: str | Path,
+    project: dict,
+) -> bool:
+    """Write forge.json to the project root from the stored forge_config.
+
+    The forge_config is populated during contract generation (in _template_stack)
+    and stored inside questionnaire_state.forge_config.  It contains the
+    machine-readable operational config the builder reads at boot:
+    test commands, venv path, entry module, frontend dir, etc.
+
+    Returns True if written, False if no config was found (e.g. contracts
+    were generated before this feature was added).
+    """
+    import json as _json
+    qs = project.get("questionnaire_state") or {}
+    forge_config = qs.get("forge_config")
+    if not forge_config:
+        return False
+    path = Path(working_dir) / "forge.json"
+    path.write_text(_json.dumps(forge_config, indent=2), encoding="utf-8")
+    logger.info("forge.json written to %s", path)
+    return True
 
 
 def _extract_phase_window(

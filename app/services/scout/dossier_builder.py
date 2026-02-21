@@ -75,7 +75,7 @@ async def _generate_dossier(
 
     Returns the parsed dossier dict, or None if LLM is unavailable or fails.
     """
-    from app.config import settings
+    from app.config import settings, get_model_for_role
 
     api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
@@ -126,7 +126,7 @@ async def _generate_dossier(
     )
 
     try:
-        model = settings.LLM_PLANNER_MODEL  # use the cheaper planner model
+        model = get_model_for_role("planner")  # use the cheaper planner model
         result = await chat(
             api_key=api_key,
             model=model,

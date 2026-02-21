@@ -116,7 +116,7 @@ def extract_text_from_blocks(content_blocks: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 _TOOL_USE_PREAMBLE = """\
-You are a Forge contract generator.  You produce detailed, production-quality
+You are a Forge contract generator.  You produce concise, structured
 project specification documents for the Forge autonomous build system.
 
 You are generating the **{contract_type}** contract for the repository
@@ -131,9 +131,10 @@ RULES:
 - Output ONLY the contract content.  No preamble, no 'Here is...', no
   commentary, no explanations.  The text passed to submit_contract must be
   the FINAL contract and nothing else.
-- Be thorough and detailed.  Do NOT leave any section empty or with
-  placeholder text.  Match the structural depth and detail level of the
-  reference example below (if one is provided).
+- Be concise and structured.  Bullet points over prose.  No filler words.
+  Every line must carry information.  Fill all required fields with
+  project-specific facts.  Match the FORMAT of the reference — not its
+  verbosity.  Do not exceed it.
 
 WORKFLOW:
 1. Use the available tools to fetch the context you need for THIS specific
@@ -168,7 +169,7 @@ TOOL GUIDANCE:
 """
 
 _GREENFIELD_PREAMBLE = """\
-You are a Forge contract generator.  You produce detailed, production-quality
+You are a Forge contract generator.  You produce concise, structured
 project specification documents for the Forge autonomous build system.
 
 You are generating the **{contract_type}** contract for the project
@@ -181,9 +182,10 @@ RULES:
 - Output ONLY the contract content.  No preamble, no 'Here is...', no
   commentary, no explanations.  The text passed to submit_contract must be
   the FINAL contract and nothing else.
-- Be thorough and detailed.  Do NOT leave any section empty or with
-  placeholder text.  Match the structural depth and detail level of the
-  reference example below (if one is provided).
+- Be concise and structured.  Bullet points over prose.  No filler words.
+  Every line must carry information.  Fill all required fields with
+  project-specific facts.  Match the FORMAT of the reference — not its
+  verbosity.  Do not exceed it.
 
 WORKFLOW:
 1. Use the available tools to fetch the context you need for THIS specific

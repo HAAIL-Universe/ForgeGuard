@@ -39,6 +39,10 @@ class InterjectRequest(BaseModel):
 class ChatRequest(BaseModel):
     """Request body for build chat — free-text questions about the build."""
     message: str = Field(..., min_length=1, max_length=2000)
+    history: list[dict] | None = Field(
+        default=None,
+        description="Prior conversation turns [{role, content}] for multi-turn context.",
+    )
 
 
 class ClarifyRequest(BaseModel):
@@ -198,7 +202,7 @@ async def build_chat(
     """Ask a free-text question about the build — answered by Haiku."""
     try:
         return await build_service.build_chat(
-            project_id, user["id"], body.message
+            project_id, user["id"], body.message, history=body.history
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -441,7 +445,7 @@ async def get_build_errors(
 
 
 class DismissErrorRequest(BaseModel):
-    error_id: str
+    error_id: UUID  # Pydantic validates format; returns 422 for non-UUID values
 
 
 @router.post("/{project_id}/build/errors/dismiss")
@@ -453,7 +457,7 @@ async def dismiss_build_error(
     """Mark a build error as dismissed by the user."""
     from app.repos import build_repo as _br
     result = await _br.resolve_build_error(
-        UUID(body.error_id),
+        body.error_id,
         method="dismissed",
     )
     if not result:

@@ -24,7 +24,7 @@ from uuid import UUID
 from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, ApiKeyPool
 from app.clients import git_client
 from app.clients import github_client
-from app.config import settings
+from app.config import settings, get_model_for_role
 from app.repos import build_repo
 from app.repos import project_repo
 from app.repos.user_repo import get_user_by_id
@@ -34,7 +34,7 @@ from app.ws_manager import manager
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MCP-driven system prompt (Phase 56) â€” used when USE_MCP_CONTRACTS=True
+# MCP-driven system prompt (Phase 56) — used when USE_MCP_CONTRACTS=True
 # ---------------------------------------------------------------------------
 
 MCP_SYSTEM_PROMPT = """\
@@ -60,7 +60,7 @@ You build projects phase-by-phase using the tools below.
 - **forge_get_phase_window**(phase_number): Get current + next phase deliverables.
 - **forge_scratchpad**(operation, key?, value?): Persistent notes across phases (survives context compaction).
 
-## AEM (Autonomous Execution Mode) â€” The Build Loop
+## AEM (Autonomous Execution Mode) — The Build Loop
 
 For EACH phase, follow these steps exactly:
 
@@ -85,7 +85,7 @@ any decisions you'll need later.
 ### Step 3: Build
 Write code using `write_file` and `edit_file`. After each file:
 - Call `check_syntax` to catch errors immediately.
-- Do NOT explore the filesystem unnecessarily â€” the workspace listing
+- Do NOT explore the filesystem unnecessarily — the workspace listing
   is in the first message, and you can `list_directory` if needed.
 
 ### Step 4: Mark Progress
@@ -114,7 +114,7 @@ Start again from Step 1.
 
 1. **Minimal Diff**: Only change what the phase requires. No renames,
    no cleanup, no unrelated refactors.
-2. **Boundary Enforcement**: Routers â†’ Services â†’ Repos. No skipping layers.
+2. **Boundary Enforcement**: Routers â†' Services â†' Repos. No skipping layers.
    Read `boundaries` contract if unsure.
 3. **Contract Exclusion**: NEVER include Forge contract content, references,
    or metadata in committed source files, READMEs, or code comments.
@@ -133,7 +133,7 @@ Start again from Step 1.
 8. **Dependencies**: When you write `requirements.txt` or `package.json`,
    dependencies are auto-installed into the project's virtual environment.
    You do NOT need to call `run_command("pip install ...")` after creating
-   requirements.txt â€” it happens automatically.
+   requirements.txt — it happens automatically.
 
 ## First Turn
 
@@ -145,12 +145,12 @@ On your VERY FIRST response:
 """
 
 # ---------------------------------------------------------------------------
-# MCP Mini-build system prompt (Phase 56B) â€” 2-phase rapid scaffold
+# MCP Mini-build system prompt (Phase 56B) — 2-phase rapid scaffold
 # ---------------------------------------------------------------------------
 
 MCP_MINI_SYSTEM_PROMPT = """\
 You are an autonomous software builder operating under the Forge governance framework.
-You are running a **Mini Build** â€” a rapid 2-phase proof-of-concept scaffold.
+You are running a **Mini Build** — a rapid 2-phase proof-of-concept scaffold.
 
 ## Your Tools
 
@@ -171,16 +171,16 @@ You are running a **Mini Build** â€” a rapid 2-phase proof-of-concept scaff
 - **forge_get_phase_window**(phase_number): Get current + next phase deliverables.
 - **forge_scratchpad**(operation, key?, value?): Persistent notes across phases.
 
-## Mini Build â€” 2 Phases Only
+## Mini Build — 2 Phases Only
 
 This is a **Mini Build**. There are EXACTLY 2 phases:
-- **Phase 0 â€” Backend Scaffold**: Project structure, database, API endpoints, auth, tests
-- **Phase 1 â€” Frontend & Ship**: UI pages/components, API integration, styling, README
+- **Phase 0 — Backend Scaffold**: Project structure, database, API endpoints, auth, tests
+- **Phase 1 — Frontend & Ship**: UI pages/components, API integration, styling, README
 
 Do NOT create additional phases. Do NOT split work into more than 2 phases.
 Every deliverable MUST fit into Phase 0 or Phase 1.
 
-## AEM (Autonomous Execution Mode) â€” The Build Loop
+## AEM (Autonomous Execution Mode) — The Build Loop
 
 For EACH phase, follow these steps exactly:
 
@@ -201,7 +201,7 @@ Emit a structured plan for THIS phase only:
 ### Step 3: Build
 Write code using `write_file` and `edit_file`. After each file:
 - Call `check_syntax` to catch errors immediately.
-- Do NOT explore the filesystem â€” the workspace listing is in the first message.
+- Do NOT explore the filesystem — the workspace listing is in the first message.
 
 ### Step 4: Mark Progress
 After completing each plan task, emit: === TASK DONE: N ===
@@ -229,7 +229,7 @@ After Phase 1 sign-off, the build is COMPLETE.
 
 1. **2 Phases Only**: Phase 0 (backend) and Phase 1 (frontend). Nothing else.
 2. **Minimal Diff**: Only change what the phase requires.
-3. **Boundary Enforcement**: Routers â†’ Services â†’ Repos. No skipping layers.
+3. **Boundary Enforcement**: Routers â†' Services â†' Repos. No skipping layers.
 4. **Contract Exclusion**: NEVER include Forge contract content in source files.
    The `Forge/` directory is server-side only.
 5. **STOP Codes**: If you encounter an unresolvable issue, emit one of:
@@ -238,8 +238,8 @@ After Phase 1 sign-off, the build is COMPLETE.
 6. **README**: In Phase 1, write a comprehensive README.md with project name,
    description, features, tech stack, setup instructions, environment variables,
    usage examples, API reference, and license placeholder.
-7. **Environment Files**: Write `.env.example` (committed â€” placeholder values)
-   and `.env` (gitignored â€” working local defaults) with all required env vars.
+7. **Environment Files**: Write `.env.example` (committed — placeholder values)
+   and `.env` (gitignored — working local defaults) with all required env vars.
 8. **Dependencies**: Writing `requirements.txt` or `package.json` auto-triggers
    installation. No need to manually `run_command("pip install ...")`.
 
@@ -248,7 +248,7 @@ After Phase 1 sign-off, the build is COMPLETE.
 On your VERY FIRST response:
 1. Call `forge_get_phase_window(0)` to get Phase 0 deliverables
 2. Call `forge_get_contract("blueprint")` and `forge_get_contract("stack")`
-3. Call `forge_get_contract("schema")` â€” you need the data model for backend
+3. Call `forge_get_contract("schema")` — you need the data model for backend
 4. Emit === PLAN === for Phase 0
 5. Start writing code immediately with `write_file`
 """
@@ -327,6 +327,7 @@ from app.services.build.context import (  # noqa: E402
     _compact_conversation,
     _build_directive,
     _write_contracts_to_workdir,
+    write_forge_config_to_workdir,
     _extract_phase_window,
     inject_forge_gitignore,
 )
@@ -339,10 +340,12 @@ from app.services.build.planner import (  # noqa: E402
     _select_contracts_for_file,
     _calculate_context_budget,
     _topological_sort,
-    _generate_file_manifest,
     _generate_single_file,
     _generate_fix_manifest,
     _CONTRACT_RELEVANCE,
+)
+from app.services.build.planner_agent_loop import (  # noqa: E402
+    run_phase_planner_agent,
 )
 from app.services.build.plan_artifacts import (  # noqa: E402
     store_phase_plan,
@@ -381,7 +384,7 @@ async def _setup_project_environment(
 
     This runs at build start, **before the LLM agent begins**, and streams
     every line of output to the build log so the user sees it in the IDE
-    console â€” just like a normal terminal.
+    console — just like a normal terminal.
 
     Steps:
         1. ``python -m venv .venv`` (creates the venv)
@@ -752,7 +755,7 @@ async def start_build(
     # Resolve working directory based on target type
     working_dir: str | None = None
     if working_dir_override:
-        # /continue â€” reuse previous build's working directory
+        # /continue — reuse previous build's working directory
         working_dir = working_dir_override
     elif target_type in ("github_new", "github_existing"):
         # Use a temp directory; clone/init happens in _run_build
@@ -850,7 +853,7 @@ async def _handle_clarification(
         await _broadcast_build_event(user_id, build_id, "build_clarification_resolved", {
             "build_id": bid,
             "question_id": question_id,
-            "answer": "(timed out â€” AI will decide)",
+            "answer": "(timed out — AI will decide)",
         })
         return (
             "No answer received within the timeout. "
@@ -933,7 +936,7 @@ async def cancel_build(project_id: UUID, user_id: UUID) -> dict:
 async def force_cancel_build(project_id: UUID, user_id: UUID) -> dict:
     """Force-cancel a build regardless of its current DB status.
 
-    This is the nuclear option â€” kills the asyncio task, cleans up all
+    This is the nuclear option — kills the asyncio task, cleans up all
     in-memory state, and marks the build failed.  Use when the normal
     cancel doesn't work (e.g. the build is stuck and the task is not
     responding to CancelledError).
@@ -1115,7 +1118,7 @@ async def resume_build(
     _resumable = ("paused", "running", "cancelled", "failed")
     if latest["status"] not in _resumable:
         raise ValueError(
-            f"Cannot resume build â€” status is '{latest['status']}'. "
+            f"Cannot resume build — status is '{latest['status']}'. "
             f"Use /start to begin a new build."
         )
 
@@ -1130,11 +1133,11 @@ async def resume_build(
     if event:
         event.set()
     else:
-        # Orphaned pause â€” the server restarted while the build was paused.
+        # Orphaned pause — the server restarted while the build was paused.
         # The background task that was waiting on the event is gone.
         # Cancel the old build and restart from the current phase.
         logger.warning(
-            "Orphaned pause for build %s â€” restarting from current phase",
+            "Orphaned pause for build %s — restarting from current phase",
             build_id,
         )
         import re as _re_resume
@@ -1172,7 +1175,7 @@ async def resume_build(
             except Exception as exc:
                 logger.warning("Failed to search prior builds for orphan recovery: %s", exc)
 
-        # Final fallback: parse git log â€” the repo is the real source of truth
+        # Final fallback: parse git log — the repo is the real source of truth
         if _best_completed < 0 and _best_dir and Path(_best_dir).exists():
             try:
                 _git_msgs = await git_client.log_oneline(_best_dir, max_count=200)
@@ -1230,7 +1233,7 @@ async def resume_build(
             # But if progress shows the phase is already done,
             # continue from the next phase instead of redoing it.
             if _best_completed >= current_phase_num:
-                resume_from = _best_completed  # phase already done â†’ continue
+                resume_from = _best_completed  # phase already done â†' continue
             else:
                 # Use max(..., 0) so Phase 0 retry gets resume_from=0
                 # (not -1, which would trigger a fresh clone over the
@@ -1407,17 +1410,17 @@ async def interject_build(
     """Inject a user message or slash command into an active build.
 
     Slash commands:
-        /stop      â€” cancel the current build immediately
-        /pause     â€” pause after the current file finishes
-        /start     â€” resume or start build (optionally: /start phase N)
-        /verify    â€” run verification (syntax + tests) on project files
-        /fix       â€” send verification errors to the builder for fixing
-        /compact   â€” compact context before the next file
-        /clear     â€” stop the build and restart immediately (preserves files on disk)
-        /commit    â€” git add, commit, and push all files to GitHub immediately
-        /push      â€” push to GitHub (commits uncommitted changes first, sets remote if needed)
-        /pull      â€” pull from GitHub and continue from last committed phase
-        /status    â€” get an LLM-generated summary of current build state
+        /stop      — cancel the current build immediately
+        /pause     — pause after the current file finishes
+        /start     — resume or start build (optionally: /start phase N)
+        /verify    — run verification (syntax + tests) on project files
+        /fix       — send verification errors to the builder for fixing
+        /compact   — compact context before the next file
+        /clear     — stop the build and restart immediately (preserves files on disk)
+        /commit    — git add, commit, and push all files to GitHub immediately
+        /push      — push to GitHub (commits uncommitted changes first, sets remote if needed)
+        /pull      — pull from GitHub and continue from last committed phase
+        /status    — get an LLM-generated summary of current build state
 
     /continue is accepted as an alias for /start.
 
@@ -1439,6 +1442,21 @@ async def interject_build(
         result = await cancel_build(project_id, user_id)
         return {"status": "stopped", "build_id": str(result["id"]), "message": "Build stopped via /stop"}
 
+    # --- /reset — force-nuke stuck/orphaned build ---------------------
+    if stripped == "/reset":
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if not latest or latest["status"] not in ("pending", "running", "paused"):
+            return {"status": "no_build", "message": "No active build to reset — type /prep or /start to begin a new build"}
+        bid = str(latest["id"])
+        try:
+            await nuke_build(project_id, user_id)
+            return {"status": "reset", "build_id": bid, "message": "Build reset — type /prep or /start to begin a new build"}
+        except Exception as exc:
+            raise ValueError(f"Reset failed: {exc}") from exc
+
     # --- /clear ------------------------------------------------------
     if stripped == "/clear":
         # Stop current build, then immediately start a new one
@@ -1457,9 +1475,79 @@ async def interject_build(
                 logger.info("/clear: cancel_build raised (may already be cancelled)", exc_info=True)
             # Give the cancelled task a tick to clean up
             await asyncio.sleep(0.1)
-        # Start fresh build â€” will pick up existing files on disk
+        # Start fresh build — will pick up existing files on disk
         result = await start_build(project_id, user_id)
         return {"status": "cleared", "build_id": str(result["id"]), "message": "Build cleared and restarted via /clear"}
+
+    # --- /prep [/plan] — run planner preview, populate phases panel ----
+    if stripped in ("/prep", "/plan"):
+        project = await project_repo.get_project_by_id(project_id)
+        if not project or str(project["user_id"]) != str(user_id):
+            raise ValueError("Project not found")
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        # Handle both "running" (builders active) and "pending" (warm-up/gate)
+        if latest and latest["status"] in ("running", "pending"):
+            bid = str(latest["id"])
+            # Case 1: At the IDE ready gate — trigger planner in preview mode.
+            # The gate is registered for "pending" status builds (warm-up done,
+            # waiting for user action).  The /prep command resolves the gate with
+            # action="prep" so the planner runs without commencing builders.
+            if bid in _ide_ready_events:
+                from app.services.build._state import resolve_ide_ready
+                resolve_ide_ready(bid, {"action": "prep"})
+                return {"status": "prepping", "build_id": bid, "message": "Planner running \u2014 phases will appear shortly"}
+            # Case 2: Plan already generated, waiting at the review gate
+            if bid in _plan_review_events:
+                return {"status": "plan_ready", "build_id": bid, "message": "Plan already generated \u2014 check the phases panel. Type /start to approve and begin building."}
+            # Case 3: Builders are actively running (status=running, no open gate)
+            if latest["status"] == "running":
+                return {"status": "building", "build_id": bid, "message": "Build in progress \u2014 plan was already generated. Check the phases panel."}
+            # Case 4: pending + no open gate — warm-up still in progress or orphaned.
+            # If the task is still running (e.g. mid-warm-up), tell the user to wait.
+            # If orphaned (server restart), fall through to nuke + fresh start.
+            _task = _active_tasks.get(bid)
+            _is_active = (
+                (bool(_task) and not _task.done())
+                or bid in _current_generating
+                or bid in _pause_events
+                or bid in _pause_flags
+                or bid in _build_heartbeat_tasks
+                or bid in _last_progress
+            )
+            if _is_active:
+                return {"status": "pending", "build_id": bid, "message": "Workspace is still warming up \u2014 try /prep again in a moment"}
+            # Orphaned pending build — nuke it so start_build() is not blocked.
+            try:
+                await nuke_build(project_id, user_id)
+                await asyncio.sleep(0.05)
+                logger.info("/prep: auto-nuked orphaned pending build %s", bid)
+            except Exception:
+                logger.warning("/prep: auto-nuke of orphaned build %s failed", bid, exc_info=True)
+        # If there is an orphaned DB record in "paused" state (server restarted),
+        # auto-nuke it so start_build() is not blocked.
+        elif latest and latest["status"] == "paused":
+            bid = str(latest["id"])
+            _task = _active_tasks.get(bid)
+            _orphaned = not (
+                (bool(_task) and not _task.done())
+                or bid in _current_generating
+                or bid in _pause_events
+                or bid in _pause_flags
+                or bid in _build_heartbeat_tasks
+                or bid in _last_progress
+            )
+            if _orphaned:
+                try:
+                    await nuke_build(project_id, user_id)
+                    await asyncio.sleep(0.05)
+                    logger.info("/prep: auto-nuked orphaned paused build %s", bid)
+                except Exception:
+                    logger.warning("/prep: auto-nuke of orphaned build %s failed", bid, exc_info=True)
+        # Start a fresh build: workspace setup runs, then the planner generates the phases
+        # plan automatically, which appears in the phases panel. The build then pauses at
+        # the plan-review gate so the user can inspect and approve with /start.
+        result = await start_build(project_id, user_id)
+        return {"status": "started", "build_id": str(result["id"]), "message": "Build starting \u2014 planner will generate your phases plan shortly. Type /start when ready to begin building."}
 
     # --- /start [phase N] (also handles /continue as alias) ----------
     if stripped == "/start" or stripped.startswith("/start ") or stripped == "/continue" or stripped.startswith("/continue "):
@@ -1482,15 +1570,58 @@ async def interject_build(
                 resolve_plan_review(bid, {"action": "approve"})
                 return {"status": "approved", "build_id": bid, "message": "Plan approved \u2014 builders starting"}
 
+        # If pending — check gates first, then orphan logic.
+        # A pending build is at the IDE ready gate (warm-up done, waiting for user).
+        # /start should resolve the gate and begin the build, not return "starting up".
+        if latest and latest["status"] == "pending":
+            bid = str(latest["id"])
+            # Check gates before the general "truly active" guard — if waiting, resolve
+            if bid in _ide_ready_events:
+                from app.services.build._state import resolve_ide_ready
+                resolve_ide_ready(bid, {"action": "commence"})
+                return {"status": "commenced", "build_id": bid, "message": "Build commenced \u2014 planning phase starting"}
+            if bid in _plan_review_events:
+                from app.services.build._state import resolve_plan_review
+                resolve_plan_review(bid, {"action": "approve"})
+                return {"status": "approved", "build_id": bid, "message": "Plan approved \u2014 builders starting"}
+            _task = _active_tasks.get(bid)
+            _is_truly_active = (
+                (bool(_task) and not _task.done())
+                or bid in _current_generating
+                or bid in _pause_events
+                or bid in _pause_flags
+                or bid in _build_heartbeat_tasks
+                or bid in _last_progress
+            )
+            if _is_truly_active:
+                return {"status": "already_running", "build_id": bid, "message": "Build is starting up"}
+            # Orphaned pending build — nuke it and re-fetch so downstream logic starts clean
+            try:
+                await nuke_build(project_id, user_id)
+                await asyncio.sleep(0.05)
+                latest = await build_repo.get_latest_build_for_project(project_id)
+                logger.info("/start: auto-nuked orphaned pending build %s", bid)
+            except Exception:
+                logger.warning("/start: auto-nuke of orphaned pending build %s failed", bid, exc_info=True)
+
         if latest and latest["status"] == "paused":
             result = await resume_build(project_id, user_id, action="retry")
             return {"status": "resumed", "build_id": str(result["id"]), "message": "Build resumed via /start"}
         # If running, check if it's truly active or orphaned (server restart)
         if latest and latest["status"] == "running":
             bid = str(latest["id"])
-            # A truly running build has active in-memory state
+            # A truly running build has either an active asyncio Task or
+            # in-memory markers set by the running task.  Checking the Task
+            # object directly covers the narrow race between task creation
+            # (line 793, synchronous) and the first _touch_progress call
+            # (line 2389, first thing _run_build() does) where the other
+            # markers have not been populated yet.
+            _task = _active_tasks.get(bid)
             is_truly_active = (
-                bid in _current_generating
+                (bool(_task) and not _task.done())
+                or bid in _current_generating
+                or bid in _ide_ready_events    # defensive: gate-waiting builds are active
+                or bid in _plan_review_events  # defensive: review-gate builds are active
                 or bid in _pause_events
                 or bid in _pause_flags
                 or bid in _build_heartbeat_tasks
@@ -1498,7 +1629,7 @@ async def interject_build(
             )
             if is_truly_active:
                 return {"status": "already_running", "build_id": str(latest["id"]), "message": "Build is already running"}
-            # Orphaned running build â€” recover by continuing (not retrying)
+            # Orphaned running build — recover by continuing (not retrying)
             result = await resume_build(project_id, user_id, action="retry")
             _cp = latest.get("completed_phases")
             _cp_str = f" (completed_phases={_cp})" if _cp is not None else ""
@@ -1542,7 +1673,7 @@ async def interject_build(
                 logger.warning("Failed to search prior builds: %s", exc)
 
         # Final fallback: parse git log for "forge: Phase N ... complete"
-        # commits â€” the git repo is the real source of truth.
+        # commits — the git repo is the real source of truth.
         _scan_dir = (_best_build or latest or {}).get("working_dir")
         if _best_cp < 0 and _scan_dir and Path(_scan_dir).exists():
             try:
@@ -1613,7 +1744,7 @@ async def interject_build(
                         "message": f"Build continuing from Phase {target_phase} (use /clear to start fresh)",
                     }
                 elif _best_build.get("target_type") in ("github_new", "github_existing"):
-                    # Workspace vanished (e.g., temp dir cleaned up) â€” clone fresh
+                    # Workspace vanished (e.g., temp dir cleaned up) — clone fresh
                     # and resume from the last completed phase inferred from DB/git log.
                     result = await start_build(
                         project_id, user_id,
@@ -1628,12 +1759,12 @@ async def interject_build(
                         "status": "continued",
                         "build_id": str(result["id"]),
                         "message": (
-                            f"Build continuing from Phase {target_phase} (fresh clone â€” "
+                            f"Build continuing from Phase {target_phase} (fresh clone — "
                             "previous workspace missing)"
                         ),
                     }
 
-        # No prior progress â€” start fresh
+        # No prior progress — start fresh
         result = await start_build(project_id, user_id)
         return {"status": "started", "build_id": str(result["id"]), "message": "Build started via /start"}
 
@@ -1689,7 +1820,7 @@ async def interject_build(
                     scan_manifest, working_dir, [],
                 )
                 _v_msg = (
-                    f"Verification complete â€” "
+                    f"Verification complete — "
                     f"{result.get('syntax_errors', 0)} syntax errors, "
                     f"{result.get('tests_passed', 0)} tests passed, "
                     f"{result.get('tests_failed', 0)} tests failed, "
@@ -1737,7 +1868,7 @@ async def interject_build(
             api_key = user.get("anthropic_api_key") or user.get("api_key") or ""
 
         if latest["status"] in ("running", "paused"):
-            # Build is active â€” queue as interjection
+            # Build is active — queue as interjection
             queue = _interjection_queues.get(str(build_id))
             if queue is not None:
                 queue.put_nowait(fix_payload)
@@ -1746,7 +1877,7 @@ async def interject_build(
                 source="user", level="info",
             )
             await _broadcast_build_event(user_id, build_id, "build_log", {
-                "message": "ðŸ”§ Fix request sent to builder",
+                "message": "🔧 Fix request sent to builder",
                 "source": "user", "level": "info",
             })
             return {
@@ -1755,12 +1886,12 @@ async def interject_build(
                 "message": "Fix request queued for active build",
             }
 
-        # Build not active â€” do a targeted in-place fix
+        # Build not active — do a targeted in-place fix
         async def _run_fix_task() -> None:
             try:
                 _touch_progress(build_id)
                 await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": "ðŸ”§ Analysing error and applying targeted fix...",
+                    "message": "🔧 Analysing error and applying targeted fix...",
                     "source": "system", "level": "info",
                 })
 
@@ -1790,14 +1921,14 @@ async def interject_build(
 
                 if not mentioned_files:
                     await _broadcast_build_event(user_id, build_id, "build_log", {
-                        "message": "ðŸ”§ Could not identify files from error output. No files modified.",
+                        "message": "🔧 Could not identify files from error output. No files modified.",
                         "source": "system", "level": "warn",
                     })
                     return
 
                 files_list = ", ".join(mentioned_files.keys())
                 await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": f"ðŸ”§ Identified {len(mentioned_files)} file(s) to fix: {files_list}",
+                    "message": f"🔧 Identified {len(mentioned_files)} file(s) to fix: {files_list}",
                     "source": "system", "level": "info",
                 })
 
@@ -1809,7 +1940,7 @@ async def interject_build(
                 system_prompt = (
                     "You are a precise code repair tool. You will be given one or more files "
                     "and an error output. Fix ONLY the issue described in the error output. "
-                    "Make the absolute minimum changes necessary â€” do not refactor, rename, "
+                    "Make the absolute minimum changes necessary — do not refactor, rename, "
                     "or change anything unrelated to the error.\n\n"
                     "Return ONLY the fixed file(s) in this exact format:\n"
                     "=== FILE: path/to/file.ext ===\n"
@@ -1826,7 +1957,7 @@ async def interject_build(
                 result = await asyncio.wait_for(
                     llm_chat(
                         api_key=api_key,
-                        model=settings.LLM_BUILDER_MODEL,
+                        model=get_model_for_role("builder"),
                         system_prompt=system_prompt,
                         messages=[{"role": "user", "content": user_message}],
                         max_tokens=16384,
@@ -1841,7 +1972,7 @@ async def interject_build(
                 fixed_files = _parse_file_blocks(response_text)
                 if not fixed_files:
                     await _broadcast_build_event(user_id, build_id, "build_log", {
-                        "message": "ðŸ”§ LLM returned no file blocks â€” could not apply fix.",
+                        "message": "🔧 LLM returned no file blocks — could not apply fix.",
                         "source": "system", "level": "warn",
                     })
                     return
@@ -1852,7 +1983,7 @@ async def interject_build(
                     fp.parent.mkdir(parents=True, exist_ok=True)
                     fp.write_text(ff["content"], encoding="utf-8")
                     await _broadcast_build_event(user_id, build_id, "build_log", {
-                        "message": f"ðŸ”§ Fixed: {ff['path']}",
+                        "message": f"🔧 Fixed: {ff['path']}",
                         "source": "system", "level": "info",
                     })
 
@@ -1862,25 +1993,25 @@ async def interject_build(
                     sha = await git_client.commit(working_dir, "forge: targeted fix via /fix")
                     if sha:
                         await build_repo.append_build_log(
-                            build_id, f"ðŸ”§ Fix committed: {sha[:8]}",
+                            build_id, f"🔧 Fix committed: {sha[:8]}",
                             source="system", level="info",
                         )
                         await _broadcast_build_event(user_id, build_id, "build_log", {
-                            "message": f"ðŸ”§ Fix committed: {sha[:8]}",
+                            "message": f"🔧 Fix committed: {sha[:8]}",
                             "source": "system", "level": "info",
                         })
                 except Exception as exc:
                     logger.warning("/fix commit failed: %s", exc)
 
                 await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": f"ðŸ”§ Fix complete â€” {len(fixed_files)} file(s) repaired",
+                    "message": f"🔧 Fix complete — {len(fixed_files)} file(s) repaired",
                     "source": "system", "level": "info",
                 })
 
             except Exception as exc:
                 logger.warning("/fix task failed: %s", exc)
                 await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": f"ðŸ”§ Fix error: {exc}",
+                    "message": f"🔧 Fix error: {exc}",
                     "source": "system", "level": "error",
                 })
 
@@ -1910,7 +2041,7 @@ async def interject_build(
             source="user", level="info",
         )
         await _broadcast_build_event(user_id, build_id, "build_log", {
-            "message": "Context compaction requested â€” will compact before next file",
+            "message": "Context compaction requested — will compact before next file",
             "source": "user", "level": "info",
         })
         return {"status": "compact_requested", "build_id": str(build_id), "message": "Context compaction requested via /compact"}
@@ -1930,11 +2061,11 @@ async def interject_build(
             source="user", level="info",
         )
         await build_repo.append_build_log(
-            build_id, "Pause requested via /pause â€” will pause after current file",
+            build_id, "Pause requested via /pause — will pause after current file",
             source="user", level="info",
         )
         await _broadcast_build_event(user_id, build_id, "build_log", {
-            "message": "Pause requested â€” will pause after current file",
+            "message": "Pause requested — will pause after current file",
             "source": "user", "level": "info",
         })
         return {"status": "pause_requested", "build_id": str(build_id), "message": "Pause requested via /pause"}
@@ -2016,7 +2147,7 @@ async def interject_build(
         user = await get_user_by_id(user_id)
         access_token = (user or {}).get("access_token", "")
         if not access_token:
-            raise ValueError("No GitHub access token â€” connect GitHub in Settings to push")
+            raise ValueError("No GitHub access token — connect GitHub in Settings to push")
 
         # Resolve repo URL from project
         repo_full_name = project.get("repo_full_name") or latest.get("target_ref", "")
@@ -2044,7 +2175,7 @@ async def interject_build(
                     working_dir, branch=branch, access_token=access_token,
                 )
             except RuntimeError:
-                # Rebase failed (conflicts / unrelated histories) â€” force push
+                # Rebase failed (conflicts / unrelated histories) — force push
                 force = True
 
             # Push (force-with-lease if pull-rebase failed)
@@ -2080,12 +2211,12 @@ async def interject_build(
             if latest_for_ref:
                 repo_full_name = latest_for_ref.get("target_ref", "")
         if not repo_full_name:
-            raise ValueError("No GitHub repository linked to this project â€” cannot pull")
+            raise ValueError("No GitHub repository linked to this project — cannot pull")
 
         user = await get_user_by_id(user_id)
         access_token = (user or {}).get("access_token", "")
         if not access_token:
-            raise ValueError("No GitHub access token â€” connect GitHub in Settings to pull")
+            raise ValueError("No GitHub access token — connect GitHub in Settings to pull")
 
         latest = await build_repo.get_latest_build_for_project(project_id)
         branch = (latest.get("branch", "main") if latest else "main")
@@ -2122,10 +2253,10 @@ async def interject_build(
                     phase_num = int(pm.group(1))
                     if phase_num > completed_phase:
                         completed_phase = phase_num
-                break  # Newest matching commit is the latest phase â€” stop
+                break  # Newest matching commit is the latest phase — stop
 
         if completed_phase < 0:
-            # No phase commits found â€” start fresh from Phase 0
+            # No phase commits found — start fresh from Phase 0
             completed_phase = -1
 
         # Start build continuing from the detected phase
@@ -2140,9 +2271,9 @@ async def interject_build(
         )
         target_phase = completed_phase + 1
         if completed_phase < 0:
-            pull_msg = f"Pulled {repo_full_name} â€” no prior phases detected, starting from Phase 0"
+            pull_msg = f"Pulled {repo_full_name} — no prior phases detected, starting from Phase 0"
         else:
-            pull_msg = f"Pulled {repo_full_name} â€” resuming from Phase {target_phase} (Phase {completed_phase} was last committed)"
+            pull_msg = f"Pulled {repo_full_name} — resuming from Phase {target_phase} (Phase {completed_phase} was last committed)"
         return {
             "status": "pulled",
             "build_id": str(result["id"]),
@@ -2204,7 +2335,7 @@ async def interject_build(
             or settings.ANTHROPIC_API_KEY
         )
         if not api_key:
-            raise ValueError("No API key available for /status â€” configure an Anthropic API key")
+            raise ValueError("No API key available for /status — configure an Anthropic API key")
 
         # Broadcast "thinking" indicator
         await _broadcast_build_event(user_id, build_id, "build_log", {
@@ -2215,7 +2346,7 @@ async def interject_build(
             from app.clients import llm_client
             result = await llm_client.chat(
                 api_key=api_key,
-                model=settings.LLM_PLANNER_MODEL,
+                model=get_model_for_role("planner"),
                 system_prompt=(
                     "You are a build status analyst for ForgeGuard, an autonomous code generation platform. "
                     "The user has asked for a status update. Analyse the build state and recent logs provided, "
@@ -2240,7 +2371,7 @@ async def interject_build(
             build_id, f"[Status] {summary}", source="system", level="info",
         )
         await _broadcast_build_event(user_id, build_id, "build_log", {
-            "message": f"ðŸ“Š {summary}", "source": "system", "level": "info",
+            "message": f"🔊 {summary}", "source": "system", "level": "info",
         })
         return {"status": "status_reported", "build_id": str(build_id), "message": summary}
 
@@ -2290,7 +2421,13 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
     if not latest:
         raise ValueError("No builds found for this project")
 
-    return latest
+    result = dict(latest)
+    # If the build is waiting at the IDE ready gate, signal the frontend so it
+    # can show "✔ IDE ready — type /start" even if it missed the WS event
+    # (e.g. user navigated to the build page after forge_ide_ready was broadcast).
+    if latest["status"] == "pending" and str(latest["id"]) in _ide_ready_events:
+        result["ide_gate_pending"] = True
+    return result
 
 
 async def get_build_logs(
@@ -2356,7 +2493,7 @@ async def _run_build(
     mode = settings.BUILD_MODE
     bid = str(build_id)
 
-    # Initialise cost tracking â€” read user's spend cap
+    # Initialise cost tracking — read user's spend cap
     user = await get_user_by_id(user_id)
     raw_cap = (user or {}).get("build_spend_cap")
     spend_cap = float(raw_cap) if raw_cap is not None else None
@@ -2485,7 +2622,7 @@ async def _run_build_conversation(
 
         # Build the directive from contracts (only needed in legacy mode)
         if settings.USE_MCP_CONTRACTS:
-            directive = ""  # MCP mode â€” builder fetches contracts via tools
+            directive = ""  # MCP mode — builder fetches contracts via tools
         else:
             directive = _build_directive(contracts)
 
@@ -2552,7 +2689,7 @@ async def _run_build_conversation(
                     "source": "system", "level": "info",
                 })
             except Exception:
-                # Branch may already exist â€” try checkout instead
+                # Branch may already exist — try checkout instead
                 try:
                     await git_client.checkout_branch(working_dir, branch)
                     await build_repo.append_build_log(
@@ -2593,6 +2730,13 @@ async def _run_build_conversation(
                 _write_contracts_to_workdir(working_dir, contracts)
             except Exception as exc:
                 logger.warning("Failed to write contracts to workdir: %s", exc)
+
+            try:
+                _proj = await project_repo.get_project_by_id(project_id)
+                if _proj:
+                    write_forge_config_to_workdir(working_dir, _proj)
+            except Exception as exc:
+                logger.warning("Failed to write forge.json: %s", exc)
 
         # Ensure .gitignore excludes Forge/ so contracts never leak to git
         if working_dir:
@@ -2641,7 +2785,7 @@ async def _run_build_conversation(
         if working_dir:
             try:
                 file_list = await git_client.get_file_list(working_dir)
-                # Exclude ALL Forge/ files â€” contracts are already inline,
+                # Exclude ALL Forge/ files — contracts are already inline,
                 # evidence/scripts/intake are governance artefacts that
                 # should not consume listing slots meant for project files.
                 file_list = [f for f in file_list if not f.startswith("Forge/")]
@@ -2672,9 +2816,9 @@ async def _run_build_conversation(
         if not settings.USE_MCP_CONTRACTS:
             phase_window = _extract_phase_window(contracts, current_phase_num)
         else:
-            phase_window = ""  # MCP mode â€” builder fetches via forge_get_phase_window
+            phase_window = ""  # MCP mode — builder fetches via forge_get_phase_window
 
-        # Assemble first user message â€” mode-dependent
+        # Assemble first user message — mode-dependent
         if settings.USE_MCP_CONTRACTS:
             # MCP mode: slim first message (~1.5K tokens)
             # Extract project name from blueprint contract
@@ -2702,7 +2846,7 @@ async def _run_build_conversation(
             first_message = (
                 f"# Project: {_project_name}\n\n"
                 + (f"{_project_desc}\n\n" if _project_desc else "")
-                + ("**Mini Build** â€” 2 phases: backend scaffold â†’ frontend & ship.\n\n"
+                + ("**Mini Build** — 2 phases: backend scaffold â†' frontend & ship.\n\n"
                    if _build_mode == "mini" else "")
                 + workspace_info
                 + "\n\nBegin Phase 0. Use your forge tools to fetch the contracts "
@@ -2711,7 +2855,7 @@ async def _run_build_conversation(
         else:
             # Legacy mode: full contract dump (~27K tokens)
             first_message = (
-                "## âš  IMPORTANT â€” DO NOT EXPLORE\n"
+                "## âš  IMPORTANT — DO NOT EXPLORE\n"
                 "Everything you need is in this message. Do NOT call list_directory, "
                 "read_file, or any exploratory tool before starting Phase 0.\n"
                 "The workspace file listing is below. Start coding IMMEDIATELY.\n\n"
@@ -2721,7 +2865,7 @@ async def _run_build_conversation(
             )
 
         # Use content-block format with cache_control so Anthropic caches
-        # the contracts across turns (prefix caching â€” 10% cost on turns 2+).
+        # the contracts across turns (prefix caching — 10% cost on turns 2+).
         messages: list[dict] = [
             {
                 "role": "user",
@@ -2764,11 +2908,11 @@ async def _run_build_conversation(
         else:
             system_prompt = (
                 "You are an autonomous software builder operating under the Forge governance framework.\n\n"
-                "## CRITICAL â€” Read This First\n"
+                "## CRITICAL — Read This First\n"
                 "1. Your contracts and build instructions are ALREADY provided in the first user message below.\n"
                 "2. Do NOT search the filesystem for contracts, README, config files, or any existing files.\n"
                 "3. Do NOT read_file or list_directory before starting Phase 0.\n"
-                "4. The working directory listing (if any) is already provided below â€” you have it.\n"
+                "4. The working directory listing (if any) is already provided below — you have it.\n"
                 "5. Start Phase 0 (Genesis) IMMEDIATELY by emitting your plan, then writing code.\n\n"
                 "## Phase Workflow\n"
                 "Your **current phase + next phase** are shown in the Phase Window section.\n"
@@ -2794,7 +2938,7 @@ async def _run_build_conversation(
                 "- **check_syntax**: Check a file for syntax errors immediately after writing it.\n"
                 "- **run_command**: Run safe shell commands (pip install, npm install, etc.).\n\n"
                 "Guidelines for tool use:\n"
-                "1. Do NOT explore the filesystem at the start â€” the workspace listing is already above.\n"
+                "1. Do NOT explore the filesystem at the start — the workspace listing is already above.\n"
                 "2. Start writing code immediately in Phase 0. Use read_file only when modifying existing files.\n"
                 "3. Prefer write_file tool over === FILE: path === blocks for creating/updating files.\n"
                 "4. Use search_code to find existing patterns, imports, or implementations.\n"
@@ -2853,7 +2997,7 @@ async def _run_build_conversation(
                     f"Phase timeout: {current_phase} exceeded {settings.PHASE_TIMEOUT_MINUTES}m",
                     source="system", level="error",
                 )
-                # Pause instead of failing â€” let user decide
+                # Pause instead of failing — let user decide
                 await _pause_build(
                     build_id, user_id, current_phase,
                     phase_loop_count,
@@ -2923,7 +3067,7 @@ async def _run_build_conversation(
             def _on_rate_limit(status_code: int, attempt: int, wait: float):
                 """Fire-and-forget WS notification on rate-limit retry."""
                 if status_code == 0:
-                    # Budget pacing â€” proactive self-throttle, not a real 429
+                    # Budget pacing — proactive self-throttle, not a real 429
                     msg = f"â³ Pacing: waiting {wait:.0f}s for token budget"
                     level = "info"
                 else:
@@ -2949,7 +3093,7 @@ async def _run_build_conversation(
 
             async for item in stream_agent(
                 api_key=api_key,
-                model=settings.LLM_BUILDER_MODEL,
+                model=get_model_for_role("builder"),
                 system_prompt=system_prompt,
                 messages=messages,
                 max_tokens=settings.LLM_BUILDER_MAX_TOKENS,
@@ -2971,7 +3115,7 @@ async def _run_build_conversation(
                     result_summary = tool_result[:300]
                     await build_repo.append_build_log(
                         build_id,
-                        f"Tool: {item.name}({input_summary}) â†’ {result_summary}",
+                        f"Tool: {item.name}({input_summary}) â†' {result_summary}",
                         source="tool", level="info",
                     )
 
@@ -2996,7 +3140,7 @@ async def _run_build_conversation(
                                     "source": "opus",
                                     "role": "builder",
                                     "summary": f"Builder wrote to scratchpad: {_sp_key}",
-                                    "content": str(_sp_val)[:2000],
+                                    "content_preview": str(_sp_val)[:2000],
                                     "full_length": len(str(_sp_val)),
                                 },
                             )
@@ -3047,7 +3191,7 @@ async def _run_build_conversation(
                                     rel_path, exc,
                                 )
 
-                    # Track run_tests calls â€” emit test_run event
+                    # Track run_tests calls — emit test_run event
                     if item.name == "run_tests":
                         exit_code_str = tool_result.split("\n")[0] if tool_result else ""
                         exit_code = 0
@@ -3065,7 +3209,7 @@ async def _run_build_conversation(
                         )
                         await build_repo.append_build_log(
                             build_id,
-                            f"Test run: {item.input.get('command', '')} â†’ exit {exit_code}",
+                            f"Test run: {item.input.get('command', '')} â†' exit {exit_code}",
                             source="test", level="info" if exit_code == 0 else "warn",
                         )
 
@@ -3169,7 +3313,7 @@ async def _run_build_conversation(
                     }
                 )
 
-            # Turn complete â€” append messages to conversation history
+            # Turn complete — append messages to conversation history
             had_tool_calls = bool(tool_calls_this_turn)
             if had_tool_calls:
                 # Build the assistant message with tool_use content blocks
@@ -3404,13 +3548,13 @@ async def _run_build_conversation(
 
                     # Extract the next phase window (current + next)
                     if settings.USE_MCP_CONTRACTS:
-                        next_window = ""  # MCP mode â€” builder fetches via tool
+                        next_window = ""  # MCP mode — builder fetches via tool
                     else:
                         next_window = _extract_phase_window(contracts, current_phase_num)
 
                     # Inject phase-advance context as a new user message
                     advance_parts = [
-                        f"## Phase {current_phase_num} â€” START\n",
+                        f"## Phase {current_phase_num} — START\n",
                         f"The previous phase ({current_phase}) passed audit.\n",
                     ]
                     if diff_log:
@@ -3450,7 +3594,7 @@ async def _run_build_conversation(
                     recorded_output_baseline += usage.output_tokens
                     await _record_phase_cost(build_id, current_phase, usage)
                 else:
-                    # Audit failed â€” inject feedback and loop back
+                    # Audit failed — inject feedback and loop back
                     phase_loop_count += 1
                     loop_count = await build_repo.increment_loop_count(build_id)
                     await build_repo.append_build_log(
@@ -3474,7 +3618,7 @@ async def _run_build_conversation(
                             f"{phase_loop_count} consecutive audit failures on {current_phase}",
                         )
 
-                        # Wait for user to resume (or timeout â†’ abort)
+                        # Wait for user to resume (or timeout â†' abort)
                         event = _pause_events.get(str(build_id))
                         if event:
                             try:
@@ -3503,7 +3647,7 @@ async def _run_build_conversation(
                             )
                             return
                         elif action == "skip":
-                            # Skip this phase â€” reset and advance
+                            # Skip this phase — reset and advance
                             await build_repo.append_build_log(
                                 build_id,
                                 f"Phase {current_phase} skipped by user",
@@ -3519,7 +3663,7 @@ async def _run_build_conversation(
                             accumulated_text = ""
                             continue
                         else:
-                            # "retry" or "edit" â€” loop back for another attempt
+                            # "retry" or "edit" — loop back for another attempt
                             await _broadcast_build_event(
                                 user_id, build_id, "build_resumed", {
                                     "action": action,
@@ -3556,7 +3700,7 @@ async def _run_build_conversation(
                             )
                         except Exception as exc:
                             logger.warning(
-                                "Recovery planner failed for %s: %s â€” falling back to generic feedback",
+                                "Recovery planner failed for %s: %s — falling back to generic feedback",
                                 current_phase, exc,
                             )
                             remediation_plan = ""
@@ -3663,7 +3807,7 @@ async def _run_build_conversation(
                             "Build aborted after git push failure",
                         )
                         return
-                    # On retry, loop continues â€” push retried next phase
+                    # On retry, loop continues — push retried next phase
 
         # Build completed (agent finished streaming)
         now = datetime.now(timezone.utc)
@@ -3901,7 +4045,10 @@ async def get_phase_files(
 
 
 async def build_chat(
-    project_id: UUID, user_id: UUID, message: str
+    project_id: UUID,
+    user_id: UUID,
+    message: str,
+    history: list[dict] | None = None,
 ) -> dict:
     """Answer a user's free-text question about the current build.
 
@@ -4231,7 +4378,16 @@ async def build_chat(
     )
 
     # --- Tool-use conversation loop (max 5 rounds) ---
-    messages: list[dict] = [{"role": "user", "content": message}]
+    # Prepend conversation history so Haiku has context of prior turns.
+    # History entries are {role, content} dicts from the frontend.
+    prior: list[dict] = []
+    if history:
+        for h in history[-20:]:  # cap at 20 prior turns to keep context bounded
+            role = h.get("role", "")
+            content = h.get("content", "")
+            if role in ("user", "assistant") and content:
+                prior.append({"role": role, "content": str(content)})
+    messages: list[dict] = prior + [{"role": "user", "content": message}]
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     MAX_TOOL_ROUNDS = 5
 
@@ -4481,20 +4637,14 @@ async def _run_build_plan_execute(
         await _fail_build(build_id, user_id, "No working directory for plan-execute mode")
         return
 
-    if not phases:
-        # Parse phases from contracts
-        for c in contracts:
-            if c["contract_type"] == "phases":
-                phases = _parse_phases_contract(c["content"])
-                break
-    if not phases:
-        await _fail_build(build_id, user_id, "No phases contract found")
-        return
+    # Planning (cache check + planner agent) runs AFTER the IDE ready gate
+    # so the user has a chance to load the IDE before any LLM spend begins.
+    # For resume builds, phases are passed in as a parameter and this is skipped.
 
-    # Mini build: hard-cap at 2 phases regardless of what the contract says
+    # Mini build cap for the resume case (phases already known from parameter).
     project = await project_repo.get_project_by_id(project_id)
-    if project and project.get("build_mode") == "mini" and len(phases) > 2:
-        logger.info("Mini build â€” capping phases from %d to 2", len(phases))
+    if phases and project and project.get("build_mode") == "mini" and len(phases) > 2:
+        logger.info("Mini build — capping phases from %d to 2", len(phases))
         phases = phases[:2]
 
     # --- Workspace setup (git clone, branch, contracts) ---
@@ -4571,6 +4721,13 @@ async def _run_build_plan_execute(
         except Exception as exc:
             logger.warning("Failed to write contracts to workdir: %s", exc)
 
+        try:
+            _project = await project_repo.get_project_by_id(project_id)
+            if _project:
+                write_forge_config_to_workdir(working_dir, _project)
+        except Exception as exc:
+            logger.warning("Failed to write forge.json: %s", exc)
+
         # Ensure .gitignore excludes Forge/ so contracts never leak to git
         try:
             inject_forge_gitignore(working_dir)
@@ -4594,11 +4751,11 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 logger.warning("Initial contracts push failed (non-fatal): %s", exc)
     else:
-        # Continuing from a prior build â€” verify workspace exists
+        # Continuing from a prior build — verify workspace exists
         if not Path(working_dir).exists():
             await _fail_build(
                 build_id, user_id,
-                "Working directory no longer exists â€” cannot continue. Use /start for a fresh build.",
+                "Working directory no longer exists — cannot continue. Use /start for a fresh build.",
             )
             return
         # If .git exists but source files are missing (e.g. a prior failed
@@ -4629,7 +4786,7 @@ async def _run_build_plan_execute(
                     })
                 except Exception as _git_exc:
                     logger.warning("Failed to restore files from git HEAD: %s", _git_exc)
-        _log_msg = f"Continuing build from Phase {resume_from_phase + 1} â€” workspace ready"
+        _log_msg = f"Continuing build from Phase {resume_from_phase + 1} — workspace ready"
         await build_repo.append_build_log(
             build_id, _log_msg, source="system", level="info",
         )
@@ -4659,13 +4816,15 @@ async def _run_build_plan_execute(
     if str(build_id) not in _interjection_queues:
         _interjection_queues[str(build_id)] = asyncio.Queue()
 
-    # Emit build overview
-    await _broadcast_build_event(user_id, build_id, "build_overview", {
-        "phases": [
-            {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
-            for p in phases
-        ],
-    })
+    # Emit build overview (resume case — phases already known from parameter).
+    # Fresh-start build_overview fires later, after the planner runs below the gate.
+    if phases:
+        await _broadcast_build_event(user_id, build_id, "build_overview", {
+            "phases": [
+                {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                for p in phases
+            ],
+        })
 
     # Track all files written across all phases
     all_files_written: dict[str, str] = {}  # path -> content
@@ -4791,6 +4950,7 @@ async def _run_build_plan_execute(
         (f"Workspace ready  --  {_n_files} files, {_n_lines:,} lines",           "info"),
         (f"  {_n_tests} tests  |  {_n_tables} tables  |  {_n_symbols} symbols",  "info"),
         ("",                                                                     "system"),
+        ("/prep             Preview build phases without starting",                 "info"),
         ("/start            Begin build (planning + execution)",                  "info"),
         ("/start phase N    Resume from a specific phase",                        "info"),
         ("/stop             Cancel the build",                                    "info"),
@@ -4811,6 +4971,10 @@ async def _run_build_plan_execute(
         f"{_n_tests} tests, {_n_tables} tables, {_n_symbols} symbols. "
         "Use /start to begin."
     )
+    # Register the gate BEFORE broadcasting — prevents a race where the client
+    # responds to forge_ide_ready before register_ide_ready has run.
+    _ready_event = register_ide_ready(str(build_id))
+
     await _broadcast_build_event(user_id, build_id, "forge_ide_ready", {
         "message": _welcome_summary,
         "total_files": _n_files,
@@ -4818,25 +4982,84 @@ async def _run_build_plan_execute(
         "test_count": _n_tests,
         "tables": list(_ws_snapshot.schema_inventory.tables) if _ws_snapshot is not None else [],
         "symbols_count": _n_symbols,
-        "options": ["commence", "cancel"],
+        "options": ["commence", "cancel", "prep"],
     })
 
-    _ready_event = register_ide_ready(str(build_id))
-    try:
-        await asyncio.wait_for(
-            _ready_event.wait(),
-            timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
-        )
-    except asyncio.TimeoutError:
-        await _fail_build(build_id, user_id, "IDE ready gate timed out \u2014 no response from user")
-        return
+    # Gate loop — supports /prep (planner preview) before /start.
+    while True:
+        try:
+            await asyncio.wait_for(
+                _ready_event.wait(),
+                timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+            )
+        except asyncio.TimeoutError:
+            await _fail_build(build_id, user_id, "IDE ready gate timed out \u2014 no response from user")
+            return
 
-    _ready_response = pop_ide_ready_response(str(build_id))
-    _ready_action = (_ready_response or {}).get("action", "commence")
+        _ready_response = pop_ide_ready_response(str(build_id))
+        _ready_action = (_ready_response or {}).get("action", "commence")
 
-    if _ready_action == "cancel":
-        await _fail_build(build_id, user_id, "User cancelled before build commenced")
-        return
+        if _ready_action == "cancel":
+            await _fail_build(build_id, user_id, "User cancelled before build commenced")
+            return
+
+        if _ready_action == "prep":
+            # Run the planner to populate the phases panel — does NOT start execution.
+            _prep_log = "Running planner preview \u2014 phases will appear in the panel shortly"
+            await build_repo.append_build_log(build_id, _prep_log, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _prep_log, "source": "system", "level": "info",
+            })
+            if not phases:
+                try:
+                    from app.services.planner_service import run_project_planner
+                    _prep_result = await run_project_planner(
+                        contracts=contracts,
+                        build_id=build_id,
+                        user_id=user_id,
+                        api_key=api_key,
+                    )
+                    if _prep_result:
+                        phases = [
+                            {
+                                "number": p["number"],
+                                "name": p["name"],
+                                "objective": p.get("purpose", ""),
+                                "deliverables": p.get("acceptance_criteria", []),
+                            }
+                            for p in _prep_result["plan"].get("phases", [])
+                        ]
+                except Exception as _prep_exc:
+                    logger.warning("Prep planner failed (%s) \u2014 trying legacy fallback", _prep_exc)
+                # Legacy fallback: parse phases contract directly
+                if not phases:
+                    for c in contracts:
+                        if c["contract_type"] == "phases":
+                            phases = _parse_phases_contract(c["content"])
+                            break
+            if phases:
+                # Apply mini cap for the preview too
+                if project and project.get("build_mode") == "mini" and len(phases) > 2:
+                    phases = phases[:2]
+                await _broadcast_build_event(user_id, build_id, "build_overview", {
+                    "phases": [
+                        {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                        for p in phases
+                    ],
+                })
+                _ready_msg = "Phase plan ready \u2014 type /start to begin building"
+            else:
+                _ready_msg = "Planner could not produce phases \u2014 type /start to try again"
+            await build_repo.append_build_log(build_id, _ready_msg, source="system", level="info")
+            await _broadcast_build_event(user_id, build_id, "build_log", {
+                "message": _ready_msg, "source": "system", "level": "info",
+            })
+            # Re-register the gate so the next /start or /prep resolves it
+            _ready_event = register_ide_ready(str(build_id))
+            continue
+
+        # "commence" — break out and start building
+        break
 
     await build_repo.update_build_status(build_id, "running", started_at=datetime.now(timezone.utc))
     await build_repo.append_build_log(
@@ -4847,6 +5070,64 @@ async def _run_build_plan_execute(
     })
     # ── End IDE ready gate ──────────────────────────────────
 
+    # ── Planning: runs after user confirms /start ─────────────────────────
+    if not phases:
+        # ── New project planner agent (primary path) ──────────────────────
+        # Run the standalone Forge Planner Agent to generate plan.json from
+        # the project's contracts.  Falls back to the legacy phases contract
+        # if the planner fails (e.g. missing API key, misconfigured path).
+        try:
+            from app.services.planner_service import run_project_planner
+            _plan_result = await run_project_planner(
+                contracts=contracts,
+                build_id=build_id,
+                user_id=user_id,
+                api_key=api_key,
+            )
+            if _plan_result:
+                phases = [
+                    {
+                        "number": p["number"],
+                        "name": p["name"],
+                        "objective": p.get("purpose", ""),
+                        "deliverables": p.get("acceptance_criteria", []),
+                    }
+                    for p in _plan_result["plan"].get("phases", [])
+                ]
+        except Exception as _planner_exc:
+            logger.warning(
+                "Project planner failed (%s) — falling back to phases contract",
+                _planner_exc,
+            )
+
+        # ── Legacy fallback: phases contract ──────────────────────────────
+        if not phases:
+            for c in contracts:
+                if c["contract_type"] == "phases":
+                    phases = _parse_phases_contract(c["content"])
+                    break
+
+    if not phases:
+        await _fail_build(
+            build_id, user_id,
+            "No phases found: project planner failed and no phases contract exists",
+        )
+        return
+
+    # Mini build cap (fresh-start — resume cap was applied above).
+    if resume_from_phase < 0 and project and project.get("build_mode") == "mini" and len(phases) > 2:
+        logger.info("Mini build — capping phases from %d to 2", len(phases))
+        phases = phases[:2]
+
+    # Build overview (fresh-start — resume already broadcast above).
+    if resume_from_phase < 0:
+        await _broadcast_build_event(user_id, build_id, "build_overview", {
+            "phases": [
+                {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                for p in phases
+            ],
+        })
+
     for phase in phases:
         phase_num = phase["number"]
         phase_name = f"Phase {phase_num}"
@@ -4855,7 +5136,7 @@ async def _run_build_plan_execute(
 
         # Skip already-completed phases when continuing a prior build
         if phase_num <= resume_from_phase:
-            _log_msg = f"â­ Skipping {phase_name}: {phase['name']} â€” already completed"
+            _log_msg = f"â­ Skipping {phase_name}: {phase['name']} — already completed"
             await build_repo.append_build_log(
                 build_id, _log_msg, source="system", level="info",
             )
@@ -4913,7 +5194,7 @@ async def _run_build_plan_execute(
             "source": "system", "level": "info",
         })
 
-        # Build workspace info â€” prefer snapshot, fallback to raw walk
+        # Build workspace info — prefer snapshot, fallback to raw walk
         workspace_info = ""
         if fresh_start and not all_files_written:
             # Fresh start + first phase: planner sees empty workspace
@@ -4962,6 +5243,7 @@ async def _run_build_plan_execute(
         _forge_dir = Path(working_dir) / ".forge"
         _manifest_cache_path = _forge_dir / f"manifest_phase_{phase_num}.json"
         manifest: list[dict] | None = None
+        _phase_chunks: list[dict] = []  # produced by run_phase_planner_agent alongside manifest
 
         # Try loading cached manifest from a previous (interrupted) run
         if _manifest_cache_path.exists():
@@ -4972,7 +5254,7 @@ async def _run_build_plan_execute(
                     _n_audited = sum(1 for f in manifest if f.get("status") in ("audited", "fixed"))
                     _n_remaining = len(manifest) - _n_audited
                     _log_msg = (
-                        f"Loaded cached manifest for {phase_name} â€” "
+                        f"Loaded cached manifest for {phase_name} — "
                         f"{len(manifest)} files total, {_n_audited} already done, "
                         f"{_n_remaining} remaining"
                     )
@@ -4998,7 +5280,7 @@ async def _run_build_plan_execute(
                     })
             except Exception as exc:
                 logger.warning(
-                    "Failed to load cached manifest for %s: %s â€” regenerating",
+                    "Failed to load cached manifest for %s: %s — regenerating",
                     phase_name, exc,
                 )
 
@@ -5008,14 +5290,17 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _log_msg, "source": "system", "level": "info",
             })
-            await _set_build_activity(build_id, user_id, f"Planning {phase_name}...", model="sonnet")
+            await _set_build_activity(build_id, user_id, f"Planning {phase_name}...")
             # Retrieve prior-phase context for cross-phase awareness
             _prior_ctx = get_prior_phase_context(build_id, phase_num)
-            manifest = await _generate_file_manifest(
-                build_id, user_id, api_key,
-                contracts, phase, workspace_info,
-                prior_phase_context=_prior_ctx,
+            _phase_plan = await run_phase_planner_agent(
+                build_id=build_id, user_id=user_id, api_key=api_key,
+                contracts=contracts, phase=phase, workspace_info=workspace_info,
+                working_dir=working_dir, prior_phase_context=_prior_ctx,
             )
+            if _phase_plan:
+                manifest = _phase_plan["manifest"]
+                _phase_chunks = _phase_plan.get("chunks", [])
 
         if manifest:
             # Persist manifest to disk for resume resilience
@@ -5027,7 +5312,7 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 logger.warning("Failed to cache manifest for %s: %s", phase_name, exc)
 
-            _log_msg = f"Manifest ready â€” {len(manifest)} files planned for {phase_name}"
+            _log_msg = f"Manifest ready — {len(manifest)} files planned for {phase_name}"
             await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _log_msg, "source": "system", "level": "info",
@@ -5040,21 +5325,24 @@ async def _run_build_plan_execute(
             # Retry once before giving up
             await build_repo.append_build_log(
                 build_id,
-                f"Manifest generation failed for {phase_name} â€” retrying once...",
+                f"Manifest generation failed for {phase_name} — retrying once...",
                 source="system", level="warn",
             )
             await _broadcast_build_event(user_id, build_id, "build_log", {
-                "message": f"Manifest generation failed for {phase_name} â€” retrying...",
+                "message": f"Manifest generation failed for {phase_name} — retrying...",
                 "source": "system", "level": "warn",
             })
             await asyncio.sleep(2)
             # Retrieve prior-phase context for cross-phase awareness
             _prior_ctx = get_prior_phase_context(build_id, phase_num)
-            manifest = await _generate_file_manifest(
-                build_id, user_id, api_key,
-                contracts, phase, workspace_info,
-                prior_phase_context=_prior_ctx,
+            _phase_plan_retry = await run_phase_planner_agent(
+                build_id=build_id, user_id=user_id, api_key=api_key,
+                contracts=contracts, phase=phase, workspace_info=workspace_info,
+                working_dir=working_dir, prior_phase_context=_prior_ctx,
             )
+            if _phase_plan_retry:
+                manifest = _phase_plan_retry["manifest"]
+                _phase_chunks = _phase_plan_retry.get("chunks", [])
             # Cache the retry result too
             if manifest:
                 try:
@@ -5067,7 +5355,7 @@ async def _run_build_plan_execute(
 
         if not manifest:
             _fail_msg = (
-                f"Manifest generation failed for {phase_name} after retry â€” "
+                f"Manifest generation failed for {phase_name} after retry — "
                 f"pausing build. Use /start phase {phase_num} to retry."
             )
             await build_repo.append_build_log(
@@ -5106,7 +5394,7 @@ async def _run_build_plan_execute(
                     source="system", level="warn",
                 )
                 continue
-            # retry â€” loop back to retry this phase (not supported in for-loop,
+            # retry — loop back to retry this phase (not supported in for-loop,
             # so we just continue and let /continue phase N handle it)
             continue
 
@@ -5146,7 +5434,7 @@ async def _run_build_plan_execute(
                 "dag": _phase_dag.to_dict(),
             })
         except _CyclicDepError:
-            logger.warning("Cyclic dependency in manifest for %s â€” DAG disabled", phase_name)
+            logger.warning("Cyclic dependency in manifest for %s — DAG disabled", phase_name)
             _phase_dag = None
         except Exception:
             logger.warning("Failed to build task DAG for %s", phase_name, exc_info=True)
@@ -5162,7 +5450,7 @@ async def _run_build_plan_execute(
         if _cached_count > 0:
             _log_msg = (
                 f"Resuming {phase_name}: {_cached_count}/{len(manifest)} files "
-                f"already generated & audited â€” skipping those"
+                f"already generated & audited — skipping those"
             )
             await build_repo.append_build_log(
                 build_id, _log_msg, source="system", level="info",
@@ -5177,7 +5465,7 @@ async def _run_build_plan_execute(
         # Pre-populate audit result lists for files whose audits were cached
         blocking_files: list[tuple[str, str]] = []  # (path, findings)
         passed_files: list[str] = []
-        # Fix queue: files auditor couldn't fix â†’ builder picks up after generation
+        # Fix queue: files auditor couldn't fix â†' builder picks up after generation
         _fix_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         # Track only files created/modified in this phase to scope verification
         touched_files: set[str] = set()
@@ -5302,22 +5590,26 @@ async def _run_build_plan_execute(
 
             if _pending_manifest:
                 from app.services.build.planner import (
-                    _plan_phase_chunks, _review_chunk_completion,
+                    _review_chunk_completion,
                     _plan_tier_interfaces, _extract_tier_interfaces,
                     _review_written_files, execute_tier,
                 )
 
-                # ── Planner analyses the phase and decides on chunks ──
-                await _set_build_activity(
-                    build_id, user_id,
-                    f"Planner analysing {len(_pending_manifest)} files...",
-                    model="sonnet",
-                )
-                chunks = await _plan_phase_chunks(
-                    build_id, user_id, api_key,
-                    _pending_manifest, contracts,
-                    phase_deliverables, working_dir,
-                )
+                # ── Use chunks produced by the phase planner agent ────
+                # run_phase_planner_agent already planned manifest + chunks
+                # together.  Filter to files still pending (not tier-handled).
+                _pending_paths = {f["path"] for f in _pending_manifest}
+                chunks = [
+                    {**c, "files": [f for f in c.get("files", []) if f in _pending_paths]}
+                    for c in _phase_chunks
+                    if any(f in _pending_paths for f in c.get("files", []))
+                ]
+                # Fallback: one chunk for all pending files if agent gave none
+                if not chunks:
+                    chunks = [{
+                        "name": f"{phase_name} files",
+                        "files": [f["path"] for f in _pending_manifest],
+                    }]
                 _chunk_log = f"Planner divided phase into {len(chunks)} chunks"
                 await build_repo.append_build_log(build_id, _chunk_log, source="planner", level="info")
                 await _broadcast_build_event(user_id, build_id, "build_log", {
@@ -5483,6 +5775,7 @@ async def _run_build_plan_execute(
                     chunk_name = chunk.get("name", f"Chunk {chunk_idx}")
                     chunk_files = chunk.get("entries", [])
                     builder_prompt = chunk.get("builder_prompt", "")
+                    work_order = chunk.get("work_order", {})
 
                     # Cancel / pause check between chunks
                     bid = str(build_id)
@@ -5530,11 +5823,35 @@ async def _run_build_plan_execute(
                             working_dir,
                         )
 
-                    # Inject the planner's builder_prompt into the interface map
-                    if builder_prompt:
+                    # Inject the planner's work_order + builder_prompt into the interface map
+                    _work_order_parts: list[str] = []
+                    if work_order.get("objective"):
+                        _work_order_parts.append(
+                            f"## Chunk Objective\n{work_order['objective']}"
+                        )
+                    if work_order.get("constraints"):
+                        _work_order_parts.append(
+                            "## Contract Constraints\n"
+                            + "\n".join(f"- {c}" for c in work_order["constraints"])
+                        )
+                    if work_order.get("patterns"):
+                        _work_order_parts.append(
+                            "## Patterns to Follow\n"
+                            + "\n".join(f"- {p}" for p in work_order["patterns"])
+                        )
+                    if work_order.get("success_criteria"):
+                        _work_order_parts.append(
+                            "## Success Criteria\n"
+                            + "\n".join(f"- {c}" for c in work_order["success_criteria"])
+                        )
+                    # Fall back to legacy builder_prompt if no structured work_order
+                    if not _work_order_parts and builder_prompt:
+                        _work_order_parts.append(
+                            f"## Planner Instructions\n{builder_prompt}"
+                        )
+                    if _work_order_parts:
                         interface_map = (
-                            f"## Planner Instructions\n{builder_prompt}\n\n"
-                            + interface_map
+                            "\n\n".join(_work_order_parts) + "\n\n" + interface_map
                         )
 
                     # ── Step 2: Send chunk to Builder ──
@@ -5750,18 +6067,18 @@ async def _run_build_plan_execute(
                     await _fail_build(build_id, user_id, "Build aborted after /pause")
                     return
 
-            # Check /compact flag â€” shed context from prior phases
+            # Check /compact flag — shed context from prior phases
             if bid in _compact_flags:
                 _compact_flags.discard(bid)
                 dropped = len(all_files_written) - len(phase_files_written)
                 all_files_written = dict(phase_files_written)
                 await build_repo.append_build_log(
                     build_id,
-                    f"Context compacted via /compact â€” dropped {dropped} prior-phase files from context cache",
+                    f"Context compacted via /compact — dropped {dropped} prior-phase files from context cache",
                     source="system", level="info",
                 )
                 await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": f"Context compacted â€” dropped {dropped} prior-phase files",
+                    "message": f"Context compacted — dropped {dropped} prior-phase files",
                     "source": "system", "level": "info",
                 })
                 await _broadcast_build_event(user_id, build_id, "context_reset", {
@@ -5784,7 +6101,7 @@ async def _run_build_plan_execute(
                     _prior_verdict = file_entry.get("audit_verdict", "PASS")
                     await build_repo.append_build_log(
                         build_id,
-                        f"Skipped {file_path} â€” already generated & audited ({_prior_verdict})",
+                        f"Skipped {file_path} — already generated & audited ({_prior_verdict})",
                         source="system", level="info",
                     )
                     await _broadcast_build_event(user_id, build_id, "file_generated", {
@@ -5826,7 +6143,7 @@ async def _run_build_plan_execute(
                     all_files_written[file_path] = existing_content
                     await build_repo.append_build_log(
                         build_id,
-                        f"Skipped {file_path} â€” already exists on disk ({existing_path.stat().st_size} bytes)",
+                        f"Skipped {file_path} — already exists on disk ({existing_path.stat().st_size} bytes)",
                         source="system", level="info",
                     )
                     await _broadcast_build_event(user_id, build_id, "file_generated", {
@@ -5842,7 +6159,7 @@ async def _run_build_plan_execute(
                         "task_id": i + 1,
                         "status": "done",
                     })
-                    # File already exists on disk â€” skip the full LLM audit.
+                    # File already exists on disk — skip the full LLM audit.
                     # It was previously generated (and likely audited/committed).
                     # Verification (syntax + tests) runs afterward and will
                     # catch any real issues.
@@ -6047,7 +6364,7 @@ async def _run_build_plan_execute(
                     if _blocked:
                         _blocked_paths = [b.file_path for b in _blocked if b.file_path]
                         logger.warning(
-                            "Task %s failed â†’ %d downstream tasks blocked: %s",
+                            "Task %s failed â†' %d downstream tasks blocked: %s",
                             _dag_tid, len(_blocked), _blocked_paths,
                         )
                     await _broadcast_build_event(user_id, build_id, "task_failed", {
@@ -6270,7 +6587,7 @@ async def _run_build_plan_execute(
 
             if fix_manifest:
                 fix_paths = [f["path"] for f in fix_manifest]
-                _fix_msg = f"Fix manifest: {len(fix_manifest)} file(s) to repair â€” {', '.join(fix_paths)}"
+                _fix_msg = f"Fix manifest: {len(fix_manifest)} file(s) to repair — {', '.join(fix_paths)}"
                 await build_repo.append_build_log(build_id, _fix_msg, source="recovery", level="info")
                 await _broadcast_build_event(user_id, build_id, "build_log", {
                     "message": _fix_msg, "source": "recovery", "level": "info",
@@ -6365,7 +6682,7 @@ async def _run_build_plan_execute(
 
             # Re-audit
             phase_output_updated = (
-                f"Phase {phase_num} ({phase['name']}) â€” attempt {audit_attempts}. "
+                f"Phase {phase_num} ({phase['name']}) — attempt {audit_attempts}. "
                 f"Files: {', '.join(phase_files_written.keys())}"
             )
             audit_verdict, audit_report = await _run_inline_audit(
@@ -6408,9 +6725,9 @@ async def _run_build_plan_execute(
                     source="system", level="warn",
                 )
                 continue
-            # retry â€” will proceed to next phase anyway at this point
+            # retry — will proceed to next phase anyway at this point
 
-        # 5. Verify phase output (syntax + tests) â€” BEFORE committing
+        # 5. Verify phase output (syntax + tests) — BEFORE committing
         # Verification is a gating step: if errors remain after fix attempts,
         # re-run verification (up to MAX_VERIFY_ROUNDS).  Each run internally
         # attempts its own fixes, so the total fix budget is generous.
@@ -6440,7 +6757,7 @@ async def _run_build_plan_execute(
                     touched_files,
                 )
                 _v_msg = (
-                    f"Verification complete â€” "
+                    f"Verification complete — "
                     f"{verification.get('syntax_errors', 0)} syntax errors, "
                     f"{verification.get('tests_passed', 0)} tests passed, "
                     f"{verification.get('tests_failed', 0)} tests failed, "
@@ -6507,7 +6824,7 @@ async def _run_build_plan_execute(
             except Exception as exc:
                 logger.warning("Verification failed: %s", exc)
                 verification = {"syntax_errors": 0, "tests_passed": 0, "tests_failed": 0, "fixes_applied": 0}
-                break  # Can't verify â€” treat as clean to avoid infinite loop
+                break  # Can't verify — treat as clean to avoid infinite loop
 
             # Check if verification is clean
             has_errors = (
@@ -6517,24 +6834,24 @@ async def _run_build_plan_execute(
             if not has_errors:
                 if verify_round > 1:
                     await _broadcast_build_event(user_id, build_id, "build_log", {
-                        "message": f"âœ“ Verification clean after {verify_round} round(s)",
+                        "message": f"✔ Verification clean after {verify_round} round(s)",
                         "source": "verify", "level": "info",
                     })
                 break  # All good
 
             if verify_round >= MAX_VERIFY_ROUNDS:
-                # Exhausted verification rounds â€” log warning but proceed
+                # Exhausted verification rounds — log warning but proceed
                 _warn_msg = (
                     f"âš  Verification still has issues after {MAX_VERIFY_ROUNDS} rounds: "
                     f"{verification.get('syntax_errors', 0)} syntax errors, "
-                    f"{verification.get('tests_failed', 0)} tests failed â€” proceeding"
+                    f"{verification.get('tests_failed', 0)} tests failed — proceeding"
                 )
                 await build_repo.append_build_log(build_id, _warn_msg, source="verify", level="warn")
                 await _broadcast_build_event(user_id, build_id, "build_log", {
                     "message": _warn_msg, "source": "verify", "level": "warn",
                 })
 
-        # 5b. Governance gate â€” deterministic checks before commit
+        # 5b. Governance gate — deterministic checks before commit
         governance_result: dict = {"passed": True, "checks": [], "blocking_failures": 0, "warnings": 0}
         if phase_files_written and touched_files:
             try:
@@ -6554,7 +6871,7 @@ async def _run_build_plan_execute(
                             if c["result"] == "FAIL"
                         ]
                         _gov_msg = (
-                            f"Governance gate FAIL â€” {governance_result['blocking_failures']} blocking "
+                            f"Governance gate FAIL — {governance_result['blocking_failures']} blocking "
                             f"issue(s). Attempting fix {gov_fix}/{gov_fix_rounds}..."
                         )
                         await build_repo.append_build_log(
@@ -6604,7 +6921,7 @@ async def _run_build_plan_execute(
                             touched_files, phase_name,
                         )
                         if governance_result["passed"]:
-                            _ok_msg = f"âœ“ Governance gate passed after fix round {gov_fix}"
+                            _ok_msg = f"✔ Governance gate passed after fix round {gov_fix}"
                             await build_repo.append_build_log(
                                 build_id, _ok_msg, source="governance", level="info",
                             )
@@ -6616,7 +6933,7 @@ async def _run_build_plan_execute(
                     if not governance_result["passed"]:
                         _fail_msg = (
                             f"âš  Governance gate still has {governance_result['blocking_failures']} "
-                            f"blocking failure(s) after {gov_fix_rounds} fix rounds â€” proceeding with caution"
+                            f"blocking failure(s) after {gov_fix_rounds} fix rounds — proceeding with caution"
                         )
                         await build_repo.append_build_log(
                             build_id, _fail_msg, source="governance", level="warn",
@@ -6720,7 +7037,7 @@ async def _run_build_plan_execute(
 
             # Lock in completed phase for /continue
             await build_repo.update_completed_phases(build_id, phase_num)
-            # Clean up cached manifest â€” phase is done
+            # Clean up cached manifest — phase is done
             _mc = Path(working_dir) / ".forge" / f"manifest_phase_{phase_num}.json"
             if _mc.exists():
                 _mc.unlink(missing_ok=True)
@@ -6728,7 +7045,7 @@ async def _run_build_plan_execute(
             # Journal: record phase complete + save checkpoint
             _journal.record(
                 "phase_complete",
-                f"Phase {phase_name} completed â€” all checks passed",
+                f"Phase {phase_name} completed — all checks passed",
                 metadata={
                     "tasks_completed": len(phase_files_written),
                     "files_written": list(phase_files_written.keys()),
@@ -6761,7 +7078,7 @@ async def _run_build_plan_execute(
                     f"governance: {governance_result.get('blocking_failures', 0)} blocking, "
                     f"{governance_result.get('warnings', 0)} warnings"
                 )
-            _log_msg = f"âš  Phase {phase_name} â€” audit PASS, {'; '.join(_issues)}"
+            _log_msg = f"âš  Phase {phase_name} — audit PASS, {'; '.join(_issues)}"
             await build_repo.append_build_log(
                 build_id, _log_msg,
                 source="audit", level="warn",
@@ -6777,10 +7094,10 @@ async def _run_build_plan_execute(
                 "verification": verification,
                 "governance": governance_result,
             })
-            # Still lock in phase so /continue works â€” verification issues
+            # Still lock in phase so /continue works — verification issues
             # can accumulate and be fixed across phases
             await build_repo.update_completed_phases(build_id, phase_num)
-            # Clean up cached manifest â€” phase is done
+            # Clean up cached manifest — phase is done
             _mc = Path(working_dir) / ".forge" / f"manifest_phase_{phase_num}.json"
             if _mc.exists():
                 _mc.unlink(missing_ok=True)
@@ -6788,7 +7105,7 @@ async def _run_build_plan_execute(
             # Journal: record partial phase complete + checkpoint
             _journal.record(
                 "phase_complete",
-                f"Phase {phase_name} completed (partial â€” verification/governance issues)",
+                f"Phase {phase_name} completed (partial — verification/governance issues)",
                 metadata={
                     "tasks_completed": len(phase_files_written),
                     "status": "partial",
@@ -6871,7 +7188,7 @@ async def _run_build_plan_execute(
         # will be loaded on demand via the context budget system.
         dropped = len(all_files_written)
         all_files_written.clear()
-        _log_msg = f"Context reset after {phase_name} â€” cleared {dropped} cached files"
+        _log_msg = f"Context reset after {phase_name} — cleared {dropped} cached files"
         await build_repo.append_build_log(
             build_id, _log_msg,
             source="system", level="info",
@@ -6889,7 +7206,7 @@ async def _run_build_plan_execute(
         if next_idx < len(phases):
             next_phase = phases[next_idx]
             _trans_msg = (
-                f"ðŸ”„ {phase_name} complete â€” transitioning to "
+                f"🔧„ {phase_name} complete — transitioning to "
                 f"Phase {next_phase['number']}: {next_phase['name']}"
             )
             await build_repo.append_build_log(
@@ -6905,7 +7222,7 @@ async def _run_build_plan_execute(
                 "next_phase_objective": next_phase.get("objective", ""),
             })
         else:
-            _trans_msg = f"ðŸ {phase_name} complete â€” all phases finished"
+            _trans_msg = f"ðŸ {phase_name} complete — all phases finished"
             await build_repo.append_build_log(
                 build_id, _trans_msg, source="system", level="info",
             )
@@ -6913,7 +7230,7 @@ async def _run_build_plan_execute(
                 "message": _trans_msg, "source": "system", "level": "info",
             })
 
-    # Build complete â€” clean up signal flags
+    # Build complete — clean up signal flags
     bid = str(build_id)
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)

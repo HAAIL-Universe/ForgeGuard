@@ -3213,3 +3213,433 @@ independently, and the auditor didn't catch the mismatch.
    being created at startup."
 
 These are additive quality fixes that stack on top of single-shot mode.
+
+---
+
+# Phase K: Agent Quality Baseline + Script Platform Migration
+
+> **Diagnosed**: Feb 2026. All 9 implementation steps COMPLETE.
+> See sections 42–50 for full rationale, specs, and file change log.
+
+## Context (why this phase exists)
+
+The gap between Claude Code CLI + Forge and ForgeGuard's custom agent was
+diagnosed in Feb 2026. Four root causes were identified:
+
+1. **Script lock-in**: The entire Forge AEM loop (build → audit → loopback
+   → sign-off) runs via `.ps1` PowerShell scripts. ForgeGuard's IDE runner
+   (`forge_ide/runner.py`) does not allow `pwsh` — so the agent can never
+   trigger an audit, complete an AEM cycle, or pass the test gate. The framework
+   is incompatible with the IDE it governs.
+
+2. **Agent model outdated**: `agent.py`'s `run_task()` convenience function
+   hardcodes `claude-sonnet-4-5-20250514`. The main build path correctly reads
+   from `settings.LLM_BUILDER_MODEL` (already set to `claude-opus-4-6`), but
+   any direct `run_task()` invocation uses the stale model.
+
+3. **Forge MCP tools missing from agent registry**: When ForgeGuard runs a
+   build, the agent has 8 generic IDE tools (`read_file`, `write_file`, etc.)
+   but NONE of the Forge governance tools (`forge_get_contract`,
+   `forge_get_phase_window`, `forge_scratchpad`, etc.). The agent is building
+   blind — it has no structured way to query contracts on-demand.
+
+4. **SessionJournal not wired**: `forge_ide/journal.py` exists and has a full
+   `SessionJournal` class for Forge-aware state tracking, but it is never
+   instantiated inside `agent.py`. Context compaction loses the current phase,
+   contracts-read state, and audit ledger summary. After compaction, the agent
+   forgets it is running under the Forge framework.
+
+Additionally, the user observed that **no structured per-turn trace exists** —
+when a build goes wrong it is very hard to reconstruct why (which tool was
+called, what it returned, what the model decided next).
+
+---
+
+## 42. Phase K Problem Statement
+
+### Current agent execution stack (broken path)
+
+```
+ForgeGuard Agent Loop (agent.py: run_agent)
+  │
+  ├─ System prompt: _DEFAULT_SYSTEM_PROMPT (generic, no Forge awareness)
+  ├─ Tools registered: 8 generic IDE tools only
+  ├─ Compaction: loses Forge phase/journal state
+  ├─ Audit: blocked — pwsh not in runner allowlist
+  └─ Model (run_task shortcut): claude-sonnet-4-5 (stale)
+```
+
+### Target execution stack (Phase K outcome)
+
+```
+ForgeGuard Agent Loop (agent.py: run_agent)
+  │
+  ├─ System prompt: Forge-aware prompt (governance rules + AEM workflow)
+  ├─ Tools registered: 8 IDE tools + 5 Forge MCP tools
+  ├─ Compaction: journal summary injected (phase, last audit, contracts read)
+  ├─ Audit: python Forge/scripts/run_audit.py (cross-platform, allowed)
+  └─ Model (run_task shortcut): claude-sonnet-4-6 (current)
+```
+
+---
+
+## 43. PS1 → Python Script Migration (most important change)
+
+### Why Python, not Bash
+
+| Option | Cross-platform | Already a dep | Runner allowlist | IDE terminal |
+|--------|:---:|:---:|:---:|:---:|
+| PowerShell 5.1 | Windows only | No | ✗ blocked | ✗ |
+| pwsh 7 | Windows + some | No | ✗ blocked | ✗ |
+| Bash (.sh) | Unix/macOS | No | ✗ blocked | ✗ |
+| **Python (.py)** | **All** | **Yes** | **✓ already allowed** | **✓** |
+
+Python is the correct choice: the whole stack is Python, the runner already
+allows `python -m` and can trivially allow `python Forge/scripts/`, and the
+`forge_ide/log_parser.py` logic already exists to reuse.
+
+### Scripts to port
+
+| Source (PS1) | Target (Python) | Exit codes |
+|---|---|---|
+| `Forge/scripts/run_audit.ps1` | `Forge/scripts/run_audit.py` | 0=PASS, 1=FAIL, 2=ERROR |
+| `Forge/scripts/run_tests.ps1` | `Forge/scripts/run_tests.py` | 0=PASS, 1=FAIL, 2=ERROR |
+| `Forge/scripts/watch_audit.ps1` | `Forge/scripts/watch_audit.py` | N/A (long-running) |
+| `Forge/scripts/overwrite_diff_log.ps1` | `Forge/scripts/overwrite_diff_log.py` | 0=OK |
+| `Forge/scripts/setup_checklist.ps1` | `Forge/scripts/setup_checklist.py` | 0=OK |
+
+### `run_audit.py` — implementation spec
+
+```
+Usage:
+  python Forge/scripts/run_audit.py --claimed-files file1.py,file2.py --phase "Phase 1"
+
+Exit codes:
+  0  All blocking checks PASS
+  1  One or more blocking checks FAIL
+  2  Script execution error
+
+Checks (same as run_audit.ps1):
+  A1  Scope compliance       — git diff vs claimed files
+  A2  Minimal-diff          — no renames in diff
+  A3  Evidence completeness  — test_runs_latest.md=PASS + diff_log.md present
+  A4  Boundary compliance    — boundaries.json patterns vs source files
+  A5  Diff log gate          — no TODO: in diff_log.md
+  A6  Authorization gate     — no unauthorized commits since last AUTHORIZED
+  A7  Verification order     — Static/Runtime/Behavior/Contract appear in order
+  A8  Test gate              — test_runs_latest.md line 1 = "Status: PASS"
+  A9  Dependency gate        — new imports present in requirements.txt/package.json
+
+Warnings (non-blocking):
+  W1  No secrets in diff
+  W2  Audit ledger integrity
+  W3  Physics route coverage
+
+Output: same structured text format as run_audit.ps1 for backward compatibility
+Appends to: Forge/evidence/audit_ledger.md (same format as PS1 version)
+```
+
+Key reuse:
+- `subprocess.run(["git", "diff", "--name-only"])` for A1/A2
+- `re` patterns already in `forge_ide/log_parser.py` for error detection
+- `json.loads(Path("Forge/Contracts/boundaries.json").read_text())` for A4
+- `pathlib.Path` throughout — no Windows-specific path calls
+
+### `run_tests.py` — implementation spec
+
+```
+Usage:
+  python Forge/scripts/run_tests.py
+
+Reads:
+  forge.json — for stack, test_framework, test_dir, venv_path
+
+Behaviour:
+  1. Read forge.json to determine stack (python/typescript/javascript/go)
+  2. Run static check: ruff check / tsc --noEmit / etc.
+  3. Run test suite: pytest / npm test / go test / etc.
+  4. Capture stdout+stderr
+  5. Parse with forge_ide.log_parser.auto_summarise() — REUSE EXISTING
+  6. Append timestamped entry to Forge/evidence/test_runs.md
+  7. Overwrite Forge/evidence/test_runs_latest.md with Status: PASS|FAIL
+
+Exit codes: 0=PASS, 1=FAIL, 2=ERROR
+```
+
+Key reuse: `forge_ide/log_parser.py` — `summarise_pytest`, `summarise_npm_test`,
+`summarise_build` are all ready to use.
+
+### `watch_audit.py` — implementation spec
+
+```
+Usage:
+  python Forge/scripts/watch_audit.py
+
+Behaviour:
+  - Uses polling fallback (5s interval, no watchdog dependency)
+  - Monitors Forge/evidence/diff_log.md for changes via mtime
+  - On change: reads file, checks if Status: COMPLETE
+  - If COMPLETE: parses claimed files from "## Files Changed" section
+  - Invokes: python Forge/scripts/run_audit.py --claimed-files <parsed> --phase <parsed>
+  - Single-instance lock via .forge_watcher.lock PID file
+  - Stays running until Ctrl+C
+
+No external deps — stdlib only (no watchdog)
+```
+
+### `overwrite_diff_log.py` — implementation spec
+
+```
+Usage:
+  python Forge/scripts/overwrite_diff_log.py [--finalize]
+
+Behaviour:
+  - Calls git for current branch, HEAD, diff stats
+  - Writes Forge/evidence/diff_log.md skeleton with TODO placeholders
+  - --finalize: checks for remaining TODO placeholders in header, exits 1 if found
+  - COMPLETE status requires all section params (--summary, --verification, etc.)
+
+No external deps beyond stdlib + git CLI
+```
+
+### Builder contract update
+
+`Forge/Contracts/builder_contract.md` §10.1.1 previously read:
+```
+pwsh -File .\Forge\scripts\watch_audit.ps1
+```
+
+Updated to:
+```
+python Forge/scripts/watch_audit.py
+```
+
+Also updated §10.2 fallback invocation, §9.2 test runner reference.
+Same in `ForgeGuard/Forge/Contracts/builder_contract.md`.
+
+---
+
+## 44. Runner Sandbox Expansion
+
+**File**: `ForgeGuard/forge_ide/runner.py`
+
+Added to `RUN_COMMAND_PREFIXES`:
+
+```python
+RUN_COMMAND_PREFIXES: tuple[str, ...] = (
+    "pip install", "pip3 install",
+    "npm install", "npx ",
+    "python -m ", "python3 -m ",
+    "python forge/scripts/", "python3 forge/scripts/",  # Forge governance scripts
+    "cat ", "head ", "tail ", "wc ", "find ", "ls ",
+    "dir ",
+    "type ",
+)
+```
+
+This is a narrow, targeted allowlist addition. The path prefix
+`forge/scripts/` ensures only governance scripts can be called this way
+— not arbitrary Python files. (Case-insensitive to handle Windows path casing.)
+
+---
+
+## 45. Forge MCP Tools in Agent Registry
+
+**File**: `ForgeGuard/forge_ide/adapters.py`
+
+Added `register_forge_tools(registry, working_dir)` function that registers
+5 Forge governance tools directly in the IDE's tool registry (not via MCP
+stdio — inline, in-process):
+
+| Tool name | What it does |
+|---|---|
+| `forge_get_contract` | Reads contracts from `{working_dir}/Forge/Contracts/` by name |
+| `forge_list_contracts` | Lists all contract files in Forge/Contracts/ |
+| `forge_get_phase_window` | Parses phases.md for phase N and N+1 deliverables |
+| `forge_get_summary` | Returns governance overview (contracts, builder_contract preview, last test status) |
+| `forge_scratchpad` | Read/write/append KV store in `Forge/evidence/scratchpad.json` — survives compaction |
+
+These are thin disk-reading wrappers — no API calls, no DB. The scratchpad
+tool is the only storage that survives context compaction events.
+
+**Wire-in**: Call `register_forge_tools(registry, working_dir)` in addition to
+`register_builtin_tools(registry)` wherever the agent is started in the build
+service.
+
+---
+
+## 46. SessionJournal Wiring
+
+**File**: `ForgeGuard/forge_ide/agent.py`
+
+The `SessionJournal` class existed but was never instantiated in the agent loop.
+
+Changes implemented:
+1. Added `journal: SessionJournal | None = field(default=None, hash=False, compare=False)`
+   to `AgentConfig` (hash=False, compare=False to avoid frozen dataclass hashability issues).
+2. Journal records tool completion/errors after every `ToolResultEvent`:
+   - Success → `journal.record("task_completed", f"Tool {tool_name} succeeded")`
+   - Failure → `journal.record("error", f"Tool {tool_name} failed: ...")`
+3. **Key fix**: `_compact_messages()` now accepts `journal` param. When journal
+   is provided, injects `journal.get_summary(max_tokens=1000)` at the start of
+   the compacted context instead of the generic `[CONTEXT COMPACTION]` header.
+   This means after compaction the agent knows: current phase, files written,
+   last audit result, key decisions.
+4. `_maybe_compact()` passes `config.journal` to `_compact_messages()`.
+
+Build service usage (when wiring in the build service):
+```python
+journal = SessionJournal(str(build_id), phase="Phase 0")
+config = AgentConfig(..., journal=journal)
+```
+
+---
+
+## 47. Structured Turn Trace Log
+
+**Problem**: When a build goes wrong there is no replay log. WebSocket events
+go to the frontend, Python logger goes to stdout. Neither persists in a
+structured, queryable form.
+
+**Solution**: Added `TurnTrace` dataclass and `_write_trace()` to `forge_ide/agent.py`.
+
+```python
+@dataclass
+class TurnTrace:
+    turn: int
+    timestamp: str
+    event_type: str   # "llm_call" | "tool_call" | "tool_result" | "compaction" | "done" | "error"
+    model: str
+    data: dict        # event-specific payload
+    elapsed_ms: int
+    tokens_in: int = 0
+    tokens_out: int = 0
+```
+
+Trace file: `logs/build_{build_id}_trace.jsonl` (one JSON line per event).
+
+Configure via `AgentConfig.trace_log_path: str = ""`. Empty string disables
+tracing (no files written). Set to a path to enable.
+
+Events traced: `llm_call`, `tool_call`, `tool_result`, `compaction`, `done`
+(both normal end_turn and max-turns-exhausted), `error`.
+
+**No new dependencies** — just Python stdlib `json` + `pathlib`.
+
+---
+
+## 48. Implementation Steps — Phase K (Ordered)
+
+All 9 steps COMPLETE as of Feb 2026.
+
+### Step 1: Fix `agent.py` model default ✓
+
+**File**: `ForgeGuard/forge_ide/agent.py`
+- `AgentConfig.model`: `"claude-sonnet-4-5-20250514"` → `"claude-sonnet-4-6"`
+- `run_task()` default: same change
+
+### Step 2: Port `run_audit.ps1` → `run_audit.py` ✓
+
+New files:
+- `Forge/scripts/run_audit.py`
+- `ForgeGuard/Forge/scripts/run_audit.py`
+
+### Step 3: Port `run_tests.ps1` → `run_tests.py` ✓
+
+New files:
+- `Forge/scripts/run_tests.py`
+- `ForgeGuard/Forge/scripts/run_tests.py`
+
+### Step 4: Port `watch_audit.py` + `overwrite_diff_log.py` ✓
+
+New files:
+- `Forge/scripts/watch_audit.py`
+- `Forge/scripts/overwrite_diff_log.py`
+- `ForgeGuard/Forge/scripts/watch_audit.py`
+- `ForgeGuard/Forge/scripts/overwrite_diff_log.py`
+
+### Step 5: Expand runner allowlist ✓
+
+**File**: `ForgeGuard/forge_ide/runner.py`
+Added `"python forge/scripts/"` and `"python3 forge/scripts/"` to `RUN_COMMAND_PREFIXES`.
+
+### Step 6: Update builder contract references ✓
+
+**Files**: `Forge/Contracts/builder_contract.md` and
+`ForgeGuard/Forge/Contracts/builder_contract.md`
+Updated all `pwsh -File .\Forge\scripts\` references to `python Forge/scripts/`.
+
+### Step 7: Register Forge tools in agent registry ✓
+
+**File**: `ForgeGuard/forge_ide/adapters.py`
+Added `register_forge_tools()` with 5 in-process Forge governance tools.
+
+### Step 8: Wire SessionJournal into agent loop ✓
+
+**File**: `ForgeGuard/forge_ide/agent.py`
+Added `journal` field to `AgentConfig`. Updated `_compact_messages()` and
+`_maybe_compact()` to use journal summary on compaction.
+
+### Step 9: Add structured turn trace log ✓
+
+**File**: `ForgeGuard/forge_ide/agent.py`
+Added `TurnTrace` dataclass, `_write_trace()` helper, `_now_iso()` helper.
+Added `trace_log_path` field to `AgentConfig`. Wired into `run_agent()` for
+all event types.
+
+---
+
+## 49. File Changes Summary — Phase K
+
+### New files
+
+| Path | Purpose |
+|------|---------|
+| `Forge/scripts/run_audit.py` | Python port of run_audit.ps1 (framework template) |
+| `Forge/scripts/run_tests.py` | Python port of run_tests.ps1 (framework template) |
+| `Forge/scripts/watch_audit.py` | Python port of watch_audit.ps1 (framework template) |
+| `Forge/scripts/overwrite_diff_log.py` | Python port of overwrite_diff_log.ps1 |
+| `ForgeGuard/Forge/scripts/run_audit.py` | Same, ForgeGuard project copy |
+| `ForgeGuard/Forge/scripts/run_tests.py` | Same, ForgeGuard project copy |
+| `ForgeGuard/Forge/scripts/watch_audit.py` | Same, ForgeGuard project copy |
+| `ForgeGuard/Forge/scripts/overwrite_diff_log.py` | Same, ForgeGuard project copy |
+
+### Modified files
+
+| Path | Change |
+|------|--------|
+| `ForgeGuard/forge_ide/agent.py` | Fix model default; add journal param; add TurnTrace |
+| `ForgeGuard/forge_ide/adapters.py` | Add `register_forge_tools()` |
+| `ForgeGuard/forge_ide/runner.py` | Add `python forge/scripts/` to allowlist |
+| `Forge/Contracts/builder_contract.md` | Update PS1 → Python script references |
+| `ForgeGuard/Forge/Contracts/builder_contract.md` | Same |
+
+### PS1 files
+
+The original `.ps1` files are **kept** (not deleted). They still work for users
+running Claude Code CLI in a PowerShell environment. The Python scripts are
+additive — they enable the IDE agent path, not replace the CLI path.
+
+---
+
+## 50. Open Questions — Phase K
+
+1. **`watchdog` dependency**: Resolved as polling (5s interval, no new dep).
+   Polling at 5s is fine for AEM — the audit only fires once per
+   diff_log `Status: COMPLETE` write.
+
+2. **git availability in runner**: `run_audit.py` calls `git` via `subprocess`
+   internally. If git is not on PATH, A1/A2/A6 emit WARN instead of FAIL
+   (graceful fallback implemented).
+
+3. **PS1 files in framework template**: Root `Forge/scripts/` now has both
+   `.ps1` and `.py` versions. New projects scaffolded from the template get
+   both. The system_prompt.md should be updated to prefer Python when the
+   target IDE terminal is not PowerShell. Consider adding a forge.json field:
+   `"script_runtime": "python"` (or `"powershell"`) so both scripts and
+   builder_contract references can adapt at scaffold time.
+
+4. **Build service wiring**: `register_forge_tools()` and `SessionJournal`
+   instantiation still need to be wired into the build service
+   (`app/services/build/`) wherever `run_agent()` is called. This is the
+   remaining Phase K integration step outside of `forge_ide/`.

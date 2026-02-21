@@ -48,7 +48,7 @@ from uuid import UUID
 
 from app.clients import git_client
 from app.clients.llm_client import chat
-from app.config import settings
+from app.config import settings, get_model_for_role
 from app.services.tool_executor import execute_tool_async
 from app.repos.scout_repo import get_scout_run, update_scout_run
 from app.repos.user_repo import get_user_by_id
@@ -1745,8 +1745,8 @@ async def _auto_fix_loop(
     _sw: _WorkerSlot | None = state.get("_sonnet_worker")
     _ow: _WorkerSlot | None = state.get("_opus_worker")
     api_key = (_sw.api_key if _sw else "") or (_ow.api_key if _ow else "")
-    planner_model = (_sw.model if _sw else "") or settings.LLM_PLANNER_MODEL
-    builder_model = (_ow.model if _ow else "") or settings.LLM_BUILDER_MODEL
+    planner_model = (_sw.model if _sw else "") or get_model_for_role("planner")
+    builder_model = (_ow.model if _ow else "") or get_model_for_role("builder")
     working_dir = state.get("working_dir", "")
     max_t1 = settings.LLM_FIX_MAX_TIER1
     max_t2 = settings.LLM_FIX_MAX_TIER2
@@ -3409,13 +3409,13 @@ async def execute_upgrade(
     sonnet_worker = _WorkerSlot(
         label="sonnet",
         api_key=key1,
-        model=settings.LLM_PLANNER_MODEL,
+        model=get_model_for_role("planner"),
         display="Sonnet",
     )
     opus_worker = _WorkerSlot(
         label="opus",
         api_key=key1,
-        model=settings.LLM_BUILDER_MODEL,
+        model=get_model_for_role("builder"),
         display="Opus",
     )
 
@@ -3432,7 +3432,7 @@ async def execute_upgrade(
         opus_worker_2 = _WorkerSlot(
             label="opus-2",
             api_key=key2,
-            model=settings.LLM_BUILDER_MODEL,
+            model=get_model_for_role("builder"),
             display="Opus-2",
         )
 
