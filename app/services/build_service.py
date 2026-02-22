@@ -1551,11 +1551,11 @@ async def interject_build(
             raise ValueError("Project not found")
         latest = await build_repo.get_latest_build_for_project(project_id)
         if not latest or latest["status"] not in ("pending", "running", "paused"):
-            return {"status": "no_build", "message": "No active build to reset — type /prep or /start to begin a new build"}
+            return {"status": "no_build", "message": "No active build to reset — type /plan or /start to begin a new build"}
         bid = str(latest["id"])
         try:
             await nuke_build(project_id, user_id)
-            return {"status": "reset", "build_id": bid, "message": "Build reset — type /prep or /start to begin a new build"}
+            return {"status": "reset", "build_id": bid, "message": "Build reset — type /plan or /start to begin a new build"}
         except Exception as exc:
             raise ValueError(f"Reset failed: {exc}") from exc
 
@@ -1581,8 +1581,8 @@ async def interject_build(
         result = await start_build(project_id, user_id)
         return {"status": "cleared", "build_id": str(result["id"]), "message": "Build cleared and restarted via /clear"}
 
-    # --- /prep [/plan] — run planner preview, populate phases panel ----
-    if stripped in ("/prep", "/plan"):
+    # --- /plan — run planner preview, populate phases panel ----
+    if stripped == "/plan":
         project = await project_repo.get_project_by_id(project_id)
         if not project or str(project["user_id"]) != str(user_id):
             raise ValueError("Project not found")
@@ -1592,7 +1592,7 @@ async def interject_build(
             bid = str(latest["id"])
             # Case 1: At the IDE ready gate — trigger planner in preview mode.
             # The gate is registered for "pending" status builds (warm-up done,
-            # waiting for user action).  The /prep command resolves the gate with
+            # waiting for user action).  The /plan command resolves the gate with
             # action="prep" so the planner runs without commencing builders.
             if bid in _ide_ready_events:
                 from app.services.build._state import resolve_ide_ready
@@ -1617,16 +1617,17 @@ async def interject_build(
                 or bid in _last_progress
             )
             if _is_active:
-                return {"status": "pending", "build_id": bid, "message": "Workspace is still warming up \u2014 try /prep again in a moment"}
+                return {"status": "pending", "build_id": bid, "message": "Workspace is still warming up \u2014 try /plan again in a moment"}
             # Orphaned pending build — nuke it so start_build() is not blocked.
             try:
                 await nuke_build(project_id, user_id)
                 await asyncio.sleep(0.05)
-                logger.info("/prep: auto-nuked orphaned pending build %s", bid)
+                logger.info("/plan: auto-nuked orphaned pending build %s", bid)
             except Exception:
-                logger.warning("/prep: auto-nuke of orphaned build %s failed", bid, exc_info=True)
-        # If there is an orphaned DB record in "paused" state (server restarted),
-        # auto-nuke it so start_build() is not blocked.
+                logger.warning("/plan: auto-nuke of orphaned build %s failed", bid, exc_info=True)
+        # If there is an orphaned DB record in "paused" state (plan already generated,
+        # server restarted before user approved).  DO NOT nuke — replay the cached plan
+        # so the user can review and approve without re-spending planner tokens.
         elif latest and latest["status"] == "paused":
             bid = str(latest["id"])
             _task = _active_tasks.get(bid)
@@ -1639,12 +1640,34 @@ async def interject_build(
                 or bid in _last_progress
             )
             if _orphaned:
+                # Check for a cached plan before nuking.
+                from app.repos.project_repo import get_cached_plan
+                _cached = await get_cached_plan(project_id)
+                if _cached:
+                    # Replay plan_complete so the IDE re-shows the plan panel.
+                    _phases_raw = _cached.get("phases", [])
+                    await _broadcast_build_event(user_id, UUID(bid), "plan_complete", {
+                        "plan_path": "",
+                        "phases": _phases_raw,
+                        "token_usage": {
+                            "input_tokens": 0, "output_tokens": 0,
+                            "cache_read_input_tokens": 0,
+                        },
+                        "iterations": 0,
+                    })
+                    logger.info("/plan: replayed cached plan for orphaned paused build %s", bid)
+                    return {
+                        "status": "plan_ready",
+                        "build_id": bid,
+                        "message": "Plan restored \u2014 REVIEW to inspect or PUSH to approve & begin building.",
+                    }
+                # No cached plan — nuke and start fresh.
                 try:
                     await nuke_build(project_id, user_id)
                     await asyncio.sleep(0.05)
-                    logger.info("/prep: auto-nuked orphaned paused build %s", bid)
+                    logger.info("/plan: auto-nuked orphaned paused build %s (no cached plan)", bid)
                 except Exception:
-                    logger.warning("/prep: auto-nuke of orphaned build %s failed", bid, exc_info=True)
+                    logger.warning("/plan: auto-nuke of orphaned build %s failed", bid, exc_info=True)
         # Start a fresh build: workspace setup runs, then the planner generates the phases
         # plan automatically, which appears in the phases panel. The build then pauses at
         # the plan-review gate so the user can inspect and approve with /start.
@@ -2539,6 +2562,15 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
     # (e.g. user navigated to the build page after forge_ide_ready was broadcast).
     if latest["status"] == "pending" and str(latest["id"]) in _ide_ready_events:
         result["ide_gate_pending"] = True
+    # If the build is paused at plan-review (completed_phases == -1 or unset),
+    # include the cached plan phases so the IDE can repopulate the phases panel
+    # on reconnect without needing to re-broadcast plan_complete.
+    completed = latest.get("completed_phases", -1)
+    if latest["status"] == "paused" and (completed is None or completed < 0):
+        from app.repos.project_repo import get_cached_plan as _gcp
+        _cached = await _gcp(project_id)
+        if _cached:
+            result["cached_plan_phases"] = _cached.get("phases", [])
     return result
 
 
@@ -5071,7 +5103,7 @@ async def _run_build_plan_execute(
         (f"Workspace ready  --  {_n_files} files, {_n_lines:,} lines",           "info"),
         (f"  {_n_tests} tests  |  {_n_tables} tables  |  {_n_symbols} symbols",  "info"),
         ("",                                                                     "system"),
-        ("/prep             Preview build phases without starting",                 "info"),
+        ("/plan             Preview build phases without starting",                 "info"),
         ("/start            Begin build (planning + execution)",                  "info"),
         ("/start phase N    Resume from a specific phase",                        "info"),
         ("/stop             Cancel the build",                                    "info"),
@@ -5106,7 +5138,7 @@ async def _run_build_plan_execute(
         "options": ["commence", "cancel", "prep"],
     })
 
-    # Gate loop — supports /prep (planner preview) before /start.
+    # Gate loop — supports /plan (planner preview) before /start.
     while True:
         try:
             await asyncio.wait_for(
@@ -5178,7 +5210,7 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _ready_msg, "source": "system", "level": "info",
             })
-            # Re-register the gate so the next /start or /prep resolves it
+            # Re-register the gate so the next /start or /plan resolves it
             _ready_event = register_ide_ready(str(build_id))
             continue
 
@@ -5196,37 +5228,58 @@ async def _run_build_plan_execute(
 
     # ── Planning: runs after user confirms /start ─────────────────────────
     if not phases:
+        # ── Check DB cache first — avoid re-planning after server restart ──
+        # If the user ran /plan before /start and the server restarted, the
+        # plan is already in cached_plan_json.  Use it directly instead of
+        # spending tokens on a duplicate planning run.
+        from app.repos.project_repo import get_cached_plan as _get_cached_plan
+        _db_plan = await _get_cached_plan(project_id)
+        if _db_plan and _db_plan.get("phases"):
+            logger.info(
+                "build %s: loaded plan from DB cache (%d phases) — skipping re-plan",
+                build_id, len(_db_plan["phases"]),
+            )
+            phases = [
+                {
+                    "number": p["number"],
+                    "name": p["name"],
+                    "objective": p.get("purpose", ""),
+                    "deliverables": p.get("acceptance_criteria", []),
+                }
+                for p in _db_plan["phases"]
+            ]
+
         # ── New project planner agent (primary path) ──────────────────────
-        # Run the standalone Forge Planner Agent to generate plan.json from
-        # the project's contracts.  Falls back to the legacy phases contract
-        # if the planner fails (e.g. missing API key, misconfigured path).
-        try:
-            from app.services.planner_service import run_project_planner
-            _plan_result = await run_project_planner(
-                contracts=contracts,
-                build_id=build_id,
-                user_id=user_id,
-                api_key=api_key,
-                max_phases=None,
-            )
-            if _plan_result:
-                phases = [
-                    {
-                        "number": p["number"],
-                        "name": p["name"],
-                        "objective": p.get("purpose", ""),
-                        "deliverables": p.get("acceptance_criteria", []),
-                    }
-                    for p in _plan_result["plan"].get("phases", [])
-                ]
-                # Save plan to DB — allows orphaned builds to recover the plan.
-                from app.repos.project_repo import set_cached_plan
-                await set_cached_plan(project_id, _plan_result["plan"])
-        except Exception as _planner_exc:
-            logger.warning(
-                "Project planner failed (%s) — falling back to phases contract",
-                _planner_exc,
-            )
+        # Only runs if no cached plan exists.  Falls back to the legacy
+        # phases contract if the planner also fails.
+        if not phases:
+            try:
+                from app.services.planner_service import run_project_planner
+                _plan_result = await run_project_planner(
+                    contracts=contracts,
+                    build_id=build_id,
+                    user_id=user_id,
+                    api_key=api_key,
+                    max_phases=None,
+                )
+                if _plan_result:
+                    phases = [
+                        {
+                            "number": p["number"],
+                            "name": p["name"],
+                            "objective": p.get("purpose", ""),
+                            "deliverables": p.get("acceptance_criteria", []),
+                        }
+                        for p in _plan_result["plan"].get("phases", [])
+                    ]
+                    # Save plan to DB — allows orphaned builds to recover the plan.
+                    from app.repos.project_repo import set_cached_plan
+                    await set_cached_plan(project_id, _plan_result["plan"])
+            except Exception as _planner_exc:
+                logger.warning(
+                    "Project planner failed (%s) — falling back to phases contract",
+                    _planner_exc,
+                )
 
         # ── Legacy fallback: phases contract ──────────────────────────────
         if not phases:

@@ -1341,6 +1341,43 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 // Show REVIEW + PUSH instead of the mid-build Resume button.
                 setStatus('ready');
                 setPlanReady(true);
+                // Repopulate phases panel from cached plan (server restart recovery).
+                // Backend includes cached_plan_phases in status when build is plan-paused.
+                const cachedPhases = (sd as any).cached_plan_phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[] | undefined;
+                if (cachedPhases && cachedPhases.length > 0) {
+                  setPhases(cachedPhases as any);
+                  setTasks(cachedPhases.map((ph) => ({
+                    id: `phase_${ph.number}`,
+                    name: `Phase ${ph.number}: ${ph.name}`,
+                    priority: 'high' as const,
+                    effort: 'large' as const,
+                    forge_automatable: true,
+                    category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                    status: 'pending' as const,
+                  })));
+                  setTotalTasks(cachedPhases.length);
+                  // Inject PLAN box into the Sonnet log so user can see the plan.
+                  const planText = formatPlanText(cachedPhases);
+                  setLogs((prev) => {
+                    // Only inject if there isn't already a plan box.
+                    if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
+                    return [...prev, {
+                      timestamp: new Date().toISOString(),
+                      source: 'reasoning' as const,
+                      level: 'info',
+                      message: `📋 Plan — ${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''} (restored)`,
+                      worker: 'sonnet' as const,
+                      reasoning: {
+                        text: planText,
+                        textLength: planText.length,
+                        turn: 0,
+                        phase: `${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''}`,
+                        isActualThinking: false,
+                        isPlanBox: true,
+                      },
+                    }];
+                  });
+                }
               } else {
                 setStatus('paused');
               }
