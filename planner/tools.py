@@ -62,6 +62,28 @@ CONTRACT_REGISTRY: dict[str, str] = {
 
 TOOL_DEFINITIONS: list[dict] = [
     {
+        "name": "forge_get_project_contract",
+        "description": (
+            "Fetch the content of a project contract by type. "
+            "Call this for every contract listed in the manifest — "
+            "make ALL calls in parallel in your first turn."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "description": (
+                        "Contract type to fetch. One of: "
+                        "blueprint, stack, schema, manifesto, physics, "
+                        "boundaries, ui, phases, builder_directive"
+                    ),
+                },
+            },
+            "required": ["contract_type"],
+        },
+    },
+    {
         "name": "write_plan",
         "description": (
             "Write the completed build plan as a JSON artifact to disk. "
@@ -269,9 +291,18 @@ def tool_write_plan(plan_json: dict | None = None, project_name: str | None = No
 
 # ─── Dispatcher ─────────────────────────────────────────────────────────────
 
-def dispatch_tool(name: str, inputs: dict) -> Any:
+def dispatch_tool(name: str, inputs: dict, contract_fetcher=None) -> Any:
     """Route a tool call from the agent loop to its implementation."""
-    if name == "read_file":
+    if name == "forge_get_project_contract":
+        ct = inputs.get("contract_type", "")
+        if contract_fetcher is not None:
+            content = contract_fetcher(ct)
+            if content is None:
+                return {"error": f"Contract '{ct}' not found in project."}
+            return {"contract_type": ct, "content": content}
+        # Fallback: read from CONTRACT_REGISTRY (local dev / standalone use)
+        return tool_get_contract(ct)
+    elif name == "read_file":
         return tool_read_file(**inputs)
     elif name == "list_directory":
         return tool_list_directory(**inputs)

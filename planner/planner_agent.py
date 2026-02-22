@@ -144,6 +144,7 @@ def run_planner(
     thinking_budget: int = 0,
     thinking_model: str | None = None,
     max_phases: int | None = None,
+    contract_fetcher=None,
 ) -> dict:
     """
     Run the Planner Agent to completion and return the plan artifact.
@@ -365,7 +366,7 @@ def run_planner(
                 keys = list(block.input.keys())
                 print(f"[PLANNER] Tool: {block.name}({keys})")
 
-            result = dispatch_tool(block.name, block.input)
+            result = dispatch_tool(block.name, block.input, contract_fetcher=contract_fetcher)
 
             # ── (5a) TERMINAL TOOL CHECK ──────────────────────────────────────
             # write_plan exits the loop ONLY on success.
