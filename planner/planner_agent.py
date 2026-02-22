@@ -62,8 +62,10 @@ MODEL = (
 )
 
 # Max tokens the model can output in a single response.
-# 8096 is enough for a full plan.json in a single write_plan call.
-MAX_TOKENS = 8096
+# Real project plans (2-4 phases, 30+ files) can easily exceed 8k output tokens
+# once narration + tool call JSON are counted together. Set this high enough that
+# the plan_json is never truncated mid-generation.
+MAX_TOKENS = 32_768
 
 # Safety valve: if the loop hasn't exited after this many turns, abort.
 # A healthy planning run uses 4-8 turns. 20 gives plenty of room for
@@ -74,17 +76,15 @@ MAX_ITERATIONS = 20
 # {max_phases_constraint} is replaced at runtime — empty string for full builds,
 # a hard limit instruction for mini-builds.
 INITIAL_USER_TURN = """\
-Please analyze the following project contracts and produce a complete Forge build plan.
-
-All project data is provided below — it was fetched from the database for you.
-Do NOT attempt to read any files from disk; no filesystem tools are available.
+Produce a complete Forge build plan for this project.
 {max_phases_constraint}
-PROJECT CONTRACTS:
+AVAILABLE CONTRACT MANIFEST (fetch content via forge_get_project_contract):
 {project_request}
 
 INSTRUCTIONS:
-1. Read the contracts above carefully — they contain everything you need.
-2. When you have a complete plan that covers all required phases, call write_plan.
+1. In this first turn, call forge_get_project_contract for ALL contracts in the
+   manifest above — make every call in parallel in a single turn.
+2. When you have read all contracts and have a complete plan, call write_plan.
    Do NOT call write_plan with a partial or incomplete plan.
 
 REMINDER: The plan must be self-contained. The builder uses ONLY plan.json
@@ -321,6 +321,36 @@ def run_planner(
             messages.append({"role": "user", "content": END_TURN_CORRECTION})
             continue
 
+        # ── (4b) HANDLE max_tokens: output was truncated ──────────────────────
+        # When the model hits MAX_TOKENS, the response is hard-truncated. If this
+        # happens inside a write_plan tool call, plan_json is cut off and the tool
+        # receives incomplete JSON — causing a validation failure and a retry loop.
+        # Detect this early and inject a targeted correction so the model knows why
+        # its previous call failed and tries again more concisely.
+        if response.stop_reason == "max_tokens":
+            if verbose:
+                print(f"[PLANNER] WARNING: max_tokens hit ({u.output_tokens} tokens) — response truncated.")
+            if turn_callback is not None:
+                turn_callback({
+                    "turn": iteration,
+                    "stop_reason": "max_tokens",
+                    "output_tokens": u.output_tokens,
+                    "cache_hit": bool(getattr(u, "cache_read_input_tokens", 0)),
+                    "tool_calls": [],
+                    "thinking_text": None,
+                    "text_content": (
+                        f"⚠ Response truncated at {u.output_tokens:,} tokens — "
+                        "plan_json was cut off before completion. Retrying."
+                    ),
+                })
+            messages.append({"role": "user", "content": (
+                "Your previous response was cut off because it exceeded the output token limit. "
+                "The plan_json argument to write_plan was incomplete. "
+                "Call write_plan again with the COMPLETE plan_json. "
+                "Skip any narration before the tool call — go straight to the tool call."
+            )})
+            continue
+
         # ── (5) DISPATCH TOOL CALLS ───────────────────────────────────────────
         # Collect all tool_use blocks from this response turn,
         # execute each one, and gather results for the next turn.
@@ -342,14 +372,31 @@ def run_planner(
             # On validation failure, errors go back to the model as a tool
             # result and the loop continues — the model fixes and retries.
             if block.name == "write_plan":
+                ok = result.get("success", False)
                 if verbose:
-                    ok = result.get("success", False)
                     print(f"[PLANNER] write_plan: {'SUCCESS' if ok else 'FAILED'}")
                     if not ok:
                         for err in result.get("errors", []):
                             print(f"[PLANNER]   error: {err}")
 
-                if result.get("success"):
+                if not ok and turn_callback is not None:
+                    # Surface validation errors to the WS so the user can see why
+                    # the plan is being rewritten instead of watching silent retries.
+                    errors = result.get("errors", [])
+                    err_preview = "; ".join(errors[:3])
+                    turn_callback({
+                        "turn": iteration,
+                        "stop_reason": "write_plan_failed",
+                        "output_tokens": 0,
+                        "cache_hit": False,
+                        "tool_calls": [],
+                        "thinking_text": None,
+                        "text_content": (
+                            f"📋 Plan validation failed ({len(errors)} error(s)): {err_preview}"
+                        ),
+                    })
+
+                if ok:
                     plan_write_result = result
                     should_exit = True
                     # Still add the tool result so the message history is clean,

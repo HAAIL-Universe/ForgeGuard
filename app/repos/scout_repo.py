@@ -46,7 +46,7 @@ async def update_scout_run(
         """
         UPDATE scout_runs
         SET status = $2::varchar,
-            results = $3::jsonb,
+            results = CASE WHEN $3::jsonb IS NOT NULL THEN $3::jsonb ELSE results END,
             checks_passed = $4,
             checks_failed = $5,
             checks_warned = $6,
@@ -216,3 +216,26 @@ async def link_dossier_to_cycle(run_id: UUID, cycle_id: UUID) -> None:
         run_id,
         cycle_id,
     )
+
+
+async def interrupt_stale_scout_runs() -> int:
+    """Mark any 'running' scout runs as 'error' on server startup.
+
+    Runs left in 'running' status after a server crash have NULL results
+    and will return 404 from the dossier endpoint forever.  This is safe
+    to call on every startup because completed/error runs are never 'running'.
+    """
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        UPDATE scout_runs
+        SET status = 'error',
+            completed_at = now()
+        WHERE status = 'running'
+        """
+    )
+    # asyncpg returns "UPDATE N" — extract the count
+    try:
+        return int(result.split()[-1])
+    except (AttributeError, ValueError, IndexError):
+        return 0
