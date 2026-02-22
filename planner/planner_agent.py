@@ -145,61 +145,85 @@ def _run_streaming_turn(
     Execute one API turn using the streaming interface.
 
     Fires stream_callback every STREAM_CHUNK_CHARS characters of thinking
-    so the UI receives progressive updates instead of one blob at the end.
-    Returns the final Message object (same type as client.messages.create()).
+    OR text narration so the UI receives progressive updates instead of one
+    blob at the end.  Returns the final Message object.
+
+    Two event types are forwarded to stream_callback:
+      "thinking_delta"  — extended thinking tokens (when model thinks)
+      "narration_delta" — visible text tokens (model's written reasoning)
 
     The signature chain in thinking blocks is preserved because we call
     stream.get_final_message() which returns fully-assembled content blocks.
     _content_to_params() then echoes the signatures back on the next turn.
     """
     # Accumulated thinking text across all thinking blocks in this turn.
-    # Key = block index (supports multi-block responses), value = text so far.
     _thinking_by_idx: dict[int, str] = {}
-    _last_fired_len = 0  # total chars emitted at last stream_callback call
-    _thinking_started = False  # have we fired the "thinking started" notification?
+    _last_fired_len = 0
+
+    # Accumulated visible text (model narration before tool calls).
+    _text_by_idx: dict[int, str] = {}
+    _text_last_fired_len = 0
 
     with client.messages.stream(**create_kwargs) as stream:
         for event in stream:
             event_type = type(event).__name__
 
-            # Fire IMMEDIATELY when a thinking block starts — before any content
-            # arrives. The Anthropic API does not stream thinking_delta events
-            # token-by-token during the thinking phase; they may only arrive as
-            # one large delta at the end. This gives the user instant feedback
-            # that the model has started thinking, even before we have any text.
+            # Fire IMMEDIATELY when a content block starts so the UI creates
+            # the entry before any text arrives.
             if event_type == "RawContentBlockStartEvent":
                 content_block = getattr(event, "content_block", None)
-                if content_block and getattr(content_block, "type", None) == "thinking":
-                    _thinking_started = True
+                block_type = getattr(content_block, "type", None) if content_block else None
+                if block_type == "thinking":
                     stream_callback({
                         "type": "thinking_delta",
                         "turn": turn_num,
                         "accumulated_text": "",
                         "char_count": 0,
                     })
+                elif block_type == "text":
+                    # Model is writing narration text — notify immediately so
+                    # the UI shows "generating plan…" without waiting for chunks.
+                    stream_callback({
+                        "type": "narration_delta",
+                        "turn": turn_num,
+                        "accumulated_text": "",
+                        "char_count": 0,
+                    })
                 continue
 
-            # Accumulate thinking content from delta events (fires if/when
-            # the API sends incremental thinking tokens).
             if event_type != "RawContentBlockDeltaEvent":
                 continue
+
             delta = event.delta
-            if getattr(delta, "type", None) != "thinking_delta":
-                continue
+            delta_type = getattr(delta, "type", None)
 
-            idx = event.index
-            _thinking_by_idx.setdefault(idx, "")
-            _thinking_by_idx[idx] += delta.thinking
+            if delta_type == "thinking_delta":
+                idx = event.index
+                _thinking_by_idx.setdefault(idx, "")
+                _thinking_by_idx[idx] += delta.thinking
+                total_chars = sum(len(v) for v in _thinking_by_idx.values())
+                if total_chars - _last_fired_len >= STREAM_CHUNK_CHARS:
+                    _last_fired_len = total_chars
+                    stream_callback({
+                        "type": "thinking_delta",
+                        "turn": turn_num,
+                        "accumulated_text": "\n\n".join(_thinking_by_idx.values()),
+                        "char_count": total_chars,
+                    })
 
-            total_chars = sum(len(v) for v in _thinking_by_idx.values())
-            if total_chars - _last_fired_len >= STREAM_CHUNK_CHARS:
-                _last_fired_len = total_chars
-                stream_callback({
-                    "type": "thinking_delta",
-                    "turn": turn_num,
-                    "accumulated_text": "\n\n".join(_thinking_by_idx.values()),
-                    "char_count": total_chars,
-                })
+            elif delta_type == "text_delta":
+                idx = event.index
+                _text_by_idx.setdefault(idx, "")
+                _text_by_idx[idx] += delta.text
+                total_chars = sum(len(v) for v in _text_by_idx.values())
+                if total_chars - _text_last_fired_len >= STREAM_CHUNK_CHARS:
+                    _text_last_fired_len = total_chars
+                    stream_callback({
+                        "type": "narration_delta",
+                        "turn": turn_num,
+                        "accumulated_text": "\n\n".join(_text_by_idx.values()),
+                        "char_count": total_chars,
+                    })
 
         return stream.get_final_message()
 

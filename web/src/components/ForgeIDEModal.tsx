@@ -2050,18 +2050,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
-            /* ---- Live streaming thinking tokens (fires every ~300 chars during API call) ---- */
+            /* ---- Live streaming thinking tokens (fires every ~100 chars during API call) ---- */
             case 'thinking_live': {
               const turn = (p.turn as number) || 0;
               const text = (p.reasoning_text as string) || '';
               const length = (p.reasoning_length as number) || text.length;
               const src = (p.source as string) || 'planner';
               const liveWorker: 'sonnet' | 'opus' = src === 'opus' ? 'opus' : 'sonnet';
-              // "Thinking…" label (trailing …) triggers the existing active-worker
-              // pulsing animation (line ~781). Upsert by turn so the entry updates
-              // in place as tokens stream in, rather than appending duplicates.
               setLogs((prev) => {
-                const existingIdx = prev.findLastIndex((l) => l.reasoning?.turn === turn);
+                // Only upsert THINKING entries — never clobber a narration entry.
+                const existingIdx = prev.findLastIndex(
+                  (l) => l.reasoning?.turn === turn && l.reasoning?.isActualThinking !== false
+                );
                 const entry = {
                   timestamp: new Date().toISOString(),
                   source: 'reasoning' as const, level: 'thinking',
@@ -2082,7 +2082,37 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
-            /* ---- Extended thinking reasoning output (fires after API call completes) ---- */
+            /* ---- Live streaming narration text (model writing plan, no extended thinking) ---- */
+            case 'narration_live': {
+              const turn = (p.turn as number) || 0;
+              const text = (p.reasoning_text as string) || '';
+              const length = (p.reasoning_length as number) || text.length;
+              setLogs((prev) => {
+                // Only upsert NARRATION entries (isActualThinking === false).
+                const existingIdx = prev.findLastIndex(
+                  (l) => l.reasoning?.turn === turn && l.reasoning?.isActualThinking === false && !l.reasoning?.isPlanBox
+                );
+                const entry = {
+                  timestamp: new Date().toISOString(),
+                  source: 'reasoning' as const, level: 'thinking',
+                  message: `📝 Narrating… (turn ${turn})`,
+                  worker: 'sonnet' as const,
+                  reasoning: {
+                    text, textLength: length, turn, phase: undefined as string | undefined,
+                    isActualThinking: false,
+                  },
+                };
+                if (existingIdx >= 0) {
+                  const next = [...prev];
+                  next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
+                  return next;
+                }
+                return [...prev, entry];
+              });
+              break;
+            }
+
+            /* ---- Extended thinking / narration output (fires after API call completes) ---- */
             case 'thinking_block': {
               const turn = (p.turn as number) || 0;
               const text = (p.reasoning_text as string) || '';
@@ -2090,11 +2120,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               const phase = (p.phase as string) || '';
               const src = (p.source as string) || 'planner';
               const blockWorker: 'sonnet' | 'opus' = src === 'opus' ? 'opus' : 'sonnet';
-              // Upsert by turn: if a live-streaming entry exists for this turn,
-              // replace it with the final complete version (changes label from
-              // "Thinking…" to "Reasoning" which also stops the pulsing animation).
+              const isActualThinking = (p.is_actual_thinking as boolean) ?? true;
+              // Upsert the matching slot: thinking ↔ thinking, narration ↔ narration.
               setLogs((prev) => {
-                const existingIdx = prev.findLastIndex((l) => l.reasoning?.turn === turn);
+                const existingIdx = prev.findLastIndex((l) =>
+                  l.reasoning?.turn === turn &&
+                  (isActualThinking
+                    ? l.reasoning?.isActualThinking !== false
+                    : l.reasoning?.isActualThinking === false && !l.reasoning?.isPlanBox)
+                );
                 const entry = {
                   timestamp: new Date().toISOString(),
                   source: 'reasoning' as const, level: 'thinking',
@@ -2102,7 +2136,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   worker: blockWorker,
                   reasoning: {
                     text, textLength: length, turn, phase: phase || undefined,
-                    isActualThinking: (p.is_actual_thinking as boolean) ?? true,
+                    isActualThinking,
                   },
                 };
                 if (existingIdx >= 0) {
