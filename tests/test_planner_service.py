@@ -1,7 +1,8 @@
 """Tests for planner_service — bridges the standalone planner into ForgeGuard.
 
 Covers:
-  - _contracts_to_request: contract → project-request string synthesis
+  - _contracts_to_manifest: contract → lightweight manifest string (pull-first)
+  - _make_contract_fetcher: closure that fetches contract content by type
   - run_project_planner: failure paths (missing dir, import error, planner crash)
   - _make_turn_callback: thinking_block WS event broadcast
 """
@@ -19,16 +20,16 @@ _USER_ID = uuid.uuid4()
 
 
 # ---------------------------------------------------------------------------
-# _contracts_to_request
+# _contracts_to_manifest (pull-first architecture)
 # ---------------------------------------------------------------------------
 
 
 class TestContractsToRequest:
-    """Tests for contract-to-project-request synthesis."""
+    """Tests for _contracts_to_manifest — lightweight manifest for pull-first planner."""
 
     def _import(self):
-        from app.services.planner_service import _contracts_to_request
-        return _contracts_to_request
+        from app.services.planner_service import _contracts_to_manifest
+        return _contracts_to_manifest
 
     def test_includes_blueprint(self):
         fn = self._import()
@@ -37,8 +38,11 @@ class TestContractsToRequest:
             {"contract_type": "schema", "content": "Table: trades"},
         ]
         result = fn(contracts)
-        assert "BLUEPRINT" in result
-        assert "Build a trading bot" in result
+        # Manifest lists contract types (not content)
+        assert "blueprint" in result
+        assert "schema" in result
+        # Content must NOT be in the manifest (pull-first: model fetches on demand)
+        assert "Build a trading bot" not in result
 
     def test_includes_all_priority_types(self):
         fn = self._import()
@@ -52,24 +56,27 @@ class TestContractsToRequest:
             {"contract_type": "ui", "content": "React"},
         ]
         result = fn(contracts)
-        assert "BLUEPRINT" in result
-        assert "STACK" in result
-        assert "SCHEMA" in result
+        assert "blueprint" in result
+        assert "stack" in result
+        assert "schema" in result
+        assert "ui" in result
 
     def test_empty_contracts_returns_fallback(self):
         fn = self._import()
         result = fn([])
-        assert "No project contracts provided" in result
+        assert "No project contracts available" in result
 
-    def test_unknown_contract_types_ignored(self):
+    def test_unknown_contract_types_included(self):
+        """Non-priority contract types are still listed (appended after priority ones)."""
         fn = self._import()
         contracts = [
             {"contract_type": "phases", "content": "phase list"},
-            {"contract_type": "builder_contract", "content": "contract"},
+            {"contract_type": "custom_type", "content": "some data"},
         ]
         result = fn(contracts)
-        # Neither 'phases' nor 'builder_contract' is in the priority list
-        assert "No project contracts provided" in result
+        # Both are listed in the manifest (no types are silently dropped)
+        assert "phases" in result
+        assert "custom_type" in result
 
     def test_duplicate_types_deduplicated(self):
         """If two contracts have the same type, only the first is included."""
@@ -79,9 +86,8 @@ class TestContractsToRequest:
             {"contract_type": "blueprint", "content": "second"},
         ]
         result = fn(contracts)
-        assert result.count("BLUEPRINT") == 1
-        assert "first" in result
-        assert "second" not in result
+        # Type should appear only once (dict key collision dedups it)
+        assert result.count("blueprint") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +202,7 @@ def _make_fake_planner_module(run_planner_fn, planner_error_cls):
 
 
 # ---------------------------------------------------------------------------
-# _contracts_to_request — ordering
+# _contracts_to_manifest — ordering
 # ---------------------------------------------------------------------------
 
 
@@ -204,25 +210,25 @@ class TestContractsToRequestOrdering:
     """Priority ordering: blueprint comes before stack, stack before schema."""
 
     def test_blueprint_appears_before_stack(self):
-        from app.services.planner_service import _contracts_to_request
+        from app.services.planner_service import _contracts_to_manifest
 
         contracts = [
             {"contract_type": "stack", "content": "Python stack"},
             {"contract_type": "blueprint", "content": "Project blueprint"},
         ]
-        result = _contracts_to_request(contracts)
-        bp_pos = result.index("BLUEPRINT")
-        stack_pos = result.index("STACK")
+        result = _contracts_to_manifest(contracts)
+        bp_pos = result.index("blueprint")
+        stack_pos = result.index("stack")
         assert bp_pos < stack_pos
 
     def test_stack_appears_before_schema(self):
-        from app.services.planner_service import _contracts_to_request
+        from app.services.planner_service import _contracts_to_manifest
 
         contracts = [
             {"contract_type": "schema", "content": "DB schema"},
             {"contract_type": "stack", "content": "Python stack"},
         ]
-        result = _contracts_to_request(contracts)
-        stack_pos = result.index("STACK")
-        schema_pos = result.index("SCHEMA")
+        result = _contracts_to_manifest(contracts)
+        stack_pos = result.index("stack")
+        schema_pos = result.index("schema")
         assert stack_pos < schema_pos

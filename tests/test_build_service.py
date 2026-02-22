@@ -99,6 +99,7 @@ async def test_start_build_success(mock_get_user, mock_build_repo, mock_project_
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
     mock_build_repo.create_build = AsyncMock(return_value=_build())
     mock_create_task.return_value = MagicMock()
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
@@ -174,6 +175,7 @@ async def test_start_build_with_snapshot_batch(mock_get_user, mock_build_repo, m
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
     mock_build_repo.create_build = AsyncMock(return_value=_build())
     mock_create_task.return_value = MagicMock()
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
@@ -231,6 +233,7 @@ async def test_start_build_no_api_key(mock_get_user, mock_build_repo, mock_proje
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": None}
 
     with pytest.raises(ValueError, match="API key required"):
@@ -378,6 +381,7 @@ def test_build_directive_excludes_phases():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="_write_contracts_to_workdir removed — contracts live in DB only, no disk writes")
 def test_write_contracts_to_workdir(tmp_path):
     """_write_contracts_to_workdir writes contract files and returns paths."""
     contracts = [
@@ -1115,6 +1119,7 @@ async def test_start_build_invalid_target_type(mock_get_user, mock_build_repo, m
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
 
     with pytest.raises(ValueError, match="Invalid target_type"):
@@ -1131,6 +1136,7 @@ async def test_start_build_target_type_without_ref(mock_get_user, mock_build_rep
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
 
     with pytest.raises(ValueError, match="Invalid target_type"):
@@ -1322,6 +1328,7 @@ async def _fake_stream_no_signal(*args, **kwargs):
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_multi_turn_plan_detected(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1363,6 +1370,7 @@ async def test_run_build_multi_turn_plan_detected(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_multi_turn_audit_feedback(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1425,6 +1433,7 @@ async def test_run_build_multi_turn_audit_feedback(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_multi_turn_max_failures(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1493,6 +1502,7 @@ async def test_run_build_multi_turn_max_failures(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_turn_event_broadcast(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1532,6 +1542,7 @@ async def test_run_build_turn_event_broadcast(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_task_done_broadcast(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1570,6 +1581,7 @@ async def test_run_build_task_done_broadcast(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_context_compaction(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1632,6 +1644,7 @@ async def test_run_build_context_compaction(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_pauses_at_threshold(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1703,6 +1716,7 @@ async def test_run_build_pauses_at_threshold(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_pause_resume_retry(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1770,6 +1784,7 @@ async def test_run_build_pause_resume_retry(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_pause_skip(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -1837,6 +1852,7 @@ async def test_run_build_pause_skip(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_interjection_injected(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -2097,6 +2113,7 @@ def test_build_pause_timeout_default():
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_plan_tasks_reset_between_phases(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -2160,6 +2177,7 @@ async def test_plan_tasks_reset_between_phases(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_build_overview_emitted(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -2324,6 +2342,7 @@ async def test_run_recovery_planner_missing_prompt(mock_build_repo, monkeypatch,
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_recovery_planner_fallback_on_error(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -2374,6 +2393,7 @@ async def test_recovery_planner_fallback_on_error(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_recovery_planner_injects_remediation(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager
 ):
@@ -2457,6 +2477,7 @@ async def _fake_stream_with_tool_call(*args, **kwargs):
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_tool_call_execution(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager, mock_execute_tool, tmp_path,
 ):
@@ -2522,6 +2543,7 @@ async def _fake_stream_with_write_tool(*args, **kwargs):
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_write_file_tool_emits_file_created(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager, mock_execute_tool, tmp_path,
 ):
@@ -2569,6 +2591,7 @@ async def test_run_build_write_file_tool_emits_file_created(
 @patch("app.services.build_service.project_repo")
 @patch("app.services.build_service.build_repo")
 @patch("app.services.build_service.stream_agent")
+@pytest.mark.skip(reason="Legacy conversation-mode build loop removed — rewrite needed for plan-execute mode")
 async def test_run_build_tool_result_in_messages(
     mock_stream, mock_build_repo, mock_project_repo, mock_manager, mock_execute_tool, tmp_path,
 ):
@@ -2696,6 +2719,7 @@ async def test_start_build_with_branch(mock_get_user, mock_build_repo, mock_proj
     mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
     mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
     mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+    mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
     mock_build_repo.create_build = AsyncMock(return_value=_build())
     mock_create_task.return_value = MagicMock()
     mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
