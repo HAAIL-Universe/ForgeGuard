@@ -183,26 +183,26 @@ class TestPlannedStatusInterrupted:
         )
 
 
-# ── 6. Builder agent stub inserted before file generation ────────────────────
+# ── 6. Builder agent is live — stub block removed ────────────────────────────
 
 
 class TestBuilderStubInPlanExecute:
-    """The builder agent stub is present in _run_build_plan_execute."""
+    """The builder agent stub block has been removed; file generation is live."""
 
-    def test_stub_return_before_file_generation(self):
-        """'BUILDER AGENT INTEGRATION POINT' marker exists in plan_execute."""
+    def test_stub_block_removed(self):
+        """'BUILDER AGENT INTEGRATION POINT' marker is gone — builder is live."""
         import inspect
         import app.services.build_service as bs
         src = inspect.getsource(bs._run_build_plan_execute)
-        assert "BUILDER AGENT INTEGRATION POINT" in src, (
-            "Builder agent stub block should be present in _run_build_plan_execute"
+        assert "BUILDER AGENT INTEGRATION POINT" not in src, (
+            "Builder agent stub block should have been removed — builder is live"
         )
 
-    def test_awaiting_builder_agent_reason_in_stub(self):
-        """The stub broadcasts 'awaiting_builder_agent' reason."""
+    def test_awaiting_builder_agent_removed(self):
+        """'awaiting_builder_agent' pause broadcast is gone — builder is live."""
         import inspect
         import app.services.build_service as bs
         src = inspect.getsource(bs._run_build_plan_execute)
-        assert "awaiting_builder_agent" in src, (
-            "Stub should broadcast reason='awaiting_builder_agent'"
+        assert "awaiting_builder_agent" not in src, (
+            "'awaiting_builder_agent' broadcast should be gone — builder is live"
         )

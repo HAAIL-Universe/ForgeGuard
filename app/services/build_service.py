@@ -5560,28 +5560,6 @@ async def _run_build_plan_execute(
                 "message": _log_msg, "source": "system", "level": "info",
             })
 
-        # ── BUILDER AGENT INTEGRATION POINT ─────────────────────────────────────────
-        # Per-phase manifest is ready and broadcast to the UI.
-        # When the builder agent is integrated, remove this stub block.
-        _stub_msg = (
-            f"✅ {phase_name} planned ({len(manifest)} files). "
-            "Builder agent not yet integrated — build halted at planning stage. "
-            "Use /push to push the plan to git."
-        )
-        await build_repo.append_build_log(
-            build_id, _stub_msg, source="system", level="info",
-        )
-        await _broadcast_build_event(user_id, build_id, "build_log", {
-            "message": _stub_msg, "source": "system", "level": "info",
-        })
-        await build_repo.update_build_status(build_id, "planned")
-        await _broadcast_build_event(user_id, build_id, "build_paused", {
-            "reason": "awaiting_builder_agent",
-            "message": "Build halted — awaiting builder agent integration",
-        })
-        return
-        # ── END BUILDER AGENT INTEGRATION POINT ──────────────────────────────────────
-
         # 2. Generate each file (with parallel per-file audits)
         phase_files_written: dict[str, str] = {}
         pending_file_audits: list[asyncio.Task] = []
