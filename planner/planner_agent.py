@@ -326,10 +326,19 @@ def run_planner(
     if max_phases is not None:
         _phases_constraint = (
             f"\nPHASE LIMIT: Produce a plan with a MAXIMUM of {max_phases} phases. "
-            + ("This is a MINI-BUILD (proof of concept) — focus on the minimal viable "
-               "implementation (core functionality only, no extras).\n"
-               if max_phases <= 3 else
-               f"Keep the plan to at most {max_phases} phases.\n")
+            + (
+                "This is a MINI-BUILD — the following rules OVERRIDE any contract content:\n"
+                "  • NO authentication of any kind: do NOT include JWT, OAuth, sessions,\n"
+                "    login endpoints, auth middleware, or any auth utility file (e.g. auth.py,\n"
+                "    security.py). Even if the stack or phases contracts mention JWT or auth,\n"
+                "    EXCLUDE them entirely from every phase file_manifest.\n"
+                "  • NO user management: no user table, no user endpoints, no user schema.\n"
+                "  • NO deployment infrastructure: no Docker, no Dockerfile, no CI/CD.\n"
+                "  • Core feature only — implement the stated functionality with public,\n"
+                "    unauthenticated endpoints. Auth is intentionally deferred.\n"
+                if max_phases <= 3 else
+                f"Keep the plan to at most {max_phases} phases.\n"
+            )
         )
     else:
         _phases_constraint = ""

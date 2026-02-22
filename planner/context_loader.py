@@ -136,8 +136,12 @@ CONSTRAINTS — read carefully:
   - Do NOT include boot.ps1 in any phase file_manifest. Setup scripts are not
     part of the automated build pipeline.
   - If the project manifest includes a max_phases constraint <= 3, this is a
-    MINI-BUILD. For mini-builds: omit authentication/JWT phases, omit user
-    management, omit deployment infrastructure — focus on the core feature only.
+    MINI-BUILD. Mini-build rules OVERRIDE contract content:
+    • NO auth of any kind — exclude JWT, OAuth, login, sessions, auth.py,
+      security.py, any auth middleware, even if contracts mention them.
+    • NO user management — no user table, no user endpoints.
+    • NO deployment infrastructure — no Docker, no CI/CD.
+    • Public unauthenticated endpoints only. Auth is deferred by design.
 
 WHAT IS PRE-LOADED IN YOUR CONTEXT:
   - builder_contract.md (plan.json structure and builder expectations)
