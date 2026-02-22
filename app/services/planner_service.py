@@ -125,6 +125,7 @@ async def run_project_planner(
     # bridge async log calls back from the synchronous planner thread.
     loop = asyncio.get_running_loop()
     turn_callback = _make_turn_callback(loop, build_id, user_id, build_repo, _broadcast_build_event)
+    stream_callback = _make_stream_callback(loop, user_id, build_id, _broadcast_build_event)
 
     try:
         result = await loop.run_in_executor(
@@ -137,6 +138,7 @@ async def run_project_planner(
                 stop_event=_stop_event,
                 model=_planner_model,
                 turn_callback=turn_callback,
+                stream_callback=stream_callback,
                 thinking_budget=_planner_thinking_budget,
                 thinking_model=_planner_thinking_model,
                 max_phases=max_phases,
@@ -263,6 +265,34 @@ def _log_future_exc(fut, label: str) -> None:
         pass  # CancelledError or similar — ignore
 
 
+def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
+    """Return a sync callable that forwards live thinking-delta events to the UI.
+
+    Called from the planner thread every STREAM_CHUNK_CHARS characters of
+    thinking so the user sees the model's reasoning as it's generated rather
+    than waiting for the full turn to complete.
+    """
+    def callback(delta_data: dict) -> None:
+        if delta_data.get("type") != "thinking_delta":
+            return
+        turn = delta_data.get("turn", "?")
+        text = delta_data.get("accumulated_text", "")
+        char_count = delta_data.get("char_count", len(text))
+        fut = asyncio.run_coroutine_threadsafe(
+            broadcast_fn(user_id, build_id, "thinking_live", {
+                "turn": turn,
+                "source": "planner",
+                "reasoning_text": text[:12_000],
+                "reasoning_length": char_count,
+                "is_actual_thinking": True,
+            }),
+            loop,
+        )
+        fut.add_done_callback(lambda f: _log_future_exc(f, "thinking_live"))
+
+    return callback
+
+
 def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
     """Return a sync callable that streams planner turn progress to build logs.
 
@@ -364,7 +394,7 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
                 broadcast_fn(user_id, build_id, "thinking_block", {
                     "turn": turn,
                     "source": "planner",
-                    "reasoning_text": thinking_text[:4000],
+                    "reasoning_text": thinking_text[:12_000],
                     "reasoning_length": len(thinking_text),
                     "is_actual_thinking": True,
                 }),
@@ -384,7 +414,7 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
                 broadcast_fn(user_id, build_id, "thinking_block", {
                     "turn": turn,
                     "source": "planner",
-                    "reasoning_text": display_text[:4000],
+                    "reasoning_text": display_text[:12_000],
                     "reasoning_length": len(display_text),
                     "is_actual_thinking": False,
                 }),
@@ -481,6 +511,7 @@ def _call_planner_sync(
     stop_event=None,
     model: str | None = None,
     turn_callback=None,
+    stream_callback=None,
     thinking_budget: int = 0,
     thinking_model: str | None = None,
     max_phases: int | None = None,
@@ -500,6 +531,7 @@ def _call_planner_sync(
             stop_event=stop_event,
             model=model,
             turn_callback=turn_callback,
+            stream_callback=stream_callback,
             thinking_budget=thinking_budget,
             thinking_model=thinking_model,
             max_phases=max_phases,

@@ -133,6 +133,61 @@ def _content_to_params(content: list) -> list[dict]:
     return params
 
 
+# ─── Streaming helper ────────────────────────────────────────────────────────
+
+def _run_streaming_turn(
+    client,
+    create_kwargs: dict,
+    turn_num: int,
+    stream_callback: "callable",
+) -> object:
+    """
+    Execute one API turn using the streaming interface.
+
+    Fires stream_callback every STREAM_CHUNK_CHARS characters of thinking
+    so the UI receives progressive updates instead of one blob at the end.
+    Returns the final Message object (same type as client.messages.create()).
+
+    The signature chain in thinking blocks is preserved because we call
+    stream.get_final_message() which returns fully-assembled content blocks.
+    _content_to_params() then echoes the signatures back on the next turn.
+    """
+    # Accumulated thinking text across all thinking blocks in this turn.
+    # Key = block index (supports multi-block responses), value = text so far.
+    _thinking_by_idx: dict[int, str] = {}
+    _last_fired_len = 0  # total chars emitted at last stream_callback call
+
+    with client.messages.stream(**create_kwargs) as stream:
+        for event in stream:
+            # Only process content block deltas — skip start/stop/message events.
+            if type(event).__name__ != "RawContentBlockDeltaEvent":
+                continue
+            delta = event.delta
+            if getattr(delta, "type", None) != "thinking_delta":
+                continue
+
+            idx = event.index
+            _thinking_by_idx.setdefault(idx, "")
+            _thinking_by_idx[idx] += delta.thinking
+
+            total_chars = sum(len(v) for v in _thinking_by_idx.values())
+            if total_chars - _last_fired_len >= STREAM_CHUNK_CHARS:
+                _last_fired_len = total_chars
+                stream_callback({
+                    "type": "thinking_delta",
+                    "turn": turn_num,
+                    "accumulated_text": "\n\n".join(_thinking_by_idx.values()),
+                    "char_count": total_chars,
+                })
+
+        return stream.get_final_message()
+
+
+# How many thinking characters to accumulate before firing stream_callback.
+# Lower = more frequent UI updates but more WS messages.
+STREAM_CHUNK_CHARS = 300
+
+
 # ─── Main Agent Function ─────────────────────────────────────────────────────
 
 def run_planner(
@@ -145,6 +200,7 @@ def run_planner(
     thinking_model: str | None = None,
     max_phases: int | None = None,
     contract_fetcher=None,
+    stream_callback: "callable | None" = None,
 ) -> dict:
     """
     Run the Planner Agent to completion and return the plan artifact.
@@ -254,7 +310,12 @@ def run_planner(
         if thinking_budget > 0:
             _create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
 
-        response = client.messages.create(**_create_kwargs)
+        # Stream if a stream_callback is provided (gives live thinking updates),
+        # otherwise fall back to the blocking create() path (e.g. unit tests).
+        if stream_callback is not None and thinking_budget > 0:
+            response = _run_streaming_turn(client, _create_kwargs, iteration, stream_callback)
+        else:
+            response = client.messages.create(**_create_kwargs)
 
         # ── (2) ACCUMULATE TOKEN USAGE ───────────────────────────────────────
         u = response.usage

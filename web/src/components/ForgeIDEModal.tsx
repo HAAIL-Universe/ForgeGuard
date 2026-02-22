@@ -2008,7 +2008,39 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
-            /* ---- Extended thinking reasoning output (fires after API call) ---- */
+            /* ---- Live streaming thinking tokens (fires every ~300 chars during API call) ---- */
+            case 'thinking_live': {
+              const turn = (p.turn as number) || 0;
+              const text = (p.reasoning_text as string) || '';
+              const length = (p.reasoning_length as number) || text.length;
+              const src = (p.source as string) || 'planner';
+              const liveWorker: 'sonnet' | 'opus' = src === 'opus' ? 'opus' : 'sonnet';
+              // "Thinking…" label (trailing …) triggers the existing active-worker
+              // pulsing animation (line ~781). Upsert by turn so the entry updates
+              // in place as tokens stream in, rather than appending duplicates.
+              setLogs((prev) => {
+                const existingIdx = prev.findLastIndex((l) => l.reasoning?.turn === turn);
+                const entry = {
+                  timestamp: new Date().toISOString(),
+                  source: 'reasoning' as const, level: 'thinking',
+                  message: `💭 Thinking… (turn ${turn})`,
+                  worker: liveWorker,
+                  reasoning: {
+                    text, textLength: length, turn, phase: undefined as string | undefined,
+                    isActualThinking: true,
+                  },
+                };
+                if (existingIdx >= 0) {
+                  const next = [...prev];
+                  next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
+                  return next;
+                }
+                return [...prev, entry];
+              });
+              break;
+            }
+
+            /* ---- Extended thinking reasoning output (fires after API call completes) ---- */
             case 'thinking_block': {
               const turn = (p.turn as number) || 0;
               const text = (p.reasoning_text as string) || '';
@@ -2016,16 +2048,28 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               const phase = (p.phase as string) || '';
               const src = (p.source as string) || 'planner';
               const blockWorker: 'sonnet' | 'opus' = src === 'opus' ? 'opus' : 'sonnet';
-              setLogs((prev) => [...prev, {
-                timestamp: new Date().toISOString(),
-                source: 'reasoning', level: 'thinking',
-                message: `💭 Reasoning (turn ${turn})${phase ? ` · ${phase}` : ''}`,
-                worker: blockWorker,
-                reasoning: {
-                  text, textLength: length, turn, phase: phase || undefined,
-                  isActualThinking: (p.is_actual_thinking as boolean) ?? true,
-                },
-              }]);
+              // Upsert by turn: if a live-streaming entry exists for this turn,
+              // replace it with the final complete version (changes label from
+              // "Thinking…" to "Reasoning" which also stops the pulsing animation).
+              setLogs((prev) => {
+                const existingIdx = prev.findLastIndex((l) => l.reasoning?.turn === turn);
+                const entry = {
+                  timestamp: new Date().toISOString(),
+                  source: 'reasoning' as const, level: 'thinking',
+                  message: `💭 Reasoning (turn ${turn})${phase ? ` · ${phase}` : ''}`,
+                  worker: blockWorker,
+                  reasoning: {
+                    text, textLength: length, turn, phase: phase || undefined,
+                    isActualThinking: (p.is_actual_thinking as boolean) ?? true,
+                  },
+                };
+                if (existingIdx >= 0) {
+                  const next = [...prev];
+                  next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
+                  return next;
+                }
+                return [...prev, entry];
+              });
               break;
             }
 
