@@ -1315,6 +1315,46 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             const currentPhaseNum = (() => { const m = (sd.phase || '').match(/\d+/); return m ? parseInt(m[0], 10) : 0; })();
             // Map build status to IDE status
             if (sd.status === 'running') {
+              if ((sd as any).plan_review_pending) {
+                // Build is running but waiting at the plan_review gate.
+                // The plan_review WS event already fired before this session —
+                // restore the plan panel so the user can approve without replanning.
+                setStatus('ready');
+                setPlanReady(true);
+                const cachedPhases = (sd as any).cached_plan_phases as { number: number; name: string; purpose?: string; objective?: string }[] | undefined;
+                if (cachedPhases && cachedPhases.length > 0) {
+                  setPhases(cachedPhases as any);
+                  setTasks(cachedPhases.map((ph) => ({
+                    id: `phase_${ph.number}`,
+                    name: `Phase ${ph.number}: ${ph.name}`,
+                    priority: 'high' as const,
+                    effort: 'large' as const,
+                    forge_automatable: true,
+                    category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                    status: 'pending' as const,
+                  })));
+                  setTotalTasks(cachedPhases.length);
+                  const planText = formatPlanText(cachedPhases);
+                  setLogs((prev) => {
+                    if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
+                    return [...prev, {
+                      timestamp: new Date().toISOString(),
+                      source: 'reasoning' as const,
+                      level: 'info',
+                      message: `📋 Plan — ${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''} (restored)`,
+                      worker: 'sonnet' as const,
+                      reasoning: {
+                        text: planText,
+                        textLength: planText.length,
+                        turn: 0,
+                        phase: `${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''}`,
+                        isActualThinking: false,
+                        isPlanBox: true,
+                      },
+                    }];
+                  });
+                }
+              } else {
               setStatus('running');
               // Mark phases that are already done
               setTasks((prev) => prev.map((t) => {
@@ -1324,6 +1364,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 return t;
               }));
               setCompletedTasks(currentPhaseNum);
+              }
             } else if (sd.status === 'pending') {
               if (sd.ide_gate_pending) {
                 // IDE warm-up is done and the gate is open — restore ready state.
