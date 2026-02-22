@@ -1383,6 +1383,42 @@ async def approve_plan(
     return {"ok": True, "build_id": build_id, "action": action}
 
 
+async def commit_plan_to_git(project_id: UUID, user_id: UUID) -> dict:
+    """Write forge_plan.json to the workspace and commit it to git.
+
+    Called when the user clicks PUSH in the IDE after reviewing the plan.
+    Does NOT start the build — that requires a separate /build/commence call.
+    """
+    from fastapi import HTTPException
+
+    build = await build_repo.get_latest_build_for_project(project_id)
+    if not build or str(build.get("user_id", "")) != str(user_id):
+        raise HTTPException(status_code=404, detail="No active build found")
+
+    plan = await project_repo.get_cached_plan(project_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="No cached plan found")
+
+    ws_base = Path(tempfile.gettempdir()) / "forgeguard_workspaces"
+    working_dir = str(ws_base / str(project_id))
+    if not Path(working_dir).exists():
+        raise HTTPException(status_code=400, detail="Workspace not yet initialised")
+
+    plan_file = Path(working_dir) / "forge_plan.json"
+    plan_file.write_text(json.dumps(plan, indent=2))
+
+    await git_client.add_all(working_dir)
+    sha = await git_client.commit(working_dir, "forge: save build plan")
+
+    build_id = build["id"]
+    await build_repo.append_build_log(
+        build_id,
+        f"📋 Plan committed{f' ({sha[:8]})' if sha else ''}",
+        source="system", level="info",
+    )
+    return {"ok": True, "sha": sha or ""}
+
+
 async def commence_build(
     project_id: UUID,
     user_id: UUID,

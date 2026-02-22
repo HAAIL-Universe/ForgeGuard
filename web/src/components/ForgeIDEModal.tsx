@@ -1121,6 +1121,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const [planReady, setPlanReady] = useState(false);          // plan_complete received
+  const [planCommitted, setPlanCommitted] = useState(false);  // plan pushed to git
   const [pendingClarification, setPendingClarification] = useState<{
     questionId: string;
     question: string;
@@ -1852,18 +1853,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 setTotalTasks(planPhaseList.length);
               }
               setPlanReady(true);
+              setPlanCommitted(false);
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: 'system',
                 level: 'system',
-                message: '✅ Plan complete — click PUSH to begin building, or REVIEW to inspect the plan',
+                message: '✅ Plan complete — click PUSH to commit to git, or REVIEW to inspect the plan',
                 worker: 'system',
               }]);
               break;
             }
 
             case 'plan_review': {
-              const AUTO_APPROVE_SECS = 15;
               const costEst = (p.cost_estimate as any) || { estimated_cost_low_usd: 0, estimated_cost_high_usd: 0 };
               const chunks = (p.chunks as any[]) || [];
               const planText = (p.plan_text as string) || '';
@@ -1872,34 +1873,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 planText,
                 chunks,
                 costEstimate: costEst,
-                autoApproveCountdown: AUTO_APPROVE_SECS,
+                autoApproveCountdown: 0,
               });
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: 'planner', level: 'info',
                 message: `📋 Build plan ready — ${chunks.length} chunks, `
-                  + `est. $${costEst.estimated_cost_low_usd?.toFixed(2)}–$${costEst.estimated_cost_high_usd?.toFixed(2)}. `
-                  + `Auto-approving in ${AUTO_APPROVE_SECS}s…`,
+                  + `est. $${costEst.estimated_cost_low_usd?.toFixed(2)}–$${costEst.estimated_cost_high_usd?.toFixed(2)}`,
                 worker: 'sonnet',
               }]);
-              // Start countdown timer
-              if (planReviewTimerRef.current) clearInterval(planReviewTimerRef.current);
-              planReviewTimerRef.current = setInterval(() => {
-                setPendingPlanReview((prev) => {
-                  if (!prev) {
-                    if (planReviewTimerRef.current) { clearInterval(planReviewTimerRef.current); planReviewTimerRef.current = null; }
-                    return null;
-                  }
-                  const next = prev.autoApproveCountdown - 1;
-                  if (next <= 0) {
-                    // Auto-approve
-                    if (planReviewTimerRef.current) { clearInterval(planReviewTimerRef.current); planReviewTimerRef.current = null; }
-                    respondToPlanReview('approve');
-                    return null;
-                  }
-                  return { ...prev, autoApproveCountdown: next };
-                });
-              }, 1000);
               break;
             }
 
@@ -3583,13 +3565,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   maxHeight: '40vh',
                   overflow: 'hidden',
                 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ color: '#38BDF8', fontSize: '0.8rem', fontWeight: 700 }}>
-                      📋 Build Plan — {pendingPlanReview.phase}
-                    </div>
-                    <div style={{ color: '#64748B', fontSize: '0.65rem' }}>
-                      Auto-approve in {pendingPlanReview.autoApproveCountdown}s
-                    </div>
+                  <div style={{ color: '#38BDF8', fontSize: '0.8rem', fontWeight: 700 }}>
+                    📋 Build Plan — {pendingPlanReview.phase}
                   </div>
                   {/* Cost estimate */}
                   <div style={{ color: '#94A3B8', fontSize: '0.72rem' }}>
@@ -3808,18 +3785,41 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     >
                       📋 REVIEW
                     </button>
-                    <button
-                      onClick={() => { sendCmd('/start'); setPlanReady(false); }}
-                      style={{
-                        background: '#14532D', color: '#22C55E',
-                        border: '1px solid #22C55E44', borderRadius: '4px',
-                        padding: '3px 12px', cursor: 'pointer',
-                        fontSize: '0.7rem', fontWeight: 700,
-                        animation: 'pulseGreen 2s ease-in-out infinite',
-                      }}
-                    >
-                      ▶ PUSH
-                    </button>
+                    {!planCommitted ? (
+                      <button
+                        onClick={async () => {
+                          try {
+                            const res = await fetch(
+                              `${API_BASE}/projects/${projectId}/build/commit-plan`,
+                              { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+                            );
+                            if (res.ok) setPlanCommitted(true);
+                          } catch (_) { /* non-fatal */ }
+                        }}
+                        style={{
+                          background: '#14532D', color: '#22C55E',
+                          border: '1px solid #22C55E44', borderRadius: '4px',
+                          padding: '3px 12px', cursor: 'pointer',
+                          fontSize: '0.7rem', fontWeight: 700,
+                          animation: 'pulseGreen 2s ease-in-out infinite',
+                        }}
+                      >
+                        ▶ PUSH
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => { sendCmd('/start'); setPlanReady(false); setPlanCommitted(false); }}
+                        style={{
+                          background: '#14532D', color: '#22C55E',
+                          border: '1px solid #22C55E44', borderRadius: '4px',
+                          padding: '3px 12px', cursor: 'pointer',
+                          fontSize: '0.7rem', fontWeight: 700,
+                          animation: 'pulseGreen 2s ease-in-out infinite',
+                        }}
+                      >
+                        ▶ START
+                      </button>
+                    )}
                   </>
                 )}
                 {/* Quick action buttons */}

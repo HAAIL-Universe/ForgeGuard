@@ -248,6 +248,21 @@ async def approve_plan(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# ── POST /projects/{project_id}/build/commit-plan ───────────────────────
+
+
+@router.post("/{project_id}/build/commit-plan")
+async def commit_plan(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Commit the cached plan JSON to the workspace git repo."""
+    try:
+        return await build_service.commit_plan_to_git(project_id, user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 # ── POST /projects/{project_id}/build/commence ──────────────────────────
 
 
