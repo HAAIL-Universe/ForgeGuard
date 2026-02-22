@@ -1,33 +1,34 @@
-# TaskFlow — Manifesto
+# [PROJECT NAME] — Manifesto
 
-## Core Principles
+⚠ FORMAT SPECIFICATION ONLY.
+Do NOT copy principle names or rules from this skeleton.
+All principles must be specific to the user's actual project.
 
-### 1. User-First, Always
-- Every feature decision starts with "how does this help the user?"
-- Optimize for clarity of information over density of controls
-- Errors must be actionable — never show raw stack traces or cryptic codes
-- Loading states and empty states are first-class design concerns
+## Principle 1: [PRINCIPLE NAME]
 
-### 2. Test-Driven Confidence
-- No feature ships without automated test coverage
-- Tests document intent — they explain what the code SHOULD do
-- Regression tests are mandatory for every bug fix
-- CI must pass before any merge to main
+- [What this principle means operationally — one line]
+- [A concrete rule derived from this principle — one line]
+- [What violates this principle — one line]
 
-### 3. Schema-First, Contract-First
-- Database schema is the single source of truth for data shape
-- API contracts define the interface before implementation begins
-- Frontend and backend evolve together against shared type definitions
-- Breaking changes require explicit migration plans
+## Principle 2: [PRINCIPLE NAME]
 
-### 4. Simplicity Over Cleverness
-- Prefer readable code over compact code
-- One obvious way to do things — avoid multiple paths to the same result
-- Dependencies must justify their weight — no library for trivial tasks
-- Comments explain WHY, not WHAT
+- [Bullet — one line]
+- [Bullet — one line]
 
-### 5. Security by Default
-- Authentication is mandatory for all mutating endpoints
-- Input validation happens at the boundary (routers), never trusted downstream
-- Secrets never appear in logs, responses, or version control
-- Principle of least privilege for all service-to-service communication
+## Principle 3: [PRINCIPLE NAME]
+
+- [Bullet — one line]
+- [Bullet — one line]
+- [Bullet — one line]
+
+## Principle 4: [PRINCIPLE NAME]
+
+- [Bullet — one line]
+- [Bullet — one line]
+
+## Confirm-before-write
+
+- **Needs confirmation**: [action type requiring user approval]
+- **Needs confirmation**: [action type]
+- **Exempt**: [action type the builder may perform autonomously]
+- **Exempt**: [action type]

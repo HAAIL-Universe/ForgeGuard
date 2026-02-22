@@ -123,13 +123,25 @@ Generate a project blueprint. Include:
 4) Hard boundaries — one line per architectural layer (Routers, Services, Repos, Clients, etc.)
 5) Deployment target — one line
 
-Facts only. One line per item. No prose paragraphs.""",
+FORMAT RULES:
+- Facts only. One line per item. No prose paragraphs.
+- All features must be achievable with the tech stack in the canonical anchor.
+- Do NOT reference any example project names (TaskFlow, etc.) — use the actual project name.
+
+ANTI-CONTAMINATION: Do NOT copy feature names, invariants, or scope items from any structural
+reference. Every item must come from the user's questionnaire answers.""",
 
     "manifesto": """\
-Generate a project manifesto with 4-5 non-negotiable principles.
+Generate a project manifesto with 4-5 non-negotiable engineering principles.
 Each principle: title + 2-3 bullets (facts only, no elaboration).
 Include a "Confirm-before-write" list (what needs user confirmation vs. exempt).
-Project-specific — no generic platitudes.""",
+
+FORMAT RULES:
+- Principles must be specific to this project — no generic platitudes.
+- Each bullet is one line. No sub-bullets.
+- Do NOT reference any example app names — all content comes from the user's intent.
+
+ANTI-CONTAMINATION: Do NOT copy principle names or rules from any structural reference.""",
 
     "stack": """\
 Generate a technology stack document. Sections:
@@ -142,26 +154,54 @@ Generate a technology stack document. Sections:
 - Environment Variables table (name, description, required/optional)
 - forge.json schema (JSON block)
 
-Facts only — no rationale or justification prose.""",
+FORMAT RULES:
+- Facts only — no rationale or justification prose.
+- ALL technology choices MUST match the canonical anchor exactly.
+- If the canonical anchor says PostgreSQL, this contract says PostgreSQL — no alternatives.
+- Do NOT invent or substitute technologies not specified by the user.
+
+CONSISTENCY RULE: This contract is the single source of truth for tech decisions.
+All other contracts (schema, physics, boundaries, builder_directive) must agree with it.""",
 
     "schema": """\
 Generate a database schema. Include:
 - Conventions: 3 bullets (naming, common columns, key patterns)
 - CREATE TABLE SQL for every table (types, constraints, indexes, ENUMs)
 
-Use PostgreSQL syntax. Every column the app needs must be defined. No traceability matrix.""",
+FORMAT RULES:
+- Database syntax MUST match the engine in the canonical anchor (e.g. PostgreSQL syntax for PostgreSQL).
+- Every table name must come from the user's actual domain — not from any example.
+- Every column the app needs must be defined. No placeholder tables.
+- Use snake_case, plural table names. UUID primary keys. TIMESTAMPTZ timestamps.
+
+CONSISTENCY RULES:
+- Every table listed in the phases contract's "schema coverage" sections must appear here.
+- Every entity mentioned in the blueprint's MVP features must have a corresponding table.
+- Do NOT use table names from any structural reference (users/tasks/projects = TaskFlow — avoid).
+
+ANTI-CONTAMINATION: Name tables from the user's domain vocabulary only.""",
 
     "phases": """\
 Generate a phase breakdown with 6-12 phases.
-Each phase MUST include exactly these 4 fields:
+Each phase MUST include exactly these 5 fields:
 - Phase number and name (e.g. "Phase 0 — Genesis")
 - Objective: 1 sentence
 - Deliverables: bullet list (each item is one line — no sub-bullets)
-- Schema coverage: table names only
+- Schema coverage: table names only (from the schema contract)
 - Exit criteria: bullet list (concrete, testable — one line each)
 
-Phase 0 is always Genesis. Final phase must include README.md deliverable.
-Phases ordered by dependency.""",
+FORMAT RULES:
+- Phase 0 is always Genesis (scaffold, dependencies, DB setup).
+- Final phase must include README.md as a deliverable.
+- Phases ordered by dependency — each phase builds on the previous.
+- Every feature from the blueprint MVP scope must be scheduled in exactly one phase.
+- Schema coverage must reference table names from the schema contract, not invented ones.
+
+CONSISTENCY RULES:
+- All tech references in deliverables (e.g. "FastAPI router") must match the stack contract.
+- Every table in the schema contract must appear in at least one phase's schema coverage.
+
+ANTI-CONTAMINATION: Phase names and deliverables come from this project only.""",
 
     "phases_mini": """\
 MINI BUILD — EXACTLY 2 phases. No more, no fewer.
@@ -170,14 +210,15 @@ IGNORE any structural reference that has more phases — output only these two.
 Phase 0 — Backend Scaffold: entire backend (scaffold, DB, migrations, all API endpoints, auth, boot script).
 Phase 1 — Frontend & Ship: entire frontend (all pages, components, API integration, README.md).
 
-Each phase uses exactly these 4 fields:
+Each phase uses exactly these 5 fields:
 - Phase number and name
 - Objective: 1 sentence
 - Deliverables: bullet list (one line each — exhaustive, every feature in one of these 2 phases)
-- Schema coverage: table names
+- Schema coverage: table names (from the schema contract)
 - Exit criteria: bullet list (concrete, testable)
 
-CRITICAL: Exactly Phase 0 and Phase 1. Nothing else.""",
+CRITICAL: Exactly Phase 0 and Phase 1. Nothing else.
+All tech references must match the canonical anchor and stack contract.""",
 
     # ── Mini-specific instructions for other contract types ────────────
     "blueprint_mini": """\
@@ -188,12 +229,19 @@ Generate a concise blueprint for a 2-phase mini build:
 4) Layer boundaries — one line per layer (routes → services → repos)
 5) Deployment — Docker-ready local dev
 
-One line per item. No prose paragraphs.""",
+FORMAT RULES:
+- One line per item. No prose paragraphs.
+- All features must be achievable with the canonical anchor tech stack.
+- Do NOT reference any example project names.
+
+ANTI-CONTAMINATION: Every item comes from the user's questionnaire answers only.""",
 
     "manifesto_mini": """\
 Generate a manifesto with 3-5 principles for a 2-phase build.
 Each principle: title + 2-3 bullets. Facts only, no ceremony.
-No confirm-before-write section needed.""",
+No confirm-before-write section needed.
+
+ANTI-CONTAMINATION: Do NOT copy principle names from any structural reference.""",
 
     "stack_mini": """\
 Generate a tech stack for a 2-phase proof-of-concept:
@@ -203,15 +251,22 @@ Generate a tech stack for a 2-phase proof-of-concept:
 - Deployment (Docker Compose)
 - Environment Variables table (name, description, required/optional)
 
-Facts only — no rationale.""",
+FORMAT RULES:
+- Facts only — no rationale.
+- ALL choices MUST match the canonical anchor exactly.""",
 
     "schema_mini": """\
 Generate a database schema. Include:
 - Conventions section (naming, common columns)
 - CREATE TABLE SQL for all tables needed by the MVP
-- Keep minimal — only tables required for core features
 
-Use PostgreSQL syntax. Only define tables the app actually needs for its MVP scope.""",
+FORMAT RULES:
+- Use syntax for the database in the canonical anchor.
+- Keep minimal — only tables required for core features.
+- Table names must come from the user's domain, not from any example app.
+
+ANTI-CONTAMINATION: Do NOT use generic placeholder names like users/tasks/projects unless
+those are actually what the user's app manages.""",
 
     "ui_mini": """\
 Generate a concise UI/UX blueprint. Include:
@@ -221,7 +276,12 @@ Generate a concise UI/UX blueprint. Include:
 4) Visual Style — color palette, typography basics
 5) Key User Flows — 2-3 primary user journeys
 
-This is a 2-phase mini build. Keep the UI scope focused on core functionality.""",
+FORMAT RULES:
+- This is a 2-phase mini build. Scope UI to core functionality only.
+- Frontend framework MUST match the canonical anchor.
+- Screen names and components must come from the user's actual product.
+
+ANTI-CONTAMINATION: Do NOT carry over screen names or flows from any structural reference.""",
 
     "physics_mini": """\
 Generate an API specification in YAML format. Include:
@@ -229,11 +289,16 @@ Generate an API specification in YAML format. Include:
 - paths: every API endpoint with method, summary, auth, request/response shapes
 - schemas: data model definitions
 
-Use the custom Forge physics YAML format (NOT OpenAPI).
-Keep it focused — only endpoints needed for the MVP features.""",
+FORMAT RULES:
+- Use the custom Forge physics YAML format (NOT OpenAPI).
+- Keep it focused — only endpoints needed for the MVP features.
+- Every endpoint must correspond to a feature in the blueprint and an entity in the schema.
+- Path names must reflect the user's actual domain entities.
+
+CONSISTENCY RULE: Every data entity in the schema contract must be reachable via an endpoint.""",
 
     "boundaries_mini": """\
-Generate an architectural boundaries spec in JSON format:
+Generate an architectural boundaries specification in JSON format:
 {
   "description": "Layer boundary rules...",
   "layers": [
@@ -247,9 +312,12 @@ Generate an architectural boundaries spec in JSON format:
   ],
   "known_violations": []
 }
-Define 3-4 layers with basic separation of concerns. Keep it simple for a mini build.
-Each entry in "forbidden" MUST be an object with "pattern" and "reason" keys — never a plain string.
-Output MUST be valid JSON.""",
+
+FORMAT RULES:
+- Define 3-4 layers with basic separation of concerns.
+- Each entry in "forbidden" MUST be an object with "pattern" and "reason" keys — never a plain string.
+- Output MUST be valid JSON.
+- Layer globs must reflect the backend framework in the canonical anchor.""",
 
     "builder_directive_mini": """\
 Generate a builder directive — operational instructions for the AI builder.
@@ -260,7 +328,8 @@ Include:
 - boot_script flag
 
 CRITICAL: There are exactly 2 phases. The builder must execute both to completion.
-Keep it concise — this is a mini build.""",
+Keep it concise — this is a mini build.
+All tech references must match the canonical anchor and stack contract.""",
 
     "ui": """\
 Generate a UI/UX blueprint. Include:
@@ -271,7 +340,18 @@ Generate a UI/UX blueprint. Include:
 5) Key User Flows — 3-4 primary journeys (one line per step)
 6) What This Is NOT — explicit out-of-scope UI list
 
-No "Interaction Patterns" section.""",
+FORMAT RULES:
+- No "Interaction Patterns" section.
+- Frontend framework MUST match the canonical anchor.
+- Screen names and flows must be derived from the blueprint MVP scope.
+- Do NOT reference any example app screens (Kanban boards, task dashboards, etc.)
+  unless that is actually what the user's product is.
+
+CONSISTENCY RULES:
+- Every MVP feature in the blueprint must have a corresponding screen or flow here.
+- Component names should align with the tech choices in the stack contract.
+
+ANTI-CONTAMINATION: All screen names, flows, and components come from the user's product only.""",
 
     "physics": """\
 Generate an API physics specification in YAML format. Structure:
@@ -285,9 +365,19 @@ Generate an API physics specification in YAML format. Structure:
   - query parameters (if applicable)
 - schemas: Pydantic/data model definitions
 
-Use the custom Forge physics YAML format (NOT OpenAPI).
-Group endpoints by resource with comments.
-Every endpoint the app needs MUST be listed.""",
+FORMAT RULES:
+- Use the custom Forge physics YAML format (NOT OpenAPI).
+- Group endpoints by resource with comments.
+- Every endpoint the app needs MUST be listed.
+- Path names must reflect the user's actual domain entities (from schema contract).
+- Auth method (token vs none) must match the canonical anchor.
+
+CONSISTENCY RULES:
+- Every data entity in the schema contract must be accessible via at least one endpoint.
+- Response shapes must reference entity names from the schema contract.
+- Do NOT invent endpoint paths that don't correspond to schema entities.
+
+ANTI-CONTAMINATION: Resource names in paths come from the user's domain, not example apps.""",
 
     "boundaries": """\
 Generate an architectural boundaries specification in JSON format. Structure:
@@ -305,9 +395,14 @@ Generate an architectural boundaries specification in JSON format. Structure:
   "known_violations": []
 }
 
-Define 4-6 layers (e.g. routers, services, repos, clients, audit/engine).
-Each layer has forbidden imports/patterns that enforce separation of concerns.
-Output MUST be valid JSON.""",
+FORMAT RULES:
+- Define 4-6 layers (e.g. routers, services, repos, clients, audit/engine).
+- Each layer has forbidden imports/patterns that enforce separation of concerns.
+- Output MUST be valid JSON.
+- Layer globs must reflect the backend framework in the canonical anchor.
+- Each "forbidden" entry MUST be an object with "pattern" and "reason" — never a plain string.
+
+CONSISTENCY RULE: Layer names must match the "Hard Boundaries" section of the blueprint.""",
 
     "builder_directive": """\
 Generate a builder directive — operational instructions for the AI builder.
@@ -315,11 +410,17 @@ Include:
 - AEM status (enabled/disabled) and auto-authorize setting
 - Step-by-step instructions (read contracts → execute phases → run audit → commit)
 - Autonomy rules (when to auto-commit, when to stop and ask)
-- Phase list with phase numbers and names
+- Phase list with phase numbers and names (from the phases contract)
 - Project summary (one sentence)
 - boot_script flag
 
-Keep it concise.""",
+FORMAT RULES:
+- Keep it concise — operational rules only, no prose.
+- Phase list MUST match the phases contract exactly (same numbers and names).
+- Tech references (framework, DB) MUST match the canonical anchor and stack contract.
+
+CONSISTENCY RULE: This contract summarises all others — it must not contradict any of them.
+If any prior contract is unclear, default to the canonical anchor.""",
 }
 
 
@@ -614,6 +715,8 @@ async def generate_contracts(
 
     answers = qs.get("answers", {})
     answers_text = _format_answers_for_prompt(project, answers)
+    answers_data_global = _extract_answers_data(project, answers)
+    canonical_anchor = _build_canonical_anchor(answers_data_global)
 
     # Pick LLM provider
     provider = settings.LLM_PROVIDER.strip().lower() if settings.LLM_PROVIDER else ""
@@ -719,7 +822,7 @@ async def generate_contracts(
 
             # Race the LLM call against the cancel event so cancellation
             # takes effect immediately, even mid-generation.
-            answers_data = _extract_answers_data(project, answers)
+            answers_data = answers_data_global  # computed once before the loop
 
             # ── Template contracts: skip LLM entirely ────────────────────
             if contract_type in _TEMPLATE_CONTRACTS:
@@ -791,6 +894,7 @@ async def generate_contracts(
                     prior_contracts=prior_contracts,
                     build_mode=build_mode,
                     on_turn_progress=_turn_progress,
+                    canonical_anchor=canonical_anchor,
                 )
             )
             cancel_task = asyncio.ensure_future(cancel_event.wait())
@@ -852,8 +956,55 @@ async def generate_contracts(
     finally:
         _active_generations.pop(pid, None)
 
-    # --- Fix 4: Post-generation cross-contract consistency check ----------
-    await _run_consistency_check(project_id, user_id, prior_contracts)
+    # --- Post-generation cross-contract consistency check + repair ---------
+    consistency_issues = await _run_consistency_check(project_id, user_id, prior_contracts)
+
+    # Repair loop: for each error-level issue, regenerate the later-ordered
+    # contract with a targeted fix prompt.  Capped at 3 repairs to prevent runaway.
+    errors = [i for i in consistency_issues if i.get("severity") == "error"]
+    if errors:
+        _ORDER = {ct: i for i, ct in enumerate(CONTRACT_TYPES)}
+        repaired: set[str] = set()
+        for issue in errors[:3]:
+            named = [c for c in issue.get("contracts", []) if c in _ORDER]
+            if len(named) < 2:
+                continue
+            target = max(named, key=lambda c: _ORDER[c])  # regenerate the later one
+            if target in repaired or target in _TEMPLATE_CONTRACTS:
+                continue
+            repaired.add(target)
+            repair_note = (
+                f"REPAIR: A consistency check found a conflict involving this contract. "
+                f"Issue: {issue.get('description', '(see prior contracts)')}. "
+                f"Re-read the canonical anchor above and the prior contracts, then produce "
+                f"a corrected version of this contract that resolves the contradiction."
+            )
+            logger.info("Repairing contract %s for project %s: %s", target, pid, issue.get("description"))
+            try:
+                new_content, _ = await _generate_greenfield_contract_with_tools(
+                    contract_type=target,
+                    project=project,
+                    answers_data=answers_data_global,
+                    api_key=llm_api_key,
+                    model=llm_model,
+                    provider=provider,
+                    prior_contracts=prior_contracts,
+                    build_mode=build_mode,
+                    canonical_anchor=canonical_anchor,
+                    extra_instruction=repair_note,
+                )
+                prior_contracts[target] = new_content
+                await upsert_contract(project_id, target, new_content)
+                await manager.send_to_user(str(user_id), {
+                    "type": "contract_consistency",
+                    "payload": {
+                        "project_id": pid,
+                        "repaired": target,
+                        "issue": issue.get("description", ""),
+                    },
+                })
+            except Exception:
+                logger.exception("Repair of %s failed for project %s — non-blocking", target, pid)
 
     # --- Store generation timing metrics ----------------------------------
     total_elapsed_s = round(time.monotonic() - gen_wall_start, 2)
@@ -892,15 +1043,17 @@ async def _run_consistency_check(
     project_id: UUID,
     user_id: UUID,
     prior_contracts: dict[str, str],
-) -> None:
+) -> list[dict]:
     """Run a lightweight LLM pass to flag cross-contract inconsistencies.
 
     This is best-effort: failures are logged but never block the pipeline.
-    Results are pushed to the client via WS so the user (and any future
-    auto-fix step) can see them.
+    Results are pushed to the client via WS and returned to the caller so
+    the repair loop can act on error-severity issues.
+
+    Returns list of issue dicts (empty list if check passed or failed).
     """
     if len(prior_contracts) < 2:
-        return  # Nothing to cross-check
+        return []  # Nothing to cross-check
 
     pid = str(project_id)
     try:
@@ -924,7 +1077,7 @@ async def _run_consistency_check(
         )
 
         raw = resp.get("text", "").strip()
-        issues = json.loads(raw) if raw else []
+        issues: list[dict] = json.loads(raw) if raw else []
 
         if issues:
             logger.warning(
@@ -943,10 +1096,13 @@ async def _run_consistency_check(
             },
         })
 
+        return issues
+
     except Exception:
         logger.exception(
             "Consistency check failed for project %s — non-blocking", pid,
         )
+        return []
 
 
 async def cancel_contract_generation(
@@ -1107,6 +1263,53 @@ def _extract_answers_data(project: dict, answers: dict) -> dict:
     return data
 
 
+def _build_canonical_anchor(answers_data: dict) -> str:
+    """Build a short immutable-decisions block from questionnaire answers.
+
+    Injected into every LLM contract's system prompt so the model cannot
+    drift from the user's stated tech choices, regardless of what a
+    structural reference example says.
+    """
+    tech = answers_data.get("tech_stack") or {}
+    deployment = answers_data.get("deployment_target") or {}
+
+    # Accept multiple key spellings that questionnaire answers may use
+    backend = (
+        tech.get("backend") or tech.get("backend_framework") or
+        tech.get("framework") or "FastAPI / Python 3.12+"
+    )
+    database = (
+        tech.get("database") or tech.get("db") or
+        tech.get("database_engine") or "PostgreSQL"
+    )
+    auth = (
+        tech.get("auth") or tech.get("authentication") or
+        tech.get("auth_method") or "JWT"
+    )
+    frontend = (
+        tech.get("frontend") or tech.get("frontend_framework") or
+        tech.get("ui_framework") or "React + Vite"
+    )
+    hosting = (
+        deployment.get("hosting") or deployment.get("platform") or
+        deployment.get("runtime") or "Docker Compose"
+    )
+
+    return "\n".join([
+        "## ⚓ CANONICAL PROJECT DECISIONS — IMMUTABLE",
+        "These technology choices come directly from the user's questionnaire answers.",
+        "ALL contracts MUST use these decisions. Do NOT substitute or add alternatives.",
+        f"- Backend: {backend}",
+        f"- Database: {database}",
+        f"- Auth: {auth}",
+        f"- Frontend: {frontend}",
+        f"- Deployment: {hosting}",
+        "",
+        "If a structural reference or prior contract shows a different technology,",
+        "ignore it and follow the canonical decisions above.",
+    ])
+
+
 async def _generate_greenfield_contract_with_tools(
     contract_type: str,
     project: dict,
@@ -1117,6 +1320,8 @@ async def _generate_greenfield_contract_with_tools(
     prior_contracts: dict[str, str],
     build_mode: str = "full",
     on_turn_progress: "Any | None" = None,
+    canonical_anchor: str = "",
+    extra_instruction: str = "",
 ) -> tuple[str, dict]:
     """Generate a single greenfield contract using the multi-turn tool-use loop.
 
@@ -1136,6 +1341,8 @@ async def _generate_greenfield_contract_with_tools(
         project_name=project.get("name", ""),
         mode="greenfield",
         mini=is_mini,
+        canonical_anchor=canonical_anchor,
+        extra_instruction=extra_instruction,
     )
 
     def _executor(name: str, tool_input: dict) -> str:

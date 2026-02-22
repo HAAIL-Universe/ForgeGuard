@@ -1,44 +1,44 @@
-# TaskFlow — Blueprint
+# [PROJECT NAME] — Blueprint
+
+⚠ FORMAT SPECIFICATION ONLY.
+Do NOT carry any names, features, or decisions from this skeleton into your output.
+All bracketed text is a placeholder. Replace every item with the user's actual project details.
 
 ## Product Intent
 
-TaskFlow is a lightweight task management platform for small teams. It lets users create projects, organize tasks into boards with customizable columns, assign team members, set due dates, and track progress through a clean dashboard. The target audience is 2-10 person teams who need something simpler than Jira but more structured than a shared spreadsheet.
+- [What the application does — one line]
+- [Who it is for — target user or team]
+- [Why it exists — the problem it solves]
 
 ## Core Interaction Invariants
 
-- A task always belongs to exactly one project and one column
-- Columns have a strict left-to-right ordering; tasks move forward through the workflow
-- Every task mutation (create, move, assign, complete) is timestamped and attributed to a user
-- Deleting a project archives all its tasks — nothing is permanently destroyed
-- Search results are scoped to projects the user has access to
+- [Primary invariant about data ownership or scoping]
+- [Invariant about user permissions or access control]
+- [Invariant about data mutation rules — what must always be true]
+- [Invariant about what cannot be permanently destroyed]
+- [Invariant about data isolation or multi-tenancy]
 
 ## MVP Scope
 
 ### Must-Ship Features
-1. **User authentication** — email/password registration and login with JWT tokens
-2. **Project CRUD** — create, rename, archive projects; invite members by email
-3. **Board view** — Kanban-style columns (default: To Do, In Progress, Done); drag-and-drop reordering
-4. **Task management** — create, edit, assign, set due date, add description (markdown), move between columns
-5. **Dashboard** — overview of all projects with task counts per column, overdue task alerts
-6. **Activity feed** — chronological log of recent actions across all user's projects
+
+1. **[Feature name]** — [one-line description of what the feature does]
+2. **[Feature name]** — [one-line description]
+3. **[Feature name]** — [one-line description]
 
 ### Explicitly NOT in MVP
-- File attachments
-- Real-time collaboration (WebSocket sync)
-- Third-party integrations (Slack, GitHub)
-- Time tracking
-- Custom fields on tasks
-- Mobile app
+
+- [Out-of-scope item]
+- [Out-of-scope item]
 
 ## Hard Boundaries
 
 - **Routers** — HTTP parsing only; no business logic, no direct DB queries
-- **Services** — all business logic lives here; no HTTP concepts (Request/Response)
-- **Repos** — data access only; no business decisions, no HTTP awareness
-- **Clients** — external API wrappers; no business logic
+- **Services** — all business logic; no HTTP concepts (Request/Response)
+- **Repos** — data access only; no business decisions
+- **Clients** — external API wrappers only; no business logic
 
 ## Deployment Target
 
-- Docker Compose for local development
-- Single VPS or cloud instance for initial deployment
-- Expected scale: <100 concurrent users in MVP
+- [Deployment method and environment — one line]
+- [Expected scale — one line]

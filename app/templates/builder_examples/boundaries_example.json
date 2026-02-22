@@ -1,36 +1,37 @@
 {
-  "description": "Architectural layer boundary rules for TaskFlow. Each layer has forbidden import patterns that enforce separation of concerns.",
+  "_notice": "FORMAT SPECIFICATION ONLY — replace all values with project-specific layer rules. Layer globs must reflect the backend framework in the canonical anchor.",
+  "description": "Layer boundary rules for [project_name]. Each layer enforces separation of concerns via forbidden import patterns.",
   "layers": [
     {
       "name": "routers",
-      "glob": "app/api/routers/*.py",
+      "glob": "app/routers/**/*.py",
       "forbidden": [
-        { "pattern": "import asyncpg|from asyncpg", "reason": "Routers must not access the database directly — use services" },
-        { "pattern": "from app\\.repos", "reason": "Routers must not import repos — use services as the intermediary" }
+        { "pattern": "from app.repos", "reason": "Routers must not import repos directly — use services" },
+        { "pattern": "asyncpg|psycopg|sqlalchemy", "reason": "No DB drivers in routers" }
       ]
     },
     {
       "name": "services",
       "glob": "app/services/**/*.py",
       "forbidden": [
-        { "pattern": "from fastapi", "reason": "Services must not depend on HTTP framework — they receive plain data" },
-        { "pattern": "Request|Response|HTTPException", "reason": "Services must not use HTTP concepts — raise domain errors instead" }
+        { "pattern": "from fastapi import Request|Response", "reason": "Services must not be HTTP-aware" },
+        { "pattern": "asyncpg.connect|psycopg.connect", "reason": "Services use repos for DB access, not raw drivers" }
       ]
     },
     {
       "name": "repos",
-      "glob": "app/repos/*.py",
+      "glob": "app/repos/**/*.py",
       "forbidden": [
-        { "pattern": "from app\\.services", "reason": "Repos must not import services — repos are called BY services" },
-        { "pattern": "from fastapi", "reason": "Repos must not depend on HTTP framework" }
+        { "pattern": "from app.services", "reason": "Repos must not import services — dependency flows one way" },
+        { "pattern": "from fastapi", "reason": "Repos are framework-agnostic" }
       ]
     },
     {
       "name": "clients",
-      "glob": "app/clients/*.py",
+      "glob": "app/clients/**/*.py",
       "forbidden": [
-        { "pattern": "from app\\.repos", "reason": "Clients must not access repos — they handle external APIs only" },
-        { "pattern": "from app\\.services", "reason": "Clients must not import services — clients are called BY services" }
+        { "pattern": "from app.repos|from app.services", "reason": "Clients are external API wrappers only" },
+        { "pattern": "asyncpg|psycopg", "reason": "Clients do not access the database directly" }
       ]
     }
   ],

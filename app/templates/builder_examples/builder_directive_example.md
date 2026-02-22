@@ -1,30 +1,35 @@
-# TaskFlow — Builder Directive
+# [PROJECT NAME] — Builder Directive
+
+⚠ FORMAT SPECIFICATION ONLY.
+Replace all bracketed content with project-specific instructions.
+Phase list MUST match the phases contract exactly.
+All tech references MUST match the canonical anchor and stack contract.
 
 AEM: enabled
 Auto-authorize: enabled
 
-## Build Sequence
-1. Read all contracts in order: manifesto → blueprint → stack → schema → physics → boundaries → ui → phases → builder_directive
-2. Execute Phase 0 — Genesis (scaffold, config, auth, database)
-3. Execute Phase 1 — Core Features (projects, columns, tasks)
-4. Execute Phase 2 — Frontend (React app, all pages, API integration)
-5. Execute Phase 3 — Polish & Ship (tests, error handling, README, deployment)
-6. After each phase: run verification, trigger audit, commit on pass
+## Build Instructions
+
+1. Read all contracts: blueprint, stack, schema, physics, boundaries, ui, phases
+2. Execute phases in order, starting with Phase 0 — Genesis
+3. After each phase: run tests, run forge audit, commit if passing
+4. On audit failure: stop and report — do not proceed to next phase
+
+## Autonomy Rules
+
+- **Auto-commit:** file creation, passing tests, documentation updates
+- **Stop and ask:** database schema changes, external service credentials, irreversible destructive operations, security policy decisions
 
 ## Phase List
-- Phase 0 — Genesis
-- Phase 1 — Core Features
-- Phase 2 — Frontend
-- Phase 3 — Polish & Ship
+
+- Phase 0: Genesis
+- Phase 1: [name from phases contract]
+- Phase N: [name from phases contract — repeat for each phase]
 
 ## Project Summary
-TaskFlow is a lightweight Kanban-style task management platform for small teams, built with Python/FastAPI backend, PostgreSQL database, and React/TypeScript frontend.
 
-## Settings
-boot_script: true
-max_loopback: 3
+[One sentence describing what is being built — from the blueprint product intent.]
 
-## Contract Exclusion
-Do NOT include Forge contract file contents, contract references, or
-contract metadata in any committed source files, READMEs, or code comments.
-The `Forge/` directory is server-side only and excluded from git pushes.
+## Boot Script
+
+- boot_script: [path/to/startup/script as defined in forge.json]

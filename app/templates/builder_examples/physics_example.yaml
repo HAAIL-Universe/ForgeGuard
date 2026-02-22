@@ -1,126 +1,72 @@
-# TaskFlow — API Physics
+# FORMAT SPECIFICATION ONLY
+# All endpoints, schemas, and values below are placeholders.
+# Do NOT use path names, entity names, or schema names from this skeleton.
+# All paths must be derived from the user's actual API requirements and schema entities.
+# Auth method must match the canonical anchor (none / token / github-token).
+# Schema names must match table names from the schema contract.
 
 info:
-  title: TaskFlow API
-  version: "1.0"
-  description: Task management platform API
+  title: "[PROJECT NAME] API"
+  version: "1.0.0"
+  description: "[Brief description of what this API does]"
 
 paths:
-  # ── Auth ────────────────────────────────────────────────────
-  /auth/register:
-    post:
-      summary: Register a new user
-      auth: none
-      request:
-        email: string (required)
-        password: string (required, min 8 chars)
-        display_name: string (required)
-      response:
-        id: uuid
-        email: string
-        display_name: string
-        access_token: string
-        refresh_token: string
 
-  /auth/login:
-    post:
-      summary: Authenticate and receive tokens
-      auth: none
-      request:
-        email: string (required)
-        password: string (required)
-      response:
-        access_token: string
-        refresh_token: string
-        user: { id, email, display_name }
-
-  /auth/refresh:
-    post:
-      summary: Refresh access token
-      auth: none
-      request:
-        refresh_token: string (required)
-      response:
-        access_token: string
-
-  # ── Projects ────────────────────────────────────────────────
-  /projects:
+  # Replace [resource] with the actual domain entity name (from schema contract)
+  /api/v1/[resource_plural]:
     get:
-      summary: List user's projects
+      summary: "List [resource]"
       auth: token
+      query_params:
+        - name: limit
+          type: integer
+          default: 50
       response:
-        projects: array of { id, name, description, role, task_count, created_at }
+        200:
+          items:
+            - id: uuid
+              created_at: timestamptz
 
     post:
-      summary: Create a new project
+      summary: "Create [resource]"
       auth: token
-      request:
-        name: string (required)
-        description: string (optional)
+      request_body:
+        required_field: "[type]"
+        optional_field: "[type]"
       response:
-        id: uuid
-        name: string
-        description: string
+        201:
+          id: uuid
+          created_at: timestamptz
 
-  /projects/{project_id}:
+  /api/v1/[resource_plural]/{id}:
     get:
-      summary: Get project details with columns and tasks
+      summary: "Get [resource] by ID"
       auth: token
       response:
-        id: uuid
-        name: string
-        columns: array of { id, name, position, tasks: [...] }
+        200:
+          id: uuid
+          created_at: timestamptz
+        404:
+          detail: "Not found"
 
-  # ── Tasks ───────────────────────────────────────────────────
-  /projects/{project_id}/tasks:
-    post:
-      summary: Create a task
-      auth: token
-      request:
-        title: string (required)
-        column_id: uuid (required)
-        description: string (optional)
-        assignee_id: uuid (optional)
-        due_date: date (optional)
-      response:
-        id: uuid
-        title: string
-        column_id: uuid
-
-  /projects/{project_id}/tasks/{task_id}:
     put:
-      summary: Update a task (move, edit, assign)
+      summary: "Update [resource]"
       auth: token
-      request:
-        title: string (optional)
-        column_id: uuid (optional)
-        description: string (optional)
-        assignee_id: uuid (optional)
-        due_date: date (optional)
+      request_body:
+        field_name: "[type]"
       response:
-        id: uuid
-        title: string
-        column_id: uuid
+        200:
+          id: uuid
+
+    delete:
+      summary: "Delete [resource]"
+      auth: token
+      response:
+        204: {}
 
 schemas:
-  User:
+  EntityName:
     id: uuid
-    email: string
-    display_name: string
-    created_at: datetime
-
-  Project:
-    id: uuid
-    name: string
-    description: string
-    owner_id: uuid
-    created_at: datetime
-
-  Task:
-    id: uuid
-    title: string
-    description: string
-    column_id: uuid
-    assignee_id: uuid | null
-    due_date: date | null
-    position: integer
+    field_name: "[type]"
+    created_at: timestamptz
+    updated_at: timestamptz

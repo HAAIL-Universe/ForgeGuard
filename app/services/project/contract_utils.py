@@ -232,6 +232,8 @@ def build_tool_use_system_prompt(
     project_name: str | None = None,
     mode: str = "scout",
     mini: bool = False,
+    canonical_anchor: str = "",
+    extra_instruction: str = "",
 ) -> str:
     """Build the system prompt for a tool-use contract generation session.
 
@@ -247,6 +249,12 @@ def build_tool_use_system_prompt(
         ``"scout"`` or ``"greenfield"``.
     mini : bool
         If True, use ``_mini`` instruction variants for applicable types.
+    canonical_anchor : str
+        Immutable tech-decision block injected before the structural reference.
+        Prevents the LLM from drifting to technologies not chosen by the user.
+    extra_instruction : str
+        Optional additional instruction appended after the base prompt (used
+        by the repair loop to request a corrected version).
     """
     instr_key = f"{contract_type}_mini" if mini else contract_type
     instructions = _CONTRACT_INSTRUCTIONS.get(
@@ -278,13 +286,22 @@ def build_tool_use_system_prompt(
             instructions=instructions,
         )
 
+    # Canonical anchor: inject BEFORE the structural reference so the model
+    # sees the locked tech decisions first and treats the reference as
+    # format-only, not as a tech-choice source.
+    if canonical_anchor:
+        prompt += f"\n{canonical_anchor}\n"
+
     example = _load_generic_template(contract_type)
     if example:
         prompt += (
-            "\n--- STRUCTURAL REFERENCE (match this level of detail and format) ---\n"
+            "\n--- FORMAT REFERENCE (structure and layout only — content comes from your project) ---\n"
             f"{example}\n"
-            "--- END REFERENCE ---\n"
+            "--- END FORMAT REFERENCE ---\n"
         )
+
+    if extra_instruction:
+        prompt += f"\n--- ADDITIONAL INSTRUCTION ---\n{extra_instruction}\n--- END ---\n"
 
     return prompt
 
