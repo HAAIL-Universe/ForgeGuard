@@ -459,6 +459,13 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
             # lazily when the first actual text chunk arrives.
             return
 
+        # Turn 1 is exclusively the contract-fetch turn. Extended thinking
+        # already shows the model's reasoning; the narration text on turn 1
+        # ("I'll fetch all contracts now") is redundant with the thinking box
+        # and the "8 tools — turn 1" log entry, so suppress it entirely.
+        if not is_thinking and turn == 1:
+            return
+
         # Lazily emit the "📝 Generating plan — turn X…" activity-log entry the
         # first time actual narration text arrives for this turn.  This ensures
         # the entry only appears for turns that genuinely narrate, and appears
