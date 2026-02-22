@@ -91,18 +91,57 @@ TOOL_DEFINITIONS: list[dict] = [
             "The plan is validated against the Forge plan schema before writing. "
             "If validation fails, errors are returned so you can fix and retry — "
             "the session does NOT end on validation failure. "
-            "On success, the session ends and the plan is saved."
+            "On success, the session ends and the plan is saved.\n\n"
+            "REQUIRED SCHEMA — every field listed is mandatory unless marked optional:\n"
+            "{\n"
+            '  "summary": {\n'
+            '    "one_liner": "A one-sentence description, e.g. A FastAPI task API with JWT",\n'
+            '    "mode": "greenfield" or "remediation",\n'
+            '    "stack_rationale": "2-3 sentences explaining why this stack",\n'
+            '    "key_constraints": ["top constraint 1", "top constraint 2", ...],\n'
+            '    "existing_contracts": ["blueprint.md", ...],\n'
+            '    "missing_contracts": [],\n'
+            '    "boot_script_required": true or false\n'
+            "  },\n"
+            '  "stack": {\n'
+            '    "backend_language": "python",\n'
+            '    "backend_framework": "fastapi",\n'
+            '    "database": "postgresql",\n'
+            '    "frontend": "react" or null,\n'
+            '    "auth": "jwt" or null,\n'
+            '    "llm_integration": "anthropic" or null,\n'
+            '    "test_framework": "pytest",\n'
+            '    "boot_script": true or false\n'
+            "  },\n"
+            '  "phases": [\n'
+            "    {\n"
+            '      "number": 0,\n'
+            '      "name": "Phase name",\n'
+            '      "purpose": "1-2 sentence TL;DR of this phase",\n'
+            '      "file_manifest": [\n'
+            '        {"path": "app/main.py", "layer": "router", "action": "create", "description": "one sentence"}\n'
+            "      ],\n"
+            '      "acceptance_criteria": [\n'
+            '        {"id": "AC-0-1", "description": "observable criterion", "test_hint": "test file or manual step"}\n'
+            "      ],\n"
+            '      "schema_tables_claimed": [],\n'
+            '      "wires_from_phase": null,\n'
+            '      "exemptions": []\n'
+            "    }\n"
+            "  ],\n"
+            '  "required_contracts": ["builder_contract.md", ...],\n'
+            '  "contract_refs": [\n'
+            '    {"contract": "builder_contract.md", "section": "§4 File boundaries", "note": "why relevant"}\n'
+            "  ]\n"
+            "}\n"
+            "Do NOT include a 'metadata' key — it is stamped automatically."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "plan_json": {
                     "type": "object",
-                    "description": (
-                        "The complete build plan. Must match the ForgePlan schema: "
-                        "summary, stack, phases[], required_contracts[], contract_refs[]. "
-                        "Do NOT include a 'metadata' key — it is stamped automatically."
-                    ),
+                    "description": "The complete build plan object matching the schema above.",
                 },
                 "project_name": {
                     "type": "string",
