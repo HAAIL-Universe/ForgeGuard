@@ -4754,6 +4754,28 @@ async def _run_build_plan_execute(
 
     # --- Workspace setup (git clone, branch, contracts) ---
     # --- Workspace setup (skip if continuing from a prior build) ---
+    # fresh_start=True means the user explicitly requested a clean build.
+    # Wipe any leftover workspace so the stale .git doesn't trick the
+    # _already_cloned check into treating this as a resume.
+    if fresh_start and Path(working_dir).exists():
+        _wipe_ok = True
+        try:
+            # Git pack files are read-only on Windows — chmod before rmtree.
+            for _wf in Path(working_dir).rglob("*"):
+                try:
+                    _wf.chmod(0o777)
+                except OSError:
+                    pass
+            shutil.rmtree(working_dir, ignore_errors=False)
+        except Exception as _wipe_exc:
+            logger.warning("Could not wipe stale workspace (non-fatal): %s", _wipe_exc)
+            _wipe_ok = False
+        if _wipe_ok:
+            await build_repo.append_build_log(
+                build_id, "Fresh start — wiped stale workspace",
+                source="system", level="info",
+            )
+
     # Also skip clone if the working_dir is already a git repo (orphan
     # recovery may set resume_from_phase=-1 with an existing workspace).
     _already_cloned = (Path(working_dir) / ".git").is_dir()
