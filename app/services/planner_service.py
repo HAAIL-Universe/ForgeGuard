@@ -371,6 +371,26 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
     """
     def callback(delta_data: dict) -> None:
         event_type = delta_data.get("type")
+
+        # ── plan_writing_delta: write_plan tool JSON is being generated ────────
+        # Fires every ~1000 chars so the user sees progress during the silent
+        # period between narration ending and the plan box appearing.
+        if event_type == "plan_writing_delta":
+            char_count = delta_data.get("char_count", 0)
+            turn = delta_data.get("turn", "?")
+            if char_count == 0:
+                msg = f"✍ Writing plan — turn {turn}… (this may take 1–2 min)"
+            else:
+                msg = f"✍ Writing plan — {char_count:,} chars…"
+            fut = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "build_log", {
+                    "message": msg, "source": "planner", "level": "info",
+                }),
+                loop,
+            )
+            fut.add_done_callback(lambda f: _log_future_exc(f, "plan_writing_log"))
+            return
+
         if event_type not in ("thinking_delta", "narration_delta"):
             return
 

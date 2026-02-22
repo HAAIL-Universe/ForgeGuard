@@ -4784,6 +4784,11 @@ async def _run_build_plan_execute(
 
     project = await project_repo.get_project_by_id(project_id)
 
+    # Derive max_phases from project build_mode so the planner knows it is a
+    # mini-build and omits auth/JWT/deployment phases automatically.
+    _build_mode = (project or {}).get("build_mode", "full")
+    _planner_max_phases = 3 if _build_mode == "mini" else None
+
     # --- Workspace setup (git clone, branch, contracts) ---
     # --- Workspace setup (skip if continuing from a prior build) ---
     # fresh_start=True means the user explicitly requested a clean build.
@@ -5171,7 +5176,7 @@ async def _run_build_plan_execute(
                         build_id=build_id,
                         user_id=user_id,
                         api_key=api_key,
-                        max_phases=None,
+                        max_phases=_planner_max_phases,
                     )
                     if _prep_result:
                         phases = [
@@ -5260,7 +5265,7 @@ async def _run_build_plan_execute(
                     build_id=build_id,
                     user_id=user_id,
                     api_key=api_key,
-                    max_phases=None,
+                    max_phases=_planner_max_phases,
                 )
                 if _plan_result:
                     phases = [

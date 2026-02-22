@@ -148,9 +148,10 @@ def _run_streaming_turn(
     OR text narration so the UI receives progressive updates instead of one
     blob at the end.  Returns the final Message object.
 
-    Two event types are forwarded to stream_callback:
-      "thinking_delta"  — extended thinking tokens (when model thinks)
-      "narration_delta" — visible text tokens (model's written reasoning)
+    Three event types are forwarded to stream_callback:
+      "thinking_delta"   — extended thinking tokens (when model thinks)
+      "narration_delta"  — visible text tokens (model's written reasoning)
+      "plan_writing_delta" — write_plan tool JSON generation progress (char count)
 
     The signature chain in thinking blocks is preserved because we call
     stream.get_final_message() which returns fully-assembled content blocks.
@@ -163,6 +164,11 @@ def _run_streaming_turn(
     # Accumulated visible text (model narration before tool calls).
     _text_by_idx: dict[int, str] = {}
     _text_last_fired_len = 0
+
+    # Track write_plan tool_use block so we can stream its JSON generation.
+    _write_plan_idx: int | None = None
+    _plan_json_chars = 0
+    _plan_json_last_fired = 0
 
     with client.messages.stream(**create_kwargs) as stream:
         for event in stream:
@@ -189,6 +195,15 @@ def _run_streaming_turn(
                         "accumulated_text": "",
                         "char_count": 0,
                     })
+                elif block_type == "tool_use":
+                    tool_name = getattr(content_block, "name", None)
+                    if tool_name == "write_plan":
+                        _write_plan_idx = event.index
+                        stream_callback({
+                            "type": "plan_writing_delta",
+                            "turn": turn_num,
+                            "char_count": 0,
+                        })
                 continue
 
             if event_type != "RawContentBlockDeltaEvent":
@@ -225,13 +240,28 @@ def _run_streaming_turn(
                         "char_count": total_chars,
                     })
 
+            elif delta_type == "input_json_delta" and event.index == _write_plan_idx:
+                partial = getattr(delta, "partial_json", "") or ""
+                _plan_json_chars += len(partial)
+                if _plan_json_chars - _plan_json_last_fired >= PLAN_STREAM_CHUNK_CHARS:
+                    _plan_json_last_fired = _plan_json_chars
+                    stream_callback({
+                        "type": "plan_writing_delta",
+                        "turn": turn_num,
+                        "char_count": _plan_json_chars,
+                    })
+
         return stream.get_final_message()
 
 
-# How many thinking characters to accumulate before firing stream_callback.
+# How many thinking/narration characters to accumulate before firing stream_callback.
 # Lower = more frequent UI updates but more WS messages.
 # 100 chars ≈ every few tokens — responsive without flooding the WS.
 STREAM_CHUNK_CHARS = 100
+
+# How many write_plan JSON chars to accumulate before firing a plan_writing_delta.
+# The plan JSON is typically 8-12k chars — 1000 char chunks ≈ 8-12 updates.
+PLAN_STREAM_CHUNK_CHARS = 1000
 
 
 # ─── Main Agent Function ─────────────────────────────────────────────────────
