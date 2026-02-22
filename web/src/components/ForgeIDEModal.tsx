@@ -1158,6 +1158,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const [planReady, setPlanReady] = useState(false);          // plan_complete received
   const [showPlanModal, setShowPlanModal] = useState(false);  // REVIEW popup open
+  const [planSaved, setPlanSaved] = useState(false);          // user clicked Save
   const [pendingClarification, setPendingClarification] = useState<{
     questionId: string;
     question: string;
@@ -1972,6 +1973,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               const costEst = (p.cost_estimate as any) || { estimated_cost_low_usd: 0, estimated_cost_high_usd: 0 };
               const chunks = (p.chunks as any[]) || [];
               const planText = (p.plan_text as string) || '';
+              setPlanSaved(false);
               setPendingPlanReview({
                 phase: (p.phase as string) || '',
                 planText,
@@ -2732,6 +2734,24 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         }
       }
     } catch { /* WS plan_approved event confirms */ }
+  }, [projectId, token]);
+
+  /* Save plan to database as a project contract */
+  const savePlan = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/save-plan`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setPlanSaved(true);
+        setLogs((prev) => [...prev, {
+          timestamp: new Date().toISOString(),
+          source: 'system', level: 'info',
+          message: '💾 Plan saved to database',
+        }]);
+      }
+    } catch { /* silent */ }
   }, [projectId, token]);
 
   /* Send a slash command */
@@ -3843,6 +3863,16 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       ✅ Approve & Build
                     </button>
                     <button
+                      onClick={savePlan}
+                      style={{
+                        background: planSaved ? '#1E3A5F' : '#172554', border: `1px solid ${planSaved ? '#38BDF888' : '#38BDF844'}`,
+                        borderRadius: '4px', color: planSaved ? '#38BDF8' : '#7DD3FC', fontSize: '0.75rem',
+                        padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                      }}
+                    >
+                      {planSaved ? '✓ Saved' : '💾 Save'}
+                    </button>
+                    <button
                       onClick={() => respondToPlanReview('reject')}
                       style={{
                         background: '#3B1114', border: '1px solid #EF444466',
@@ -4065,6 +4095,14 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                           padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                         }}
                       >✅ Approve & Build</button>
+                      <button
+                        onClick={savePlan}
+                        style={{
+                          background: planSaved ? '#1E3A5F' : '#172554', border: `1px solid ${planSaved ? '#38BDF888' : '#38BDF844'}`,
+                          borderRadius: '4px', color: planSaved ? '#38BDF8' : '#7DD3FC', fontSize: '0.75rem',
+                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                        }}
+                      >{planSaved ? '✓ Saved' : '💾 Save'}</button>
                       <button
                         onClick={() => { respondToPlanReview('reject'); setShowPlanModal(false); }}
                         style={{

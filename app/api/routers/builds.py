@@ -266,6 +266,26 @@ async def commit_plan(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# ── POST /projects/{project_id}/build/save-plan ─────────────────────────
+
+
+@router.post("/{project_id}/build/save-plan")
+async def save_plan(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Save the cached plan JSON as a project contract (type='plan').
+
+    Stores the plan durably in the contracts table alongside other project
+    contracts so it can be retrieved later without replanning.
+    """
+    from app.repos import project_repo
+    ok = await project_repo.save_plan_as_contract(project_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No plan found to save")
+    return {"saved": True}
+
+
 # ── POST /projects/{project_id}/build/commence ──────────────────────────
 
 

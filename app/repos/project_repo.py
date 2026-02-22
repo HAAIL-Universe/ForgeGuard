@@ -129,6 +129,33 @@ async def clear_cached_plan(project_id: UUID) -> None:
     )
 
 
+async def save_plan_as_contract(project_id: UUID) -> bool:
+    """Persist the cached plan JSON into project_contracts as contract_type='plan'.
+
+    This stores the plan durably alongside the project's other contract files so
+    it can be retrieved via forge_get_project_contract(type='plan') later.
+
+    Returns True if the plan was saved, False if there was nothing to save.
+    """
+    plan = await get_cached_plan(project_id)
+    if not plan:
+        return False
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO project_contracts (project_id, contract_type, content, version)
+        VALUES ($1, 'plan', $2, 1)
+        ON CONFLICT (project_id, contract_type)
+        DO UPDATE SET content    = EXCLUDED.content,
+                      version    = project_contracts.version + 1,
+                      updated_at = now()
+        """,
+        project_id,
+        json.dumps(plan),
+    )
+    return True
+
+
 async def save_generation_metrics(
     project_id: UUID,
     metrics: dict,
