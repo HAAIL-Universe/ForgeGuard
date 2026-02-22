@@ -278,11 +278,14 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
         turn = delta_data.get("turn", "?")
         text = delta_data.get("accumulated_text", "")
         char_count = delta_data.get("char_count", len(text))
+        # char_count == 0 means "thinking block just started" — show a
+        # placeholder so the UI creates the pulsing entry immediately.
+        display_text = text[:12_000] if text else "…"
         fut = asyncio.run_coroutine_threadsafe(
             broadcast_fn(user_id, build_id, "thinking_live", {
                 "turn": turn,
                 "source": "planner",
-                "reasoning_text": text[:12_000],
+                "reasoning_text": display_text,
                 "reasoning_length": char_count,
                 "is_actual_thinking": True,
             }),

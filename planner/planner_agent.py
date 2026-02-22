@@ -156,11 +156,32 @@ def _run_streaming_turn(
     # Key = block index (supports multi-block responses), value = text so far.
     _thinking_by_idx: dict[int, str] = {}
     _last_fired_len = 0  # total chars emitted at last stream_callback call
+    _thinking_started = False  # have we fired the "thinking started" notification?
 
     with client.messages.stream(**create_kwargs) as stream:
         for event in stream:
-            # Only process content block deltas — skip start/stop/message events.
-            if type(event).__name__ != "RawContentBlockDeltaEvent":
+            event_type = type(event).__name__
+
+            # Fire IMMEDIATELY when a thinking block starts — before any content
+            # arrives. The Anthropic API does not stream thinking_delta events
+            # token-by-token during the thinking phase; they may only arrive as
+            # one large delta at the end. This gives the user instant feedback
+            # that the model has started thinking, even before we have any text.
+            if event_type == "RawContentBlockStartEvent":
+                content_block = getattr(event, "content_block", None)
+                if content_block and getattr(content_block, "type", None) == "thinking":
+                    _thinking_started = True
+                    stream_callback({
+                        "type": "thinking_delta",
+                        "turn": turn_num,
+                        "accumulated_text": "",
+                        "char_count": 0,
+                    })
+                continue
+
+            # Accumulate thinking content from delta events (fires if/when
+            # the API sends incremental thinking tokens).
+            if event_type != "RawContentBlockDeltaEvent":
                 continue
             delta = event.delta
             if getattr(delta, "type", None) != "thinking_delta":
@@ -185,7 +206,8 @@ def _run_streaming_turn(
 
 # How many thinking characters to accumulate before firing stream_callback.
 # Lower = more frequent UI updates but more WS messages.
-STREAM_CHUNK_CHARS = 300
+# 100 chars ≈ every few tokens — responsive without flooding the WS.
+STREAM_CHUNK_CHARS = 100
 
 
 # ─── Main Agent Function ─────────────────────────────────────────────────────
