@@ -34,7 +34,7 @@ class StackSpec(BaseModel):
     auth: Optional[str] = None       # "jwt" | "apikey" | null
     llm_integration: Optional[str] = None  # "openai" | "anthropic" | null
     test_framework: str              # "pytest"
-    boot_script: bool                # from system_prompt.md question 27
+    boot_script: bool = False        # opt-in setup script (default: no)
 
 
 class ContractRef(BaseModel):
@@ -66,7 +66,7 @@ class Phase(BaseModel):
     acceptance_criteria: list[AcceptanceCriterion]
     schema_tables_claimed: list[str] = Field(default_factory=list)
     wires_from_phase: Optional[int] = None  # builder_contract.md §9.5
-    exemptions: list[str] = Field(default_factory=list)  # Phase 0 AEM exemptions
+    exemptions: list[str] = Field(default_factory=list)  # phase-level build exemptions
 
     class Config:
         extra = "forbid"
@@ -85,7 +85,7 @@ class ProjectSummary(BaseModel):
     key_constraints: list[str]          # top 5 contract rules affecting this build
     existing_contracts: list[str]       # filled contract files already on disk
     missing_contracts: list[str]        # templates still needing to be filled
-    boot_script_required: bool
+    boot_script_required: bool = False
 
     class Config:
         extra = "forbid"

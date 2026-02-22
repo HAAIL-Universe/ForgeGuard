@@ -31,8 +31,15 @@ if str(_AUDITOR_DIR) not in sys.path:
 import anthropic
 
 from audit_schema import AuditResult, TokenUsage, validate_audit_result
-from context_loader import build_audit_system_prompt
 from tools import TOOL_DEFINITIONS, dispatch_tool
+
+# Load context_loader from the auditor package by explicit path to avoid
+# collision with planner.context_loader which may already be in sys.modules.
+import importlib.util as _ilu
+_cl_spec = _ilu.spec_from_file_location("auditor.context_loader", _AUDITOR_DIR / "context_loader.py")
+_cl_module = _ilu.module_from_spec(_cl_spec)  # type: ignore[arg-type]
+_cl_spec.loader.exec_module(_cl_module)  # type: ignore[union-attr]
+build_audit_system_prompt = _cl_module.build_audit_system_prompt
 
 logger = logging.getLogger(__name__)
 

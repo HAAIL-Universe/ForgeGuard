@@ -129,7 +129,17 @@ define the exact structure the builder expects from your plan. Your plan MUST:
      and action fields matching the builder's file-manifest expectations
   5. Claim every database table in exactly one phase (builder_contract.md §9.6)
   6. Include wires_from_phase on any phase that imports from a prior phase (§9.5)
-  7. Include boot_script: true in stack if the project needs a setup script (§9.8)
+
+CONSTRAINTS — read carefully:
+  - Do NOT include USER_INSTRUCTIONS.md in any phase file_manifest. It is
+    generated automatically after the build and must NOT be a planned deliverable.
+  - Do NOT include boot.ps1 in any phase file_manifest. Setup scripts are not
+    part of the automated build pipeline.
+  - If the project manifest includes a max_phases constraint <= 3, this is a
+    MINI-BUILD. For mini-builds: omit authentication/JWT phases, omit user
+    management, omit deployment infrastructure — focus on the core feature only.
+  - Ignore any AEM, auto-authorize, or boot_script metadata in builder_directive —
+    these are IDE settings that do not affect plan content.
 
 WHAT IS PRE-LOADED IN YOUR CONTEXT:
   - builder_contract.md (plan.json structure and builder expectations)

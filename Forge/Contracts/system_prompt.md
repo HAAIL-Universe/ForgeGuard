@@ -179,15 +179,11 @@ After all files are written, ask the user to review them and make adjustments ba
 
 ### Step 4: User Confirmation Gate
 
-After all contract files have been reviewed and any feedback incorporated, **ask the user two things:**
+After all contract files have been reviewed and any feedback incorporated, **ask the user:**
 
-> "All contracts are finalised."
-> 1. "Would you like me to prepare the builder directive so you can kick off the build?"
-> 2. (If the user said yes to question 27, or hasn't answered yet): "You opted for a `boot.ps1` setup script. Just confirming — the builder will create it in the final phase and keep running it until the app starts successfully. Sound good?"
+> "All contracts are finalised. Would you like me to prepare the builder directive so you can kick off the build?"
 
 Do **not** generate the directive until the user confirms. Acceptable confirmations include: "yes", "go ahead", "prepare the builder", "I'm happy with everything", or any clear affirmative.
-
-Record the boot.ps1 decision as `boot_script: true|false` — it will be included in the directive.
 
 If the user wants further changes, make them first, then ask again.
 
@@ -206,9 +202,6 @@ Write it in this format:
 ```markdown
 You are an autonomous software builder operating under the Forge governance framework.
 
-AEM: enabled.
-Auto-authorize: enabled.
-
 ## Instructions
 
 1. Read `Forge/Contracts/builder_contract.md` — this defines your rules for the entire build. Pay special attention to §0 (Folder Structure Convention): `Forge/` is a governance subfolder — all project source code, tests, and config files go at the project root, NOT inside `Forge/`.
@@ -225,18 +218,14 @@ Auto-authorize: enabled.
 3. Execute **Phase 0 (Genesis)** per `Forge/Contracts/phases.md`. All scaffolded project files (app/, tests/, requirements.txt, forge.json, .env.example, etc.) go at the **project root** — never inside `Forge/`.
 4. After Phase 0, run the full verification hierarchy (static → runtime → behaviour → contract) per §9.
 5. Run `Forge/scripts/run_audit.ps1` per §10.2. React to the result:
-   - **All PASS** (exit 0): Emit a Phase Sign-off per §10.4. Because `Auto-authorize: enabled`, commit and proceed directly to the next phase without halting.
+   - **All PASS** (exit 0): Emit a Phase Sign-off per §10.4. Commit and proceed directly to the next phase.
    - **Any FAIL** (exit non-zero): Enter the Loopback Protocol per §10.3. Fix only the FAIL items, re-verify, re-audit. If 3 consecutive loops fail, STOP with `RISK_EXCEEDS_SCOPE`.
 6. Repeat steps 3–5 for each subsequent phase in order:
    - [List each phase from phases.md by number and name]
-7. After the final phase passes audit and is committed:
-   - If `boot_script: true`: Create `boot.ps1` per §9.8 of the builder contract. Run it. If it fails, fix the issue and re-run. Repeat until the app starts successfully (or 5 consecutive failures → STOP with `ENVIRONMENT_LIMITATION`). Then HALT and report: "All phases complete. App is running."
-   - If `boot_script: false`: HALT and report: "All phases complete."
+7. After the final phase passes audit and is committed: HALT and report: "All phases complete."
 
-## Autonomy Rules
+## Builder Rules
 
-- **Auto-authorize** means: when an audit passes (exit 0), you commit and advance to the next phase without waiting for user input. You do NOT need the `AUTHORIZED` token between phases.
-- You MUST still STOP if you hit `AMBIGUOUS_INTENT`, `RISK_EXCEEDS_SCOPE`, `CONTRACT_CONFLICT` that cannot be resolved within the loopback protocol, or `ENVIRONMENT_LIMITATION`.
 - You MUST NOT add features, files, or endpoints beyond what is specified in the contracts. If you believe something is missing from the spec, STOP and ask — do not invent.
 - Diff log discipline per §11 applies to every phase: read → plan → scaffold → work → finalise. No `TODO:` placeholders at phase end.
 - Re-read contracts at the start of each new phase (§1 read gate is active from Phase 1 onward).
@@ -245,10 +234,6 @@ Auto-authorize: enabled.
 ## Project Summary
 
 [2–3 sentence plain-English summary of what the project does, derived from the user's answers.]
-
-## Boot Script
-
-boot_script: [true|false]
 ```
 
 **Customisation rules:**
@@ -364,9 +349,6 @@ The builder directive for remediation mode differs slightly:
 ```markdown
 You are an autonomous software builder operating under the Forge governance framework.
 This is a REMEDIATION build — the project already has working source code.
-
-AEM: enabled.
-Auto-authorize: enabled.
 
 ## Instructions
 

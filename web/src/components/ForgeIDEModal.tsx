@@ -111,6 +111,8 @@ interface LogEntry {
     phase?: string;
     /** True = real extended thinking (Sonnet/Opus); false = haiku text narration */
     isActualThinking?: boolean;
+    /** True = this is the auto-generated PLAN box from plan_complete */
+    isPlanBox?: boolean;
   };
   /** Present when this is a grouped planner tool call entry (multiple tools, one turn) */
   toolGroup?: {
@@ -123,6 +125,26 @@ function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
   if (msg.includes('[Sonnet]')) return 'sonnet';
   if (msg.includes('[Opus]') || msg.includes('[Opus-2]')) return 'opus';
   return 'system';
+}
+
+/** Format plan phases into readable plain-English text for the PLAN narration box. */
+function formatPlanText(phases: any[]): string {
+  return phases.map((ph: any) => {
+    const purpose = ph.purpose || ph.objective || '(no description)';
+    const fileLines = (ph.file_manifest || []).map((f: any) => {
+      const icon = f.action === 'create' ? '+' : f.action === 'modify' ? '~' : '-';
+      return `  ${icon} ${f.path}  [${f.layer}]  — ${f.description}`;
+    });
+    const tables = ph.schema_tables_claimed?.length
+      ? `  tables: ${ph.schema_tables_claimed.join(', ')}`
+      : '';
+    return [
+      `PHASE ${ph.number}: ${(ph.name as string).toUpperCase()}`,
+      purpose,
+      tables,
+      ...fileLines,
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
 }
 
 interface FileDiff {
@@ -1054,11 +1076,13 @@ const LogPane = memo(function LogPane({
                       <span style={{ color: '#334155', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
                         {ts}
                       </span>
-                        <span style={{ color: '#475569', fontSize: '0.6rem', fontWeight: 600, letterSpacing: '0.4px' }}>
-                        {log.reasoning.isActualThinking !== false ? 'EXTENDED THINKING' : 'PLANNER NARRATION'}
+                        <span style={{ color: log.reasoning.isPlanBox ? '#38BDF8' : '#475569', fontSize: '0.6rem', fontWeight: 600, letterSpacing: '0.4px' }}>
+                        {log.reasoning.isPlanBox ? 'PLAN' : log.reasoning.isActualThinking !== false ? 'EXTENDED THINKING' : 'PLANNER NARRATION'}
                       </span>
                       <span style={{ color: '#334155', fontSize: '0.6rem' }}>
-                        {' — turn '}{log.reasoning.turn}{log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}
+                        {log.reasoning.isPlanBox
+                          ? (log.reasoning.phase ? ` — ${log.reasoning.phase}` : '')
+                          : `${' — turn '}${log.reasoning.turn}${log.reasoning.phase ? ` · ${log.reasoning.phase}` : ''}`}
                       </span>
                     </div>
                     <span style={{ color: '#64748B', fontSize: '0.6rem' }}>
@@ -1839,7 +1863,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
 
             case 'plan_complete': {
-              const planPhaseList = (p.phases as { number: number; name: string; objective?: string }[]) || [];
+              const planPhaseList = (p.phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[]) || [];
               if (planPhaseList.length > 0) {
                 setPhases(planPhaseList as any);
                 setTasks(planPhaseList.map((ph) => ({
@@ -1848,10 +1872,28 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   priority: 'high' as const,
                   effort: 'large' as const,
                   forge_automatable: true,
-                  category: ph.objective?.substring(0, 50) || 'Build phase',
+                  category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
                   status: 'pending' as const,
                 })));
                 setTotalTasks(planPhaseList.length);
+
+                // Add PLAN narration box to the Sonnet panel
+                const planText = formatPlanText(planPhaseList);
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'reasoning' as const,
+                  level: 'info',
+                  message: `📋 Plan — ${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
+                  worker: 'sonnet' as const,
+                  reasoning: {
+                    text: planText,
+                    textLength: planText.length,
+                    turn: 0,
+                    phase: `${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
+                    isActualThinking: false,
+                    isPlanBox: true,
+                  },
+                }]);
               }
               setPlanReady(true);
               setShowPlanModal(false);
@@ -1859,7 +1901,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 timestamp: new Date().toISOString(),
                 source: 'system',
                 level: 'system',
-                message: '✅ Plan complete — click REVIEW to inspect or PUSH to approve & build',
+                message: '✅ Plan complete — REVIEW to inspect or PUSH to approve & build',
                 worker: 'system',
               }]);
               break;
@@ -3869,7 +3911,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       {phases.map((ph: any) => (
                         <div key={ph.number} style={{ marginBottom: '6px' }}>
                           <span style={{ color: '#A78BFA', fontWeight: 600 }}>Phase {ph.number}: {ph.name}</span>
-                          {ph.objective && <div style={{ paddingLeft: '12px', color: '#64748B' }}>{ph.objective}</div>}
+                          {(ph.purpose || ph.objective) && <div style={{ paddingLeft: '12px', color: '#64748B' }}>{ph.purpose || ph.objective}</div>}
                         </div>
                       ))}
                     </div>

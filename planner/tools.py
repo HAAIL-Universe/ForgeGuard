@@ -101,7 +101,7 @@ TOOL_DEFINITIONS: list[dict] = [
             '    "key_constraints": ["top constraint 1", "top constraint 2", ...],\n'
             '    "existing_contracts": ["blueprint.md", ...],\n'
             '    "missing_contracts": [],\n'
-            '    "boot_script_required": true or false\n'
+            '    "boot_script_required": false\n'
             "  },\n"
             '  "stack": {\n'
             '    "backend_language": "python",\n'
@@ -110,8 +110,7 @@ TOOL_DEFINITIONS: list[dict] = [
             '    "frontend": "react" or null,\n'
             '    "auth": "jwt" or null,\n'
             '    "llm_integration": "anthropic" or null,\n'
-            '    "test_framework": "pytest",\n'
-            '    "boot_script": true or false\n'
+            '    "test_framework": "pytest"\n'
             "  },\n"
             '  "phases": [\n'
             "    {\n"
