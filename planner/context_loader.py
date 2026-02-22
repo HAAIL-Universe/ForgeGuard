@@ -43,7 +43,7 @@ Fetching other governance contracts on demand
 ---------------------------------------------
 If the planner ever needs system_prompt.md, auditor_prompt.md, or any other
 governance file, it can call read_file() — those are available via the
-z:/ForgeCollection/Forge/Contracts/ path.
+z:/ForgeCollection/ForgeGuard/Forge/Contracts/ path.
 """
 
 from __future__ import annotations
