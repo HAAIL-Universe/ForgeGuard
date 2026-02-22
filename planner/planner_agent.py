@@ -174,9 +174,12 @@ def run_planner(
     # this runs in a thread pool executor and Python cannot kill threads once
     # started. Without a timeout, a cancelled build still charges until the
     # API call eventually completes (up to 600s by default).
-    # 120s: planning turns with large contract contexts (20-30K tokens) can
-    # legitimately take 60-90s to respond — 30s was too aggressive.
-    client = anthropic.Anthropic(timeout=120.0)
+    # 300s: Sonnet with extended thinking (10K token budget) on a full
+    # contract context (9 contracts, 20-40K tokens) can legitimately take
+    # 2-4 minutes per planning turn. 120s caused spurious timeouts and
+    # retries. Hard upper bound is kept well below the SDK default of 600s
+    # so a hung thread doesn't block the executor indefinitely.
+    client = anthropic.Anthropic(timeout=300.0)
     _model = model or MODEL
 
     # ── Build the cacheable system prompt ────────────────────────────────────
