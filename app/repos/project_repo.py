@@ -100,7 +100,9 @@ async def get_cached_plan(project_id: UUID) -> dict | None:
     )
     if row and row["cached_plan_json"]:
         raw = row["cached_plan_json"]
-        return dict(raw) if not isinstance(raw, dict) else raw
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw)  # asyncpg may return JSONB as raw JSON string
     return None
 
 
