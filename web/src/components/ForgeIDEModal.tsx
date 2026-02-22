@@ -757,20 +757,32 @@ const LogPane = memo(function LogPane({
     scrolledAway.current = remaining > 60;
   }, []);
 
-  useEffect(() => {
-    // New logs arrived — auto-scroll to the very bottom unless the user
-    // has deliberately scrolled up to read earlier output.
-    if (panelLogs.length !== prevLogCount.current) {
-      prevLogCount.current = panelLogs.length;
-      if (!scrolledAway.current && containerRef.current) {
-        // Use rAF so the DOM has painted the new rows first
-        requestAnimationFrame(() => {
-          const el = containerRef.current;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
-      }
+  // Track the total chars of the latest live-streaming reasoning entry.
+  // thinking_live and narration_live are UPSERTS (same array length) so
+  // the length-only scroll effect never fires during streaming.  Watching
+  // this value catches every 100-char streaming chunk and auto-scrolls.
+  const latestReasoningChars = useMemo(() => {
+    for (let i = panelLogs.length - 1; i >= 0; i--) {
+      const r = panelLogs[i].reasoning;
+      if (r && !r.isPlanBox) return r.textLength ?? (r.text?.length ?? 0);
     }
-  }, [panelLogs.length]);
+    return 0;
+  }, [panelLogs]);
+
+  useEffect(() => {
+    // Scroll to bottom when:
+    //   a) new log entries arrive (panelLogs.length changes), OR
+    //   b) an existing reasoning entry grows (latestReasoningChars changes) —
+    //      this covers thinking_live / narration_live streaming upserts.
+    prevLogCount.current = panelLogs.length;
+    if (!scrolledAway.current && containerRef.current) {
+      // Use rAF so the DOM has painted the new rows first
+      requestAnimationFrame(() => {
+        const el = containerRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [panelLogs.length, latestReasoningChars]);
 
   // Auto-expand the latest expandable (thinking/scratchpad/reasoning) entry,
   // collapsing any previously auto-expanded one.

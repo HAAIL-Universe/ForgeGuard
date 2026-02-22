@@ -232,6 +232,7 @@ async def run_project_planner(
             build_id=build_id,
             plan_json=plan,
             contract_fetcher=contract_fetcher,
+            api_key=api_key,
         )
     )
 
@@ -242,6 +243,7 @@ async def _run_plan_audit(
     build_id: UUID,
     plan_json: dict,
     contract_fetcher,
+    api_key: str = "",
 ) -> None:
     """Fire-and-forget background plan audit using the standalone auditor module.
 
@@ -252,6 +254,10 @@ async def _run_plan_audit(
         return
     if str(_AUDITOR_DIR) not in sys.path:
         sys.path.insert(0, str(_AUDITOR_DIR))
+    # Set the API key in env so the auditor agent (standalone, reads env) picks it up.
+    _orig_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
     try:
         from auditor_agent import run_auditor, AuditorError  # type: ignore[import]
         result = await run_auditor(
@@ -267,6 +273,12 @@ async def _run_plan_audit(
         logger.info("[PLAN_AUDIT] %s (%d issues)", status_str, issue_count)
     except Exception as exc:
         logger.warning("[PLAN_AUDIT] Non-blocking failure: %s", exc)
+    finally:
+        # Restore the original env so we don't leave the temp BYOK key around.
+        if _orig_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        elif api_key:
+            os.environ["ANTHROPIC_API_KEY"] = _orig_key
 
 
 # ---------------------------------------------------------------------------
@@ -279,17 +291,30 @@ _CONTRACT_PRIORITY = [
     "physics", "boundaries", "ui", "phases", "intake",
 ]
 
+# Contracts that the planner must NOT see.  builder_directive is a
+# runtime governance document for the builder agent: it contains AEM,
+# Auto-authorize, and build-loop settings that are irrelevant to
+# plan.json structure and actively confuse the planner into narrating
+# "AEM + auto-authorize enabled" even when those flags are absent.
+_PLANNER_EXCLUDED_CONTRACTS = {"builder_directive"}
+
 
 def _contracts_to_manifest(contracts: list[dict]) -> str:
     """Build a lightweight contract manifest (~200 tokens, no content).
 
     Lists available contract types and their sizes so the planner knows what
     to fetch. Content is NOT pushed — the planner pulls via forge_get_project_contract.
+    builder_directive is excluded — it is a runtime builder document, not a
+    planning input, and its AEM/auto-authorize language confuses the planner.
     """
     if not contracts:
         return "No project contracts available."
 
-    type_map = {c["contract_type"]: len(c.get("content", "")) for c in contracts}
+    type_map = {
+        c["contract_type"]: len(c.get("content", ""))
+        for c in contracts
+        if c["contract_type"] not in _PLANNER_EXCLUDED_CONTRACTS
+    }
     ordered = [t for t in _CONTRACT_PRIORITY if t in type_map]
     ordered += sorted(t for t in type_map if t not in _CONTRACT_PRIORITY)
 
@@ -305,8 +330,13 @@ def _make_contract_fetcher(contracts: list[dict]):
     The planner runs in a thread-pool executor (sync), so this is a plain
     dict lookup against the contracts list already fetched from the DB by
     the async build pipeline. No DB calls happen in the thread.
+    builder_directive is excluded — see _PLANNER_EXCLUDED_CONTRACTS.
     """
-    index = {c["contract_type"]: c["content"] for c in contracts}
+    index = {
+        c["contract_type"]: c["content"]
+        for c in contracts
+        if c["contract_type"] not in _PLANNER_EXCLUDED_CONTRACTS
+    }
 
     def fetch(contract_type: str) -> str | None:
         return index.get(contract_type)
@@ -550,7 +580,10 @@ async def _planner_heartbeat(
         try:
             await broadcast_fn(user_id, build_id, "build_log", {
                 "message": f"⏳ Still generating plan… ({elapsed}s elapsed)",
-                "source": "planner", "level": "info", "worker": "sonnet",
+                "source": "planner", "level": "info",
+                # NO worker= here — heartbeats go to Activity panel only.
+                # Adding worker="sonnet" would push the thinking entry up
+                # out of the Sonnet panel viewport on every heartbeat.
             })
         except Exception as exc:
             logger.debug("Planner heartbeat broadcast failed (non-fatal): %s", exc)
