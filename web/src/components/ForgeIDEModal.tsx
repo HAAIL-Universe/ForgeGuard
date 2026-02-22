@@ -2215,6 +2215,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               const src = (p.source as string) || 'planner';
               const blockWorker: 'sonnet' | 'opus' = src === 'opus' ? 'opus' : 'sonnet';
               const isActualThinking = (p.is_actual_thinking as boolean) ?? true;
+              // Skip empty narration blocks — model had 0 chars in this turn
+              // (e.g. turn 1 that went straight to tool calls).  No box needed.
+              if (!isActualThinking && length === 0) break;
               // Upsert the matching slot: thinking ↔ thinking, narration ↔ narration.
               setLogs((prev) => {
                 const existingIdx = prev.findLastIndex((l) =>

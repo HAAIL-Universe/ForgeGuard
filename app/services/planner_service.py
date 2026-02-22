@@ -431,6 +431,14 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
                 loop,
             )
             log_fut.add_done_callback(lambda f: _log_future_exc(f, f"{event_type}_start_log"))
+            # For narration (not extended thinking): don't create an empty box.
+            # The model often narrates 0 chars in turn 1 before tool calls —
+            # an empty "PLANNER NARRATION" box is confusing.  The box will be
+            # created on the first actual text chunk (char_count > 0).
+            # For thinking we DO want to create the box immediately so the user
+            # sees progress during the silent 1-3 min extended-thinking phase.
+            if not is_thinking:
+                return
 
         fut = asyncio.run_coroutine_threadsafe(
             broadcast_fn(user_id, build_id, ws_event, {
