@@ -3151,10 +3151,20 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
         <div style={{ flex: 1 }} />
 
-        {/* Close button — cancels the build server-side if still active */}
+        {/* Close button — cancels the build server-side if actively running.
+            Rules:
+            - status=running: cancel (API calls in flight — must stop them)
+            - status=paused + planReady=false: cancel (mid-execution pause, loop may resume)
+            - status=paused + planReady=true: just close (plan-review pause, no API calls)
+            - status=preparing: just close (workspace warming up, no API calls yet)
+            - status=ready/stopped/completed: just close */}
         <button
           onClick={async () => {
-            if (isBuild && (status === 'running' || status === 'preparing' || status === 'paused') && projectId && token) {
+            const shouldCancel = isBuild && projectId && token && (
+              status === 'running' ||
+              (status === 'paused' && !planReady)
+            );
+            if (shouldCancel) {
               try {
                 await fetch(`${API_BASE}/projects/${projectId}/build/cancel`, {
                   method: 'POST',
@@ -3165,12 +3175,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             onClose();
           }}
           style={{
-            background: status === 'running' ? '#334155' : '#1E293B',
+            background: (status === 'running' || (status === 'paused' && !planReady)) ? '#334155' : '#1E293B',
             color: '#94A3B8', border: '1px solid #334155', borderRadius: '6px',
             padding: '4px 14px', cursor: 'pointer', fontSize: '0.75rem',
           }}
         >
-          {status === 'running' ? '⏹ Stop & Close' : status === 'preparing' ? '⏹ Stop & Close' : status === 'paused' ? '⏸ Close' : '✕ Close'}
+          {(status === 'running' || (status === 'paused' && !planReady)) ? '⏹ Stop & Close' : '✕ Close'}
         </button>
       </div>
 

@@ -1661,11 +1661,40 @@ async def interject_build(
                         "build_id": bid,
                         "message": "Plan restored \u2014 REVIEW to inspect or PUSH to approve & begin building.",
                     }
-                # No cached plan — nuke and start fresh.
+                # No cached plan — re-run the planner for this existing paused build
+                # WITHOUT nuking it.  Nuking first is dangerous: if start_build then
+                # fails for any reason the user is left with 0 builds and all logs lost.
+                try:
+                    _contracts = await project_repo.get_contracts_by_project(project_id)
+                    _u = await get_user_by_id(user_id)
+                    _ak = (_u or {}).get("anthropic_api_key") or ""
+                    _pr = await project_repo.get_project_by_id(project_id)
+                    _bm = (_pr or {}).get("build_mode", "full")
+                    _mp = 3 if _bm == "mini" else None
+                    from app.services.planner_service import run_project_planner
+                    from app.repos.project_repo import set_cached_plan
+                    _rp = await run_project_planner(
+                        contracts=_contracts,
+                        build_id=UUID(bid),
+                        user_id=user_id,
+                        api_key=_ak,
+                        max_phases=_mp,
+                    )
+                    if _rp:
+                        await set_cached_plan(project_id, _rp["plan"])
+                        logger.info("/plan: re-planned orphaned paused build %s (no prior cache)", bid)
+                        return {
+                            "status": "plan_ready",
+                            "build_id": bid,
+                            "message": "Plan regenerated \u2014 REVIEW or PUSH to approve & begin building.",
+                        }
+                except Exception as _rp_exc:
+                    logger.warning("/plan: re-plan for orphaned paused build %s failed: %s", bid, _rp_exc)
+                # Re-plan failed — now nuke and start fresh as last resort.
                 try:
                     await nuke_build(project_id, user_id)
                     await asyncio.sleep(0.05)
-                    logger.info("/plan: auto-nuked orphaned paused build %s (no cached plan)", bid)
+                    logger.info("/plan: auto-nuked orphaned paused build %s (no cached plan, re-plan failed)", bid)
                 except Exception:
                     logger.warning("/plan: auto-nuke of orphaned build %s failed", bid, exc_info=True)
         # Start a fresh build: workspace setup runs, then the planner generates the phases
@@ -5169,6 +5198,7 @@ async def _run_build_plan_execute(
                 "message": _prep_log, "source": "system", "level": "info",
             })
             if not phases:
+                _prep_result = None
                 try:
                     from app.services.planner_service import run_project_planner
                     _prep_result = await run_project_planner(
@@ -5178,23 +5208,27 @@ async def _run_build_plan_execute(
                         api_key=api_key,
                         max_phases=_planner_max_phases,
                     )
-                    if _prep_result:
-                        phases = [
-                            {
-                                "number": p["number"],
-                                "name": p["name"],
-                                "objective": p.get("purpose", ""),
-                                "deliverables": p.get("acceptance_criteria", []),
-                            }
-                            for p in _prep_result["plan"].get("phases", [])
-                        ]
-                        # Save plan to DB — source of truth for resume after server restart.
-                        # 'paused' is skipped by interrupt_stale_builds() + zombie cleanup.
-                        from app.repos.project_repo import set_cached_plan
-                        await set_cached_plan(project_id, _prep_result["plan"])
-                        await build_repo.update_build_status(build_id, "paused")
                 except Exception as _prep_exc:
                     logger.warning("Prep planner failed (%s) \u2014 trying legacy fallback", _prep_exc)
+                if _prep_result:
+                    phases = [
+                        {
+                            "number": p["number"],
+                            "name": p["name"],
+                            "objective": p.get("purpose", ""),
+                            "deliverables": p.get("acceptance_criteria", []),
+                        }
+                        for p in _prep_result["plan"].get("phases", [])
+                    ]
+                    # Save plan to DB — source of truth for resume after server restart.
+                    # Separated from planner try/except so a DB write failure does
+                    # NOT silently appear as "Prep planner failed".
+                    try:
+                        from app.repos.project_repo import set_cached_plan
+                        await set_cached_plan(project_id, _prep_result["plan"])
+                    except Exception as _cache_exc:
+                        logger.error("Failed to cache plan for build %s: %s", build_id, _cache_exc)
+                    await build_repo.update_build_status(build_id, "paused")
                 # Legacy fallback: parse phases contract directly
                 if not phases:
                     for c in contracts:
