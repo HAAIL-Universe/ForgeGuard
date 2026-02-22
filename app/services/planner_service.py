@@ -117,6 +117,7 @@ async def run_project_planner(
         f"Model: {_planner_model} | thinking_budget: {_planner_thinking_budget}"
         + (f" | thinking_model: {_planner_thinking_model}" if _planner_thinking_model != _planner_model else "")
     )
+    await _log(f"⚙ Fetching {len(contracts)} project contracts — generating plan…")
 
     _stop_event = _threading.Event()
 
@@ -155,21 +156,6 @@ async def run_project_planner(
 
     # -- success -----------------------------------------------------------
     plan = result["plan"]
-
-    # Post-synthesis thinking review — one Sonnet+thinking call (non-fatal).
-    # Haiku can't do extended thinking, so we run a review pass with the
-    # thinking_model so the user sees real reasoning in the Sonnet pane.
-    if "haiku" in _planner_model.lower() and _planner_thinking_model:
-        await _review_plan_with_thinking(
-            plan=plan,
-            build_id=build_id,
-            user_id=user_id,
-            api_key=api_key,
-            thinking_model=_planner_thinking_model,
-            thinking_budget=8000,
-            broadcast_fn=_broadcast_build_event,
-        )
-
     phases = plan.get("phases", [])
     phase_summary = " → ".join(
         f"Phase {p['number']} ({p['name']})" for p in phases
@@ -177,12 +163,14 @@ async def run_project_planner(
     u = result["token_usage"]
     savings_pct = u["cache_read_input_tokens"] / max(u["input_tokens"], 1) * 100
 
+    # ── 1. Announce plan completion BEFORE running any review ─────────────
+    # The user should see the finished plan immediately; the review is a
+    # background concern and must not delay plan_complete from reaching the UI.
     await _log(f"Plan complete — {len(phases)} phases: {phase_summary}")
     await _log(
         f"Tokens: {u['input_tokens']:,} in / {u['output_tokens']:,} out "
         f"(cache saved {savings_pct:.0f}%)"
     )
-
     # Broadcast a structured event so the UI can render the plan summary
     await _broadcast_build_event(user_id, build_id, "plan_complete", {
         "plan_path": result["plan_path"],
@@ -190,6 +178,27 @@ async def run_project_planner(
         "token_usage": u,
         "iterations": result["iterations"],
     })
+
+    # ── 2. Post-synthesis review — background task (non-blocking) ─────────
+    # Haiku can't do extended thinking, so a separate Sonnet+thinking pass
+    # reviews the completed plan. Fires as a background asyncio.Task so the
+    # plan is already visible to the user before the review starts.
+    if "haiku" in _planner_model.lower() and _planner_thinking_model:
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": "🔍 Analysing plan in background — results will appear below…",
+            "source": "planner", "level": "info",
+        })
+        asyncio.create_task(
+            _review_plan_with_thinking(
+                plan=plan,
+                build_id=build_id,
+                user_id=user_id,
+                api_key=api_key,
+                thinking_model=_planner_thinking_model,
+                thinking_budget=8000,
+                broadcast_fn=_broadcast_build_event,
+            )
+        )
 
     return result
 
@@ -270,6 +279,25 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
         out_tokens = turn_data.get("output_tokens", 0)
         cache_hit = turn_data.get("cache_hit", False)
         stop_reason = turn_data.get("stop_reason", "")
+
+        # ── Synthetic callbacks from planner_agent for special events ─────────
+        # These are fired in ADDITION to the normal turn callback and should
+        # appear in the activity log as warnings, not as turn-summary entries.
+        if stop_reason in ("write_plan_failed", "max_tokens"):
+            warn_text = turn_data.get("text_content", "Planner encountered an error.")
+            warn_fut = asyncio.run_coroutine_threadsafe(
+                build_repo.append_build_log(build_id, warn_text, source="planner", level="warn"),
+                loop,
+            )
+            warn_fut.add_done_callback(lambda f: _log_future_exc(f, "planner_warn_log"))
+            ws_warn = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "build_log", {
+                    "message": warn_text, "source": "planner", "level": "warn",
+                }),
+                loop,
+            )
+            ws_warn.add_done_callback(lambda f: _log_future_exc(f, "planner_warn_ws"))
+            return  # don't emit a normal turn-summary for synthetic callbacks
 
         if tools:
             tool_summary = ", ".join(
@@ -388,12 +416,17 @@ async def _review_plan_with_thinking(
     import anthropic as _ant
     import json as _json
 
-    # Signal to the UI that thinking is starting so the pane doesn't go blank.
+    # Signal to the UI that the analysis section is starting.
     await broadcast_fn(user_id, build_id, "build_log", {
-        "message": f"💭 Plan review starting ({thinking_model})…",
+        "message": "─────────────── PLAN ANALYSIS ───────────────",
+        "source": "planner", "level": "info",
+    })
+    await broadcast_fn(user_id, build_id, "build_log", {
+        "message": f"💭 Plan analysis starting ({thinking_model})…",
         "source": "planner", "level": "info", "worker": "sonnet",
     })
 
+    had_thinking = False
     try:
         client = _ant.AsyncAnthropic(api_key=api_key, timeout=120.0)
         review_prompt = (
@@ -414,6 +447,7 @@ async def _review_plan_with_thinking(
             if getattr(block, "type", None) != "thinking":
                 continue
             text = getattr(block, "thinking", "") or ""
+            had_thinking = True
             await broadcast_fn(user_id, build_id, "thinking_block", {
                 "turn": i + 1,
                 "source": "planner",
@@ -424,9 +458,18 @@ async def _review_plan_with_thinking(
     except Exception as exc:
         logger.warning("Plan thinking review failed (non-fatal): %s", exc)
         await broadcast_fn(user_id, build_id, "build_log", {
-            "message": f"Plan thinking review skipped: {exc}",
+            "message": f"Plan analysis skipped: {exc}",
             "source": "planner", "level": "warn", "worker": "sonnet",
         })
+
+    await broadcast_fn(user_id, build_id, "plan_analysis_complete", {
+        "build_id": str(build_id),
+        "had_thinking": had_thinking,
+    })
+    await broadcast_fn(user_id, build_id, "build_log", {
+        "message": "─────────────── END ANALYSIS ────────────────",
+        "source": "planner", "level": "info",
+    })
 
 
 def _call_planner_sync(
