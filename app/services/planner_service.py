@@ -32,6 +32,16 @@ _PLANNER_DIR = Path(__file__).resolve().parent.parent.parent / "planner"
 if _PLANNER_DIR.exists() and str(_PLANNER_DIR) not in sys.path:
     sys.path.insert(0, str(_PLANNER_DIR))
 
+# Import planner_agent at module level so sys.modules is seeded with the
+# correct version immediately.  A lazy import inside run_project_planner()
+# would silently pick up any stale planner_agent already cached in sys.modules
+# (e.g. from forge_ide/mcp/tools.py pointing to Z:/ForgeCollection/planner/).
+try:
+    from planner_agent import PlannerError as _PlannerError, run_planner as _run_planner  # type: ignore[import]  # noqa: E402
+except ImportError:
+    _run_planner = None  # type: ignore[assignment]
+    _PlannerError = None  # type: ignore[assignment]
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -77,13 +87,14 @@ async def run_project_planner(
         await build_repo.append_build_log(build_id, msg, source="planner", level="error")
         return None
 
-    try:
-        from planner_agent import run_planner, PlannerError  # type: ignore[import]
-    except ImportError as exc:
-        msg = f"Cannot import planner_agent: {exc}"
+    if _run_planner is None or _PlannerError is None:
+        msg = f"Cannot import planner_agent from {_PLANNER_DIR} — check sys.path"
         logger.error(msg)
         await build_repo.append_build_log(build_id, msg, source="planner", level="error")
         return None
+
+    run_planner = _run_planner
+    PlannerError = _PlannerError
 
     project_manifest = _contracts_to_manifest(contracts)
     contract_fetcher = _make_contract_fetcher(contracts)

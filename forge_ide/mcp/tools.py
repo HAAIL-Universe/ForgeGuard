@@ -586,7 +586,7 @@ async def _run_planner(arguments: dict[str, Any]) -> dict[str, Any]:
     if not project_request:
         return {"error": "Missing required parameter: project_request"}
 
-    planner_dir = FORGEGUARD_ROOT.parent / "planner"
+    planner_dir = FORGEGUARD_ROOT / "planner"
     if not planner_dir.exists():
         return {"error": f"Planner directory not found: {planner_dir}"}
 
