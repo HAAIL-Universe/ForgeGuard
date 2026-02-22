@@ -50,6 +50,7 @@ async def lifespan(application: FastAPI):
                     ADD COLUMN IF NOT EXISTS plan_cached_at    TIMESTAMPTZ
             """)
             from app.repos.build_repo import interrupt_stale_builds, delete_all_zombie_builds
+            from app.repos.scout_repo import interrupt_stale_scout_runs
             _interrupted = await interrupt_stale_builds()
             if _interrupted:
                 logger.warning(
@@ -61,6 +62,12 @@ async def lifespan(application: FastAPI):
                 logger.info(
                     "Startup: cleared %d zombie build(s) with no phase progress.",
                     _zombies,
+                )
+            _stale_scouts = await interrupt_stale_scout_runs()
+            if _stale_scouts:
+                logger.warning(
+                    "Startup: marked %d stale scout run(s) as error.",
+                    _stale_scouts,
                 )
         except Exception as _db_exc:
             # Neon auto-pauses on the free tier — the first request will

@@ -40,12 +40,16 @@ services:
     environment:
       # Override DATABASE_URL to point at the compose-managed Postgres.
       DATABASE_URL: postgresql://forgeguard:forgeguard@db:5432/forgeguard
+      # Persistent workspace directory — survives container restarts.
+      WORKSPACE_DIR: /data/workspaces
     depends_on:
       db:
         condition: service_healthy
     volumes:
       # Mount source for hot-reload during development.
       - .:/app
+      # Persist build workspaces across container restarts.
+      - workspaces:/data/workspaces
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -63,3 +67,4 @@ services:
 
 volumes:
   pgdata:
+  workspaces:

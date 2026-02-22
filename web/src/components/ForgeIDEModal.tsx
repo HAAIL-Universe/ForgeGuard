@@ -1121,7 +1121,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [pendingPrompt, setPendingPrompt] = useState(false);  // Y/N prompt active
   const [planReady, setPlanReady] = useState(false);          // plan_complete received
-  const [planCommitted, setPlanCommitted] = useState(false);  // plan pushed to git
+  const [showPlanModal, setShowPlanModal] = useState(false);  // REVIEW popup open
   const [pendingClarification, setPendingClarification] = useState<{
     questionId: string;
     question: string;
@@ -1834,6 +1834,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'build_commenced':
               setPlanReady(false);
+              setShowPlanModal(false);
               setStatus('running');
               break;
 
@@ -1853,12 +1854,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 setTotalTasks(planPhaseList.length);
               }
               setPlanReady(true);
-              setPlanCommitted(false);
+              setShowPlanModal(false);
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: 'system',
                 level: 'system',
-                message: '✅ Plan complete — click PUSH to commit to git, or REVIEW to inspect the plan',
+                message: '✅ Plan complete — click REVIEW to inspect or PUSH to approve & build',
                 worker: 'system',
               }]);
               break;
@@ -2498,11 +2499,21 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       message: action === 'approve' ? '> Plan approved ✅' : '> Plan rejected ❌',
     }]);
     try {
-      await fetch(`${API_BASE}/projects/${projectId}/build/approve-plan`, {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/approve-plan`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
+      if (action === 'approve' && res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.sha) {
+          setLogs((prev) => [...prev, {
+            timestamp: new Date().toISOString(),
+            source: 'system', level: 'info',
+            message: `📋 Plan saved to git (${data.sha.slice(0, 8)})`,
+          }]);
+        }
+      }
     } catch { /* WS plan_approved event confirms */ }
   }, [projectId, token]);
 
@@ -3766,16 +3777,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 {planReady && (
                   <>
                     <button
-                      onClick={() => {
-                        const phaseList = phases.length > 0 ? phases : [];
-                        setLogs((prev) => [...prev, {
-                          timestamp: new Date().toISOString(),
-                          source: 'system',
-                          level: 'system',
-                          message: `📋 Build Plan — ${phaseList.length} phase${phaseList.length !== 1 ? 's' : ''}:\n${phaseList.map((ph: any) => `  Phase ${ph.number}: ${ph.name}${ph.objective ? ` — ${ph.objective}` : ''}`).join('\n')}`,
-                          worker: 'system',
-                        }]);
-                      }}
+                      onClick={() => setShowPlanModal(true)}
                       style={{
                         background: '#0F1A2E', color: '#38BDF8',
                         border: '1px solid #38BDF844', borderRadius: '4px',
@@ -3785,42 +3787,67 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     >
                       📋 REVIEW
                     </button>
-                    {!planCommitted ? (
-                      <button
-                        onClick={async () => {
-                          try {
-                            const res = await fetch(
-                              `${API_BASE}/projects/${projectId}/build/commit-plan`,
-                              { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
-                            );
-                            if (res.ok) setPlanCommitted(true);
-                          } catch (_) { /* non-fatal */ }
-                        }}
-                        style={{
-                          background: '#14532D', color: '#22C55E',
-                          border: '1px solid #22C55E44', borderRadius: '4px',
-                          padding: '3px 12px', cursor: 'pointer',
-                          fontSize: '0.7rem', fontWeight: 700,
-                          animation: 'pulseGreen 2s ease-in-out infinite',
-                        }}
-                      >
-                        ▶ PUSH
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => { sendCmd('/start'); setPlanReady(false); setPlanCommitted(false); }}
-                        style={{
-                          background: '#14532D', color: '#22C55E',
-                          border: '1px solid #22C55E44', borderRadius: '4px',
-                          padding: '3px 12px', cursor: 'pointer',
-                          fontSize: '0.7rem', fontWeight: 700,
-                          animation: 'pulseGreen 2s ease-in-out infinite',
-                        }}
-                      >
-                        ▶ START
-                      </button>
-                    )}
+                    <button
+                      onClick={() => { respondToPlanReview('approve'); setPlanReady(false); }}
+                      style={{
+                        background: '#14532D', color: '#22C55E',
+                        border: '1px solid #22C55E44', borderRadius: '4px',
+                        padding: '3px 12px', cursor: 'pointer',
+                        fontSize: '0.7rem', fontWeight: 700,
+                        animation: 'pulseGreen 2s ease-in-out infinite',
+                      }}
+                    >
+                      ▶ Approve & Build
+                    </button>
                   </>
+                )}
+                {/* Plan review modal — opens when user clicks REVIEW */}
+                {showPlanModal && planReady && (
+                  <div style={{
+                    position: 'absolute', bottom: '100%', left: 0, right: 0,
+                    background: '#0F1A2E', border: '1px solid #38BDF866',
+                    borderRadius: '6px 6px 0 0', padding: '12px 14px',
+                    display: 'flex', flexDirection: 'column', gap: '8px',
+                    maxHeight: '45vh', overflow: 'hidden',
+                    boxShadow: '0 -4px 24px rgba(56,189,248,0.15)',
+                    zIndex: 20,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: '#38BDF8', fontSize: '0.8rem', fontWeight: 700 }}>
+                        📋 Build Plan — {phases.length} phase{phases.length !== 1 ? 's' : ''}
+                      </span>
+                      <button
+                        onClick={() => setShowPlanModal(false)}
+                        style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '1rem', lineHeight: 1 }}
+                      >✕</button>
+                    </div>
+                    <div style={{ overflowY: 'auto', maxHeight: '30vh', fontSize: '0.72rem', color: '#CBD5E1', lineHeight: 1.7 }}>
+                      {phases.map((ph: any) => (
+                        <div key={ph.number} style={{ marginBottom: '6px' }}>
+                          <span style={{ color: '#A78BFA', fontWeight: 600 }}>Phase {ph.number}: {ph.name}</span>
+                          {ph.objective && <div style={{ paddingLeft: '12px', color: '#64748B' }}>{ph.objective}</div>}
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', paddingTop: '4px' }}>
+                      <button
+                        onClick={() => { respondToPlanReview('approve'); setPlanReady(false); setShowPlanModal(false); }}
+                        style={{
+                          flex: 1, background: '#065F46', border: '1px solid #22C55E66',
+                          borderRadius: '4px', color: '#22C55E', fontSize: '0.75rem',
+                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                        }}
+                      >✅ Approve & Build</button>
+                      <button
+                        onClick={() => { respondToPlanReview('reject'); setShowPlanModal(false); }}
+                        style={{
+                          background: '#3B1114', border: '1px solid #EF444466',
+                          borderRadius: '4px', color: '#EF4444', fontSize: '0.75rem',
+                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                        }}
+                      >❌ Reject</button>
+                    </div>
+                  </div>
                 )}
                 {/* Quick action buttons */}
                 {status === 'running' && (

@@ -243,6 +243,26 @@ async def push(
     await _strip_token_from_remote(repo_path, remote)
 
 
+async def fetch(
+    repo_path: str | Path,
+    *,
+    remote: str = "origin",
+    access_token: str | None = None,
+) -> None:
+    """Fetch from remote to update tracking refs.
+
+    Non-fatal if the remote has no branches yet (new empty repo).
+    Must be called before ``--force-with-lease`` so git has a tracking ref
+    to compare against.
+    """
+    env: dict[str, str] = {}
+    if access_token:
+        env = _make_askpass_env(access_token)
+
+    await _run_git(["fetch", remote], cwd=repo_path, env=env or None)
+    await _strip_token_from_remote(repo_path, remote)
+
+
 async def pull_rebase(
     repo_path: str | Path,
     *,
@@ -250,13 +270,17 @@ async def pull_rebase(
     branch: str = "main",
     access_token: str | None = None,
 ) -> None:
-    """Pull with rebase to integrate remote changes before pushing."""
+    """Pull with rebase to integrate remote changes before pushing.
+
+    Note: ``--allow-unrelated-histories`` is a merge flag and is NOT valid for
+    ``git rebase`` — it was removed to prevent silent failures across git versions.
+    """
     env: dict[str, str] = {}
     if access_token:
         env = _make_askpass_env(access_token)
 
     await _run_git(
-        ["pull", "--rebase", "--allow-unrelated-histories", remote, branch],
+        ["pull", "--rebase", remote, branch],
         cwd=repo_path,
         env=env or None,
     )
