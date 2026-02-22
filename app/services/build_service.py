@@ -33,6 +33,22 @@ from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
+
+def _get_workspace_dir(project_id: UUID | str) -> Path:
+    """Return the persistent workspace directory for a project.
+
+    Uses WORKSPACE_DIR env var when set; otherwise defaults to
+    ~/.forgeguard/workspaces so workspaces survive server restarts.
+    In Docker, set WORKSPACE_DIR=/data/workspaces and mount a volume there.
+    """
+    base = settings.WORKSPACE_DIR.strip() if settings.WORKSPACE_DIR else ""
+    if not base:
+        base = str(Path.home() / ".forgeguard" / "workspaces")
+    ws_base = Path(base)
+    ws_base.mkdir(parents=True, exist_ok=True)
+    return ws_base / str(project_id)
+
+
 # ---------------------------------------------------------------------------
 # MCP-driven system prompt (Phase 56) — used when USE_MCP_CONTRACTS=True
 # ---------------------------------------------------------------------------
@@ -780,11 +796,9 @@ async def start_build(
         # /continue — reuse previous build's working directory
         working_dir = working_dir_override
     elif target_type in ("github_new", "github_existing"):
-        # Use a stable, project-scoped directory so the venv, cloned repo,
-        # and installed deps persist across builds for the same project.
-        _ws_base = Path(tempfile.gettempdir()) / "forgeguard_workspaces"
-        _ws_base.mkdir(parents=True, exist_ok=True)
-        working_dir = str(_ws_base / str(project_id))
+        # Use a persistent, project-scoped directory so the venv, cloned repo,
+        # and installed deps survive server restarts and Docker container cycles.
+        working_dir = str(_get_workspace_dir(project_id))
 
     # Create build record
     build = await build_repo.create_build(
@@ -793,7 +807,7 @@ async def start_build(
         target_ref=target_ref,
         working_dir=working_dir,
         branch=branch,
-        build_mode=settings.BUILD_MODE,
+        build_mode="plan_execute",
         contract_batch=contract_batch,
     )
 
@@ -1380,27 +1394,37 @@ async def approve_plan(
         source="user", level="info",
     )
 
-    return {"ok": True, "build_id": build_id, "action": action}
+    # On approval, commit the plan to git so it survives server restarts.
+    # Non-fatal: if the workspace isn't ready yet (edge case), skip silently.
+    sha: str = ""
+    if action == "approve":
+        try:
+            commit_result = await commit_plan_to_git(project_id, user_id)
+            sha = commit_result.get("sha", "")
+        except Exception as exc:
+            logger.warning("approve_plan: plan git commit skipped: %s", exc)
+
+    return {"ok": True, "build_id": build_id, "action": action, "sha": sha}
 
 
 async def commit_plan_to_git(project_id: UUID, user_id: UUID) -> dict:
-    """Write forge_plan.json to the workspace and commit it to git.
+    """Write forge_plan.json to the workspace, commit it, and push to GitHub.
 
-    Called when the user clicks PUSH in the IDE after reviewing the plan.
-    Does NOT start the build — that requires a separate /build/commence call.
+    Called automatically when the user approves the plan in the IDE (via
+    approve_plan).  Ensures the plan is persisted to git before any builder
+    work starts — so closing/restarting does not silently lose it.
     """
     from fastapi import HTTPException
 
     build = await build_repo.get_latest_build_for_project(project_id)
-    if not build or str(build.get("user_id", "")) != str(user_id):
+    if not build:
         raise HTTPException(status_code=404, detail="No active build found")
 
     plan = await project_repo.get_cached_plan(project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="No cached plan found")
 
-    ws_base = Path(tempfile.gettempdir()) / "forgeguard_workspaces"
-    working_dir = str(ws_base / str(project_id))
+    working_dir = str(_get_workspace_dir(project_id))
     if not Path(working_dir).exists():
         raise HTTPException(status_code=400, detail="Workspace not yet initialised")
 
@@ -1411,12 +1435,29 @@ async def commit_plan_to_git(project_id: UUID, user_id: UUID) -> dict:
     sha = await git_client.commit(working_dir, "forge: save build plan")
 
     build_id = build["id"]
-    await build_repo.append_build_log(
-        build_id,
-        f"📋 Plan committed{f' ({sha[:8]})' if sha else ''}",
-        source="system", level="info",
-    )
-    return {"ok": True, "sha": sha or ""}
+
+    # Push to GitHub so the plan survives server restarts
+    pushed = False
+    if sha:
+        try:
+            project = await project_repo.get_project_by_id(project_id)
+            user = await get_user_by_id(user_id)
+            access_token = (user or {}).get("access_token", "")
+            repo_full_name = (project or {}).get("repo_full_name") or build.get("target_ref", "")
+            branch = build.get("branch", "main")
+            if access_token and repo_full_name:
+                remote_url = f"https://github.com/{repo_full_name}.git"
+                await git_client.set_remote(working_dir, remote_url)
+                await git_client.push(working_dir, branch=branch, access_token=access_token)
+                pushed = True
+        except Exception as exc:
+            logger.warning("commit_plan_to_git: push failed (non-fatal): %s", exc)
+
+    log_msg = f"📋 Plan committed ({sha[:8]})" if sha else "📋 Plan unchanged (nothing to commit)"
+    if pushed:
+        log_msg += " and pushed to GitHub"
+    await build_repo.append_build_log(build_id, log_msg, source="system", level="info")
+    return {"ok": True, "sha": sha or "", "pushed": pushed}
 
 
 async def commence_build(
@@ -2229,17 +2270,27 @@ async def interject_build(
             remote_url = f"https://github.com/{repo_full_name}.git"
             await git_client.set_remote(working_dir, remote_url)
 
-            # Pull rebase to integrate any remote changes, then push
+            # Fetch first so remote-tracking refs exist (required for
+            # --force-with-lease to work correctly).  Non-fatal for new
+            # repos where the remote branch doesn't exist yet.
+            try:
+                await git_client.fetch(working_dir, access_token=access_token)
+            except RuntimeError:
+                pass  # empty remote or unreachable — continue
+
+            # Rebase local commits onto remote; fall back to force push
             force = False
             try:
                 await git_client.pull_rebase(
                     working_dir, branch=branch, access_token=access_token,
                 )
             except RuntimeError:
-                # Rebase failed (conflicts / unrelated histories) — force push
+                # Rebase failed (conflicts or no common ancestor) — force push.
+                # Tracking refs were established by the fetch above, so
+                # --force-with-lease is now safe to use.
                 force = True
 
-            # Push (force-with-lease if pull-rebase failed)
+            # Push — force-with-lease if pull-rebase was skipped/failed
             await git_client.push(
                 working_dir, branch=branch, access_token=access_token,
                 force_with_lease=force,
@@ -2542,16 +2593,13 @@ async def _run_build(
     resume_from_phase: int = -1,
     fresh_start: bool = False,
 ) -> None:
-    """Dispatch to the appropriate build mode.
+    """Dispatch to the plan-execute build mode.
 
-    If BUILD_MODE is ``plan_execute``, uses the plan-then-execute architecture
-    (Phase 21): one planning call produces a manifest, then independent per-file
-    calls generate each file.
+    Uses the plan-then-execute architecture (Phase 21): the planner agent
+    produces a per-phase manifest, then the builder agent generates each file.
 
-    If BUILD_MODE is ``conversation``, falls back to the original conversation
-    loop.
+    The legacy conversation mode has been removed.
     """
-    mode = settings.BUILD_MODE
     bid = str(build_id)
 
     # Initialise cost tracking — read user's spend cap
@@ -2578,30 +2626,18 @@ async def _run_build(
         logger.warning("[mcp:session] set_session failed (non-fatal): %s", _exc)
 
     try:
-        if mode == "plan_execute" and working_dir:
-            await _run_build_plan_execute(
-                build_id, project_id, user_id, contracts, api_key,
-                audit_llm_enabled,
-                target_type=target_type,
-                target_ref=target_ref,
-                working_dir=working_dir,
-                access_token=access_token,
-                branch=branch,
-                api_key_2=api_key_2,
-                resume_from_phase=resume_from_phase,
-                fresh_start=fresh_start,
-            )
-        else:
-            await _run_build_conversation(
-                build_id, project_id, user_id, contracts, api_key,
-                audit_llm_enabled,
-                target_type=target_type,
-                target_ref=target_ref,
-                working_dir=working_dir,
-                access_token=access_token,
-                branch=branch,
-                api_key_2=api_key_2,
-            )
+        await _run_build_plan_execute(
+            build_id, project_id, user_id, contracts, api_key,
+            audit_llm_enabled,
+            target_type=target_type,
+            target_ref=target_ref,
+            working_dir=working_dir,
+            access_token=access_token,
+            branch=branch,
+            api_key_2=api_key_2,
+            resume_from_phase=resume_from_phase,
+            fresh_start=fresh_start,
+        )
     except asyncio.CancelledError:
         logger.info("Build task cancelled: %s", build_id)
         try:
@@ -2656,13 +2692,17 @@ async def _run_build_conversation(
     branch: str = "main",
     api_key_2: str = "",
 ) -> None:
-    """Background task that orchestrates the full build lifecycle.
+    """Legacy conversation-mode build loop — removed.
 
-    Streams agent output, detects phase completion signals, runs inline
-    audits, handles loopback, and advances through phases.
-    When a build target is configured, parses file blocks from the
-    builder output and writes them to the working directory.
+    The plan-execute architecture (``_run_build_plan_execute``) is the only
+    supported build mode.  This function is kept as a stub so existing
+    references compile; it is never called from ``_run_build()``.
     """
+    raise NotImplementedError(
+        "_run_build_conversation has been removed. "
+        "Use _run_build_plan_execute (the only supported build mode)."
+    )  # fmt: skip
+    # noqa — unreachable legacy code below kept for reference
     try:
         now = datetime.now(timezone.utc)
         await build_repo.update_build_status(
@@ -5519,6 +5559,28 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _log_msg, "source": "system", "level": "info",
             })
+
+        # ── BUILDER AGENT INTEGRATION POINT ─────────────────────────────────────────
+        # Per-phase manifest is ready and broadcast to the UI.
+        # When the builder agent is integrated, remove this stub block.
+        _stub_msg = (
+            f"✅ {phase_name} planned ({len(manifest)} files). "
+            "Builder agent not yet integrated — build halted at planning stage. "
+            "Use /push to push the plan to git."
+        )
+        await build_repo.append_build_log(
+            build_id, _stub_msg, source="system", level="info",
+        )
+        await _broadcast_build_event(user_id, build_id, "build_log", {
+            "message": _stub_msg, "source": "system", "level": "info",
+        })
+        await build_repo.update_build_status(build_id, "planned")
+        await _broadcast_build_event(user_id, build_id, "build_paused", {
+            "reason": "awaiting_builder_agent",
+            "message": "Build halted — awaiting builder agent integration",
+        })
+        return
+        # ── END BUILDER AGENT INTEGRATION POINT ──────────────────────────────────────
 
         # 2. Generate each file (with parallel per-file audits)
         phase_files_written: dict[str, str] = {}

@@ -521,15 +521,13 @@ class TestGenerateFixManifest:
 
 
 class TestBuildModeDispatcher:
-    """Tests for build mode selection."""
+    """Tests for build mode dispatcher — always uses plan_execute."""
 
     @pytest.mark.asyncio
-    async def test_plan_execute_mode(self):
-        """When BUILD_MODE=plan_execute and working_dir set → plan-execute path."""
-        with patch.object(build_service.settings, "BUILD_MODE", "plan_execute"), \
-             patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
-             patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe, \
-             patch("app.services.build_service._run_build_conversation", new_callable=AsyncMock) as mock_conv:
+    async def test_always_uses_plan_execute(self):
+        """_run_build always calls _run_build_plan_execute regardless of args."""
+        with patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
+             patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe:
 
             await build_service._run_build(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, [], "sk-test",
@@ -537,38 +535,28 @@ class TestBuildModeDispatcher:
             )
 
         mock_pe.assert_called_once()
-        mock_conv.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_conversation_mode(self):
-        """When BUILD_MODE=conversation → conversation path."""
-        with patch.object(build_service.settings, "BUILD_MODE", "conversation"), \
-             patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
-             patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe, \
-             patch("app.services.build_service._run_build_conversation", new_callable=AsyncMock) as mock_conv:
-
-            await build_service._run_build(
-                _BUILD_ID, _PROJECT_ID, _USER_ID, [], "sk-test",
-                working_dir="/tmp/test",
-            )
-
-        mock_conv.assert_called_once()
-        mock_pe.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_plan_execute_without_working_dir_falls_back(self):
-        """Plan-execute without working_dir → falls back to conversation."""
-        with patch.object(build_service.settings, "BUILD_MODE", "plan_execute"), \
-             patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
-             patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe, \
-             patch("app.services.build_service._run_build_conversation", new_callable=AsyncMock) as mock_conv:
+    async def test_plan_execute_without_working_dir(self):
+        """_run_build calls plan_execute even when working_dir is not provided."""
+        with patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock, return_value={"build_spend_cap": None}), \
+             patch("app.services.build_service._run_build_plan_execute", new_callable=AsyncMock) as mock_pe:
 
             await build_service._run_build(
                 _BUILD_ID, _PROJECT_ID, _USER_ID, [], "sk-test",
             )
 
-        mock_conv.assert_called_once()
-        mock_pe.assert_not_called()
+        mock_pe.assert_called_once()
+
+    def test_conversation_mode_raises(self):
+        """_run_build_conversation raises NotImplementedError (legacy removed)."""
+        import asyncio
+        with pytest.raises(NotImplementedError, match="removed"):
+            asyncio.get_event_loop().run_until_complete(
+                build_service._run_build_conversation(
+                    _BUILD_ID, _PROJECT_ID, _USER_ID, [], "sk-test",
+                )
+            )
 
 
 # ---------------------------------------------------------------------------

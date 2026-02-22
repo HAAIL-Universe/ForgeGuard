@@ -225,12 +225,15 @@ async def delete_all_zombie_builds() -> int:
 
 
 async def interrupt_stale_builds() -> int:
-    """Mark any 'pending' or 'running' builds as 'failed' on server startup.
+    """Mark any active builds as 'failed' on server startup.
 
     Called once during lifespan startup to clear builds that were left in an
     active state by a previous server instance (crash, SIGTERM, restart).
     Without this, start_build() refuses to create a fresh build and the IDE
     shows stale logs with no live background task behind them.
+
+    'planned' builds are also interrupted: the plan is committed to git so
+    no work is lost, and the user can start a fresh build for the builder.
 
     Returns the number of builds interrupted.
     """
@@ -242,7 +245,7 @@ async def interrupt_stale_builds() -> int:
            SET status       = 'failed',
                completed_at = $1,
                error_detail = 'Interrupted by server restart'
-         WHERE status IN ('pending', 'running')
+         WHERE status IN ('pending', 'running', 'planned')
         """,
         now,
     )
@@ -254,10 +257,10 @@ async def interrupt_stale_builds() -> int:
 
 
 async def has_active_builds(project_id: UUID) -> bool:
-    """Return True if the project has any pending/running/paused builds."""
+    """Return True if the project has any pending/running/paused/planned builds."""
     pool = await get_pool()
     return await pool.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM builds WHERE project_id = $1 AND status IN ('pending', 'running', 'paused'))",
+        "SELECT EXISTS(SELECT 1 FROM builds WHERE project_id = $1 AND status IN ('pending', 'running', 'paused', 'planned'))",
         project_id,
     )
 
@@ -270,7 +273,7 @@ async def cancel_build(build_id: UUID) -> bool:
         """
         UPDATE builds SET status = 'cancelled', completed_at = $2,
                paused_at = NULL, pause_reason = NULL, pause_phase = NULL
-        WHERE id = $1 AND status IN ('pending', 'running', 'paused')
+        WHERE id = $1 AND status IN ('pending', 'running', 'paused', 'planned')
         """,
         build_id,
         now,

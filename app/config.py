@@ -105,6 +105,11 @@ class Settings(BaseSettings):
             self.BUILD_MODEL_TIER = "haiku"  # keeps get_model_for_role consistent
         return self
 
+    # Persistent workspace directory for all build working trees.
+    # Defaults to ~/.forgeguard/workspaces so it survives server restarts.
+    # In Docker set to /data/workspaces and mount a volume there.
+    WORKSPACE_DIR: str = ""
+
     PAUSE_THRESHOLD: int = Field(default=3, ge=1)
     BUILD_PAUSE_TIMEOUT_MINUTES: int = 30
     PHASE_TIMEOUT_MINUTES: int = 10
@@ -120,8 +125,6 @@ class Settings(BaseSettings):
 
     # Token budget for workspace snapshot in planner context (0 = unlimited)
     RECON_TOKEN_BUDGET: int = 30_000
-    # Build mode: "plan_execute" (new) or "conversation" (legacy)
-    BUILD_MODE: str = "plan_execute"
     # Server-level hard cost cap (USD) applied when the user has no
     # personal spend cap configured.  Set to 0 to disable.
     BUILD_MAX_COST_USD: float = 50.00

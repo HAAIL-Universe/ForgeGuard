@@ -1,0 +1,162 @@
+"""
+Tests for the builder agent stub and "planned" build status path.
+
+These tests verify that:
+  1. builder_agent.generate_file() raises NotImplementedError (stub in place).
+  2. build_service.py no longer has a BUILD_MODE conditional in _run_build().
+  3. _run_build_conversation() raises NotImplementedError (removed legacy code).
+  4. "planned" status is included in active-build checks (build_repo).
+  5. "planned" status is cleaned up on server restart (interrupt_stale_builds).
+"""
+from __future__ import annotations
+
+import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
+from uuid import UUID, uuid4
+
+
+# ── 1. builder_agent.generate_file() raises NotImplementedError ──────────────
+
+
+class TestBuilderAgentStub:
+    """The builder agent interface exists but raises NotImplementedError."""
+
+    @pytest.mark.asyncio
+    async def test_generate_file_raises_not_implemented(self):
+        from app.services.build.builder_agent import generate_file
+        with pytest.raises(NotImplementedError, match="not yet implemented"):
+            await generate_file(
+                build_id=str(uuid4()),
+                user_id=str(uuid4()),
+                api_key="sk-test",
+                file_entry={"path": "app/main.py", "purpose": "Entry point"},
+                contracts=[],
+                context=[],
+                phase_deliverables=[],
+                working_dir="/tmp/test",
+            )
+
+    def test_generate_file_has_correct_signature(self):
+        """generate_file accepts the expected arguments."""
+        import inspect
+        from app.services.build.builder_agent import generate_file
+        sig = inspect.signature(generate_file)
+        params = list(sig.parameters.keys())
+        assert "build_id" in params
+        assert "user_id" in params
+        assert "api_key" in params
+        assert "file_entry" in params
+        assert "working_dir" in params
+
+
+# ── 2. BUILD_MODE no longer in settings ──────────────────────────────────────
+
+
+class TestBuildModeRemoved:
+    """BUILD_MODE setting has been removed from config."""
+
+    def test_build_mode_not_in_settings(self):
+        from app.config import Settings
+        assert not hasattr(Settings(), "BUILD_MODE"), (
+            "BUILD_MODE should have been removed from Settings"
+        )
+
+    def test_run_build_no_mode_branch(self):
+        """_run_build source code does not branch on BUILD_MODE."""
+        import inspect
+        import app.services.build_service as bs
+        src = inspect.getsource(bs._run_build)
+        assert "BUILD_MODE" not in src, (
+            "_run_build should no longer reference BUILD_MODE"
+        )
+        assert "_run_build_conversation" not in src, (
+            "_run_build should no longer call _run_build_conversation"
+        )
+
+
+# ── 3. _run_build_conversation raises NotImplementedError ────────────────────
+
+
+class TestConversationModeRemoved:
+    """Legacy conversation mode raises NotImplementedError."""
+
+    @pytest.mark.asyncio
+    async def test_conversation_mode_raises(self):
+        import app.services.build_service as bs
+        with pytest.raises(NotImplementedError, match="removed"):
+            await bs._run_build_conversation(
+                build_id=uuid4(),
+                project_id=uuid4(),
+                user_id=uuid4(),
+                contracts=[],
+                api_key="sk-test",
+            )
+
+
+# ── 4. "planned" is treated as an active build status ────────────────────────
+
+
+class TestPlannedStatusActive:
+    """'planned' builds block new builds from starting (active state)."""
+
+    @pytest.mark.asyncio
+    async def test_has_active_builds_includes_planned(self):
+        """has_active_builds query includes 'planned' status."""
+        import inspect
+        from app.repos import build_repo
+        src = inspect.getsource(build_repo.has_active_builds)
+        assert "'planned'" in src, (
+            "has_active_builds should include 'planned' in the status IN clause"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancel_build_includes_planned(self):
+        """cancel_build allows cancelling 'planned' builds."""
+        import inspect
+        from app.repos import build_repo
+        src = inspect.getsource(build_repo.cancel_build)
+        assert "'planned'" in src, (
+            "cancel_build should allow cancelling 'planned' builds"
+        )
+
+
+# ── 5. "planned" is interrupted on server restart ─────────────────────────────
+
+
+class TestPlannedStatusInterrupted:
+    """'planned' builds are marked failed on server restart."""
+
+    @pytest.mark.asyncio
+    async def test_interrupt_stale_builds_includes_planned(self):
+        """interrupt_stale_builds SQL includes 'planned' in WHERE clause."""
+        import inspect
+        from app.repos import build_repo
+        src = inspect.getsource(build_repo.interrupt_stale_builds)
+        assert "'planned'" in src, (
+            "interrupt_stale_builds should include 'planned' in the status IN clause"
+        )
+
+
+# ── 6. Builder agent stub inserted before file generation ────────────────────
+
+
+class TestBuilderStubInPlanExecute:
+    """The builder agent stub is present in _run_build_plan_execute."""
+
+    def test_stub_return_before_file_generation(self):
+        """'BUILDER AGENT INTEGRATION POINT' marker exists in plan_execute."""
+        import inspect
+        import app.services.build_service as bs
+        src = inspect.getsource(bs._run_build_plan_execute)
+        assert "BUILDER AGENT INTEGRATION POINT" in src, (
+            "Builder agent stub block should be present in _run_build_plan_execute"
+        )
+
+    def test_awaiting_builder_agent_reason_in_stub(self):
+        """The stub broadcasts 'awaiting_builder_agent' reason."""
+        import inspect
+        import app.services.build_service as bs
+        src = inspect.getsource(bs._run_build_plan_execute)
+        assert "awaiting_builder_agent" in src, (
+            "Stub should broadcast reason='awaiting_builder_agent'"
+        )
