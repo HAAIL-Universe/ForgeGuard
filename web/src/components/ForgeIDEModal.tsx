@@ -1926,23 +1926,35 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 })));
                 setTotalTasks(planPhaseList.length);
 
-                // Add PLAN narration box to the Sonnet panel
+                // Upsert (or append) the PLAN box in the Sonnet panel.
+                // If plan_writing_live already created a partial-content plan box,
+                // replace it with the final formatted text.  If not (e.g. restored
+                // build), append a new one.
                 const planText = formatPlanText(planPhaseList);
-                setLogs((prev) => [...prev, {
-                  timestamp: new Date().toISOString(),
-                  source: 'reasoning' as const,
-                  level: 'info',
-                  message: `📋 Plan — ${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
-                  worker: 'sonnet' as const,
-                  reasoning: {
-                    text: planText,
-                    textLength: planText.length,
-                    turn: 0,
-                    phase: `${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
-                    isActualThinking: false,
-                    isPlanBox: true,
-                  },
-                }]);
+                setLogs((prev) => {
+                  const existingIdx = prev.findLastIndex((l) => l.reasoning?.isPlanBox);
+                  const entry = {
+                    timestamp: new Date().toISOString(),
+                    source: 'reasoning' as const,
+                    level: 'info',
+                    message: `📋 Plan — ${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
+                    worker: 'sonnet' as const,
+                    reasoning: {
+                      text: planText,
+                      textLength: planText.length,
+                      turn: 0,
+                      phase: `${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
+                      isActualThinking: false,
+                      isPlanBox: true,
+                    },
+                  };
+                  if (existingIdx >= 0) {
+                    const next = [...prev];
+                    next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
+                    return next;
+                  }
+                  return [...prev, entry];
+                });
               }
               setPlanReady(true);
               setShowPlanModal(false);
@@ -2149,6 +2161,39 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   reasoning: {
                     text, textLength: length, turn, phase: undefined as string | undefined,
                     isActualThinking: false,
+                  },
+                };
+                if (existingIdx >= 0) {
+                  const next = [...prev];
+                  next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
+                  return next;
+                }
+                return [...prev, entry];
+              });
+              break;
+            }
+
+            /* ---- Live streaming plan JSON (upserts plan box progressively as write_plan runs) ---- */
+            case 'plan_writing_live': {
+              const turn = (p.turn as number) || 0;
+              const partialText = (p.partial_text as string) || '';
+              const charCount = (p.char_count as number) || partialText.length;
+              setLogs((prev) => {
+                const existingIdx = prev.findLastIndex((l) => l.reasoning?.isPlanBox);
+                const previewLabel = charCount > 0 ? ` (${(charCount / 1000).toFixed(1)}k chars…)` : '…';
+                const entry = {
+                  timestamp: new Date().toISOString(),
+                  source: 'reasoning' as const,
+                  level: 'info',
+                  message: `✍ Writing plan${previewLabel}`,
+                  worker: 'sonnet' as const,
+                  reasoning: {
+                    text: partialText,
+                    textLength: charCount,
+                    turn,
+                    phase: undefined as string | undefined,
+                    isActualThinking: false,
+                    isPlanBox: true,
                   },
                 };
                 if (existingIdx >= 0) {

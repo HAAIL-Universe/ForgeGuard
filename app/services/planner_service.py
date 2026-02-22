@@ -378,18 +378,30 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
         if event_type == "plan_writing_delta":
             char_count = delta_data.get("char_count", 0)
             turn = delta_data.get("turn", "?")
+            partial_text = delta_data.get("partial_text", "")
+            # On the first event (block start) also emit an activity-panel log entry
+            # so the Activity tab shows progress even when the Sonnet panel is hidden.
             if char_count == 0:
-                msg = f"✍ Writing plan — turn {turn}… (this may take 1–2 min)"
-            else:
-                msg = f"✍ Writing plan — {char_count:,} chars…"
+                log_fut = asyncio.run_coroutine_threadsafe(
+                    broadcast_fn(user_id, build_id, "build_log", {
+                        "message": f"✍ Writing plan — turn {turn}… (this may take 1–2 min)",
+                        "source": "planner", "level": "info", "worker": "sonnet",
+                    }),
+                    loop,
+                )
+                log_fut.add_done_callback(lambda f: _log_future_exc(f, "plan_writing_start_log"))
+            # Always upsert the live plan box in the Sonnet panel with the
+            # accumulated partial JSON — mirrors narration_live / thinking_live.
             fut = asyncio.run_coroutine_threadsafe(
-                broadcast_fn(user_id, build_id, "build_log", {
-                    "message": msg, "source": "planner", "level": "info",
-                    "worker": "sonnet",
+                broadcast_fn(user_id, build_id, "plan_writing_live", {
+                    "turn": turn,
+                    "source": "planner",
+                    "partial_text": partial_text,
+                    "char_count": char_count,
                 }),
                 loop,
             )
-            fut.add_done_callback(lambda f: _log_future_exc(f, "plan_writing_log"))
+            fut.add_done_callback(lambda f: _log_future_exc(f, "plan_writing_live"))
             return
 
         if event_type not in ("thinking_delta", "narration_delta"):

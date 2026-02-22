@@ -169,6 +169,7 @@ def _run_streaming_turn(
     _write_plan_idx: int | None = None
     _plan_json_chars = 0
     _plan_json_last_fired = 0
+    _plan_json_text = ""  # accumulated partial JSON for live preview
 
     with client.messages.stream(**create_kwargs) as stream:
         for event in stream:
@@ -243,12 +244,14 @@ def _run_streaming_turn(
             elif delta_type == "input_json_delta" and event.index == _write_plan_idx:
                 partial = getattr(delta, "partial_json", "") or ""
                 _plan_json_chars += len(partial)
+                _plan_json_text += partial
                 if _plan_json_chars - _plan_json_last_fired >= PLAN_STREAM_CHUNK_CHARS:
                     _plan_json_last_fired = _plan_json_chars
                     stream_callback({
                         "type": "plan_writing_delta",
                         "turn": turn_num,
                         "char_count": _plan_json_chars,
+                        "partial_text": _plan_json_text,
                     })
 
         return stream.get_final_message()
