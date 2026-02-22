@@ -52,15 +52,19 @@ def _make_broadcast_mock():
 class TestPlanCompleteBeforeReview:
 
     def test_plan_complete_before_review_in_source(self):
-        """Source code: plan_complete broadcast appears before create_task call."""
+        """Source code: plan_complete broadcast appears before the review create_task call."""
         import inspect
         src = inspect.getsource(ps.run_project_planner)
         plan_complete_pos = src.find('"plan_complete"')
-        review_task_pos = src.find("create_task")
+        # Search specifically for the review task, not any create_task (e.g. heartbeat).
+        review_task_pos = src.find("create_task(_review_plan_with_thinking")
+        # Fallback: find create_task wrapping the review function by its keyword args.
+        if review_task_pos == -1:
+            review_task_pos = src.find("_review_plan_with_thinking")
         assert plan_complete_pos != -1, "plan_complete broadcast not found in source"
-        assert review_task_pos != -1, "create_task not found in source"
+        assert review_task_pos != -1, "create_task for review not found in source"
         assert plan_complete_pos < review_task_pos, (
-            "plan_complete broadcast must appear before asyncio.create_task in source"
+            "plan_complete broadcast must appear before the review asyncio.create_task in source"
         )
 
     def test_review_not_awaited_inline(self):
