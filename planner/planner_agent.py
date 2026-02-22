@@ -328,6 +328,12 @@ def run_planner(
         # receives incomplete JSON — causing a validation failure and a retry loop.
         # Detect this early and inject a targeted correction so the model knows why
         # its previous call failed and tries again more concisely.
+        #
+        # IMPORTANT: if the truncated assistant turn contained any tool_use blocks,
+        # the Anthropic API requires that the very next user turn contains matching
+        # tool_result blocks (one per tool_use id). Injecting a plain text message
+        # without these results causes a 400 API error on the next call. We add
+        # synthetic error tool_results before the correction text.
         if response.stop_reason == "max_tokens":
             if verbose:
                 print(f"[PLANNER] WARNING: max_tokens hit ({u.output_tokens} tokens) — response truncated.")
@@ -344,6 +350,22 @@ def run_planner(
                         "plan_json was cut off before completion. Retrying."
                     ),
                 })
+            # Synthesise tool_result entries for any tool_use blocks that were
+            # truncated (no real result was produced). The correction message
+            # must follow immediately after in the same user turn.
+            truncated_tool_uses = [b for b in response.content if b.type == "tool_use"]
+            if truncated_tool_uses:
+                synthetic_results = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": json.dumps({
+                            "error": "Response was truncated before tool execution completed."
+                        }),
+                    }
+                    for b in truncated_tool_uses
+                ]
+                messages.append({"role": "user", "content": synthetic_results})
             messages.append({"role": "user", "content": (
                 "Your previous response was cut off because it exceeded the output token limit. "
                 "The plan_json argument to write_plan was incomplete. "
