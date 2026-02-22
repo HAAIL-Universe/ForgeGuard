@@ -5,9 +5,6 @@ Replace all bracketed content with project-specific instructions.
 Phase list MUST match the phases contract exactly.
 All tech references MUST match the canonical anchor and stack contract.
 
-AEM: enabled
-Auto-authorize: enabled
-
 ## Build Instructions
 
 1. Read all contracts: blueprint, stack, schema, physics, boundaries, ui, phases
@@ -29,7 +26,3 @@ Auto-authorize: enabled
 ## Project Summary
 
 [One sentence describing what is being built — from the blueprint product intent.]
-
-## Boot Script
-
-- boot_script: [path/to/startup/script as defined in forge.json]
