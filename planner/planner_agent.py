@@ -356,9 +356,10 @@ def run_planner(
         if thinking_budget > 0:
             _create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
 
-        # Stream if a stream_callback is provided (gives live thinking updates),
-        # otherwise fall back to the blocking create() path (e.g. unit tests).
-        if stream_callback is not None and thinking_budget > 0:
+        # Stream if a stream_callback is provided (gives live thinking + narration).
+        # Text narration streaming works for ALL models (Haiku included) — do NOT
+        # gate on thinking_budget > 0 or narration text will always bulk-drop.
+        if stream_callback is not None:
             response = _run_streaming_turn(client, _create_kwargs, iteration, stream_callback)
         else:
             response = client.messages.create(**_create_kwargs)
