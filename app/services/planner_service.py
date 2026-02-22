@@ -385,6 +385,7 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
             fut = asyncio.run_coroutine_threadsafe(
                 broadcast_fn(user_id, build_id, "build_log", {
                     "message": msg, "source": "planner", "level": "info",
+                    "worker": "sonnet",
                 }),
                 loop,
             )

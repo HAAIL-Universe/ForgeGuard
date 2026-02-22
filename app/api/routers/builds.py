@@ -84,7 +84,10 @@ async def start_build(
             fresh_start=body.fresh_start if body else False,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        msg = str(exc).lower()
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── GET /projects/{project_id}/builds ─────────────────────────────────────

@@ -86,6 +86,7 @@ def test_start_build(mock_get_user, mock_start, client):
         target_type=None, target_ref=None,
         branch="main",
         contract_batch=None,
+        fresh_start=False,
     )
 
 
@@ -110,6 +111,7 @@ def test_start_build_with_contract_batch(mock_get_user, mock_start, mock_limiter
         target_type=None, target_ref=None,
         branch="main",
         contract_batch=3,
+        fresh_start=False,
     )
 
 

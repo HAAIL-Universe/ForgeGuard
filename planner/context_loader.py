@@ -140,7 +140,6 @@ CONSTRAINTS — read carefully:
     • NO auth of any kind — exclude JWT, OAuth, login, sessions, auth.py,
       security.py, any auth middleware, even if contracts mention them.
     • NO user management — no user table, no user endpoints.
-    • NO deployment infrastructure — no Docker, no CI/CD.
     • Public unauthenticated endpoints only. Auth is deferred by design.
 
 WHAT IS PRE-LOADED IN YOUR CONTEXT:

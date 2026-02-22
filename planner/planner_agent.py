@@ -333,7 +333,6 @@ def run_planner(
                 "    security.py). Even if the stack or phases contracts mention JWT or auth,\n"
                 "    EXCLUDE them entirely from every phase file_manifest.\n"
                 "  • NO user management: no user table, no user endpoints, no user schema.\n"
-                "  • NO deployment infrastructure: no Docker, no Dockerfile, no CI/CD.\n"
                 "  • Core feature only — implement the stated functionality with public,\n"
                 "    unauthenticated endpoints. Auth is intentionally deferred.\n"
                 if max_phases <= 3 else
