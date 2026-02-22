@@ -267,6 +267,10 @@ _CONTRACT_PRIORITY = [
     "physics", "boundaries", "ui", "phases", "intake",
 ]
 
+# Contract types the planner must never see — they contain IDE/builder metadata
+# irrelevant to plan generation and can cause contamination.
+_PLANNER_EXCLUDED_CONTRACTS = {"builder_directive"}
+
 
 def _contracts_to_manifest(contracts: list[dict]) -> str:
     """Build a lightweight contract manifest (~200 tokens, no content).
@@ -277,7 +281,11 @@ def _contracts_to_manifest(contracts: list[dict]) -> str:
     if not contracts:
         return "No project contracts available."
 
-    type_map = {c["contract_type"]: len(c.get("content", "")) for c in contracts}
+    type_map = {
+        c["contract_type"]: len(c.get("content", ""))
+        for c in contracts
+        if c["contract_type"] not in _PLANNER_EXCLUDED_CONTRACTS
+    }
     ordered = [t for t in _CONTRACT_PRIORITY if t in type_map]
     ordered += sorted(t for t in type_map if t not in _CONTRACT_PRIORITY)
 

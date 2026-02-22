@@ -76,7 +76,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "description": (
                         "Contract type to fetch. One of: "
                         "blueprint, stack, schema, manifesto, physics, "
-                        "boundaries, ui, phases, builder_directive"
+                        "boundaries, ui, phases"
                     ),
                 },
             },

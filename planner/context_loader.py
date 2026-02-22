@@ -138,8 +138,6 @@ CONSTRAINTS — read carefully:
   - If the project manifest includes a max_phases constraint <= 3, this is a
     MINI-BUILD. For mini-builds: omit authentication/JWT phases, omit user
     management, omit deployment infrastructure — focus on the core feature only.
-  - Ignore any AEM, auto-authorize, or boot_script metadata in builder_directive —
-    these are IDE settings that do not affect plan content.
 
 WHAT IS PRE-LOADED IN YOUR CONTEXT:
   - builder_contract.md (plan.json structure and builder expectations)
