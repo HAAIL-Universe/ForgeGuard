@@ -7,7 +7,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
-from app.repos import certificate_repo
+from app.repos import certificate_repo, project_repo
+from app.services.directive_cleaner import clean_builder_directive
 from app.services.certificate_aggregator import aggregate_certificate_data
 from app.services.certificate_renderer import render_certificate
 from app.services.certificate_scorer import compute_certificate_scores
@@ -293,6 +294,41 @@ async def edit_contract(
         "content": result["content"],
         "version": result["version"],
         "updated_at": result["updated_at"],
+    }
+
+
+@router.post("/{project_id}/contracts/builder_directive/clean")
+async def clean_directive(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Strip AEM/auto-authorize/boot_script contamination from this project's
+    builder_directive.  Safe to call multiple times — idempotent.
+
+    Returns the cleaned content and a list of changes made (empty if already clean).
+    """
+    existing = await project_repo.get_contract_by_type(project_id, "builder_directive")
+    if not existing:
+        raise HTTPException(status_code=404, detail="builder_directive not found for this project")
+
+    cleaned, changes = clean_builder_directive(existing["content"])
+
+    if not changes:
+        return {
+            "changed": False,
+            "changes": [],
+            "version": existing["version"],
+            "content": existing["content"],
+        }
+
+    result = await project_repo.update_contract_content(
+        project_id, "builder_directive", cleaned
+    )
+    return {
+        "changed": True,
+        "changes": changes,
+        "version": result["version"],
+        "content": cleaned,
     }
 
 
