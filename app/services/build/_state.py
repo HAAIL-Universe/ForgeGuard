@@ -362,10 +362,11 @@ async def _build_watchdog(build_id: UUID, user_id: UUID) -> None:
             status = activity_label
 
             if idle >= _STALL_FAIL_THRESHOLD:
-                # Never force-fail a build that is intentionally waiting at the
-                # IDE gate (user is reviewing the plan before pressing /start or
-                # PUSH).  The idle time here is user think-time, not a stall.
-                if bid in _ide_ready_events:
+                # Never force-fail a build that is intentionally waiting for
+                # user action.  Both gates are user-think-time, not real stalls:
+                #   _ide_ready_events    — user hasn't clicked PUSH yet (pre-plan)
+                #   _plan_review_events  — user hasn't approved the plan yet (post-plan)
+                if bid in _ide_ready_events or bid in _plan_review_events:
                     _touch_progress(build_id)   # reset stall clock
                     idle = 0                    # fall through to normal heartbeat
                 else:

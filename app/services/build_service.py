@@ -5907,7 +5907,10 @@ async def _run_build_plan_execute(
                     source="planner", level="info",
                 )
 
-                # Wait for user to approve/reject
+                # Wait for user to approve/reject.
+                # Touch progress so the watchdog doesn't force-fail while
+                # the user is reading the plan (user-think-time, not a stall).
+                _touch_progress(build_id)
                 _review_event = register_plan_review(str(build_id))
                 try:
                     await asyncio.wait_for(
