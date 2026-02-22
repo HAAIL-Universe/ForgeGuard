@@ -139,6 +139,11 @@ async def run_project_planner(
     turn_callback = _make_turn_callback(loop, build_id, user_id, build_repo, _broadcast_build_event)
     stream_callback = _make_stream_callback(loop, user_id, build_id, _broadcast_build_event)
 
+    # Heartbeat: emit "still planning" every 30 s so the user never stares at
+    # a blank screen.  Cancelled as soon as the planner returns.
+    _heartbeat = asyncio.create_task(
+        _planner_heartbeat(user_id, build_id, _broadcast_build_event, interval=30)
+    )
     try:
         result = await loop.run_in_executor(
             None,
@@ -159,10 +164,17 @@ async def run_project_planner(
         )
     except asyncio.CancelledError:
         _stop_event.set()
+        _heartbeat.cancel()
         raise
     except Exception as exc:
         await _log(f"Project planner crashed: {exc}", "error")
         return None
+    finally:
+        _heartbeat.cancel()
+        try:
+            await _heartbeat
+        except asyncio.CancelledError:
+            pass
 
     if result is None:
         await _log("Project planner failed to produce a plan.", "error")
@@ -333,6 +345,20 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
         # char_count == 0 means "thinking block just started" — show a
         # placeholder so the UI creates the pulsing entry immediately.
         display_text = text[:12_000] if text else "…"
+
+        # Belt-and-suspenders: ALSO emit a plain build_log on thinking start
+        # so the activity log shows something even if thinking_live events
+        # don't surface in the reasoning box for some reason.
+        if char_count == 0:
+            log_fut = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "build_log", {
+                    "message": f"💭 Extended thinking — turn {turn}…",
+                    "source": "planner", "level": "info", "worker": "sonnet",
+                }),
+                loop,
+            )
+            log_fut.add_done_callback(lambda f: _log_future_exc(f, "thinking_start_log"))
+
         fut = asyncio.run_coroutine_threadsafe(
             broadcast_fn(user_id, build_id, "thinking_live", {
                 "turn": turn,
@@ -442,6 +468,22 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
             )
             tool_fut.add_done_callback(lambda f: _log_future_exc(f, "tool_broadcast"))
 
+        # After the contract-fetch turn (all tools are forge_get_project_contract),
+        # emit an immediate "generating plan" message so the user knows what's
+        # happening during the long extended-thinking turn that follows.
+        if tools and all(t.get("name") == "forge_get_project_contract" for t in tools):
+            contracts_fut = asyncio.run_coroutine_threadsafe(
+                broadcast_fn(user_id, build_id, "build_log", {
+                    "message": (
+                        f"📊 All {len(tools)} contracts loaded — "
+                        "generating plan (extended thinking in progress, may take 1–3 min)…"
+                    ),
+                    "source": "planner", "level": "info", "worker": "sonnet",
+                }),
+                loop,
+            )
+            contracts_fut.add_done_callback(lambda f: _log_future_exc(f, "contracts_loaded"))
+
         # Surface extended thinking blocks to the UI when present (Sonnet/Opus only)
         thinking_text = turn_data.get("thinking_text")
         if thinking_text:
@@ -478,6 +520,32 @@ def _make_turn_callback(loop, build_id, user_id, build_repo, broadcast_fn):
             text_fut.add_done_callback(lambda f: _log_future_exc(f, "text_content"))
 
     return callback
+
+
+async def _planner_heartbeat(
+    user_id: UUID,
+    build_id: UUID,
+    broadcast_fn,
+    interval: int = 30,
+) -> None:
+    """Emit 'still planning' heartbeat messages during a long planning run.
+
+    Runs as a background asyncio.Task alongside loop.run_in_executor so the
+    user sees activity every `interval` seconds instead of a blank screen.
+    Cancelled as soon as the planner executor returns.
+    """
+    await asyncio.sleep(interval)
+    elapsed = interval
+    while True:
+        try:
+            await broadcast_fn(user_id, build_id, "build_log", {
+                "message": f"⏳ Still generating plan… ({elapsed}s elapsed)",
+                "source": "planner", "level": "info", "worker": "sonnet",
+            })
+        except Exception as exc:
+            logger.debug("Planner heartbeat broadcast failed (non-fatal): %s", exc)
+        await asyncio.sleep(interval)
+        elapsed += interval
 
 
 async def _review_plan_with_thinking(
