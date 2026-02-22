@@ -1307,11 +1307,14 @@ def _default_model_for_role(role: SubAgentRole) -> str:
     """Return the default model for a given role.
 
     * Coder / Fixer → use the main builder model (Opus-class)
-    * Scout / Auditor → use the lighter model (Sonnet-class)
+    * Auditor       → use the dedicated auditor model (defaults to questionnaire tier)
+    * Scout / other → use the lighter questionnaire model
     """
     if role in (SubAgentRole.CODER, SubAgentRole.FIXER):
         return _state.settings.LLM_BUILDER_MODEL
-    # Scout and auditor use the cheaper/faster model
+    if role == SubAgentRole.AUDITOR:
+        return _state.settings.LLM_AUDITOR_MODEL
+    # Scout and others use the cheaper/faster questionnaire model
     return _state.settings.LLM_QUESTIONNAIRE_MODEL
 
 

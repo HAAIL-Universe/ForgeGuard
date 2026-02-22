@@ -170,6 +170,7 @@ async def run_builder(
     build_id: str,
     user_id: str,
     api_key: str,
+    audit_api_key: "str | None" = None,
     phase_plan_context: str = "",
     verbose: bool = True,
     turn_callback: "callable | None" = None,
@@ -393,7 +394,7 @@ async def run_builder(
         auditor_result = await run_sub_agent(
             auditor_handoff,
             str(working_dir),
-            api_key,
+            audit_api_key or api_key,
         )
         sub_agent_results.append(auditor_result)
         _accumulate_tokens(total_usage, auditor_result)
@@ -457,7 +458,7 @@ async def run_builder(
         fixer_result = await run_sub_agent(
             fixer_handoff,
             str(working_dir),
-            api_key,
+            audit_api_key or api_key,
         )
         sub_agent_results.append(fixer_result)
         _accumulate_tokens(total_usage, fixer_result)

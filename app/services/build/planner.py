@@ -1526,26 +1526,19 @@ async def execute_tier(
     all_files_written: dict[str, str],
     *,
     key_pool: Any | None = None,
+    audit_api_key: str | None = None,
 ) -> dict[str, str]:
-    """Execute a tier using parallel Opus Coder sub-agents.
+    """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
-    Each sub-agent batch receives:
-    - Relevant contracts
-    - The tier's interface map (from Sonnet planner)
-    - Already-written files from prior tiers (as context)
-    - Its assigned file entries
+    Each file is built independently by run_builder(), with up to 3 files running
+    concurrently (controlled by a semaphore).  SCOUT/CODER use api_key; AUDITOR/FIXER
+    use audit_api_key (falls back to api_key if not set).
 
     Returns dict of ``{path: content}`` for all files written.
     """
-    from .subagent import (
-        SubAgentRole,
-        SubAgentHandoff,
-        SubAgentResult,
-        run_sub_agent,
-        build_context_pack,
-    )
-
-    batches = _batch_tier_files(tier_files)
+    from .subagent import build_context_pack, SubAgentResult
+    from .verification import _is_test_file
+    from builder.builder_agent import run_builder, BuilderError  # noqa: E402
 
     # Compute common path prefix for display stripping
     all_paths = [f["path"] for f in tier_files]
@@ -1560,21 +1553,21 @@ async def execute_tier(
 
     await _state.build_repo.append_build_log(
         build_id,
-        f"Tier {tier_index}: {len(tier_files)} files in {len(batches)} parallel batches",
+        f"Tier {tier_index}: {len(tier_files)} files (per-file Builder pipeline)",
         source="planner", level="info",
     )
     await _state._broadcast_build_event(user_id, build_id, "tier_start", {
         "tier": tier_index,
         "file_count": len(tier_files),
-        "batch_count": len(batches),
+        "batch_count": len(tier_files),  # one "batch" per file in new pipeline
         "files": all_paths,
         "common_prefix": common_prefix,
         "agents": [
             {
-                "agent_id": f"agent-{idx}",
-                "files": [f["path"] for f in batch],
+                "agent_id": f"builder-{idx}",
+                "files": [f["path"]],
             }
-            for idx, batch in enumerate(batches)
+            for idx, f in enumerate(tier_files)
         ],
     })
 
@@ -1631,178 +1624,116 @@ async def execute_tier(
         + "\n\n".join(_test_contract_parts)
     ) if _test_contract_parts else ""
 
-    # Dispatch each batch as a sub-agent
-    async def run_batch(batch: list[dict], batch_idx: int) -> SubAgentResult:
-        from .verification import _is_test_file
+    # Per-file builder pipeline (max 3 concurrent)
+    _semaphore = asyncio.Semaphore(3)
 
-        batch_paths = [f["path"] for f in batch]
-        _test_count = sum(1 for p in batch_paths if _is_test_file(p))
-        _batch_is_test_heavy = _test_count > len(batch_paths) / 2
-        _batch_is_config_only = all(
-            Path(p).name in _NO_CONTRACT_FILES for p in batch_paths
-        )
+    async def run_one_file(file_entry: dict, file_idx: int) -> None:
+        fp = file_entry["path"]
+        _is_test = _is_test_file(fp)
+        _is_config_only = Path(fp).name in _NO_CONTRACT_FILES
 
-        # Build context from already-written files (prior tiers)
-        # Cap each file at 3k chars and total at 15k to control Opus input cost.
-        # Test-heavy batches get tighter caps — they mainly need their source file.
-        _CTX_PER_FILE_CAP = 2_000 if _batch_is_test_heavy else 3_000
-        _CTX_TOTAL_CAP = 8_000 if _batch_is_test_heavy else 15_000
+        # Build context from already-written files (prior tiers/files in this tier)
+        _CTX_PER_FILE_CAP = 2_000 if _is_test else 3_000
+        _CTX_TOTAL_CAP = 8_000 if _is_test else 15_000
         context_files: dict[str, str] = {}
         _ctx_total = 0
-        for f in batch:
-            for dep in f.get("depends_on", []):
-                if dep in all_files_written and dep not in context_files:
-                    _snippet = all_files_written[dep]
-                    if len(_snippet) > _CTX_PER_FILE_CAP:
-                        _snippet = _snippet[:_CTX_PER_FILE_CAP] + "\n# [truncated]\n"
-                    if _ctx_total + len(_snippet) > _CTX_TOTAL_CAP:
-                        break
-                    context_files[dep] = _snippet
-                    _ctx_total += len(_snippet)
-            for ctx in f.get("context_files", []):
-                if ctx in all_files_written and ctx not in context_files:
-                    _snippet = all_files_written[ctx]
-                    if len(_snippet) > _CTX_PER_FILE_CAP:
-                        _snippet = _snippet[:_CTX_PER_FILE_CAP] + "\n# [truncated]\n"
-                    if _ctx_total + len(_snippet) > _CTX_TOTAL_CAP:
-                        break
-                    context_files[ctx] = _snippet
-                    _ctx_total += len(_snippet)
+        for dep in file_entry.get("depends_on", []):
+            if dep in all_files_written and dep not in context_files:
+                _snippet = all_files_written[dep]
+                if len(_snippet) > _CTX_PER_FILE_CAP:
+                    _snippet = _snippet[:_CTX_PER_FILE_CAP] + "\n# [truncated]\n"
+                if _ctx_total + len(_snippet) > _CTX_TOTAL_CAP:
+                    break
+                context_files[dep] = _snippet
+                _ctx_total += len(_snippet)
+        for ctx in file_entry.get("context_files", []):
+            if ctx in all_files_written and ctx not in context_files:
+                _snippet = all_files_written[ctx]
+                if len(_snippet) > _CTX_PER_FILE_CAP:
+                    _snippet = _snippet[:_CTX_PER_FILE_CAP] + "\n# [truncated]\n"
+                if _ctx_total + len(_snippet) > _CTX_TOTAL_CAP:
+                    break
+                context_files[ctx] = _snippet
+                _ctx_total += len(_snippet)
 
-        # Also get auto-detected context from disk (kept slim)
-        # Test-heavy batches get minimal disk context — source files are
-        # more useful and are already in context_files via depends_on.
+        # Auto-detected disk context (slim for test files)
         disk_context = build_context_pack(
-            working_dir, batch_paths,
-            max_context_files=3 if _batch_is_test_heavy else 6,
-            max_context_chars=6_000 if _batch_is_test_heavy else 15_000,
+            working_dir, [fp],
+            max_context_files=3 if _is_test else 6,
+            max_context_chars=6_000 if _is_test else 15_000,
         )
         for k, v in disk_context.items():
             if k not in context_files:
                 context_files[k] = v
 
-        # Build assignment text
-        file_specs = []
-        for f in batch:
-            deps = ", ".join(f.get("depends_on", [])) or "none"
-            file_specs.append(
-                f"### {f['path']} ({f.get('language', 'python')})\n"
-                f"Purpose: {f.get('purpose', '')}\n"
-                f"Dependencies: {deps}\n"
-                f"Estimated lines: {f.get('estimated_lines', 100)}"
-            )
+        # Include interface map as a named context file so SCOUT and CODER see it
+        if interface_map:
+            context_files["interface_map.md"] = interface_map
 
-        assignment = (
-            f"## Interface Map (follow this exactly)\n{interface_map}\n\n"
-            f"## Your Assignment\n"
-            f"Create the following {len(batch)} file(s).\n"
-            f"Follow the interface map PRECISELY — use the exact class names, "
-            f"function signatures, and import paths specified.\n\n"
-            + "\n\n".join(file_specs)
-            + "\n\nOutput ALL files using <file path=\"...\"> tags (single-shot mode)."
-        )
-
-        # Determine contracts: skip for config-only, slim for test-heavy
-        if _batch_is_config_only:
-            _contracts = ""
-        elif _batch_is_test_heavy:
-            _contracts = contracts_summary_slim
+        # Select contracts: skip for config-only, slim for test files
+        if _is_config_only:
+            _contracts_list: list[str] = []
+        elif _is_test:
+            _contracts_list = [contracts_summary_slim] if contracts_summary_slim else []
         else:
-            _contracts = contracts_summary
+            _contracts_list = [contracts_summary] if contracts_summary else []
 
-        handoff = SubAgentHandoff(
-            role=SubAgentRole.CODER,
-            build_id=build_id,
-            user_id=user_id,
-            assignment=assignment,
-            files=batch_paths,
-            context_files=context_files,
-            contracts_text=_contracts,
-            phase_deliverables=phase_deliverables if not _batch_is_test_heavy else "",
-            max_tokens=32_768,
-            timeout_seconds=300.0,
-        )
-
-        _agent_id = f"agent-{batch_idx}"
-
-        # Broadcast thinking event — what the sub-agent is about to receive
-        await _state._broadcast_build_event(user_id, build_id, "llm_thinking", {
-            "model": "opus",
-            "purpose": f"Agent {batch_idx} — building {len(batch)} files",
-            "system_prompt": "CODER sub-agent: write production-quality code for assigned files",
-            "user_message_preview": assignment[:800],
-            "user_message_length": len(assignment),
-            "files": batch_paths,
-            "context_file_count": len(context_files),
-        })
-
-        # Broadcast agent start with file list
-        await _state._broadcast_build_event(user_id, build_id, "agent_start", {
+        # Broadcast file_generating
+        _agent_id = f"builder-{file_idx}"
+        await _state._broadcast_build_event(user_id, build_id, "file_generating", {
+            "path": fp,
             "agent_id": _agent_id,
             "tier": tier_index,
-            "files": batch_paths,
-            "file_count": len(batch_paths),
             "common_prefix": common_prefix,
         })
 
-        # Emit per-file generating events
-        for fp in batch_paths:
-            await _state._broadcast_build_event(user_id, build_id, "file_generating", {
-                "path": fp,
-                "agent_id": _agent_id,
-                "tier": tier_index,
-                "common_prefix": common_prefix,
-            })
+        async with _semaphore:
+            result = await run_builder(
+                file_entry=file_entry,
+                contracts=_contracts_list,
+                context=list(context_files.values()),
+                phase_deliverables=[phase_deliverables] if phase_deliverables else [],
+                working_dir=working_dir,
+                build_id=str(build_id),
+                user_id=str(user_id),
+                api_key=api_key,
+                audit_api_key=audit_api_key,
+                phase_plan_context="",
+            )
 
-        _sub_result = await run_sub_agent(handoff, working_dir, api_key, key_pool=key_pool)
+        if result.status == "completed" and result.content:
+            tier_written[fp] = result.content
 
-        # Broadcast per-file completion from this agent
-        for fp in _sub_result.files_written:
-            await _state._broadcast_build_event(user_id, build_id, "agent_file_done", {
-                "agent_id": _agent_id,
-                "tier": tier_index,
-                "path": fp,
-            })
+        # Accumulate cost from all sub-agents in the pipeline
+        for sar in result.sub_agent_results:
+            if isinstance(sar, SubAgentResult):
+                try:
+                    await _accumulate_cost(
+                        build_id,
+                        sar.input_tokens, sar.output_tokens,
+                        sar.model,
+                        Decimal(str(sar.cost_usd)),
+                    )
+                except Exception:
+                    pass
 
-        # Broadcast agent completion
+        # Broadcast completion
         await _state._broadcast_build_event(user_id, build_id, "agent_done", {
             "agent_id": _agent_id,
             "tier": tier_index,
-            "files_written": _sub_result.files_written,
-            "file_count": len(_sub_result.files_written),
-            "duration_s": round(_sub_result.duration_seconds, 1),
+            "files_written": [fp] if result.status == "completed" else [],
+            "file_count": 1 if result.status == "completed" else 0,
+            "status": result.status,
         })
 
-        return _sub_result
-
-    # Run batches in parallel
-    tasks = [
-        asyncio.create_task(run_batch(batch, idx))
-        for idx, batch in enumerate(batches)
-    ]
-    results: list[SubAgentResult] = await asyncio.gather(*tasks, return_exceptions=False)
-
-    # Collect written files
     tier_written: dict[str, str] = {}
-    for res in results:
-        if isinstance(res, SubAgentResult):
-            for fp in res.files_written:
-                full = Path(working_dir) / fp
-                if full.exists():
-                    try:
-                        tier_written[fp] = full.read_text(encoding="utf-8")
-                    except Exception:
-                        pass
 
-            # Accumulate cost
-            await _accumulate_cost(
-                build_id,
-                res.input_tokens, res.output_tokens,
-                res.model,
-                Decimal(str(res.cost_usd)),
-            )
+    # Run all files (semaphore limits to 3 concurrent)
+    await asyncio.gather(*[
+        run_one_file(fe, idx) for idx, fe in enumerate(tier_files)
+    ], return_exceptions=False)
 
-    # Emit file_generated events for each file
+    # Emit file_generated events for each successfully written file
     for fp, content in tier_written.items():
         await _state._broadcast_build_event(user_id, build_id, "file_generated", {
             "path": fp,

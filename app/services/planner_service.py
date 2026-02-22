@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # __file__ = Z:/ForgeCollection/ForgeGuard/app/services/planner_service.py
 # parents:   services → app → ForgeGuard  (3 levels, not 4)
 _PLANNER_DIR = Path(__file__).resolve().parent.parent.parent / "planner"
+_AUDITOR_DIR = Path(__file__).resolve().parent.parent.parent / "auditor"
 
 # Register the planner package on sys.path once at import time so that
 # workers can `from planner_agent import run_planner` without path gymnastics.
@@ -213,7 +214,47 @@ async def run_project_planner(
             )
         )
 
+    # ── 3. External plan audit — background task (non-blocking) ───────────
+    asyncio.create_task(
+        _run_plan_audit(
+            build_id=build_id,
+            plan_json=plan,
+            contract_fetcher=contract_fetcher,
+        )
+    )
+
     return result
+
+
+async def _run_plan_audit(
+    build_id: UUID,
+    plan_json: dict,
+    contract_fetcher,
+) -> None:
+    """Fire-and-forget background plan audit using the standalone auditor module.
+
+    Failures are logged but never propagate — the plan is already complete.
+    """
+    if not _AUDITOR_DIR.exists():
+        logger.debug("[PLAN_AUDIT] Auditor directory not found, skipping: %s", _AUDITOR_DIR)
+        return
+    if str(_AUDITOR_DIR) not in sys.path:
+        sys.path.insert(0, str(_AUDITOR_DIR))
+    try:
+        from auditor_agent import run_auditor, AuditorError  # type: ignore[import]
+        result = await run_auditor(
+            mode="plan",
+            build_id=build_id,
+            project_id=build_id,  # use build_id as project_id proxy for logging
+            plan_json=plan_json,
+            contract_fetcher=contract_fetcher,
+            verbose=False,
+        )
+        status_str = result.status if hasattr(result, "status") else "unknown"
+        issue_count = len(result.issues) if hasattr(result, "issues") else 0
+        logger.info("[PLAN_AUDIT] %s (%d issues)", status_str, issue_count)
+    except Exception as exc:
+        logger.warning("[PLAN_AUDIT] Non-blocking failure: %s", exc)
 
 
 # ---------------------------------------------------------------------------

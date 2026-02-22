@@ -47,6 +47,7 @@ async def generate_file(
     phase_deliverables: list[str],
     working_dir: str | Path,
     phase_plan_context: str = "",
+    audit_api_key: str | None = None,
 ) -> str:
     """Generate a single file's content via the builder agent pipeline.
 
@@ -78,6 +79,7 @@ async def generate_file(
         build_id=build_id,
         user_id=user_id,
         api_key=api_key,
+        audit_api_key=audit_api_key,
         phase_plan_context=phase_plan_context,
     )
 

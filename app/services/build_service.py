@@ -5995,6 +5995,7 @@ async def _run_build_plan_execute(
                         phase_deliverables, working_dir,
                         interface_map, all_files_written,
                         key_pool=key_pool,
+                        audit_api_key=_audit_key,
                     )
 
                     # ── Step 3: Merge results + audit ──
@@ -7306,6 +7307,17 @@ async def _run_build_plan_execute(
             governance=governance_result,
         )
 
+        # --- External phase audit (background, non-blocking) ---
+        asyncio.create_task(
+            _run_phase_audit(
+                build_id=build_id,
+                project_id=project_id,
+                phase_number=phase_num,
+                phase_files=list(phase_files_written.keys()),
+                contracts=contracts,
+            )
+        )
+
         # --- Auto-clear context between phases ---
         # Each phase is independent; prior-phase files live on disk and
         # will be loaded on demand via the context budget system.
@@ -7396,3 +7408,48 @@ async def _run_build_plan_execute(
         logger.info("Forge seal persisted for build %s", build_id)
     except Exception as _exc:
         logger.warning("Forge seal persistence failed (non-fatal): %s", _exc)
+
+
+async def _run_phase_audit(
+    build_id: UUID,
+    project_id: UUID,
+    phase_number: int,
+    phase_files: list[str],
+    contracts: list[dict],
+) -> None:
+    """Fire-and-forget background phase audit using the standalone auditor module.
+
+    Runs after each phase completes. Failures are logged but never propagate.
+    """
+    _auditor_dir = Path(__file__).resolve().parent.parent.parent / "auditor"
+    if not _auditor_dir.exists():
+        logger.debug("[PHASE_AUDIT] Auditor directory not found, skipping: %s", _auditor_dir)
+        return
+
+    import sys as _sys
+    if str(_auditor_dir) not in _sys.path:
+        _sys.path.insert(0, str(_auditor_dir))
+
+    try:
+        from auditor_agent import run_auditor  # type: ignore[import]
+
+        # Build a simple contract fetcher from the contracts list
+        _index = {c["contract_type"]: c.get("content", "") for c in (contracts or [])}
+
+        def _fetcher(contract_type: str):
+            return _index.get(contract_type)
+
+        result = await run_auditor(
+            mode="phase",
+            build_id=build_id,
+            project_id=project_id,
+            phase_number=phase_number,
+            phase_files=phase_files,
+            contract_fetcher=_fetcher,
+            verbose=False,
+        )
+        status_str = result.status if hasattr(result, "status") else "unknown"
+        issue_count = len(result.issues) if hasattr(result, "issues") else 0
+        logger.info("[PHASE_AUDIT] Phase %d: %s (%d issues)", phase_number, status_str, issue_count)
+    except Exception as exc:
+        logger.warning("[PHASE_AUDIT] Non-blocking failure (phase %d): %s", phase_number, exc)

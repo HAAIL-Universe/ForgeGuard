@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     LLM_BUILDER_MODEL: str = ""
     LLM_PLANNER_MODEL: str = ""
     LLM_QUESTIONNAIRE_MODEL: str = ""
+    LLM_AUDITOR_MODEL: str = ""          # dedicated auditor model; falls back to questionnaire tier
     LLM_NARRATOR_MODEL: str = "claude-haiku-4-5"  # always Haiku — narration only
 
     @model_validator(mode="after")
@@ -101,8 +102,12 @@ class Settings(BaseSettings):
             self.LLM_BUILDER_MODEL = self.FORGE_FORCE_MODEL
             self.LLM_PLANNER_MODEL = self.FORGE_FORCE_MODEL
             self.LLM_QUESTIONNAIRE_MODEL = self.FORGE_FORCE_MODEL
+            self.LLM_AUDITOR_MODEL = self.FORGE_FORCE_MODEL
             self.LLM_NARRATOR_MODEL = self.FORGE_FORCE_MODEL
             self.BUILD_MODEL_TIER = "haiku"  # keeps get_model_for_role consistent
+        # Fall back to questionnaire tier if auditor model not explicitly set
+        if not self.LLM_AUDITOR_MODEL:
+            self.LLM_AUDITOR_MODEL = self.LLM_QUESTIONNAIRE_MODEL
         return self
 
     # Persistent workspace directory for all build working trees.
