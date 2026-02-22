@@ -254,6 +254,29 @@ def _run_streaming_turn(
                         "partial_text": _plan_json_text,
                     })
 
+        # Flush any text that never crossed the 100-char threshold because
+        # the model started a tool call before accumulating enough chars.
+        # Without this the last <100 chars are invisible until thinking_block
+        # fires at turn end (causes a visible "jump").
+        if _text_by_idx:
+            _remaining = sum(len(v) for v in _text_by_idx.values())
+            if _remaining > _text_last_fired_len:
+                stream_callback({
+                    "type": "narration_delta",
+                    "turn": turn_num,
+                    "accumulated_text": "\n\n".join(_text_by_idx.values()),
+                    "char_count": _remaining,
+                })
+        if _thinking_by_idx:
+            _remaining_t = sum(len(v) for v in _thinking_by_idx.values())
+            if _remaining_t > _last_fired_len:
+                stream_callback({
+                    "type": "thinking_delta",
+                    "turn": turn_num,
+                    "accumulated_text": "\n\n".join(_thinking_by_idx.values()),
+                    "char_count": _remaining_t,
+                })
+
         return stream.get_final_message()
 
 

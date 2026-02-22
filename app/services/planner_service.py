@@ -362,25 +362,41 @@ def _log_future_exc(fut, label: str) -> None:
 def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
     """Return a sync callable that forwards live streaming events to the UI.
 
-    Handles two event types from the planner thread:
-      "thinking_delta"  — extended thinking tokens → broadcasts "thinking_live"
-      "narration_delta" — visible text tokens     → broadcasts "narration_live"
+    Handles three event types from the planner thread:
+      "thinking_delta"      — extended thinking tokens  → broadcasts "thinking_live"
+      "narration_delta"     — visible text tokens       → broadcasts "narration_live"
+      "plan_writing_delta"  — write_plan JSON generation → broadcasts "plan_writing_live"
 
-    Both are fired every STREAM_CHUNK_CHARS characters so the UI receives
-    progressive updates instead of one blob at the end of the API call.
+    All three are fired every STREAM_CHUNK_CHARS / PLAN_STREAM_CHUNK_CHARS characters.
+
+    KEY: Each `run_coroutine_threadsafe` call is AWAITED via fut.result() so the
+    planner thread blocks until the WS frame is sent before firing the next event.
+    This prevents events from piling up in the asyncio queue and being processed
+    all at once (which causes burst rendering on the frontend).
     """
+    # Tracks which turns have already had their "📝 Generating plan" activity-log
+    # entry emitted.  We fire it lazily on the first actual text chunk rather than
+    # at block start, so turns with 0 chars of narration produce no log entry.
+    _narration_logged: set = set()
+
+    def _send_and_wait(coro, label: str) -> None:
+        """Schedule coro on the event loop and block until it completes."""
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            fut.result(timeout=5.0)
+        except Exception as exc:
+            logger.debug("Stream event send failed (%s): %s", label, exc)
+
     def callback(delta_data: dict) -> None:
         event_type = delta_data.get("type")
 
         # ── plan_writing_delta: write_plan tool JSON is being generated ────────
-        # Fires every ~1000 chars so the user sees progress during the silent
-        # period between narration ending and the plan box appearing.
         if event_type == "plan_writing_delta":
             char_count = delta_data.get("char_count", 0)
             turn = delta_data.get("turn", "?")
             partial_text = delta_data.get("partial_text", "")
-            # On the first event (block start) also emit an activity-panel log entry
-            # so the Activity tab shows progress even when the Sonnet panel is hidden.
+            # Activity-log entry fires once at block start (fire-and-forget is
+            # fine for logs — we don't need ordering guarantees on activity log).
             if char_count == 0:
                 log_fut = asyncio.run_coroutine_threadsafe(
                     broadcast_fn(user_id, build_id, "build_log", {
@@ -390,18 +406,17 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
                     loop,
                 )
                 log_fut.add_done_callback(lambda f: _log_future_exc(f, "plan_writing_start_log"))
-            # Always upsert the live plan box in the Sonnet panel with the
-            # accumulated partial JSON — mirrors narration_live / thinking_live.
-            fut = asyncio.run_coroutine_threadsafe(
+            # Upsert the live plan box — WAIT for each send so chunks arrive
+            # one at a time and the box grows progressively.
+            _send_and_wait(
                 broadcast_fn(user_id, build_id, "plan_writing_live", {
                     "turn": turn,
                     "source": "planner",
                     "partial_text": partial_text,
                     "char_count": char_count,
                 }),
-                loop,
+                "plan_writing_live",
             )
-            fut.add_done_callback(lambda f: _log_future_exc(f, "plan_writing_live"))
             return
 
         if event_type not in ("thinking_delta", "narration_delta"):
@@ -415,32 +430,53 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
         is_thinking = event_type == "thinking_delta"
         ws_event = "thinking_live" if is_thinking else "narration_live"
 
-        # On block start (char_count == 0): also emit a build_log so the
-        # activity panel shows something even if the reasoning box is hidden.
+        # Extended thinking block start: create the thinking box immediately and
+        # emit the activity-log entry so the user sees progress during the silent
+        # 1–3 min extended-thinking phase.  Narration has no equivalent: if the
+        # model narrates 0 chars (turn 1 tool-call turn) we don't want any entry.
         if char_count == 0:
-            log_msg = (
-                f"💭 Extended thinking — turn {turn}…"
-                if is_thinking
-                else f"📝 Generating plan — turn {turn}…"
-            )
+            if is_thinking:
+                log_fut = asyncio.run_coroutine_threadsafe(
+                    broadcast_fn(user_id, build_id, "build_log", {
+                        "message": f"💭 Extended thinking — turn {turn}…",
+                        "source": "planner", "level": "info", "worker": "sonnet",
+                    }),
+                    loop,
+                )
+                log_fut.add_done_callback(lambda f: _log_future_exc(f, "thinking_start_log"))
+                # Create the thinking box immediately (empty placeholder).
+                _send_and_wait(
+                    broadcast_fn(user_id, build_id, ws_event, {
+                        "turn": turn,
+                        "source": "planner",
+                        "reasoning_text": display_text,
+                        "reasoning_length": char_count,
+                        "is_actual_thinking": True,
+                    }),
+                    "thinking_live_start",
+                )
+            # For narration: do nothing at block start — the box is created
+            # lazily when the first actual text chunk arrives.
+            return
+
+        # Lazily emit the "📝 Generating plan — turn X…" activity-log entry the
+        # first time actual narration text arrives for this turn.  This ensures
+        # the entry only appears for turns that genuinely narrate, and appears
+        # AFTER the preceding tool-call group rather than before it.
+        if not is_thinking and turn not in _narration_logged:
+            _narration_logged.add(turn)
             log_fut = asyncio.run_coroutine_threadsafe(
                 broadcast_fn(user_id, build_id, "build_log", {
-                    "message": log_msg,
+                    "message": f"📝 Generating plan — turn {turn}…",
                     "source": "planner", "level": "info", "worker": "sonnet",
                 }),
                 loop,
             )
-            log_fut.add_done_callback(lambda f: _log_future_exc(f, f"{event_type}_start_log"))
-            # For narration (not extended thinking): don't create an empty box.
-            # The model often narrates 0 chars in turn 1 before tool calls —
-            # an empty "PLANNER NARRATION" box is confusing.  The box will be
-            # created on the first actual text chunk (char_count > 0).
-            # For thinking we DO want to create the box immediately so the user
-            # sees progress during the silent 1-3 min extended-thinking phase.
-            if not is_thinking:
-                return
+            log_fut.add_done_callback(lambda f: _log_future_exc(f, "narration_start_log"))
 
-        fut = asyncio.run_coroutine_threadsafe(
+        # Send the streaming update — WAIT so each chunk lands before the next
+        # one is queued.  This is the core ordering guarantee.
+        _send_and_wait(
             broadcast_fn(user_id, build_id, ws_event, {
                 "turn": turn,
                 "source": "planner",
@@ -448,9 +484,8 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
                 "reasoning_length": char_count,
                 "is_actual_thinking": is_thinking,
             }),
-            loop,
+            ws_event,
         )
-        fut.add_done_callback(lambda f: _log_future_exc(f, ws_event))
 
     return callback
 
