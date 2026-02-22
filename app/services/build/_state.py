@@ -362,20 +362,27 @@ async def _build_watchdog(build_id: UUID, user_id: UUID) -> None:
             status = activity_label
 
             if idle >= _STALL_FAIL_THRESHOLD:
-                msg = (
-                    f"\u26A0 Health: build stalled — no progress for "
-                    f"{int(idle)}s while {status}. Force-failing."
-                )
-                await build_repo.append_build_log(
-                    build_id, msg, source="health", level="error",
-                )
-                await _broadcast_build_event(user_id, build_id, "build_log", {
-                    "message": msg, "source": "health", "level": "error",
-                })
-                task = _active_tasks.get(bid)
-                if task and not task.done():
-                    task.cancel()
-                break
+                # Never force-fail a build that is intentionally waiting at the
+                # IDE gate (user is reviewing the plan before pressing /start or
+                # PUSH).  The idle time here is user think-time, not a stall.
+                if bid in _ide_ready_events:
+                    _touch_progress(build_id)   # reset stall clock
+                    idle = 0                    # fall through to normal heartbeat
+                else:
+                    msg = (
+                        f"\u26A0 Health: build stalled — no progress for "
+                        f"{int(idle)}s while {status}. Force-failing."
+                    )
+                    await build_repo.append_build_log(
+                        build_id, msg, source="health", level="error",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": msg, "source": "health", "level": "error",
+                    })
+                    task = _active_tasks.get(bid)
+                    if task and not task.done():
+                        task.cancel()
+                    break
 
             if idle >= _STALL_WARN_THRESHOLD:
                 msg = (

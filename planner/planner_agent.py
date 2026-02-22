@@ -609,7 +609,25 @@ def run_planner(
         # ── (6) INJECT TOOL RESULTS as a new user turn ───────────────────────
         # This is how the model sees what its tool calls returned.
         # "user" role for tool results is required by the Anthropic API.
+        #
+        # PROMPT CACHING: On turn 1 the model fetches all contracts via
+        # forge_get_project_contract tool calls.  Those contract bodies are
+        # stable content (~25-40K tokens) that will be re-read on every
+        # subsequent turn as part of the conversation history.  We add a
+        # cache_control marker to the LAST tool_result so Anthropic caches
+        # the full prefix up to this point.  Turns 2-N then read the system
+        # prompt + turn-1 contracts from cache (10% cost) instead of paying
+        # full input price.  This restores the high cache-savings ratio.
         if tool_results:
+            any_contract_fetch = any(
+                '"forge_get_project_contract"' in r.get("content", "")
+                or (r.get("type") == "tool_result")
+                for r in tool_results
+            )
+            if any_contract_fetch and not should_exit:
+                # Mark cache boundary after last tool result (non-write_plan turns
+                # only — write_plan is the final turn and doesn't need caching).
+                tool_results[-1]["cache_control"] = {"type": "ephemeral"}
             messages.append({"role": "user", "content": tool_results})
 
         # ── (7) EXIT if write_plan succeeded ─────────────────────────────────

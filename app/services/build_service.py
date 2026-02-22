@@ -5249,7 +5249,11 @@ async def _run_build_plan_execute(
             await _broadcast_build_event(user_id, build_id, "build_log", {
                 "message": _ready_msg, "source": "system", "level": "info",
             })
-            # Re-register the gate so the next /start or /plan resolves it
+            # Re-register the gate so the next /start or /plan resolves it.
+            # Also touch progress so the watchdog doesn't count plan-review
+            # time as a stall (the watchdog will see _ide_ready_events and
+            # reset its own counter, but touching here is belt-and-suspenders).
+            _touch_progress(build_id)
             _ready_event = register_ide_ready(str(build_id))
             continue
 
