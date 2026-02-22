@@ -2750,8 +2750,21 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           source: 'system', level: 'info',
           message: '💾 Plan saved to database',
         }]);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setLogs((prev) => [...prev, {
+          timestamp: new Date().toISOString(),
+          source: 'system', level: 'error',
+          message: `❌ Save failed (${res.status}): ${data.detail || 'unknown error'}`,
+        }]);
       }
-    } catch { /* silent */ }
+    } catch (err) {
+      setLogs((prev) => [...prev, {
+        timestamp: new Date().toISOString(),
+        source: 'system', level: 'error',
+        message: `❌ Save failed: ${err}`,
+      }]);
+    }
   }, [projectId, token]);
 
   /* Send a slash command */

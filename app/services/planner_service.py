@@ -374,11 +374,6 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
     This prevents events from piling up in the asyncio queue and being processed
     all at once (which causes burst rendering on the frontend).
     """
-    # Tracks which turns have already had their "📝 Generating plan" activity-log
-    # entry emitted.  We fire it lazily on the first actual text chunk rather than
-    # at block start, so turns with 0 chars of narration produce no log entry.
-    _narration_logged: set = set()
-
     def _send_and_wait(coro, label: str) -> None:
         """Schedule coro on the event loop and block until it completes."""
         fut = asyncio.run_coroutine_threadsafe(coro, loop)
@@ -459,27 +454,11 @@ def _make_stream_callback(loop, user_id, build_id, broadcast_fn):
             # lazily when the first actual text chunk arrives.
             return
 
-        # Turn 1 is exclusively the contract-fetch turn. Extended thinking
-        # already shows the model's reasoning; the narration text on turn 1
-        # ("I'll fetch all contracts now") is redundant with the thinking box
-        # and the "8 tools — turn 1" log entry, so suppress it entirely.
+        # Turn 1 is exclusively the contract-fetch turn — suppress narration.
+        # The PLANNER NARRATION box is the visible progress indicator for turn 2+;
+        # no extra "Generating plan" log entry is needed (it duplicated "Writing plan").
         if not is_thinking and turn == 1:
             return
-
-        # Lazily emit the "📝 Generating plan — turn X…" activity-log entry the
-        # first time actual narration text arrives for this turn.  This ensures
-        # the entry only appears for turns that genuinely narrate, and appears
-        # AFTER the preceding tool-call group rather than before it.
-        if not is_thinking and turn not in _narration_logged:
-            _narration_logged.add(turn)
-            log_fut = asyncio.run_coroutine_threadsafe(
-                broadcast_fn(user_id, build_id, "build_log", {
-                    "message": f"📝 Generating plan — turn {turn}…",
-                    "source": "planner", "level": "info", "worker": "sonnet",
-                }),
-                loop,
-            )
-            log_fut.add_done_callback(lambda f: _log_future_exc(f, "narration_start_log"))
 
         # Send the streaming update — WAIT so each chunk lands before the next
         # one is queued.  This is the core ordering guarantee.

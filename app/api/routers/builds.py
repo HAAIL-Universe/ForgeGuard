@@ -280,7 +280,10 @@ async def save_plan(
     contracts so it can be retrieved later without replanning.
     """
     from app.repos import project_repo
-    ok = await project_repo.save_plan_as_contract(project_id)
+    try:
+        ok = await project_repo.save_plan_as_contract(project_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Save failed: {exc}") from exc
     if not ok:
         raise HTTPException(status_code=404, detail="No plan found to save")
     return {"saved": True}

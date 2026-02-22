@@ -141,18 +141,21 @@ async def save_plan_as_contract(project_id: UUID) -> bool:
     if not plan:
         return False
     pool = await get_pool()
-    await pool.execute(
-        """
-        INSERT INTO project_contracts (project_id, contract_type, content, version)
-        VALUES ($1, 'plan', $2, 1)
-        ON CONFLICT (project_id, contract_type)
-        DO UPDATE SET content    = EXCLUDED.content,
-                      version    = project_contracts.version + 1,
-                      updated_at = now()
-        """,
-        project_id,
-        json.dumps(plan),
-    )
+    try:
+        await pool.execute(
+            """
+            INSERT INTO project_contracts (project_id, contract_type, content, version)
+            VALUES ($1, 'plan', $2, 1)
+            ON CONFLICT (project_id, contract_type)
+            DO UPDATE SET content    = EXCLUDED.content,
+                          version    = project_contracts.version + 1,
+                          updated_at = now()
+            """,
+            project_id,
+            json.dumps(plan),
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to save plan contract: {exc}") from exc
     return True
 
 
