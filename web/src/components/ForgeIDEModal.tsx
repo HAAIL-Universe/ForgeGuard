@@ -2854,6 +2854,31 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             message: `📋 Plan saved to git (${data.sha.slice(0, 8)})`,
           }]);
         }
+      } else if (action === 'approve' && !res.ok) {
+        // approve-plan failed (e.g. server restarted, state lost) — fall back
+        // to commence (resumes a paused build at the IDE ready gate)
+        try {
+          const commRes = await fetch(`${API_BASE}/projects/${projectId}/build/commence`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'commence' }),
+          });
+          if (commRes.ok) {
+            setStatus('running');
+          } else {
+            setLogs((prev) => [...prev, {
+              timestamp: new Date().toISOString(),
+              source: 'system', level: 'warn',
+              message: '⚠ Could not resume build — try /start to begin a new build',
+            }]);
+          }
+        } catch {
+          setLogs((prev) => [...prev, {
+            timestamp: new Date().toISOString(),
+            source: 'system', level: 'warn',
+            message: '⚠ Could not resume build — try /start to begin a new build',
+          }]);
+        }
       }
     } catch { /* WS plan_approved event confirms */ }
   }, [projectId, token]);
