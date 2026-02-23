@@ -2085,7 +2085,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 timestamp: new Date().toISOString(),
                 source: 'system',
                 level: 'system',
-                message: '✅ Plan complete — REVIEW to inspect or PUSH to approve & build',
+                message: '✅ Plan complete — REVIEW to inspect or APPROVE PLAN to continue',
                 worker: 'system',
               }]);
               break;
@@ -4214,7 +4214,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         animation: 'pulseGreen 2s ease-in-out infinite',
                       }}
                     >
-                      ▶ Approve & Build
+                      ▶ Approve Plan
                     </button>
                   </>
                 )}
@@ -4254,7 +4254,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                           borderRadius: '4px', color: '#22C55E', fontSize: '0.75rem',
                           padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                         }}
-                      >✅ Approve & Build</button>
+                      >✅ Approve Plan</button>
                       <button
                         onClick={savePlan}
                         style={{
