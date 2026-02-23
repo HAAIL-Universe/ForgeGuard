@@ -88,12 +88,11 @@ async def create_new_project(
     name: str,
     description: str | None = None,
     repo_id: UUID | None = None,
-    local_path: str | None = None,
     build_mode: str = "full",
 ) -> dict:
-    """Create a new project, optionally linked to a repo or local path."""
+    """Create a new project, optionally linked to a repo."""
     project = await repo_create_project(
-        user_id, name, description, repo_id=repo_id, local_path=local_path,
+        user_id, name, description, repo_id=repo_id,
         build_mode=build_mode,
     )
     return project
