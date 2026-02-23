@@ -269,7 +269,7 @@ const fmtTs = (ts: string) => {
 
 const ACTION_ICON: Record<string, string> = { modify: '✏️', create: '➕', delete: '🗑️' };
 
-const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistItem[] }) {
+const FileChecklist = memo(function FileChecklist({ items, embedded }: { items: ChecklistItem[]; embedded?: boolean }) {
   if (items.length === 0) return null;
   const done = items.filter(i => i.status !== 'pending' && i.status !== 'generating').length;
   const hasTiers = items.some(i => i.tierIndex !== undefined && i.tierIndex >= 0);
@@ -309,6 +309,33 @@ const FileChecklist = memo(function FileChecklist({ items }: { items: ChecklistI
       </div>
     );
   };
+
+  // When embedded in collapsible wrapper, skip header/progress bar/container styling
+  if (embedded) {
+    return (
+      <div style={{ fontSize: '0.7rem' }}>
+        {hasTiers ? (
+          Array.from(tierGroups.entries()).sort(([a], [b]) => a - b).map(([tierIdx, tierItems]) => {
+            const tierDone = tierItems.filter(x => x.status !== 'pending').length;
+            return (
+              <div key={`tier-${tierIdx}`} style={{ marginBottom: '6px' }}>
+                <div style={{
+                  color: '#60A5FA', fontSize: '0.6rem', fontWeight: 600,
+                  padding: '2px 0', borderBottom: '1px solid #1E293B44',
+                  marginBottom: '2px',
+                }}>
+                  {tierIdx >= 0 ? `⚡ TIER ${tierIdx}` : '📋 UNGROUPED'} ({tierDone}/{tierItems.length})
+                </div>
+                {tierItems.map((item, i) => renderItem(item, tierIdx * 1000 + i))}
+              </div>
+            );
+          })
+        ) : (
+          items.map((item, i) => renderItem(item, i))
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -1149,6 +1176,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
   const [leftTab, setLeftTab] = useState<'tasks' | 'chat'>('tasks');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [fileProgressExpanded, setFileProgressExpanded] = useState(true);
   const [chatLoading, setChatLoading] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
@@ -3773,6 +3801,52 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               )}
             </div>
           )}
+
+          {/* ── File Progress (collapsible, always visible) ── */}
+          {fileChecklist.length > 0 && (() => {
+            const fpDone = fileChecklist.filter(i => i.status !== 'pending' && i.status !== 'generating').length;
+            const fpTotal = fileChecklist.length;
+            const fpPct = fpTotal > 0 ? (fpDone / fpTotal) * 100 : 0;
+            return (
+              <div style={{ flexShrink: 0, borderTop: '1px solid #1E293B', background: '#0D0D1A' }}>
+                {/* Header — always visible, clickable */}
+                <div
+                  onClick={() => setFileProgressExpanded(prev => !prev)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '5px 12px', cursor: 'pointer', userSelect: 'none',
+                  }}
+                >
+                  <span style={{ color: '#94A3B8', fontWeight: 700, letterSpacing: '0.5px', fontSize: '0.6rem' }}>
+                    FILE PROGRESS
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ color: '#94A3B8', fontSize: '0.6rem', fontVariantNumeric: 'tabular-nums' }}>
+                      {fpDone}/{fpTotal}
+                    </span>
+                    <span style={{ color: '#475569', fontSize: '0.55rem' }}>
+                      {fileProgressExpanded ? '▾' : '▸'}
+                    </span>
+                  </span>
+                </div>
+                {/* Progress bar — always visible */}
+                <div style={{ height: '3px', background: '#1E293B', margin: '0 12px 4px', borderRadius: '2px', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', borderRadius: '2px',
+                    width: `${fpPct}%`,
+                    background: 'linear-gradient(90deg, #D946EF, #A855F7)',
+                    transition: 'width 0.4s ease',
+                  }} />
+                </div>
+                {/* Expanded — full file list */}
+                {fileProgressExpanded && (
+                  <div style={{ maxHeight: '40vh', overflowY: 'auto', padding: '0 12px 6px' }}>
+                    <FileChecklist items={fileChecklist} embedded />
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
         )}
 
@@ -3861,7 +3935,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   labelColor="#94A3B8"
                   emptyText={status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
                 />
-                {fileChecklist.length > 0 && <FileChecklist items={fileChecklist} />}
               </div>
               {/* Divider */}
               <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
