@@ -15,7 +15,7 @@ from .artifact_store import (
     store_artifact,
 )
 from .config import LOCAL_MODE
-from .local import get_invariants, get_summary, list_contracts, load_contract
+from .local import get_governance, get_invariants, get_summary, list_contracts, load_contract
 from .project import (
     get_build_contracts,
     get_project_contract,
@@ -56,114 +56,127 @@ _PROJECT_TOOLS = frozenset(
     }
 )
 
-TOOL_DEFINITIONS = [
+# ── Annotation presets ────────────────────────────────────────────────────
+
+_READ_ONLY = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+_WRITE = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+# ── Tool definitions ─────────────────────────────────────────────────────
+# Single list for all modes.  16 tools (removed 4 redundant shortcuts,
+# added forge_get_governance).  Descriptions optimised for Forge agents
+# (Scout, Coder, Auditor, Planner, Fixer) as primary consumers.
+#
+# The 4 shortcut tools (forge_get_boundaries, forge_get_physics,
+# forge_get_directive, forge_get_stack) are no longer advertised.
+# Use forge_get_contract(name="boundaries") etc. instead.
+# Dispatch still handles them for backward compat (returns deprecation hint).
+
+TOOL_DEFINITIONS: list[dict] = [
+    # ── Governance (read contracts from disk or DB) ───────────────────────
+    {
+        "name": "forge_get_governance",
+        "description": (
+            "Get all governance rules in one call — builder contract "
+            "(master rules), architecture layer boundaries (forbidden "
+            "imports), tech stack constraints, and invariant gates. "
+            "Call this first before any code generation or modification."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "annotations": _READ_ONLY,
+    },
     {
         "name": "forge_summary",
         "description": (
-            "Get a compact overview of the entire ForgeGuard governance "
-            "framework — all contracts, invariants, layer boundaries, and "
-            "available endpoints. Call this FIRST to understand the framework."
+            "Get a compact overview of the ForgeGuard framework — contract "
+            "names, architectural layers, invariant names, and available "
+            "tool endpoints. Lighter than forge_get_governance when you "
+            "only need metadata."
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "forge_list_contracts",
-        "description": (
-            "List all available governance contracts with their names, "
-            "filenames, and formats (json/yaml/markdown)."
-        ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_get_contract",
         "description": (
-            "Read the full content of a specific governance contract. "
-            "Use forge_list_contracts first to see available names. "
-            "Key contracts: boundaries (architecture rules), physics "
-            "(API spec), builder_directive (build rules), stack (tech stack)."
+            "Read a specific governance contract by name. Returns full "
+            "content (parsed JSON/YAML or raw markdown). Key contracts: "
+            "boundaries (layer rules), physics (API spec), stack (tech "
+            "requirements), builder_directive (AI build rules), "
+            "builder_contract (master governance)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": (
-                        "Contract name — one of: boundaries, physics, "
-                        "blueprint, builder_contract, builder_directive, "
-                        "manifesto, phases, schema, stack, system_prompt, "
-                        "ui, auditor_prompt, recovery_planner_prompt, "
-                        "remediation, desktop_distribution_plan"
-                    ),
+                    "description": "Contract name to fetch.",
+                    "enum": [
+                        "boundaries", "physics", "blueprint",
+                        "builder_contract", "builder_directive",
+                        "manifesto", "phases", "schema", "stack",
+                        "system_prompt", "ui", "auditor_prompt",
+                        "recovery_planner_prompt", "remediation",
+                        "desktop_distribution_plan",
+                    ],
                 },
             },
             "required": ["name"],
         },
+        "annotations": _READ_ONLY,
+    },
+    {
+        "name": "forge_list_contracts",
+        "description": (
+            "List all available governance contracts with names, filenames, "
+            "and formats. Use before forge_get_contract to discover what "
+            "contracts exist."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_get_invariants",
         "description": (
-            "Get all invariant gate definitions — hard constraints enforced "
-            "during builds. Includes constraint types (MONOTONIC_UP, EQUAL, "
-            "etc.) and default values."
+            "Get invariant gate definitions — hard constraints enforced "
+            "between build phases. Includes constraint types (MONOTONIC_UP, "
+            "EQUAL, etc.), default values, and descriptions."
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "annotations": _READ_ONLY,
     },
-    {
-        "name": "forge_get_boundaries",
-        "description": (
-            "Get architectural layer boundary rules — which imports and "
-            "patterns are forbidden in each layer (routers, repos, clients, "
-            "audit_engine, services). Violation of these rules fails the build."
-        ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "forge_get_physics",
-        "description": (
-            "Get the canonical API specification (physics.yaml) — the "
-            "single source of truth for every endpoint, auth type, request "
-            "and response schemas."
-        ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "forge_get_directive",
-        "description": (
-            "Get the builder directive — the system prompt and rules that "
-            "govern how the AI builder operates during code generation."
-        ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "forge_get_stack",
-        "description": (
-            "Get the technology stack contract — required languages, "
-            "frameworks, versions, and dependencies."
-        ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    # ── Artifact store (MCP temp pattern) ─────────────────────────────────
+    # ── Artifact store ────────────────────────────────────────────────────
     {
         "name": "forge_store_artifact",
         "description": (
-            "Store a generated artifact (contract, scout dossier, renovation "
-            "plan, builder directive, phase output, etc.) in the MCP artifact "
-            "store for on-demand retrieval by other sub-agents.  Use this "
-            "instead of embedding large content in agent system prompts."
+            "Store a generated artifact (contract, scout dossier, plan, "
+            "phase output, diff, seal) for retrieval by other agents. "
+            "Persists to memory (TTL-aware) and optionally to disk."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project identifier",
+                    "description": "Project identifier (UUID)",
                 },
                 "artifact_type": {
                     "type": "string",
-                    "description": (
-                        "Category: contract | scout | renovation | "
-                        "directive | phase | seal | diff"
-                    ),
+                    "description": "Category of artifact.",
+                    "enum": [
+                        "contract", "scout", "renovation",
+                        "directive", "phase", "seal", "diff",
+                    ],
                 },
                 "key": {
                     "type": "string",
@@ -177,30 +190,37 @@ TOOL_DEFINITIONS = [
                 },
                 "ttl_hours": {
                     "type": "number",
-                    "description": "Memory TTL in hours (default: 24).  Disk copies are permanent.",
+                    "description": "Memory TTL in hours (default 24). Disk copies are permanent.",
                 },
                 "persist": {
                     "type": "boolean",
-                    "description": "Write to disk for cross-session durability (default: true)",
+                    "description": "Also write to disk for cross-session durability (default true).",
                 },
             },
             "required": ["project_id", "artifact_type", "key", "content"],
         },
+        "annotations": _WRITE,
     },
     {
         "name": "forge_get_artifact",
         "description": (
-            "Retrieve a previously stored artifact by project ID, type, and "
-            "key.  Checks in-memory store first, then disk.  Use this to "
-            "lazy-load contracts or other large context on demand."
+            "Retrieve a stored artifact by project, type, and key. "
+            "Checks in-memory store first (TTL-aware), then disk."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID)",
+                },
                 "artifact_type": {
                     "type": "string",
-                    "description": "contract | scout | renovation | directive | phase | seal | diff",
+                    "description": "Category of artifact.",
+                    "enum": [
+                        "contract", "scout", "renovation",
+                        "directive", "phase", "seal", "diff",
+                    ],
                 },
                 "key": {
                     "type": "string",
@@ -209,51 +229,72 @@ TOOL_DEFINITIONS = [
             },
             "required": ["project_id", "artifact_type", "key"],
         },
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_list_artifacts",
         "description": (
-            "List all stored artifacts for a project, optionally filtered "
-            "by type.  Shows key, source (memory/disk), age, and size."
+            "List all stored artifacts for a project. Optionally filter "
+            "by type. Shows key, source (memory/disk), age, and size."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID)",
+                },
                 "artifact_type": {
                     "type": "string",
-                    "description": "Optional filter: contract | scout | renovation | directive | phase | seal | diff",
+                    "description": "Optional filter by artifact category.",
+                    "enum": [
+                        "contract", "scout", "renovation",
+                        "directive", "phase", "seal", "diff",
+                    ],
                 },
             },
             "required": ["project_id"],
         },
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_clear_artifacts",
         "description": (
-            "Remove all stored artifacts for a project (memory + disk), "
-            "optionally scoped to a single artifact type."
+            "Delete all stored artifacts for a project (memory + disk). "
+            "Optionally scope to a single artifact type."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project identifier (UUID)",
+                },
                 "artifact_type": {
                     "type": "string",
-                    "description": "Optional — clear only this type",
+                    "description": "Optional — delete only this type.",
+                    "enum": [
+                        "contract", "scout", "renovation",
+                        "directive", "phase", "seal", "diff",
+                    ],
                 },
             },
             "required": ["project_id"],
         },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
-    # ── Project-scoped contract tools (Phase E) ──────────────────────────
+    # ── Session management ────────────────────────────────────────────────
     {
         "name": "forge_set_session",
         "description": (
-            "Set session-level defaults for the MCP server instance. "
-            "Called once by the build orchestrator before spawning sub-agents. "
-            "Project-scoped tools auto-resolve project_id and build_id from "
-            "the session when the caller omits them."
+            "Set session-level defaults (project_id, build_id, user_id). "
+            "Call once at build start. Project-scoped tools then auto-resolve "
+            "IDs from the session without repeating them."
         ),
         "inputSchema": {
             "type": "object",
@@ -273,6 +314,7 @@ TOOL_DEFINITIONS = [
             },
             "required": ["project_id"],
         },
+        "annotations": _WRITE,
     },
     {
         "name": "forge_clear_session",
@@ -281,112 +323,102 @@ TOOL_DEFINITIONS = [
             "and user_id defaults."
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "annotations": _WRITE,
     },
+    # ── Project-scoped contract tools (reads from Neon DB) ────────────────
     {
         "name": "forge_get_project_context",
         "description": (
-            "Get a combined manifest for a project — project info, list of "
-            "available generated contracts (types, versions, sizes), build "
-            "count, and latest snapshot batch. Returns METADATA only, not "
-            "full contract content. Call this first to see what's available, "
-            "then fetch specific contracts with forge_get_project_contract."
+            "Get project manifest — project info, list of generated "
+            "contracts (types, versions, sizes), build count. Returns "
+            "metadata only, not full contract content. Call this first, "
+            "then use forge_get_project_contract for specific contracts."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": (
-                        "Project identifier. Optional if session is set "
-                        "via forge_set_session."
-                    ),
+                    "description": "Project identifier (UUID). Optional if session is set.",
                 },
             },
             "required": [],
         },
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_list_project_contracts",
         "description": (
-            "List all generated contracts for the current project — contract "
-            "types, versions, and last updated timestamps. Lighter than "
-            "forge_get_project_context when you only need the contract list."
+            "List all generated contracts for the project — types, versions, "
+            "last-updated timestamps. Lighter than forge_get_project_context."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": (
-                        "Project identifier. Optional if session is set."
-                    ),
+                    "description": "Project identifier (UUID). Optional if session is set.",
                 },
             },
             "required": [],
         },
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_get_project_contract",
         "description": (
-            "Fetch a single generated contract for the current project from "
-            "the database. Returns the full content, version, and source. "
-            "Use forge_list_project_contracts to see available types first. "
-            "Common types: manifesto, stack, physics, boundaries, blueprint, "
-            "builder_directive, schema, ui."
+            "Fetch a single generated contract for the project from the "
+            "database. Returns full content, version, and source. "
+            "Common types: manifesto, blueprint, stack, schema, physics, "
+            "boundaries, ui, phases, builder_directive."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": (
-                        "Project identifier. Optional if session is set."
-                    ),
+                    "description": "Project identifier (UUID). Optional if session is set.",
                 },
                 "contract_type": {
                     "type": "string",
-                    "description": (
-                        "Contract type — e.g. manifesto, stack, physics, "
-                        "boundaries, blueprint, builder_directive, schema, "
-                        "ui, phases, system_prompt, remediation"
-                    ),
+                    "description": "Contract type to fetch.",
+                    "enum": [
+                        "manifesto", "blueprint", "stack", "schema",
+                        "physics", "boundaries", "ui", "phases",
+                        "builder_directive",
+                    ],
                 },
             },
             "required": ["contract_type"],
         },
+        "annotations": _READ_ONLY,
     },
     {
         "name": "forge_get_build_contracts",
         "description": (
-            "Fetch the pinned contract snapshot for a specific build. "
-            "Returns all contracts that were frozen when the build started. "
-            "These are immutable — mid-build edits don't affect them. "
-            "Used by the Fixer role to reference the exact contracts the "
-            "build was executed against."
+            "Fetch the pinned contract snapshot for a build. Returns all "
+            "contracts frozen at build start (immutable). Use this to "
+            "reference the exact rules the build was executed against."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "build_id": {
                     "type": "string",
-                    "description": (
-                        "Build identifier. Optional if session is set "
-                        "via forge_set_session."
-                    ),
+                    "description": "Build identifier (UUID). Optional if session is set.",
                 },
             },
             "required": [],
         },
+        "annotations": _READ_ONLY,
     },
-    # ── Planner tool ───────────────────────────────────────────────────────
+    # ── Planner ───────────────────────────────────────────────────────────
     {
         "name": "forge_run_planner",
         "description": (
-            "Run the Forge Project Planner Agent. Analyses the project "
-            "request and generates a complete build plan (plan.json) covering "
-            "all phases. Returns the plan path, phase list, token usage, and a "
-            "turn-by-turn trace of the planning loop so you can follow the "
-            "planner's reasoning in real time."
+            "Run the Forge Planner Agent. Analyses the project request and "
+            "generates a complete build plan covering all phases. Returns "
+            "plan path, phase list, token usage, and turn-by-turn trace."
         ),
         "inputSchema": {
             "type": "object",
@@ -395,13 +427,17 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "Natural-language description of what to build — "
-                        "stack, features, constraints. Include everything "
-                        "the planner needs to produce a complete, "
-                        "unambiguous plan."
+                        "stack, features, constraints."
                     ),
                 },
             },
             "required": ["project_request"],
+        },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": True,
         },
     },
 ]
@@ -521,6 +557,8 @@ async def _dispatch_project(name: str, arguments: dict[str, Any]) -> dict[str, A
 def _dispatch_local(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Serve from local disk — but redirect DB contracts when session active."""
     match name:
+        case "forge_get_governance":
+            return get_governance()
         case "forge_summary":
             return get_summary()
         case "forge_list_contracts":
@@ -540,6 +578,8 @@ def _dispatch_local(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return load_contract(contract_name)
         case "forge_get_invariants":
             return get_invariants()
+        # Deprecated shortcuts — not advertised but still handled for
+        # backward compatibility with older agent prompts.
         case "forge_get_boundaries":
             session = get_session()
             if session.project_id:
@@ -656,14 +696,14 @@ async def _resolve_contract_from_db(
 ) -> dict[str, Any]:
     """Fetch a generated contract from the Neon DB via project-scoped API.
 
-    Maps the generic tool names (forge_get_contract, forge_get_boundaries,
-    etc.) to the project-scoped handler that reads from PostgreSQL.
+    Maps tool names to the project-scoped handler that reads from PostgreSQL.
+    Handles both forge_get_contract and deprecated shortcut tool names.
     """
-    # Determine contract type from tool name or arguments
     contract_type: str | None = None
     match name:
         case "forge_get_contract":
             contract_type = arguments.get("name")
+        # Deprecated shortcuts — backward compat
         case "forge_get_boundaries":
             contract_type = "boundaries"
         case "forge_get_physics":
@@ -706,6 +746,9 @@ async def _dispatch_remote(name: str, arguments: dict[str, Any]) -> dict[str, An
             return await get_project_contract({"contract_type": contract_name})
 
     match name:
+        case "forge_get_governance":
+            # In remote mode, fall back to local governance reader
+            return get_governance()
         case "forge_summary":
             return await api_get("/forge/summary")
         case "forge_list_contracts":

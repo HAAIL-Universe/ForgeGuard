@@ -103,6 +103,84 @@ def get_invariants() -> dict[str, Any]:
     return cache_set("invariants", result)
 
 
+def get_governance() -> dict[str, Any]:
+    """Consolidated governance read gate — one call for all rules (cached).
+
+    Returns the builder contract content, architecture boundary details,
+    tech stack, and invariant definitions.  Designed for the IDE use case
+    where Claude Code needs governance context before modifying code.
+    """
+    cached = cache_get("governance")
+    if cached is not None:
+        return cached
+
+    sections: dict[str, Any] = {}
+
+    # 1. Builder contract (master governance document)
+    bc = load_contract("builder_contract")
+    if "error" not in bc:
+        sections["builder_contract"] = bc["content"]
+    else:
+        sections["builder_contract_error"] = bc["error"]
+
+    # 2. Architecture boundaries (layer names + forbidden patterns)
+    bd = load_contract("boundaries")
+    if "error" not in bd:
+        content = bd["content"]
+        if isinstance(content, dict):
+            layers_summary = []
+            for layer in content.get("layers", []):
+                layers_summary.append({
+                    "name": layer["name"],
+                    "glob": layer.get("glob", ""),
+                    "description": layer.get("description", ""),
+                    "forbidden": [
+                        f["pattern"] + " — " + f["reason"]
+                        for f in layer.get("forbidden", [])
+                    ],
+                })
+            sections["boundaries"] = {
+                "layers": layers_summary,
+                "known_violations": content.get("known_violations", []),
+            }
+        else:
+            sections["boundaries"] = content
+    else:
+        sections["boundaries_error"] = bd["error"]
+
+    # 3. Technology stack
+    st = load_contract("stack")
+    if "error" not in st:
+        sections["stack"] = st["content"]
+    else:
+        sections["stack_error"] = st["error"]
+
+    # 4. Invariant gates
+    inv = get_invariants()
+    if "error" not in inv:
+        sections["invariants"] = inv["invariants"]
+    else:
+        sections["invariants_error"] = inv.get("error", "Unknown error")
+
+    result = {
+        "governance_version": "1.0",
+        "description": (
+            "ForgeGuard governance rules. The builder_contract is the "
+            "master document. Boundaries define forbidden imports per "
+            "architectural layer. Stack defines required technologies. "
+            "Invariants are hard constraints enforced during builds."
+        ),
+        "sections": sections,
+        "available_contracts": list(CONTRACT_MAP.keys()),
+        "hint": (
+            "Use forge_get_contract(name) to read any individual "
+            "contract in full. Key contracts: boundaries, physics, "
+            "builder_directive, stack, builder_contract."
+        ),
+    }
+    return cache_set("governance", result)
+
+
 def get_summary() -> dict[str, Any]:
     """Build a governance summary from disk (cached)."""
     cached = cache_get("summary")
@@ -141,13 +219,10 @@ def get_summary() -> dict[str, Any]:
         "architectural_layers": layers,
         "invariants": invariant_names,
         "endpoints": {
+            "governance": "forge_get_governance (MCP tool) — consolidated read gate",
             "list_contracts": "forge_list_contracts (MCP tool)",
             "get_contract": "forge_get_contract(name) (MCP tool)",
             "get_invariants": "forge_get_invariants (MCP tool)",
-            "get_boundaries": "forge_get_boundaries (MCP tool)",
-            "get_physics": "forge_get_physics (MCP tool)",
-            "get_directive": "forge_get_directive (MCP tool)",
-            "get_stack": "forge_get_stack (MCP tool)",
         },
     }
     return cache_set("summary", result)
