@@ -147,6 +147,26 @@ function formatPlanText(phases: any[]): string {
   }).join('\n\n');
 }
 
+/** Cycling word animation shown inside an empty PLAN box while planner is thinking. */
+const PLAN_THINKING_WORDS = [
+  'Synthesizing…', 'Percolating…', 'Deliberating…', 'Architecting…',
+  'Mapping phases…', 'Drafting blueprint…', 'Resolving dependencies…',
+  'Structuring…', 'Contemplating…', 'Assembling plan…', 'Calibrating…', 'Composing…',
+];
+
+function PlanThinkingAnimation() {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setIndex((i) => (i + 1) % PLAN_THINKING_WORDS.length), 1500);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <span style={{ color: '#64748B', fontStyle: 'italic' }}>
+      {PLAN_THINKING_WORDS[index]}
+    </span>
+  );
+}
+
 interface FileDiff {
   task_id: string;
   file: string;
@@ -1134,7 +1154,9 @@ const LogPane = memo(function LogPane({
                     color: '#CBD5E1', whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word', maxHeight: '400px', overflowY: 'auto',
                   }}>
-                    <code>{log.reasoning.text}</code>
+                    <code>{log.reasoning.isPlanBox && log.reasoning.text.length < 20
+                      ? <PlanThinkingAnimation />
+                      : log.reasoning.text}</code>
                     {log.reasoning.textLength > log.reasoning.text.length && (
                       <span style={{ color: '#64748B', fontStyle: 'italic' }}>
                         {'\n'}... truncated ({log.reasoning.textLength - log.reasoning.text.length} more chars)
