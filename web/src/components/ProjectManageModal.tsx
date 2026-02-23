@@ -4,7 +4,7 @@ interface ProjectManageModalProps {
   projectName: string;
   hasRepo: boolean;
   loading: boolean;
-  onRestart: (deleteRepo: boolean) => void;
+  onRestart: () => void;
   onRemove: (deleteRepo: boolean) => void;
   onCancel: () => void;
 }
@@ -103,7 +103,7 @@ function ProjectManageModal({
             >
               <div style={{ fontWeight: 600 }}>Restart Build</div>
               <div style={{ fontSize: '0.75rem', color: '#94A3B8', marginTop: '2px' }}>
-                Delete builds &amp; start fresh. Keeps contracts &amp; questionnaire.
+                Wipe builds &amp; repo contents. Keeps contracts &amp; questionnaire.
               </div>
             </button>
 
@@ -146,35 +146,28 @@ function ProjectManageModal({
           </p>
 
           {hasRepo && (
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                marginBottom: '16px',
-                color: '#F59E0B',
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={deleteRepo}
-                onChange={(e) => setDeleteRepo(e.target.checked)}
-                style={{ accentColor: '#F59E0B' }}
-              />
-              Also delete the GitHub repository
-            </label>
+            <p style={{
+              color: '#60A5FA',
+              fontSize: '0.8rem',
+              margin: '0 0 16px 0',
+              padding: '8px 12px',
+              background: '#1E3A5F44',
+              borderRadius: '6px',
+              border: '1px solid #2563EB33',
+            }}>
+              The GitHub repo will be kept but its contents will be reset to a clean
+              state (README only) so the next build starts fresh.
+            </p>
           )}
 
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
-            <button onClick={() => { setView('main'); setDeleteRepo(false); }} style={btnGhost}>
+            <button onClick={() => setView('main')} style={btnGhost}>
               Back
             </button>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button onClick={onCancel} style={btnGhost}>Cancel</button>
               <button
-                onClick={() => onRestart(deleteRepo)}
+                onClick={() => onRestart()}
                 disabled={loading}
                 style={btnAmber}
               >

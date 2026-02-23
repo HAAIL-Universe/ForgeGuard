@@ -204,6 +204,88 @@ async def delete_github_repo(
     return False
 
 
+async def reset_github_repo(
+    access_token: str,
+    full_name: str,
+    default_branch: str | None = None,
+) -> str:
+    """Reset a repo to just a README.md, preserving the repo itself.
+
+    Uses the Git Data API to create a single-file commit on the default branch.
+    All previous code is removed but git history is preserved.
+    Webhooks, settings, and collaborators are untouched.
+
+    Returns the new HEAD commit SHA.
+    """
+    client = _get_client()
+    headers = _auth_headers(access_token)
+
+    # Resolve default branch if not provided
+    if not default_branch:
+        meta = await get_repo_metadata(access_token, full_name)
+        default_branch = meta.get("default_branch", "main")
+
+    repo_name = full_name.split("/")[-1]
+
+    # 1. Create a blob for the README
+    blob_resp = await client.post(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/blobs",
+        json={"content": f"# {repo_name}\n", "encoding": "utf-8"},
+        headers=headers,
+    )
+    blob_resp.raise_for_status()
+    blob_sha = blob_resp.json()["sha"]
+
+    # 2. Create a tree with only the README (no base_tree → clean slate)
+    tree_resp = await client.post(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/trees",
+        json={
+            "tree": [
+                {
+                    "path": "README.md",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob_sha,
+                }
+            ]
+        },
+        headers=headers,
+    )
+    tree_resp.raise_for_status()
+    tree_sha = tree_resp.json()["sha"]
+
+    # 3. Get the current HEAD SHA for the default branch
+    ref_resp = await client.get(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/ref/heads/{default_branch}",
+        headers=headers,
+    )
+    ref_resp.raise_for_status()
+    current_sha = ref_resp.json()["object"]["sha"]
+
+    # 4. Create a commit with the clean tree, parented to current HEAD
+    commit_resp = await client.post(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/commits",
+        json={
+            "message": "Reset repository for fresh build",
+            "tree": tree_sha,
+            "parents": [current_sha],
+        },
+        headers=headers,
+    )
+    commit_resp.raise_for_status()
+    new_sha = commit_resp.json()["sha"]
+
+    # 5. Force-update the branch ref to the new commit
+    update_resp = await client.patch(
+        f"{GITHUB_API_BASE}/repos/{full_name}/git/refs/heads/{default_branch}",
+        json={"sha": new_sha, "force": True},
+        headers=headers,
+    )
+    update_resp.raise_for_status()
+
+    return new_sha
+
+
 async def create_webhook(
     access_token: str,
     full_name: str,

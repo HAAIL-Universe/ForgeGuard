@@ -136,9 +136,33 @@ async def get_project(
 @router.delete("/{project_id}")
 async def remove_project(
     project_id: UUID,
+    delete_repo: bool = Query(False),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """Delete a project."""
+    """Delete a project and optionally its GitHub repository."""
+    from app.repos import project_repo, user_repo
+
+    # Delete the GitHub repo first (before the project record is gone)
+    if delete_repo:
+        project = await project_repo.get_project_by_id(project_id)
+        repo_full_name = (project or {}).get("repo_full_name")
+        if repo_full_name:
+            try:
+                from app.clients import github_client
+                user = await user_repo.get_user_by_id(current_user["id"])
+                access_token = (user or {}).get("access_token", "")
+                if access_token:
+                    await github_client.delete_github_repo(
+                        access_token, repo_full_name,
+                    )
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to delete GitHub repo: {exc}",
+                )
+
     await delete_user_project(current_user["id"], project_id)
     return {"status": "deleted"}
 
@@ -148,21 +172,16 @@ async def remove_project(
 # ---------------------------------------------------------------------------
 
 
-class RestartRequest(BaseModel):
-    delete_repo: bool = False
-
-
 @router.post("/{project_id}/restart")
 async def restart_project(
     project_id: UUID,
-    body: RestartRequest = RestartRequest(),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Reset a project for a fresh build — deletes all builds but keeps
     contracts and questionnaire data intact.
 
-    If delete_repo=true, also deletes the GitHub repository (requires
-    delete_repo scope on the user's GitHub token).
+    If the project has a linked GitHub repo, the repo contents are wiped
+    (reset to just a README) but the repo itself is preserved.
 
     Sets project status back to 'contracts_ready' so the user can start
     a new build from the planning step.
@@ -189,27 +208,24 @@ async def restart_project(
     else:
         deleted = 0
 
-    # Optionally delete the GitHub repo
-    repo_deleted = False
+    # Reset GitHub repo contents (wipe files, keep the repo)
+    repo_reset = False
     repo_full_name = project.get("repo_full_name")
-    if body.delete_repo and repo_full_name:
+    if repo_full_name:
         try:
             from app.clients import github_client
             user = await user_repo.get_user_by_id(current_user["id"])
             access_token = (user or {}).get("access_token", "")
             if access_token:
-                repo_deleted = await github_client.delete_github_repo(
+                await github_client.reset_github_repo(
                     access_token, repo_full_name,
                 )
-        except PermissionError as exc:
-            raise HTTPException(
-                status_code=403,
-                detail=str(exc),
-            )
+                repo_reset = True
         except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to delete GitHub repo: {exc}",
+            # Non-fatal — repo reset failure shouldn't block the restart
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Failed to reset repo {repo_full_name}: {exc}"
             )
 
     # Clean up workspace directory on disk
@@ -229,7 +245,7 @@ async def restart_project(
     return {
         "status": "restarted",
         "builds_deleted": deleted,
-        "repo_deleted": repo_deleted,
+        "repo_reset": repo_reset,
         "message": "Project reset. Contracts preserved — ready for a fresh build.",
     }
 

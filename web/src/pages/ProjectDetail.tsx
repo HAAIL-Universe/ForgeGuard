@@ -443,21 +443,19 @@ function ProjectDetail() {
   const handleDeleteProject = async (deleteRepo: boolean) => {
     setDeleting(true);
     try {
-      // If deleteRepo requested, restart first to clean up GitHub repo
-      if (deleteRepo && project?.repo_full_name) {
-        await fetch(`${API_BASE}/projects/${projectId}/restart`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ delete_repo: true }),
-        });
-      }
-      const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+      const url = deleteRepo
+        ? `${API_BASE}/projects/${projectId}?delete_repo=true`
+        : `${API_BASE}/projects/${projectId}`;
+      const res = await fetch(url, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         addToast('Project removed', 'success');
         navigate('/');
+      } else if (res.status === 403) {
+        const data = await res.json().catch(() => ({ detail: '' }));
+        addToast(data.detail || 'GitHub token lacks permission. Log out and re-authenticate.');
       } else {
         const data = await res.json().catch(() => ({ detail: 'Failed to remove project' }));
         addToast(data.detail || 'Failed to remove project');
@@ -470,22 +468,17 @@ function ProjectDetail() {
     }
   };
 
-  const handleRestartProject = async (deleteRepo: boolean) => {
+  const handleRestartProject = async () => {
     setDeleting(true);
     try {
       const res = await fetch(`${API_BASE}/projects/${projectId}/restart`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delete_repo: deleteRepo }),
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
         addToast(data.message || 'Project restarted', 'success');
-        // Reload the page to reflect new state
         window.location.reload();
-      } else if (res.status === 403) {
-        const data = await res.json().catch(() => ({ detail: '' }));
-        addToast(data.detail || 'GitHub token lacks permission. Log out and re-authenticate.');
       } else {
         const data = await res.json().catch(() => ({ detail: 'Failed to restart project' }));
         addToast(data.detail || 'Failed to restart project');
@@ -1244,7 +1237,7 @@ function ProjectDetail() {
           projectName={project?.name || ''}
           hasRepo={!!project?.repo_full_name}
           loading={deleting}
-          onRestart={(deleteRepo) => handleRestartProject(deleteRepo)}
+          onRestart={() => handleRestartProject()}
           onRemove={(deleteRepo) => handleDeleteProject(deleteRepo)}
           onCancel={() => setShowDeleteConfirm(false)}
         />
