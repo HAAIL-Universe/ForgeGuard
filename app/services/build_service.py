@@ -641,14 +641,18 @@ async def start_build(
             zombies, project_id,
         )
 
-    # Block new build if a meaningful historical build exists (completed >= 1 phase).
-    # The user must continue it or explicitly delete it via Build History first.
-    latest = await build_repo.get_latest_build_for_project(project_id)
-    if latest and latest["completed_phases"] >= 0:
-        raise ValueError(
-            "A previous build with progress exists. "
-            "Open Build History to delete it, or continue it from where it left off."
-        )
+    # Block new FRESH build if a meaningful historical build exists (completed >= 1 phase).
+    # The user must continue it (via /start → interject_build) or explicitly delete it
+    # via Build History first.  When resume_from_phase >= 0, the caller (interject_build)
+    # already performed smart resume detection and is intentionally creating a
+    # continuation build — allow it through.
+    if resume_from_phase < 0:
+        latest = await build_repo.get_latest_build_for_project(project_id)
+        if latest and latest.get("completed_phases") is not None and latest["completed_phases"] >= 0:
+            raise ValueError(
+                "A previous build with progress exists. "
+                "Open Build History to delete it, or continue it from where it left off."
+            )
 
     # BYOK: user must supply their own Anthropic API key for builds
     user = await get_user_by_id(user_id)
@@ -2510,6 +2514,18 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
         _cached2 = await _gcp2(project_id)
         if _cached2:
             result["cached_plan_phases"] = _cached2.get("phases", [])
+    # For terminal builds (cancelled/failed/completed) with real progress,
+    # include the cached plan phases so the IDE can display the plan, show
+    # completed phases, and offer /start to resume.
+    if latest["status"] in ("cancelled", "failed", "completed"):
+        _cp = latest.get("completed_phases")
+        if _cp is not None and _cp >= 0:
+            result["has_progress"] = True
+            result["resumable"] = latest["status"] != "completed"
+        from app.repos.project_repo import get_cached_plan as _gcp_term
+        _cached_term = await _gcp_term(project_id)
+        if _cached_term:
+            result["cached_plan_phases"] = _cached_term.get("phases", [])
     return result
 
 

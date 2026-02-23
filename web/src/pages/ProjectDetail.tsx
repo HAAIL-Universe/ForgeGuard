@@ -888,21 +888,19 @@ function ProjectDetail() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>⏸ Plan ready</span>
               <button
-                onClick={handleStartBuild}
-                disabled={starting}
+                onClick={() => navigate(`/projects/${projectId}/build`)}
                 style={{
                   background: '#581C87',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '6px',
                   padding: '10px 20px',
-                  cursor: starting ? 'wait' : 'pointer',
+                  cursor: 'pointer',
                   fontSize: '0.875rem',
                   fontWeight: 600,
-                  opacity: starting ? 0.6 : 1,
                 }}
               >
-                {starting ? 'Starting...' : 'Continue Build'}
+                Continue Build
               </button>
             </div>
           )}

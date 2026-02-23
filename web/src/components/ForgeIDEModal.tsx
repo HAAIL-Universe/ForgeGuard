@@ -1477,8 +1477,64 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 setStatus('paused');
               }
             }
-            else if (sd.status === 'completed') { setStatus('completed'); setCompletedTasks(phases.length); }
-            else if (sd.status === 'failed') setStatus('error');
+            else if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
+              // Terminal build — restore plan and phase progress so the user
+              // can see what was accomplished and type /start to resume.
+              const termStatus = sd.status === 'completed' ? 'completed' : 'error';
+              setStatus(termStatus);
+
+              const cp = sd.completed_phases ?? -1;
+              if (cp >= 0) setCompletedTasks(cp + 1);
+
+              // Restore phases from cached plan if available
+              const cachedPhases = (sd as any).cached_plan_phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[] | undefined;
+              if (cachedPhases && cachedPhases.length > 0) {
+                setPhases(cachedPhases as any);
+                setTasks(cachedPhases.map((ph) => ({
+                  id: `phase_${ph.number}`,
+                  name: `Phase ${ph.number}: ${ph.name}`,
+                  priority: 'high' as const,
+                  effort: 'large' as const,
+                  forge_automatable: true,
+                  category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                  status: cp >= 0 && ph.number <= cp
+                    ? 'proposed' as const  // 'proposed' = completed in UI
+                    : 'pending' as const,
+                })));
+                setTotalTasks(cachedPhases.length);
+
+                // Inject plan box into the Sonnet log
+                const planText = formatPlanText(cachedPhases);
+                setLogs((prev) => {
+                  if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
+                  return [...prev, {
+                    timestamp: new Date().toISOString(),
+                    source: 'reasoning' as const,
+                    level: 'info',
+                    message: `📋 Plan — ${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''} (${sd.status})`,
+                    worker: 'sonnet' as const,
+                    reasoning: {
+                      text: planText,
+                      textLength: planText.length,
+                      turn: 0,
+                      phase: `${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''}`,
+                      isActualThinking: false,
+                      isPlanBox: true,
+                    },
+                  }];
+                });
+              }
+
+              // Prompt user to resume if the build is resumable
+              if ((sd as any).resumable && cp >= 0) {
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system',
+                  level: 'info',
+                  message: `Build ${sd.status} at Phase ${cp}. Type /start to resume from Phase ${cp + 1}.`,
+                }]);
+              }
+            }
             else if (sd.status === 'plan_ready') {
               // No active build — only a saved plan exists (e.g. after server restart).
               // Show plan approval UI immediately; no seed logs will arrive (no build).
@@ -3008,54 +3064,46 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       }]);
 
       if (isBuild) {
-        // Build mode: start build
+        // Build mode: route /start through the interject endpoint which has
+        // smart resume logic (detects gates, finds prior builds with progress,
+        // scans git log, handles orphaned builds, etc.)
         try {
-          const res = await fetch(`${API_BASE}/projects/${projectId}/build`, {
+          const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: '/start' }),
           });
           if (res.ok) {
             const data = await res.json();
-            setBuildId(data.id || '');
-            setStatus('preparing');
-            autoCommenceRef.current = true;
+            if (data.build_id) setBuildId(data.build_id);
+            // Map interject response statuses to IDE states
+            const st = data.status;
+            if (st === 'commenced' || st === 'approved' || st === 'started' || st === 'continued' || st === 'resumed') {
+              setStatus('running');
+              autoCommenceRef.current = true;
+            } else if (st === 'already_running') {
+              setStatus('running');
+            } else {
+              setStatus('running');
+            }
+            if (data.message) {
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(), source: 'system', level: 'info',
+                message: data.message,
+              }]);
+            }
           } else {
             const err = await res.json().catch(() => ({ detail: 'Failed to start build' }));
             const detail = err.detail || 'Failed to start build';
-            if (typeof detail === 'string' && detail.toLowerCase().includes('previous build')) {
-              setLogs((prev) => [...prev, {
-                timestamp: new Date().toISOString(), source: 'system', level: 'warn',
-                message: '⚠ ' + detail,
-              }]);
-              return;
-            }
-            if (typeof detail === 'string' && (detail.toLowerCase().includes('already') || detail.toLowerCase().includes('running'))) {
-              // Build exists — if it's waiting at the ready gate, commence it
-              autoCommenceRef.current = true;
-              try {
-                const commRes = await fetch(`${API_BASE}/projects/${projectId}/build/commence`, {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ action: 'commence' }),
-                });
-                if (commRes.ok) {
-                  setStatus('running');
-                } else {
-                  // Already commenced / already running — just reflect status
-                  setStatus('running');
-                }
-              } catch {
-                setStatus('running');
-              }
-              return;
-            }
             setLogs((prev) => [...prev, {
-              timestamp: new Date().toISOString(), source: 'system', level: 'error', message: typeof detail === 'string' ? detail : JSON.stringify(detail),
+              timestamp: new Date().toISOString(), source: 'system', level: 'error',
+              message: typeof detail === 'string' ? detail : JSON.stringify(detail),
             }]);
           }
         } catch {
           setLogs((prev) => [...prev, {
-            timestamp: new Date().toISOString(), source: 'system', level: 'error', message: 'Network error starting build',
+            timestamp: new Date().toISOString(), source: 'system', level: 'error',
+            message: 'Network error starting build',
           }]);
           setStatus('error');
         }

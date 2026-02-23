@@ -50,6 +50,7 @@ def _build(**overrides):
         "loop_count": 0,
         "error_detail": None,
         "created_at": datetime.now(timezone.utc),
+        "completed_phases": -1,
     }
     defaults.update(overrides)
     return defaults
@@ -1899,6 +1900,70 @@ class TestDBPreflightCheck:
         mock_sleep.assert_called_once_with(3)
         # Second pool's fetchval was called
         mock_pool_ok.fetchval.assert_called_once_with("SELECT 1")
+
+
+# ---------------------------------------------------------------------------
+# Tests: resume_from_phase guard bypass
+# ---------------------------------------------------------------------------
+
+
+class TestResumeGuardBypass:
+    """Tests for the historical-progress guard in start_build()."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.asyncio.create_task")
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    @patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+    async def test_resume_bypasses_progress_guard(
+        self, mock_get_user, mock_build_repo, mock_project_repo,
+        mock_create_task, mock_get_pool,
+    ):
+        """start_build with resume_from_phase >= 0 bypasses the historical-progress guard."""
+        mock_pool = AsyncMock()
+        mock_get_pool.return_value = mock_pool
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        mock_project_repo.update_project_status = AsyncMock()
+        mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+        # First call: concurrent guard check (returns terminal build — no block)
+        # Second call is only reached for fresh builds (resume_from_phase < 0)
+        mock_build_repo.get_latest_build_for_project = AsyncMock(
+            return_value=_build(status="cancelled", completed_phases=3)
+        )
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+        mock_build_repo.create_build = AsyncMock(return_value=_build())
+        mock_create_task.return_value = MagicMock()
+        mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+        # Should NOT raise ValueError even though a build with completed_phases=3 exists
+        result = await build_service.start_build(
+            _PROJECT_ID, _USER_ID, resume_from_phase=3,
+        )
+        assert result["status"] == "pending"
+        mock_build_repo.create_build.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    async def test_fresh_build_blocked_when_progress_exists(
+        self, mock_build_repo, mock_project_repo, mock_get_pool,
+    ):
+        """start_build with no resume_from_phase still blocks when historical build has progress."""
+        mock_pool = AsyncMock()
+        mock_get_pool.return_value = mock_pool
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        # Concurrent guard passes (cancelled != active), zombie cleanup returns nothing
+        mock_build_repo.get_latest_build_for_project = AsyncMock(
+            return_value=_build(status="cancelled", completed_phases=3)
+        )
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+
+        with pytest.raises(ValueError, match="previous build with progress"):
+            await build_service.start_build(_PROJECT_ID, _USER_ID)
 
 
 # ---------------------------------------------------------------------------
