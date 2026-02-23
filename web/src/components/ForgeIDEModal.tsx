@@ -3101,27 +3101,35 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         }
       } else if (action === 'approve' && !res.ok) {
         // approve-plan failed (e.g. server restarted, state lost) — fall back
-        // to commence (resumes a paused build at the IDE ready gate)
+        // to /start via interject endpoint to begin a fresh build
         try {
-          const commRes = await fetch(`${API_BASE}/projects/${projectId}/build/commence`, {
+          const startRes = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'commence' }),
+            body: JSON.stringify({ message: '/start' }),
           });
-          if (commRes.ok) {
+          if (startRes.ok) {
+            const startData = await startRes.json().catch(() => ({}));
             setStatus('running');
+            if (startData.message) {
+              setLogs((prev) => [...prev, {
+                timestamp: new Date().toISOString(),
+                source: 'system', level: 'info',
+                message: startData.message,
+              }]);
+            }
           } else {
             setLogs((prev) => [...prev, {
               timestamp: new Date().toISOString(),
               source: 'system', level: 'warn',
-              message: '⚠ Could not resume build — try /start to begin a new build',
+              message: '⚠ Could not start build — try /start manually',
             }]);
           }
         } catch {
           setLogs((prev) => [...prev, {
             timestamp: new Date().toISOString(),
             source: 'system', level: 'warn',
-            message: '⚠ Could not resume build — try /start to begin a new build',
+            message: '⚠ Could not start build — try /start manually',
           }]);
         }
       }
@@ -4534,31 +4542,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   </button>
                 )}
                 {planReady && (
-                  <>
-                    <button
-                      onClick={() => setShowPlanModal(true)}
-                      style={{
-                        background: '#0F1A2E', color: '#38BDF8',
-                        border: '1px solid #38BDF844', borderRadius: '4px',
-                        padding: '3px 10px', cursor: 'pointer',
-                        fontSize: '0.7rem', fontWeight: 600,
-                      }}
-                    >
-                      📋 REVIEW
-                    </button>
-                    <button
-                      onClick={() => { respondToPlanReview('approve'); setPlanReady(false); }}
-                      style={{
-                        background: '#14532D', color: '#22C55E',
-                        border: '1px solid #22C55E44', borderRadius: '4px',
-                        padding: '3px 12px', cursor: 'pointer',
-                        fontSize: '0.7rem', fontWeight: 700,
-                        animation: 'pulseGreen 2s ease-in-out infinite',
-                      }}
-                    >
-                      ▶ Approve Plan
-                    </button>
-                  </>
+                  <button
+                    onClick={() => setShowPlanModal(true)}
+                    style={{
+                      background: '#14532D', color: '#22C55E',
+                      border: '1px solid #22C55E44', borderRadius: '4px',
+                      padding: '3px 12px', cursor: 'pointer',
+                      fontSize: '0.7rem', fontWeight: 700,
+                      animation: 'pulseGreen 2s ease-in-out infinite',
+                    }}
+                  >
+                    📋 REVIEW &amp; APPROVE
+                  </button>
                 )}
                 {/* Plan review modal — opens when user clicks REVIEW */}
                 {showPlanModal && planReady && (
