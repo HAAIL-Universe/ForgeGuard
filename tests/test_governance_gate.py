@@ -464,3 +464,107 @@ class TestGovernanceCheckCount:
         assert len(result["checks"]) == 7
         codes = [c["code"] for c in result["checks"]]
         assert codes == ["G1", "G2", "G3", "G4", "G5", "G6", "G7"]
+
+
+# ---------------------------------------------------------------------------
+# 34.11 Governance detail message format (for Change 4 broadcasting)
+# ---------------------------------------------------------------------------
+
+
+class TestGovernanceDetailFormat:
+    """Tests that governance check results contain structured detail for broadcasting."""
+
+    @pytest.mark.asyncio
+    async def test_failing_checks_have_code_name_detail(self, tmp_path):
+        """Failed governance checks include code, name, and detail fields."""
+        manifest = _manifest(["missing.py"])
+        touched: set[str] = set()
+
+        p1, p2, p3 = _mock_patches()
+        with p1 as mock_repo, p2, p3:
+            mock_repo.append_build_log = AsyncMock()
+            result = await _run_governance_checks(
+                _BUILD_ID, _USER_ID, "fake-key",
+                manifest, str(tmp_path), _contracts(),
+                touched, "Phase 1",
+            )
+
+        failing = [c for c in result["checks"] if c["result"] == "FAIL"]
+        assert len(failing) >= 1
+        for chk in failing:
+            assert "code" in chk, "Failing check must have 'code' field"
+            assert "name" in chk, "Failing check must have 'name' field"
+            assert "detail" in chk, "Failing check must have 'detail' field"
+            assert chk["code"].startswith("G"), "Check code must start with 'G'"
+
+    @pytest.mark.asyncio
+    async def test_detail_message_format_matches_broadcast(self, tmp_path):
+        """Detail message format matches what build_service broadcasts to the user.
+
+        The build service broadcasts:
+          [G1] Scope compliance: <detail text>
+        We verify the check result has the right shape for that template.
+        """
+        # Create a phantom file to trigger G1 FAIL
+        (tmp_path / "phantom.py").write_text("x = 1\n")
+        manifest = _manifest([])
+        touched = {"phantom.py"}
+
+        p1, p2, p3 = _mock_patches()
+        with p1 as mock_repo, p2, p3:
+            mock_repo.append_build_log = AsyncMock()
+            result = await _run_governance_checks(
+                _BUILD_ID, _USER_ID, "fake-key",
+                manifest, str(tmp_path), _contracts(),
+                touched, "Phase 1",
+            )
+
+        g1 = next(c for c in result["checks"] if c["code"] == "G1")
+        assert g1["result"] == "FAIL"
+
+        # Simulate the exact format used in build_service.py governance broadcasting
+        detail_msg = (
+            f"  [{g1.get('code', '?')}] "
+            f"{g1.get('name', 'unknown')}: "
+            f"{g1.get('detail', 'no detail')}"
+        )
+        assert "[G1]" in detail_msg
+        assert g1["name"] in detail_msg
+        assert g1["detail"] in detail_msg
+
+    @pytest.mark.asyncio
+    async def test_boundary_fail_produces_useful_detail(self, tmp_path):
+        """G2 boundary violation includes the forbidden pattern in detail."""
+        routers_dir = tmp_path / "app" / "api" / "routers"
+        routers_dir.mkdir(parents=True)
+        (routers_dir / "builds.py").write_text(
+            "import asyncpg\n\ndef get_builds():\n    pass\n"
+        )
+        boundaries = {
+            "layers": [
+                {
+                    "name": "routers",
+                    "glob": "app/api/routers/*.py",
+                    "forbidden": [
+                        {"pattern": "asyncpg", "reason": "no asyncpg in routers"}
+                    ],
+                }
+            ]
+        }
+        manifest = _manifest(["app/api/routers/builds.py"])
+        touched = {"app/api/routers/builds.py"}
+
+        p1, p2, p3 = _mock_patches()
+        with p1 as mock_repo, p2, p3:
+            mock_repo.append_build_log = AsyncMock()
+            result = await _run_governance_checks(
+                _BUILD_ID, _USER_ID, "fake-key",
+                manifest, str(tmp_path), _contracts(boundaries),
+                touched, "Phase 1",
+            )
+
+        g2 = next(c for c in result["checks"] if c["code"] == "G2")
+        assert g2["result"] == "FAIL"
+        # The detail should include the forbidden pattern for broadcast
+        detail_msg = f"  [{g2['code']}] {g2['name']}: {g2['detail']}"
+        assert "asyncpg" in detail_msg

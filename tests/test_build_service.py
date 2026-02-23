@@ -77,9 +77,12 @@ def _mock_build_state_deps():
     mock_mgr = MagicMock()
     mock_mgr.send_to_user = AsyncMock(return_value=None)
     mock_mgr.send_to_group = AsyncMock(return_value=None)
+    mock_pool = AsyncMock()  # pool.fetchval("SELECT 1") returns AsyncMock
+    mock_get_pool = AsyncMock(return_value=mock_pool)
     with patch("app.services.build._state.build_repo", mock_repo), \
-         patch("app.services.build._state.manager", mock_mgr):
-        yield {"build_repo": mock_repo, "manager": mock_mgr}
+         patch("app.services.build._state.manager", mock_mgr), \
+         patch("app.services.build_service.get_pool", mock_get_pool):
+        yield {"build_repo": mock_repo, "manager": mock_mgr, "get_pool": mock_get_pool}
 
 # ---------------------------------------------------------------------------
 # Tests: start_build
@@ -1771,6 +1774,131 @@ async def test_start_build_with_branch(mock_get_user, mock_build_repo, mock_proj
     mock_build_repo.create_build.assert_called_once()
     call_kwargs = mock_build_repo.create_build.call_args.kwargs
     assert call_kwargs["branch"] == "forge/v2"
+
+
+# ---------------------------------------------------------------------------
+# Tests: DB pre-flight check in start_build
+# ---------------------------------------------------------------------------
+
+
+class TestDBPreflightCheck:
+    """Tests for the DB warm-up SELECT 1 at the top of start_build()."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.asyncio.create_task")
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    @patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+    async def test_preflight_calls_select_1(
+        self, mock_get_user, mock_build_repo, mock_project_repo,
+        mock_create_task, mock_get_pool,
+    ):
+        """start_build performs DB pre-flight SELECT 1 before business logic."""
+        mock_pool = AsyncMock()
+        mock_get_pool.return_value = mock_pool
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        mock_project_repo.update_project_status = AsyncMock()
+        mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+        mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+        mock_build_repo.create_build = AsyncMock(return_value=_build())
+        mock_create_task.return_value = MagicMock()
+        mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+        await build_service.start_build(_PROJECT_ID, _USER_ID)
+
+        # get_pool called exactly once (first attempt succeeds)
+        mock_get_pool.assert_called_once()
+        mock_pool.fetchval.assert_called_once_with("SELECT 1")
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.asyncio.create_task")
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    @patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+    async def test_preflight_retries_on_first_failure(
+        self, mock_get_user, mock_build_repo, mock_project_repo,
+        mock_create_task, mock_get_pool, mock_sleep,
+    ):
+        """DB pre-flight retries after 3s if first attempt fails."""
+        mock_pool_ok = AsyncMock()
+        # First call to get_pool raises, second succeeds
+        mock_get_pool.side_effect = [
+            Exception("connection refused"),
+            mock_pool_ok,
+        ]
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        mock_project_repo.update_project_status = AsyncMock()
+        mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+        mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+        mock_build_repo.create_build = AsyncMock(return_value=_build())
+        mock_create_task.return_value = MagicMock()
+        mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+        await build_service.start_build(_PROJECT_ID, _USER_ID)
+
+        # get_pool called twice (first failed, retry succeeded)
+        assert mock_get_pool.call_count == 2
+        mock_sleep.assert_called_once_with(3)
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    async def test_preflight_raises_on_both_failures(
+        self, mock_build_repo, mock_project_repo,
+        mock_get_pool, mock_sleep,
+    ):
+        """DB pre-flight raises ValueError with clean message if both attempts fail."""
+        mock_get_pool.side_effect = Exception("connection refused")
+
+        with pytest.raises(ValueError, match="Database is unreachable"):
+            await build_service.start_build(_PROJECT_ID, _USER_ID)
+
+        # Both attempts made, sleep between them
+        assert mock_get_pool.call_count == 2
+        mock_sleep.assert_called_once_with(3)
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.asyncio.create_task")
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    @patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+    async def test_preflight_retries_when_fetchval_fails(
+        self, mock_get_user, mock_build_repo, mock_project_repo,
+        mock_create_task, mock_get_pool, mock_sleep,
+    ):
+        """DB pre-flight retries when get_pool succeeds but fetchval fails."""
+        # First pool's fetchval raises, second pool works fine
+        mock_pool_bad = AsyncMock()
+        mock_pool_bad.fetchval = AsyncMock(side_effect=Exception("cannot run query"))
+        mock_pool_ok = AsyncMock()
+        mock_get_pool.side_effect = [mock_pool_bad, mock_pool_ok]
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        mock_project_repo.update_project_status = AsyncMock()
+        mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+        mock_build_repo.get_latest_build_for_project = AsyncMock(return_value=None)
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+        mock_build_repo.create_build = AsyncMock(return_value=_build())
+        mock_create_task.return_value = MagicMock()
+        mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+        await build_service.start_build(_PROJECT_ID, _USER_ID)
+
+        assert mock_get_pool.call_count == 2
+        mock_sleep.assert_called_once_with(3)
+        # Second pool's fetchval was called
+        mock_pool_ok.fetchval.assert_called_once_with("SELECT 1")
 
 
 # ---------------------------------------------------------------------------
