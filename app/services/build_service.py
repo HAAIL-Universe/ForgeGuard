@@ -4597,6 +4597,7 @@ async def _run_build_plan_execute(
                 # ── End plan confirmation gate ────────────────────────
 
                 _accumulated_interfaces = ""
+                _accumulated_lessons = ""   # findings snowball: confirmed-fixed patterns
 
                 # Helper: merge chunk results into tracking dicts
                 async def _merge_tier_results(
@@ -4744,7 +4745,7 @@ async def _run_build_plan_execute(
                         "source": "planner", "level": "info",
                     })
 
-                    chunk_written = await execute_tier(
+                    chunk_written, _chunk_lessons = await execute_tier(
                         build_id, user_id, api_key,
                         chunk_idx, chunk_files, contracts,
                         phase_deliverables, working_dir,
@@ -4752,6 +4753,7 @@ async def _run_build_plan_execute(
                         key_pool=key_pool,
                         audit_api_key=_audit_key,
                         build_mode=_build_mode,
+                        lessons_learned=_accumulated_lessons,
                     )
 
                     # ── Step 3: Merge results + audit ──
@@ -4781,6 +4783,8 @@ async def _run_build_plan_execute(
                         _accumulated_interfaces, working_dir,
                     )
                     _accumulated_interfaces += f"\n\n{chunk_interfaces}"
+                    if _chunk_lessons:
+                        _accumulated_lessons = _chunk_lessons  # lessons already capped in execute_tier
 
                     # Quick Sonnet review (advisory, non-blocking)
                     try:

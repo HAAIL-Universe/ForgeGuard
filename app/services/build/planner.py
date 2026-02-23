@@ -1528,14 +1528,16 @@ async def execute_tier(
     key_pool: Any | None = None,
     audit_api_key: str | None = None,
     build_mode: str = "full",
-) -> dict[str, str]:
+    lessons_learned: str = "",
+) -> tuple[dict[str, str], str]:
     """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
     Each file is built independently by run_builder(), with up to 3 files running
     concurrently (controlled by a semaphore).  SCOUT/CODER use api_key; AUDITOR/FIXER
     use audit_api_key (falls back to api_key if not set).
 
-    Returns dict of ``{path: content}`` for all files written.
+    Returns ``(written_files, lessons_learned)`` — written_files is ``{path: content}``,
+    lessons_learned is accumulated findings summary for downstream tiers/chunks.
     """
     from .subagent import build_context_pack, SubAgentResult
     from .verification import _is_test_file
@@ -1579,6 +1581,10 @@ async def execute_tier(
 
     # Per-file builder pipeline (sequential for now — switch to 3+ for production)
     _semaphore = asyncio.Semaphore(1)
+    _LESSONS_CAP = 2000  # max chars for accumulated lessons string
+    _lessons_parts: list[str] = []  # mutable — shared across sequential file runs
+    if lessons_learned:
+        _lessons_parts.append(lessons_learned)
 
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
         fp = file_entry["path"]
@@ -1652,6 +1658,11 @@ async def execute_tier(
             )
 
         async with _semaphore:
+            # Build lessons snapshot BEFORE acquiring builder
+            _current_lessons = "\n".join(_lessons_parts)
+            if len(_current_lessons) > _LESSONS_CAP:
+                _current_lessons = _current_lessons[-_LESSONS_CAP:]
+
             result = await run_builder(
                 file_entry=file_entry,
                 contracts=_contracts_list,
@@ -1665,10 +1676,17 @@ async def execute_tier(
                 phase_plan_context="",
                 build_mode=build_mode,
                 integration_check=_per_file_integration_check,
+                lessons_learned=_current_lessons,
             )
 
         if result.status == "completed" and result.content:
             tier_written[fp] = result.content
+
+        # Accumulate lessons from FIXER findings (confirmed-fixed patterns)
+        if result.fixed_findings:
+            _lessons_parts.append(
+                f"[{fp}] Fixed: {result.fixed_findings[:300]}"
+            )
 
         # Accumulate cost from all sub-agents in the pipeline
         for sar in result.sub_agent_results:
@@ -1716,4 +1734,9 @@ async def execute_tier(
         "file_count": len(tier_written),
     })
 
-    return tier_written
+    # Build final lessons string (capped)
+    _final_lessons = "\n".join(_lessons_parts)
+    if len(_final_lessons) > _LESSONS_CAP:
+        _final_lessons = _final_lessons[-_LESSONS_CAP:]
+
+    return tier_written, _final_lessons

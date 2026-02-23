@@ -85,6 +85,7 @@ class BuilderResult:
     token_usage: dict = field(default_factory=dict)
     sub_agent_results: list = field(default_factory=list)
     iterations: int = 0
+    fixed_findings: str = ""                    # Summary of issues FIXER resolved (for lessons learned)
 
 
 class BuilderError(Exception):
@@ -176,6 +177,7 @@ async def run_builder(
     turn_callback: "callable | None" = None,
     stop_event: "threading.Event | None" = None,
     integration_check: "callable | None" = None,
+    lessons_learned: str = "",
 ) -> BuilderResult:
     """
     Run the Builder Agent pipeline for a single file.
@@ -235,6 +237,8 @@ async def run_builder(
     scout_context: dict[str, str] = {}
     if phase_plan_context:
         scout_context["phase_plan_context.md"] = phase_plan_context
+    if lessons_learned:
+        scout_context["lessons_learned.md"] = lessons_learned
 
     scout_handoff = SubAgentHandoff(
         role=SubAgentRole.SCOUT,
@@ -299,6 +303,8 @@ async def run_builder(
         )
     for i, ctx_content in enumerate(context):
         coder_context[f"context_{i + 1}.txt"] = ctx_content
+    if lessons_learned:
+        coder_context["lessons_learned.md"] = lessons_learned
 
     coder_handoff = SubAgentHandoff(
         role=SubAgentRole.CODER,
@@ -354,6 +360,8 @@ async def run_builder(
     # ────────────────────────────────────────────────────────────────────────
     audit_verdict = "PASS"
     last_audit_findings = ""
+    _fixer_ran = False
+    _last_combined_findings = ""          # what FIXER was asked to fix
 
     for fix_attempt in range(MAX_FIX_RETRIES + 1):
         # Check stop signal before each audit/fix cycle
@@ -474,6 +482,9 @@ async def run_builder(
             )
 
         # --- FIXER (receives combined audit + integration findings) ---
+        _fixer_ran = True
+        _last_combined_findings = combined_findings
+
         if verbose:
             _fix_sources = []
             if audit_verdict == "FAIL":
@@ -533,6 +544,11 @@ async def run_builder(
     # ────────────────────────────────────────────────────────────────────────
     iterations = len(sub_agent_results)
 
+    # Capture what FIXER resolved (only if it ran AND final status is good)
+    _resolved_findings = ""
+    if _fixer_ran and audit_verdict != "FAIL" and _last_combined_findings:
+        _resolved_findings = _last_combined_findings
+
     if audit_verdict == "FAIL":
         result = BuilderResult(
             file_path=file_path,
@@ -542,6 +558,7 @@ async def run_builder(
             token_usage=total_usage,
             sub_agent_results=sub_agent_results,
             iterations=iterations,
+            fixed_findings=_last_combined_findings if _fixer_ran else "",
         )
     else:
         result = BuilderResult(
@@ -551,6 +568,7 @@ async def run_builder(
             token_usage=total_usage,
             sub_agent_results=sub_agent_results,
             iterations=iterations,
+            fixed_findings=_resolved_findings,
         )
 
     if verbose:
