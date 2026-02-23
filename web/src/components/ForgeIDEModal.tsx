@@ -3507,7 +3507,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         <div style={{
           width: '280px', flexShrink: 0,
           background: '#0F172A', borderRight: '1px solid #1E293B',
-          display: 'flex', flexDirection: 'column',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
         }}>
           {/* Left tab switcher */}
           <div style={{
@@ -3546,7 +3546,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
           {/* Tasks tab */}
           {leftTab === 'tasks' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px', minHeight: 0 }}>
               {tasks.length === 0 && status === 'preparing' && (
                 <div style={{ color: '#475569', fontSize: '0.75rem', padding: '8px' }}>
                   Initializing…
@@ -3737,7 +3737,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
           {/* Chat tab */}
           {leftTab === 'chat' && (
-            <div ref={chatScrollRef} style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+            <div ref={chatScrollRef} style={{ flex: 1, overflowY: 'auto', padding: '8px', minHeight: 0 }}>
               {chatMessages.length === 0 ? (
                 <div style={{ color: '#475569', fontSize: '0.7rem', padding: '8px', lineHeight: 1.6 }}>
                   <div style={{ color: '#38BDF8', fontSize: '0.65rem', fontWeight: 700, marginBottom: '6px' }}>💬 BUILD CHAT</div>
