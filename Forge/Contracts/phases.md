@@ -3020,7 +3020,7 @@ Each phase is self-contained and builds on the previous. Together they transform
 
 ---
 
-## Phase 40 — Structured Reconnaissance
+## Phase 40 — Structured Reconnaissance  *(DONE)*
 
 **Objective:** Before writing a single line of code, the builder performs a systematic inventory of the existing codebase — gathering imports, exports, schemas, test counts, file structure, and dependency graphs. This inventory becomes the **ground truth** that all subsequent planning and code generation references.
 
@@ -3128,7 +3128,7 @@ Builds minimal, relevant context for each file generation call. Instead of sendi
 
 ---
 
-## Phase 41 — Task DAG & Progress Tracking
+## Phase 41 — Task DAG & Progress Tracking  *(DONE)*
 
 **Objective:** Replace the flat task list with a **directed acyclic graph** (DAG) of tasks with explicit dependencies, estimated costs, and state tracking. The DAG serves as the builder's "program counter" — it always knows exactly what has been done, what's in progress, and what's blocked.
 
@@ -3245,7 +3245,7 @@ When a task fails:
 
 ---
 
-## Phase 42 — Patch Retargeting & Self-Healing Edits
+## Phase 42 — Patch Retargeting & Self-Healing Edits  *(DONE)*
 
 **Objective:** When the builder needs to modify an existing file (fix a bug, update an import, add a method), it generates a **targeted patch** rather than rewriting the entire file. If the file has changed since the builder last saw it (due to a previous fix or a parallel task), the patch engine automatically retargets to the new file content.
 
@@ -3372,7 +3372,7 @@ Update the builder's `write_file` tool to support a `mode` parameter:
 
 ---
 
-## Phase 43 — Session Journal & Context Continuity
+## Phase 43 — Session Journal & Context Continuity  *(DONE)*
 
 **Objective:** Implement a persistent **session journal** that survives context window rotations, API timeouts, and process restarts. The journal captures every significant event (task completed, test baseline changed, file written, error encountered) so the builder can resume from any point without re-discovering what it has already done.
 
@@ -3517,7 +3517,7 @@ The `get_summary()` method produces a structured text block optimised for LLM co
 
 ---
 
-## Phase 44 — Invariant Gates & Test Baseline Tracking
+## Phase 44 — Invariant Gates & Test Baseline Tracking  *(DONE)*
 
 **Objective:** Implement a **hard invariant system** that prevents the build from ever regressing on key metrics. The test count is the primary invariant: it must never decrease. If a code change causes a test to fail or a test file to be deleted, the build halts immediately — before committing, before moving on, before the error propagates into downstream phases.
 
@@ -3657,7 +3657,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 45 — Build Observability & Cognitive Dashboard
+## Phase 45 — Build Observability & Cognitive Dashboard  *(DONE)*
 
 **Objective:** Surface the Phase 40-44 cognitive architecture to the frontend.
 
@@ -3670,7 +3670,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 46 — Contracts Server-Side Lock & Git Exclusion
+## Phase 46 — Contracts Server-Side Lock & Git Exclusion  *(DONE)*
 
 **Objective:** Contracts never leave the server. Every build — mini, full, or scout — pushes code and instructions to git but never pushes Forge contract files. The contract framework is ForgeGuard's value proposition; users own their code, the framework stays behind their login.
 
@@ -3702,7 +3702,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 47 — Mini Mode: Database & API Foundation
+## Phase 47 — Mini Mode: Database & API Foundation  *(DONE)*
 
 **Objective:** Add the data model and API surface for build tiers (proof-of-concept vs full) and project modes. This is the schema and routing layer that all subsequent mini mode phases depend on.
 
@@ -3750,7 +3750,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 48 — Mini Mode: Proof-of-Concept Questionnaire
+## Phase 48 — Mini Mode: Proof-of-Concept Questionnaire  *(DONE)*
 
 **Objective:** When `project_mode == "mini"`, the questionnaire runs a focused 2-section flow (Product Intent + Primary UI Flow) with ~6-10 adaptive questions total. The LLM uses section templates with required-field checklists to ensure completeness before marking each section done.
 
@@ -3803,7 +3803,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 49 — Mini Mode: Contract Generation, Auto Stack & Docker Release
+## Phase 49 — Mini Mode: Contract Generation & Auto Stack  *(DONE)*
 
 **Objective:** When `project_mode == "mini"`, contract generation uses a curated default tech stack, injects auto-decided defaults for all remaining config, produces a 2-phase `phases` contract, and targets a Docker-ready release. All 9 contracts are still generated (the builder needs full context), but scoped to proof-of-concept depth.
 
@@ -3889,7 +3889,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 50 — Mini Mode: Build Execution
+## Phase 50 — Mini Mode: Build Execution  *(DONE)*
 
 **Objective:** The build pipeline handles `build_tier == "mini"` — executing exactly 2 phases using the standard plan-execute flow with no pipeline changes. Git pushes exclude all contract files (enforced globally from Phase 46).
 
@@ -3926,7 +3926,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 51 — Mini Mode: README, Deployment Docs & Instructions
+## Phase 51 — Mini Mode: README & Dev Setup Docs  *(DONE)*
 
 **Objective:** Every build (mini and full) generates comprehensive documentation as a post-build step: `README.md` for setup/usage and `DEPLOYMENT.md` for deployment instructions. For mini builds, the README includes a call-to-action to continue building via ForgeGuard.
 
@@ -4003,7 +4003,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 52 — Mini Mode: Continue to Full Build
+## Phase 52 — Mini Mode: Upgrade to Full Build  *(DONE)*
 
 **Objective:** Users who completed a proof-of-concept can upgrade to a full build. This triggers a gap questionnaire (5 remaining sections), full-depth contract regeneration, and build resumption from Phase 2 onward.
 
@@ -4050,7 +4050,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 53 — Mini Mode: Frontend UX
+## Phase 53 — Mini Mode: Frontend UX  *(DONE)*
 
 **Objective:** The frontend surfaces mini mode / proof-of-concept as a first-class option throughout the user journey — project creation, questionnaire, build progress, and build completion.
 
@@ -4093,7 +4093,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 54 — Contract Generation Decoupling
+## Phase 54 — Contract Generation Decoupling  *(DONE)*
 
 **Objective:** Decouple contract generation from ForgeGuard's own governance documents. Replace ForgeGuard-specific structural references with generic builder templates. Reorder generation to manifesto-first with cumulative snowball chain context.
 
@@ -4132,7 +4132,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 55 — MCP Builder: Forge Tools
+## Phase 55 — MCP Builder: Forge Tools  *(DONE)*
 
 **Objective:** Add Forge governance tools to the builder's tool catalogue so it can fetch contracts on-demand via MCP tool calls instead of receiving a pre-loaded context dump.
 
@@ -4163,7 +4163,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 56 — MCP Builder: System Prompt & Slim First Message
+## Phase 56 — MCP Builder: System Prompt & Slim First Message  *(DONE)*
 
 **Objective:** Replace the ~27K token contract dump in the first user message with a lean system prompt (~4.5K tokens) that instructs the builder to fetch contracts on-demand via forge tools. Feature-flagged via `USE_MCP_CONTRACTS`.
 
@@ -4199,7 +4199,7 @@ When an invariant is violated:
 
 ---
 
-## Phase 57 — Repo Health Check & Commit Status Display
+## Phase 57 — Repo Health Check & Commit Status Display  *(DONE)*
 
 **Objective:** Detect when connected GitHub repositories have been deleted, archived, renamed, or become inaccessible since they were connected to Forge. Display real-time commit information on every repo card so users can see the current state of each repo at a glance. Trigger health checks automatically on page load and manually via a refresh button.
 
@@ -4353,7 +4353,7 @@ The `repos` table stores `full_name`, `default_branch`, `webhook_active`, and au
 
 ---
 
-## Phase 58 — Immutable Dossier & Build Cycle Lifecycle
+## Phase 58 — Immutable Dossier & Build Cycle Lifecycle  *(DONE)*
 
 **Objective:** Redesign the Scout dossier from a disposable report into an immutable baseline snapshot that anchors the ForgeGuard build lifecycle. The dossier becomes the single source of truth for a project's state at a point in time. Everything downstream — contracts, builds, and the Forge Seal — reads from it. The dossier is never manually regenerated; each build cycle creates exactly one.
 
@@ -4490,7 +4490,7 @@ Replace the 5 shallow `compute_repo_metrics()` dimensions with the Seal's 9-dime
 
 ---
 
-## Phase 59 — Forge Seal Persistence
+## Phase 59 — Forge Seal Persistence  *(DONE)*
 
 **Objective:** Persist the Forge Certificate (forge seal) to Neon PostgreSQL at
 build completion so seals survive server restarts, are queryable by project /
