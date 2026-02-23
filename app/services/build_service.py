@@ -2524,8 +2524,11 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
     # If the build is running but waiting at the plan_review gate, the WS
     # plan_review event already fired and won't fire again on reconnect.
     # Signal the frontend so it can restore the plan panel immediately.
-    if latest["status"] == "running" and str(latest["id"]) in _plan_review_events:
-        result["plan_review_pending"] = True
+    if latest["status"] == "running":
+        if str(latest["id"]) in _plan_review_events:
+            result["plan_review_pending"] = True
+        # Always include cached plan phases for running builds so the IDE
+        # can populate the phase sidebar with file manifests on reconnect.
         from app.repos.project_repo import get_cached_plan as _gcp2
         _cached2 = await _gcp2(project_id)
         if _cached2:

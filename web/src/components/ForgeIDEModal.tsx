@@ -1471,6 +1471,21 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 return t;
               }));
               setCompletedTasks(currentPhaseNum);
+              // Pre-populate phase files from cached plan (running build reconnect)
+              const cachedPhasesRunning = (sd as any).cached_plan_phases as { number: number; name: string; file_manifest?: any[] }[] | undefined;
+              if (cachedPhasesRunning && cachedPhasesRunning.length > 0) {
+                const initPFR: Record<number, PhaseFile[]> = {};
+                for (const ph of cachedPhasesRunning) {
+                  if (ph.file_manifest?.length) {
+                    initPFR[ph.number] = ph.file_manifest.map((f: any) => ({
+                      path: f.path, committed: false,
+                      status: ph.number < currentPhaseNum ? 'passed' as const : 'pending' as const,
+                      action: f.action, description: f.description,
+                    }));
+                  }
+                }
+                if (Object.keys(initPFR).length > 0) setPhaseFiles(initPFR);
+              }
               }
             } else if (sd.status === 'pending') {
               if (sd.ide_gate_pending) {
@@ -1604,27 +1619,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   }
                 }
                 if (Object.keys(initPF3).length > 0) setPhaseFiles(initPF3);
-
-                // Inject plan box into the Sonnet log
-                const planText = formatPlanText(cachedPhases);
-                setLogs((prev) => {
-                  if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
-                  return [...prev, {
-                    timestamp: new Date().toISOString(),
-                    source: 'reasoning' as const,
-                    level: 'info',
-                    message: `📋 Plan — ${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''} (${sd.status})`,
-                    worker: 'sonnet' as const,
-                    reasoning: {
-                      text: planText,
-                      textLength: planText.length,
-                      turn: 0,
-                      phase: `${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''}`,
-                      isActualThinking: false,
-                      isPlanBox: true,
-                    },
-                  }];
-                });
+                // No plan box for terminal builds — phase sidebar shows files directly
               }
 
               // Prompt user to resume if the build is resumable
