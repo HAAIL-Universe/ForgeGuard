@@ -361,6 +361,7 @@ from app.services.build.planner import (  # noqa: E402
 )
 from app.services.build.planner_agent_loop import (  # noqa: E402
     run_phase_planner_agent,
+    LANGUAGE_MAP as _PLANNER_LANGUAGE_MAP,
 )
 from app.services.build.plan_artifacts import (  # noqa: E402
     store_phase_plan,
@@ -382,6 +383,90 @@ from app.services.build.verification import (  # noqa: E402
     _verify_phase_output,
     _run_governance_checks,
 )
+
+
+# ---------------------------------------------------------------------------
+# Project manifest adapter (project plan → Phase Planner format)
+# ---------------------------------------------------------------------------
+
+# Layer ordering for deterministic chunk grouping (DB/models first, UI/tests last).
+_LAYER_CHUNK_ORDER = [
+    "migration", "schema", "db", "model", "repo", "repository",
+    "service", "util", "helper", "api", "router", "route",
+    "frontend", "ui", "component", "hook",
+    "test", "spec", "config", "ci",
+]
+
+
+def _adapt_project_manifest(
+    file_manifest: list[dict],
+    phase_objective: str = "",
+) -> tuple[list[dict], list[dict]]:
+    """Convert a project-plan file_manifest to Phase Planner format + auto-chunks.
+
+    The project-level planner already emits a per-phase ``file_manifest``
+    (path, layer, action, description).  This adapter converts it to the richer
+    format expected by ``execute_tier()`` (purpose, language, status, depends_on,
+    estimated_lines) and groups files into dependency-ordered chunks of ≤5 files.
+
+    Returns (manifest, chunks) matching the ``run_phase_planner_agent()`` output
+    contract so the downstream build loop needs no further changes.
+    """
+    manifest: list[dict] = []
+    for entry in file_manifest:
+        path = entry.get("path", "")
+        if not path:
+            continue
+        ext = Path(path).suffix.lower()
+        manifest.append({
+            "path": path,
+            "action": entry.get("action", "create"),
+            "purpose": entry.get("description", f"Implement {path}"),
+            "depends_on": [],
+            "context_files": [],
+            "estimated_lines": 100,
+            "language": _PLANNER_LANGUAGE_MAP.get(ext, "python"),
+            "status": "pending",
+        })
+
+    if not manifest:
+        return [], []
+
+    # Sort by layer order for dependency-correct chunk sequencing
+    def _layer_key(m: dict) -> int:
+        layer = ""
+        for orig in file_manifest:
+            if orig.get("path") == m["path"]:
+                layer = orig.get("layer", "").lower()
+                break
+        for i, lname in enumerate(_LAYER_CHUNK_ORDER):
+            if lname in layer:
+                return i
+        return len(_LAYER_CHUNK_ORDER)
+
+    sorted_manifest = sorted(manifest, key=_layer_key)
+
+    # Group into chunks of ≤5 files
+    _CHUNK_SIZE = 5
+    chunks: list[dict] = []
+    for i in range(0, len(sorted_manifest), _CHUNK_SIZE):
+        batch = sorted_manifest[i:i + _CHUNK_SIZE]
+        chunk_idx = i // _CHUNK_SIZE
+        chunk_name = f"Chunk {chunk_idx + 1}"
+        chunks.append({
+            "name": chunk_name,
+            "files": [f["path"] for f in batch],
+            "entries": list(batch),
+            "builder_prompt": "",
+            "work_order": {
+                "objective": phase_objective or f"Build {chunk_name}",
+                "constraints": [],
+                "patterns": [],
+                "success_criteria": [],
+            },
+        })
+
+    return manifest, chunks
 
 
 # ---------------------------------------------------------------------------
@@ -5512,6 +5597,29 @@ async def _run_build_plan_execute(
                     phase_name, exc,
                 )
 
+        # ── Use project-plan file_manifest if available (skip PUSH Phase Planner) ─
+        # The project-level planner already produced a per-phase file list.
+        # Reuse it so we don't spend a Sonnet+extended-thinking call per phase.
+        if not manifest:
+            _proj_file_manifest = phase.get("file_manifest", [])
+            if _proj_file_manifest:
+                manifest, _phase_chunks = _adapt_project_manifest(
+                    _proj_file_manifest,
+                    phase_objective=phase.get("purpose", phase.get("name", "")),
+                )
+                if manifest:
+                    _log_msg = (
+                        f"Using project-plan manifest for {phase_name} "
+                        f"({len(manifest)} files, {len(_phase_chunks)} chunks)"
+                    )
+                    await build_repo.append_build_log(
+                        build_id, _log_msg, source="planner", level="info",
+                    )
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _log_msg, "source": "planner", "level": "info",
+                    })
+
+        # ── Fallback: call Phase Planner Agent if project manifest absent/empty ─
         if not manifest:
             _log_msg = f"Planning file manifest for {phase_name}..."
             await build_repo.append_build_log(build_id, _log_msg, source="system", level="info")
