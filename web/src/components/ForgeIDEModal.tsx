@@ -1480,8 +1480,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             else if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
               // Terminal build — restore plan and phase progress so the user
               // can see what was accomplished and type /start to resume.
-              const termStatus = sd.status === 'completed' ? 'completed' : 'error';
-              setStatus(termStatus);
+              // For resumable builds (cancelled/failed with progress), use 'ready' so the
+              // user can see the IDE and type /start. 'error' triggers the blocking overlay.
+              if (sd.status === 'completed') {
+                setStatus('completed');
+              } else if ((sd as any).resumable) {
+                setStatus('ready');
+              } else {
+                setStatus('error');
+              }
 
               const cp = sd.completed_phases ?? -1;
               if (cp >= 0) setCompletedTasks(cp + 1);
