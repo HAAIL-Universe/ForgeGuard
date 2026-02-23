@@ -13,6 +13,14 @@ describes what role it plays and is cached across calls for the same file type.
 """
 
 from __future__ import annotations
+import sys
+from pathlib import Path
+
+_forgeguard_root = str(Path(__file__).resolve().parent.parent)
+if _forgeguard_root not in sys.path:
+    sys.path.insert(0, _forgeguard_root)
+
+from forge_constitution import CONSTITUTION
 
 
 BUILDER_ROLE = """\
@@ -81,7 +89,7 @@ def build_system_prompt(
     return [
         {
             "type": "text",
-            "text": BUILDER_ROLE,
+            "text": f"{CONSTITUTION}\n\n{BUILDER_ROLE}",
         },
         {
             "type": "text",

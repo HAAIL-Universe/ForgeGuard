@@ -47,7 +47,15 @@ z:/ForgeCollection/ForgeGuard/Forge/Contracts/ path.
 """
 
 from __future__ import annotations
+import sys
 from pathlib import Path
+
+# Ensure ForgeGuard root is importable so forge_constitution can be found
+_forgeguard_root = str(Path(__file__).resolve().parent.parent)
+if _forgeguard_root not in sys.path:
+    sys.path.insert(0, _forgeguard_root)
+
+from forge_constitution import CONSTITUTION
 
 CONTRACTS_DIR = Path(__file__).parent.parent.parent / "Forge" / "Contracts"
 
@@ -168,6 +176,48 @@ DISCIPLINE:
     will cause a validation error and you will need to fix and retry.
   - The plan must be self-contained: the builder uses ONLY plan.json to build.
     It must not need to ask clarifying questions.
+
+EXAMPLE — CORRECT PHASE STRUCTURE:
+  {
+    "phase_number": 0,
+    "phase_name": "Backend Foundation",
+    "objectives": ["Set up FastAPI app structure", "Create database models and migrations", "Implement core CRUD repositories"],
+    "acceptance_criteria": ["Server starts without errors", "All models have corresponding repos", "Database migrations run cleanly"],
+    "file_manifest": [
+      {"path": "app/main.py", "purpose": "FastAPI app entry point", "language": "python", "layer": "entrypoint", "action": "create", "estimated_lines": 30},
+      {"path": "app/db/session.py", "purpose": "Database session factory", "language": "python", "layer": "infrastructure", "action": "create", "estimated_lines": 25},
+      {"path": "app/models/user.py", "purpose": "User Pydantic models", "language": "python", "layer": "model", "action": "create", "estimated_lines": 40}
+    ],
+    "wires_from_phase": []
+  }
+
+  Note: each file has layer and action fields. layer matches the boundaries
+  contract (entrypoint, router, service, repo, model, infrastructure, test).
+  action is "create" for new files or "modify" for existing files.
+
+ANTI-EXAMPLE — WRONG PHASE:
+  {
+    "phase_number": 0,
+    "phase_name": "Setup Everything",
+    "objectives": ["Build the whole app"],
+    "file_manifest": [
+      {"path": "app.py", "purpose": "everything"}
+    ]
+  }
+
+  This is wrong because: vague objectives, no acceptance_criteria, single
+  monolithic file, missing layer/action/estimated_lines fields.
+
+FAILURE MODES:
+  - If a contract is missing or empty: plan based on the contracts you DO have.
+    Note the missing contract in summary.key_constraints.
+  - If contracts conflict (e.g. schema mentions a table that blueprint doesn't):
+    follow schema > physics > boundaries > stack > blueprint > ui priority.
+  - If write_plan returns a validation error: read the error message carefully,
+    fix ONLY the invalid fields, and re-call write_plan. Do NOT regenerate
+    the entire plan from scratch.
+  - If the project is too large for the phase limit: prioritise MVP features
+    from the blueprint. Defer nice-to-haves to later phases.
 """
 
 
@@ -191,7 +241,7 @@ def build_system_prompt(project_hint: str = "") -> list[dict]:
     return [
         {
             "type": "text",
-            "text": PLANNER_ROLE,
+            "text": f"{CONSTITUTION}\n\n{PLANNER_ROLE}",
             # No cache_control here — it is included in the cache because
             # the next block sets the cache boundary.
         },
