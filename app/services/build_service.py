@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
+from app.repos.db import get_pool
 from app.clients.agent_client import StreamUsage, ToolCall, stream_agent, ApiKeyPool
 from app.clients import git_client
 from app.clients import github_client
@@ -593,6 +594,22 @@ async def start_build(
         ValueError: If project not found, not owned, contracts missing,
                     or a build is already running.
     """
+    # ── Pre-flight: warm up DB (Neon cold start can take 5-10s) ──
+    try:
+        _pool = await get_pool()
+        await _pool.fetchval("SELECT 1")
+    except Exception as _db_exc:
+        logger.warning("DB pre-flight failed (%s) — retrying after 3s...", _db_exc)
+        await asyncio.sleep(3)
+        try:
+            _pool = await get_pool()
+            await _pool.fetchval("SELECT 1")
+        except Exception:
+            raise ValueError(
+                "Database is unreachable — Neon may be paused. "
+                "Please wait a moment and try again."
+            )
+
     project = await project_repo.get_project_by_id(project_id)
     if not project or str(project["user_id"]) != str(user_id):
         raise ValueError("Project not found")
@@ -5712,6 +5729,17 @@ async def _run_build_plan_execute(
                             "message": _gov_msg, "source": "governance", "level": "warn",
                         })
 
+                        # Surface individual check details to the user
+                        for _chk in governance_result.get("checks", []):
+                            if _chk.get("result") == "FAIL":
+                                _detail_msg = f"  [{_chk.get('code', '?')}] {_chk.get('name', 'unknown')}: {_chk.get('detail', 'no detail')}"
+                                await build_repo.append_build_log(
+                                    build_id, _detail_msg, source="governance", level="error",
+                                )
+                                await _broadcast_build_event(user_id, build_id, "build_log", {
+                                    "message": _detail_msg, "source": "governance", "level": "error",
+                                })
+
                         # Try to fix via recovery plan
                         fix_plan = (
                             "Governance gate failures detected. Fix these BLOCKING issues:\n"
@@ -5772,6 +5800,16 @@ async def _run_build_plan_execute(
                         await _broadcast_build_event(user_id, build_id, "build_log", {
                             "message": _fail_msg, "source": "governance", "level": "warn",
                         })
+                        # Surface remaining failures to the user
+                        for _chk in governance_result.get("checks", []):
+                            if _chk.get("result") == "FAIL":
+                                _detail_msg = f"  [{_chk.get('code', '?')}] {_chk.get('name', 'unknown')}: {_chk.get('detail', 'no detail')}"
+                                await build_repo.append_build_log(
+                                    build_id, _detail_msg, source="governance", level="error",
+                                )
+                                await _broadcast_build_event(user_id, build_id, "build_log", {
+                                    "message": _detail_msg, "source": "governance", "level": "error",
+                                })
             except Exception as exc:
                 logger.warning("Governance gate failed: %s", exc)
                 await build_repo.append_build_log(

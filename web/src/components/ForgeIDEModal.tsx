@@ -1194,6 +1194,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
     options?: string[];
   } | null>(null);
   const [fixProgress, setFixProgress] = useState<{ tier: number; attempt: number; max: number } | null>(null);
+  const [lastPhaseIssues, setLastPhaseIssues] = useState<{
+    phase: string;
+    verification: { syntax_errors: number; tests_passed: number; tests_failed: number };
+    governance: { blocking_failures: number; warnings: number; checks: any[] };
+  } | null>(null);
   const [fileChecklist, setFileChecklist] = useState<ChecklistItem[]>([]);
   const [opusAgents, setOpusAgents] = useState<AgentInfo[]>([]);
   const [pendingPlanReview, setPendingPlanReview] = useState<{
@@ -1830,6 +1835,16 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   total: (prev.total || 0) + (p.input_tokens || 0) + (p.output_tokens || 0),
                 }));
               }
+              // Track issues from partial phase completions
+              if (p.status === 'partial' && (p.verification || p.governance)) {
+                setLastPhaseIssues({
+                  phase: phaseStr,
+                  verification: p.verification || { syntax_errors: 0, tests_passed: 0, tests_failed: 0 },
+                  governance: p.governance || { blocking_failures: 0, warnings: 0, checks: [] },
+                });
+              } else {
+                setLastPhaseIssues(null);
+              }
               break;
             }
 
@@ -1932,8 +1947,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               }
               break;
 
-            case 'build_error':
             case 'build_failed':
+              // Terminal failure — show blocking overlay
               setStatus('error');
               if (p.error_detail || p.error) {
                 const errMsg = p.error_detail || p.error || 'Build failed';
@@ -1943,7 +1958,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   message: errMsg,
                   worker: 'system',
                 }]);
-                // Track as fatal error
                 const fp = errorFingerprint('system', 'fatal', errMsg);
                 setBuildErrors((prev) => {
                   const existing = prev.find((e) => e.fingerprint === fp && !e.resolved);
@@ -1962,6 +1976,41 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     occurrence_count: 1,
                     source: 'system',
                     severity: 'fatal' as const,
+                    message: errMsg,
+                    resolved: false,
+                  }];
+                });
+              }
+              break;
+
+            case 'build_error':
+              // Recoverable error — add to ERRORS tab but do NOT show overlay
+              if (p.error_detail || p.error) {
+                const errMsg = p.error_detail || p.error || 'Build error';
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system', level: 'error',
+                  message: errMsg,
+                  worker: 'system',
+                }]);
+                const fp = errorFingerprint('system', 'error', errMsg);
+                setBuildErrors((prev) => {
+                  const existing = prev.find((e) => e.fingerprint === fp && !e.resolved);
+                  if (existing) {
+                    return prev.map((e) =>
+                      e.id === existing.id
+                        ? { ...e, occurrence_count: e.occurrence_count + 1, last_seen: new Date().toISOString() }
+                        : e,
+                    );
+                  }
+                  return [...prev, {
+                    id: `fe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    fingerprint: fp,
+                    first_seen: new Date().toISOString(),
+                    last_seen: new Date().toISOString(),
+                    occurrence_count: 1,
+                    source: (p.source as string) || 'system',
+                    severity: 'error' as const,
                     message: errMsg,
                     resolved: false,
                   }];
@@ -3901,7 +3950,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     : `Errors (${buildErrors.filter(e => !e.resolved).length})`}
                 {/* Red badge for unresolved errors */}
                 {tab === 'errors' && buildErrors.filter(e => !e.resolved).length > 0 && activeTab !== 'errors' && (
-                  <span style={{
+                  <span className="forge-error-badge-pulse" style={{
                     position: 'absolute', top: '2px', right: '2px',
                     width: '7px', height: '7px', borderRadius: '50%',
                     background: '#EF4444',
@@ -4083,6 +4132,33 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       </div>
                     ))}
                   </div>
+                  {/* Previous phase issues warning */}
+                  {lastPhaseIssues && (
+                    <div style={{
+                      background: '#451A0322', border: '1px solid #F59E0B44',
+                      borderRadius: '4px', padding: '6px 10px', fontSize: '0.68rem',
+                      color: '#FBBF24', lineHeight: 1.5,
+                    }}>
+                      <div style={{ fontWeight: 700, marginBottom: '2px' }}>
+                        ⚠ {lastPhaseIssues.phase} completed with issues:
+                      </div>
+                      {(lastPhaseIssues.verification.tests_failed || 0) > 0 && (
+                        <div style={{ color: '#F59E0B' }}>
+                          • {lastPhaseIssues.verification.tests_failed} test failure{lastPhaseIssues.verification.tests_failed !== 1 ? 's' : ''}
+                        </div>
+                      )}
+                      {(lastPhaseIssues.verification.syntax_errors || 0) > 0 && (
+                        <div style={{ color: '#F59E0B' }}>
+                          • {lastPhaseIssues.verification.syntax_errors} syntax error{lastPhaseIssues.verification.syntax_errors !== 1 ? 's' : ''}
+                        </div>
+                      )}
+                      {(lastPhaseIssues.governance.blocking_failures || 0) > 0 && (
+                        <div style={{ color: '#F59E0B' }}>
+                          • {lastPhaseIssues.governance.blocking_failures} governance violation{lastPhaseIssues.governance.blocking_failures !== 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* Buttons */}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button
@@ -4095,16 +4171,29 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     >
                       ✅ Approve & Build
                     </button>
-                    <button
-                      onClick={savePlan}
-                      style={{
-                        background: planSaved ? '#1E3A5F' : '#172554', border: `1px solid ${planSaved ? '#38BDF888' : '#38BDF844'}`,
-                        borderRadius: '4px', color: planSaved ? '#38BDF8' : '#7DD3FC', fontSize: '0.75rem',
-                        padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
-                      }}
-                    >
-                      {planSaved ? '✓ Saved' : '💾 Save'}
-                    </button>
+                    {lastPhaseIssues ? (
+                      <button
+                        onClick={() => setActiveTab('errors')}
+                        style={{
+                          background: '#451A03', border: '1px solid #F59E0B66',
+                          borderRadius: '4px', color: '#FBBF24', fontSize: '0.75rem',
+                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                        }}
+                      >
+                        ⚠ Review Issues ({(lastPhaseIssues.verification.tests_failed || 0) + (lastPhaseIssues.governance.blocking_failures || 0)})
+                      </button>
+                    ) : (
+                      <button
+                        onClick={savePlan}
+                        style={{
+                          background: planSaved ? '#1E3A5F' : '#172554', border: `1px solid ${planSaved ? '#38BDF888' : '#38BDF844'}`,
+                          borderRadius: '4px', color: planSaved ? '#38BDF8' : '#7DD3FC', fontSize: '0.75rem',
+                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                        }}
+                      >
+                        {planSaved ? '✓ Saved' : '💾 Save'}
+                      </button>
+                    )}
                     <button
                       onClick={() => respondToPlanReview('reject')}
                       style={{
@@ -4319,6 +4408,33 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         </div>
                       ))}
                     </div>
+                    {/* Previous phase issues warning */}
+                    {lastPhaseIssues && (
+                      <div style={{
+                        background: '#451A0322', border: '1px solid #F59E0B44',
+                        borderRadius: '4px', padding: '6px 10px', fontSize: '0.68rem',
+                        color: '#FBBF24', lineHeight: 1.5,
+                      }}>
+                        <div style={{ fontWeight: 700, marginBottom: '2px' }}>
+                          ⚠ {lastPhaseIssues.phase} completed with issues:
+                        </div>
+                        {(lastPhaseIssues.verification.tests_failed || 0) > 0 && (
+                          <div style={{ color: '#F59E0B' }}>
+                            • {lastPhaseIssues.verification.tests_failed} test failure{lastPhaseIssues.verification.tests_failed !== 1 ? 's' : ''}
+                          </div>
+                        )}
+                        {(lastPhaseIssues.verification.syntax_errors || 0) > 0 && (
+                          <div style={{ color: '#F59E0B' }}>
+                            • {lastPhaseIssues.verification.syntax_errors} syntax error{lastPhaseIssues.verification.syntax_errors !== 1 ? 's' : ''}
+                          </div>
+                        )}
+                        {(lastPhaseIssues.governance.blocking_failures || 0) > 0 && (
+                          <div style={{ color: '#F59E0B' }}>
+                            • {lastPhaseIssues.governance.blocking_failures} governance violation{lastPhaseIssues.governance.blocking_failures !== 1 ? 's' : ''}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: '8px', paddingTop: '4px' }}>
                       <button
                         onClick={() => { respondToPlanReview('approve'); setPlanReady(false); setShowPlanModal(false); }}
@@ -4328,14 +4444,25 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                           padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                         }}
                       >✅ Approve Plan</button>
-                      <button
-                        onClick={savePlan}
-                        style={{
-                          background: planSaved ? '#1E3A5F' : '#172554', border: `1px solid ${planSaved ? '#38BDF888' : '#38BDF844'}`,
-                          borderRadius: '4px', color: planSaved ? '#38BDF8' : '#7DD3FC', fontSize: '0.75rem',
-                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
-                        }}
-                      >{planSaved ? '✓ Saved' : '💾 Save'}</button>
+                      {lastPhaseIssues ? (
+                        <button
+                          onClick={() => { setActiveTab('errors'); setShowPlanModal(false); }}
+                          style={{
+                            background: '#451A03', border: '1px solid #F59E0B66',
+                            borderRadius: '4px', color: '#FBBF24', fontSize: '0.75rem',
+                            padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                          }}
+                        >⚠ Review Issues ({(lastPhaseIssues.verification.tests_failed || 0) + (lastPhaseIssues.governance.blocking_failures || 0)})</button>
+                      ) : (
+                        <button
+                          onClick={savePlan}
+                          style={{
+                            background: planSaved ? '#1E3A5F' : '#172554', border: `1px solid ${planSaved ? '#38BDF888' : '#38BDF844'}`,
+                            borderRadius: '4px', color: planSaved ? '#38BDF8' : '#7DD3FC', fontSize: '0.75rem',
+                            padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
+                          }}
+                        >{planSaved ? '✓ Saved' : '💾 Save'}</button>
+                      )}
                       <button
                         onClick={() => { respondToPlanReview('reject'); setShowPlanModal(false); }}
                         style={{
@@ -4633,6 +4760,13 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           25% { content: '.'; }
           50% { content: '..'; }
           75% { content: '...'; }
+        }
+        @keyframes pulseRed {
+          0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+          50% { transform: scale(1.3); box-shadow: 0 0 6px 2px rgba(239, 68, 68, 0.4); }
+        }
+        .forge-error-badge-pulse {
+          animation: pulseRed 0.8s ease-in-out 3;
         }
       `}</style>
     </div>
