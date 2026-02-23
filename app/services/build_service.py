@@ -4850,6 +4850,12 @@ async def _run_build_plan_execute(
                                 _integ_warns = [i for i in _integ_issues if i.severity == "warning"]
                                 for issue in _integ_errors:
                                     blocking_files.append((issue.file_path, issue.message))
+                                    # Feed into fix queue so FIXER can attempt cross-file repairs
+                                    await _fix_queue.put((
+                                        issue.file_path,
+                                        f"[Integration Audit] {issue.message}"
+                                        + (f" (related: {issue.related_file})" if issue.related_file else ""),
+                                    ))
                                 await _broadcast_build_event(user_id, build_id, "integration_audit_result", {
                                     "chunk": chunk_idx,
                                     "status": "failed" if _integ_errors else "warned",

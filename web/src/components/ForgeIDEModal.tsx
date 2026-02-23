@@ -2705,25 +2705,29 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             }
 
             /* ---- Sub-agent events (legacy flat log) ---- */
-            case 'subagent_start':
+            case 'subagent_start': {
+              const startWorker: 'sonnet' | 'opus' = (p.role === 'scout' || p.role === 'auditor') ? 'sonnet' : 'opus';
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: p.role || 'agent',
                 level: 'info',
                 message: `🤖 Sub-agent [${p.role}] started — ${(p.files as string[])?.length || p.file_count || 0} files`,
-                worker: 'opus',
+                worker: startWorker,
               }]);
               break;
+            }
 
-            case 'subagent_done':
+            case 'subagent_done': {
+              const doneWorker: 'sonnet' | 'opus' = (p.role === 'scout' || p.role === 'auditor') ? 'sonnet' : 'opus';
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: p.role || 'agent',
                 level: 'info',
                 message: `✔ Sub-agent [${p.role}] done — ${(p.summary as string) || `${(p.files_written as string[])?.length || 0} files written`}`,
-                worker: 'opus',
+                worker: doneWorker,
               }]);
               break;
+            }
           }
           return;
         }

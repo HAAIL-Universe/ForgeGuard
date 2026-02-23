@@ -906,16 +906,25 @@ async def run_sub_agent(
         },
     )
 
-    # 5b. Broadcast LLM thinking event — shows SYSTEM PROMPT / USER MESSAGE in Opus panel
+    # 5b. Broadcast LLM thinking event — shows prompt details in the correct panel
     _model_label = "opus" if handoff.role in (SubAgentRole.CODER, SubAgentRole.FIXER) else "sonnet"
+    _PURPOSE_BY_ROLE = {
+        SubAgentRole.SCOUT: "Scouting",
+        SubAgentRole.CODER: "Building",
+        SubAgentRole.AUDITOR: "Auditing",
+        SubAgentRole.FIXER: "Fixing",
+    }
+    _purpose_verb = _PURPOSE_BY_ROLE.get(handoff.role, "Processing")
+    _purpose_file = handoff.files[0] if handoff.files else "file"
     await _state._broadcast_build_event(
         handoff.user_id, handoff.build_id, "llm_thinking", {
             "model": _model_label,
-            "purpose": f"Building {handoff.files[0] if handoff.files else 'file'}",
+            "role": handoff.role.value,
+            "purpose": f"{_purpose_verb} {_purpose_file}",
             "system_prompt": sys_prompt[:2000],
             "user_message_preview": user_message[:800],
             "user_message_length": len(user_message),
-            "file": handoff.files[0] if handoff.files else "",
+            "file": _purpose_file,
             "context_files": list(handoff.context_files.keys()) if handoff.context_files else [],
         },
     )
