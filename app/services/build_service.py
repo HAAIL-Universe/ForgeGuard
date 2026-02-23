@@ -6231,6 +6231,7 @@ async def _run_build_plan_execute(
                         interface_map, all_files_written,
                         key_pool=key_pool,
                         audit_api_key=_audit_key,
+                        build_mode=_build_mode,
                     )
 
                     # ── Step 3: Merge results + audit ──

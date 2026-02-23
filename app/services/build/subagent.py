@@ -505,18 +505,36 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
 }
 
 
+_MINI_BUILD_CONTEXT = """\
+## MINI BUILD MODE — PROOF OF CONCEPT
+This is a rapid scaffold, NOT a production build. Adjust your output accordingly:
+- Working code over robust error handling — skip edge cases
+- Simple patterns — no complex abstractions, no overengineering
+- No auth, rate limiting, caching, or advanced middleware
+- Basic happy-path tests only (1-2 per endpoint)
+- Lean output — aim for ~50-70% of estimated_lines
+- No Docker files — this is a dev-ready local build (`pip install && uvicorn`)
+- No CI/CD configuration or deployment scripts
+- Minimal dependencies — only what the core feature needs
+"""
+
+
 def system_prompt_for_role(
     role: SubAgentRole,
     *,
     extra: str = "",
+    build_mode: str = "full",
 ) -> str:
     """Return the system prompt for *role*, prepended with the Forge Constitution.
 
     The constitution (shared law for all agents) comes first, then the
-    role-specific prompt, then any extra context.
+    role-specific prompt, then any extra context. For mini builds, a
+    scope-reduction block is appended.
     """
     base = _ROLE_SYSTEM_PROMPTS.get(role, "")
     parts = [CONSTITUTION, base]
+    if build_mode == "mini":
+        parts.append(_MINI_BUILD_CONTEXT)
     if extra:
         parts.append(extra)
     return "\n\n".join(parts)
@@ -554,6 +572,7 @@ class SubAgentHandoff:
     model: str = ""  # empty → use default for role
     max_tokens: int = 16_384
     timeout_seconds: float = 600.0
+    build_mode: str = "full"  # "mini" or "full" — affects prompt scoping
 
     # Metadata
     handoff_id: str = ""  # auto-assigned if empty
@@ -844,7 +863,7 @@ async def run_sub_agent(
     # 3. Build system prompt — inject contracts so they benefit from
     #    Anthropic prompt caching across all sub-agent calls with the
     #    same role + contracts.
-    sys_prompt = system_prompt_for_role(handoff.role)
+    sys_prompt = system_prompt_for_role(handoff.role, build_mode=handoff.build_mode)
     if handoff.contracts_text:
         sys_prompt += f"\n\n## Project Contracts\n{handoff.contracts_text}"
 
@@ -1286,6 +1305,8 @@ async def _run_coder_single_shot(
     # prompt caching — the system block is identical across all batches
     # in a tier, saving ~12k tokens of repeated input per batch.
     sys_prompt = f"{CONSTITUTION}\n\n{_SINGLE_SHOT_CODER_PROMPT}"
+    if handoff.build_mode == "mini":
+        sys_prompt += f"\n\n{_MINI_BUILD_CONTEXT}"
     if handoff.contracts_text:
         sys_prompt += f"\n\n## Project Contracts\n{handoff.contracts_text}"
 

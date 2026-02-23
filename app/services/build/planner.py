@@ -1527,6 +1527,7 @@ async def execute_tier(
     *,
     key_pool: Any | None = None,
     audit_api_key: str | None = None,
+    build_mode: str = "full",
 ) -> dict[str, str]:
     """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
@@ -1699,6 +1700,7 @@ async def execute_tier(
                 api_key=api_key,
                 audit_api_key=audit_api_key,
                 phase_plan_context="",
+                build_mode=build_mode,
             )
 
         if result.status == "completed" and result.content:

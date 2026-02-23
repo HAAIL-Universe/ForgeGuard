@@ -172,6 +172,7 @@ async def run_builder(
     api_key: str,
     audit_api_key: "str | None" = None,
     phase_plan_context: str = "",
+    build_mode: str = "full",
     verbose: bool = True,
     turn_callback: "callable | None" = None,
     stop_event: "threading.Event | None" = None,
@@ -249,6 +250,7 @@ async def run_builder(
         context_files=scout_context,
         contracts_text="",          # Scout fetches contracts via its own tools
         phase_deliverables=deliverables_text,
+        build_mode=build_mode,
     )
 
     scout_result = await run_sub_agent(
@@ -312,6 +314,7 @@ async def run_builder(
         context_files=coder_context,
         contracts_text=contracts_text,    # pre-loaded per CODER prompt design
         phase_deliverables=deliverables_text,
+        build_mode=build_mode,
     )
 
     coder_result = await run_sub_agent(
@@ -389,6 +392,7 @@ async def run_builder(
             context_files=auditor_context,
             contracts_text=contracts_text,
             phase_deliverables=deliverables_text,
+            build_mode=build_mode,
         )
 
         auditor_result = await run_sub_agent(
@@ -453,6 +457,7 @@ async def run_builder(
             contracts_text=contracts_text,
             phase_deliverables=deliverables_text,
             error_context=last_audit_findings,
+            build_mode=build_mode,
         )
 
         fixer_result = await run_sub_agent(
