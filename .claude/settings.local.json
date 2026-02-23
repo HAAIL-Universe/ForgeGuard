@@ -8,7 +8,7 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "mcp__forgeguard__forge_summary",
-      "mcp__forgeguard__forge_get_directive",
+      "mcp__forgeguard__forge_get_governance",
       "mcp__forgeguard__forge_get_contract",
       "Bash(dir:*)",
       "Bash(wc:*)",
