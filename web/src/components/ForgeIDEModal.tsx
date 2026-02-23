@@ -2373,7 +2373,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 timestamp: new Date().toISOString(),
                 source: 'system',
                 level: 'system',
-                message: '✅ Plan complete — REVIEW to inspect or APPROVE PLAN to continue',
+                message: '✅ Plan complete — click START to begin building',
                 worker: 'system',
               }]);
               break;
@@ -4603,7 +4603,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 )}
                 {planReady && (
                   <button
-                    onClick={() => setShowPlanModal(true)}
+                    onClick={() => respondToPlanReview('approve')}
                     style={{
                       background: '#14532D', color: '#22C55E',
                       border: '1px solid #22C55E44', borderRadius: '4px',
@@ -4612,7 +4612,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       animation: 'pulseGreen 2s ease-in-out infinite',
                     }}
                   >
-                    📋 REVIEW &amp; APPROVE
+                    ▶ START
                   </button>
                 )}
                 {/* Plan review modal — opens when user clicks REVIEW */}
