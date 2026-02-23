@@ -1223,7 +1223,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
   const [leftTab, setLeftTab] = useState<'tasks' | 'chat'>('tasks');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [fileProgressExpanded, setFileProgressExpanded] = useState(true);
   const [chatLoading, setChatLoading] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
   const [cmdSuggestions, setCmdSuggestions] = useState<string[]>([]);
@@ -1258,7 +1257,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const planReviewTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [opusPct, setOpusPct] = useState(50);  // Opus takes top N%, Sonnet gets rest
   /* Per-phase file tracking for expandable sidebar */
-  const [phaseFiles, setPhaseFiles] = useState<Record<number, { path: string; size_bytes?: number; language?: string; committed: boolean }[]>>({});
+  type PhaseFile = { path: string; size_bytes?: number; language?: string; committed: boolean; status?: 'pending' | 'generating' | 'written' | 'passed' | 'failed'; action?: string; description?: string };
+  const [phaseFiles, setPhaseFiles] = useState<Record<number, PhaseFile[]>>({});
+  const updatePhaseFileStatus = useCallback((filePath: string, updates: Partial<Pick<PhaseFile, 'status' | 'size_bytes' | 'committed'>>) => {
+    setPhaseFiles((prev) => {
+      for (const phNum of Object.keys(prev)) {
+        const idx = prev[+phNum].findIndex(f => f.path === filePath);
+        if (idx >= 0) {
+          const next = { ...prev };
+          next[+phNum] = [...next[+phNum]];
+          next[+phNum][idx] = { ...next[+phNum][idx], ...updates };
+          return next;
+        }
+      }
+      return prev;
+    });
+  }, []);
   const [expandedPhase, setExpandedPhase] = useState<number | null>(null);
   const [setupEndIndex, setSetupEndIndex] = useState(-1);
   const [setupCollapsed, setSetupCollapsed] = useState(true);
@@ -1403,7 +1417,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 // restore the plan panel so the user can approve without replanning.
                 setStatus('ready');
                 setPlanReady(true);
-                const cachedPhases = (sd as any).cached_plan_phases as { number: number; name: string; purpose?: string; objective?: string }[] | undefined;
+                const cachedPhases = (sd as any).cached_plan_phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[] | undefined;
                 if (cachedPhases && cachedPhases.length > 0) {
                   setPhases(cachedPhases as any);
                   setTasks(cachedPhases.map((ph) => ({
@@ -1416,6 +1430,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     status: 'pending' as const,
                   })));
                   setTotalTasks(cachedPhases.length);
+                  // Pre-populate phase files from plan manifest (all pending)
+                  const initPF: Record<number, PhaseFile[]> = {};
+                  for (const ph of cachedPhases) {
+                    if (ph.file_manifest?.length) {
+                      initPF[ph.number] = ph.file_manifest.map((f: any) => ({
+                        path: f.path, committed: false, status: 'pending' as const,
+                        action: f.action, description: f.description,
+                      }));
+                    }
+                  }
+                  if (Object.keys(initPF).length > 0) setPhaseFiles(initPF);
                   const planText = formatPlanText(cachedPhases);
                   setLogs((prev) => {
                     if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
@@ -1498,6 +1523,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     status: 'pending' as const,
                   })));
                   setTotalTasks(cachedPhases.length);
+                  // Pre-populate phase files from plan manifest (all pending)
+                  const initPF2: Record<number, PhaseFile[]> = {};
+                  for (const ph of cachedPhases) {
+                    if (ph.file_manifest?.length) {
+                      initPF2[ph.number] = ph.file_manifest.map((f: any) => ({
+                        path: f.path, committed: false, status: 'pending' as const,
+                        action: f.action, description: f.description,
+                      }));
+                    }
+                  }
+                  if (Object.keys(initPF2).length > 0) setPhaseFiles(initPF2);
                   // Inject PLAN box into the Sonnet log so user can see the plan.
                   const planText = formatPlanText(cachedPhases);
                   setLogs((prev) => {
@@ -1556,6 +1592,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     : 'pending' as const,
                 })));
                 setTotalTasks(cachedPhases.length);
+                // Pre-populate phase files from plan manifest
+                const initPF3: Record<number, PhaseFile[]> = {};
+                for (const ph of cachedPhases) {
+                  if (ph.file_manifest?.length) {
+                    initPF3[ph.number] = ph.file_manifest.map((f: any) => ({
+                      path: f.path, committed: false,
+                      status: (cp >= 0 && ph.number <= cp) ? 'passed' as const : 'pending' as const,
+                      action: f.action, description: f.description,
+                    }));
+                  }
+                }
+                if (Object.keys(initPF3).length > 0) setPhaseFiles(initPF3);
 
                 // Inject plan box into the Sonnet log
                 const planText = formatPlanText(cachedPhases);
@@ -1927,12 +1975,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 t.id === `phase_${phNum}` ? { ...t, status: 'proposed' as const } : t
               ));
               setCompletedTasks((prev) => Math.max(prev, phNum + 1));
-              // Store per-phase file list for expandable sidebar
+              // Merge per-phase file list (plan-populated entries get committed flag)
               if (Array.isArray(p.files) && p.files.length > 0) {
-                setPhaseFiles((prev) => ({
-                  ...prev,
-                  [phNum]: (p.files as { path: string; size_bytes?: number; language?: string; committed: boolean }[]),
-                }));
+                const committedSet = new Set((p.files as any[]).map((f: any) => f.path));
+                setPhaseFiles((prev) => {
+                  const existing = prev[phNum] || [];
+                  const merged = existing.map(f =>
+                    committedSet.has(f.path) ? { ...f, committed: true, status: 'passed' as const } : f
+                  );
+                  // Add any files from phase_complete not already in plan manifest
+                  for (const pf of (p.files as any[])) {
+                    if (!existing.some(e => e.path === pf.path)) {
+                      merged.push({ ...pf, status: 'passed' as const });
+                    }
+                  }
+                  return { ...prev, [phNum]: merged };
+                });
               }
               if (p.input_tokens && p.output_tokens) {
                 setTokenUsage((prev) => ({
@@ -1994,12 +2052,14 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setFileChecklist((prev) => prev.map((c) =>
                 c.file === p.path ? { ...c, status: p.skipped ? 'pending' as const : 'written' as const } : c
               ));
+              if (!p.skipped) updatePhaseFileStatus(p.path as string, { status: 'written', size_bytes: p.size_bytes as number });
               break;
 
             case 'file_audited':
               setFileChecklist((prev) => prev.map((c) =>
                 c.file === p.path ? { ...c, status: p.verdict === 'PASS' ? 'passed' as const : 'failed' as const } : c
               ));
+              updatePhaseFileStatus(p.path as string, { status: p.verdict === 'PASS' ? 'passed' : 'failed' });
               if (p.verdict === 'FAIL' || ((p.findings as string) || '').length > 0) {
                 setFindings((prev) => [...prev, {
                   id: `fa-${Date.now()}-${prev.length}`,
@@ -2230,6 +2290,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setPlanReady(false);
               setShowPlanModal(false);
               setStatus('running');
+              // Remove the plan box from Sonnet panel — phases sidebar now shows files
+              setLogs((prev) => prev.filter((l) => !l.reasoning?.isPlanBox));
               break;
 
             case 'plan_complete': {
@@ -2246,6 +2308,21 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   status: 'pending' as const,
                 })));
                 setTotalTasks(planPhaseList.length);
+
+                // Pre-populate phase files from plan manifest (all pending)
+                const initPF: Record<number, PhaseFile[]> = {};
+                for (const ph of planPhaseList) {
+                  if (ph.file_manifest?.length) {
+                    initPF[ph.number] = ph.file_manifest.map((f: any) => ({
+                      path: f.path,
+                      committed: false,
+                      status: 'pending' as const,
+                      action: f.action,
+                      description: f.description,
+                    }));
+                  }
+                }
+                if (Object.keys(initPF).length > 0) setPhaseFiles(initPF);
 
                 // Upsert (or append) the PLAN box in the Sonnet panel.
                 // If plan_writing_live already created a partial-content plan box,
@@ -2756,6 +2833,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setFileChecklist((prev) => prev.map((c) =>
                 c.file === p.path ? { ...c, status: 'generating' as const } : c
               ));
+              updatePhaseFileStatus(p.path as string, { status: 'generating' });
               break;
             }
 
@@ -3796,7 +3874,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
               {tasks.map((task, i) => {
                 const phNum = parseInt(task.id.replace('phase_', ''), 10);
-                const hasFiles = (task.status === 'proposed' || task.status === 'skipped') && phaseFiles[phNum]?.length > 0;
+                const hasFiles = phaseFiles[phNum]?.length > 0;
                 const isExpanded = expandedPhase === phNum && hasFiles;
                 return (
                 <div
@@ -3884,7 +3962,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     </div>
                   )}
 
-                  {/* Expanded file list for completed/skipped phases */}
+                  {/* Expanded file list — status-aware indicators */}
                   {isExpanded && (
                     <div style={{
                       marginTop: '6px', paddingTop: '6px',
@@ -3893,6 +3971,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       {phaseFiles[phNum].map((f, fi) => {
                         const fname = f.path.split('/').pop() || f.path;
                         const dir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
+                        const st = f.status || (f.committed ? 'passed' : undefined);
+                        const statusIcon = st === 'generating' ? '◉'
+                          : st === 'written' ? '●'
+                          : st === 'passed' ? '✓'
+                          : st === 'failed' ? '✗'
+                          : '○';
+                        const statusColor = st === 'generating' ? '#FBBF24'
+                          : st === 'written' ? '#A78BFA'
+                          : st === 'passed' ? '#22C55E'
+                          : st === 'failed' ? '#EF4444'
+                          : '#475569';
+                        const statusTitle = st === 'generating' ? 'Building...'
+                          : st === 'written' ? 'Written to disk'
+                          : st === 'passed' ? 'Audit passed'
+                          : st === 'failed' ? 'Audit failed'
+                          : 'Pending';
                         return (
                           <div
                             key={fi}
@@ -3900,23 +3994,16 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                               display: 'flex', alignItems: 'center', gap: '6px',
                               padding: '3px 4px', borderRadius: '3px',
                               fontSize: '0.65rem', fontFamily: 'monospace',
-                              color: '#CBD5E1',
+                              color: st === 'pending' || !st ? '#64748B' : '#CBD5E1',
                             }}
-                            title={`${f.path}${f.size_bytes ? ` (${(f.size_bytes / 1024).toFixed(1)} KB)` : ''}${f.committed ? ' — committed' : ' — on disk'}`}
+                            title={`${f.path}${f.size_bytes ? ` (${(f.size_bytes / 1024).toFixed(1)} KB)` : ''} — ${statusTitle}`}
                           >
                             <span style={{
                               flexShrink: 0, fontSize: '0.6rem',
-                              color: f.committed ? '#22C55E' : '#F59E0B',
+                              color: statusColor,
+                              fontWeight: st === 'passed' || st === 'failed' ? 700 : 400,
                             }}>
-                              {f.committed ? '●' : '○'}
-                            </span>
-                            <span style={{ color: '#64748B', flexShrink: 0 }}>
-                              {f.language === 'python' ? '🐍' :
-                               f.language === 'typescript' || f.language === 'javascript' ? '📜' :
-                               f.language === 'json' ? '📋' :
-                               f.language === 'css' || f.language === 'scss' ? '🎨' :
-                               f.language === 'html' ? '🌐' :
-                               f.language === 'markdown' ? '📝' : '📄'}
+                              {statusIcon}
                             </span>
                             <span style={{
                               overflow: 'hidden', textOverflow: 'ellipsis',
@@ -3940,9 +4027,13 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       <div style={{
                         display: 'flex', gap: '8px', marginTop: '4px',
                         fontSize: '0.55rem', color: '#64748B', padding: '2px 4px',
+                        flexWrap: 'wrap',
                       }}>
-                        <span style={{ color: '#22C55E' }}>● committed</span>
-                        <span style={{ color: '#F59E0B' }}>○ on disk</span>
+                        <span style={{ color: '#475569' }}>○ pending</span>
+                        <span style={{ color: '#FBBF24' }}>◉ building</span>
+                        <span style={{ color: '#A78BFA' }}>● written</span>
+                        <span style={{ color: '#22C55E', fontWeight: 700 }}>✓ passed</span>
+                        <span style={{ color: '#EF4444', fontWeight: 700 }}>✗ failed</span>
                       </div>
                     </div>
                   )}
@@ -4019,51 +4110,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             </div>
           )}
 
-          {/* ── File Progress (collapsible, always visible) ── */}
-          {fileChecklist.length > 0 && (() => {
-            const fpDone = fileChecklist.filter(i => i.status !== 'pending' && i.status !== 'generating').length;
-            const fpTotal = fileChecklist.length;
-            const fpPct = fpTotal > 0 ? (fpDone / fpTotal) * 100 : 0;
-            return (
-              <div style={{ flexShrink: 0, borderTop: '1px solid #1E293B', background: '#0D0D1A' }}>
-                {/* Header — always visible, clickable */}
-                <div
-                  onClick={() => setFileProgressExpanded(prev => !prev)}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '5px 12px', cursor: 'pointer', userSelect: 'none',
-                  }}
-                >
-                  <span style={{ color: '#94A3B8', fontWeight: 700, letterSpacing: '0.5px', fontSize: '0.6rem' }}>
-                    FILE PROGRESS
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ color: '#94A3B8', fontSize: '0.6rem', fontVariantNumeric: 'tabular-nums' }}>
-                      {fpDone}/{fpTotal}
-                    </span>
-                    <span style={{ color: '#475569', fontSize: '0.55rem' }}>
-                      {fileProgressExpanded ? '▾' : '▸'}
-                    </span>
-                  </span>
-                </div>
-                {/* Progress bar — always visible */}
-                <div style={{ height: '3px', background: '#1E293B', margin: '0 12px 4px', borderRadius: '2px', overflow: 'hidden' }}>
-                  <div style={{
-                    height: '100%', borderRadius: '2px',
-                    width: `${fpPct}%`,
-                    background: 'linear-gradient(90deg, #D946EF, #A855F7)',
-                    transition: 'width 0.4s ease',
-                  }} />
-                </div>
-                {/* Expanded — full file list */}
-                {fileProgressExpanded && (
-                  <div style={{ maxHeight: '40vh', overflowY: 'auto', padding: '0 12px 6px' }}>
-                    <FileChecklist items={fileChecklist} embedded />
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+          {/* FILE PROGRESS section removed — phase sidebar now shows per-file status */}
         </div>
         )}
 
