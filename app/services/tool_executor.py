@@ -1261,7 +1261,7 @@ FORGE_TOOLS = [
                     "enum": [
                         "manifesto", "blueprint", "stack", "schema",
                         "physics", "boundaries", "ui",
-                        "builder_directive", "builder_contract",
+                        "builder_directive",
                     ],
                 },
             },
