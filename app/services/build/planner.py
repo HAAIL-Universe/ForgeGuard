@@ -1572,58 +1572,9 @@ async def execute_tier(
         ],
     })
 
-    # Pre-load relevant contracts INLINE so Coder agents don't need
-    # tool calls to fetch them.  Each contract pull via tool would add
-    # a full round-trip (output tokens for tool_use + input replay of
-    # the growing message history).  Pre-loading is far cheaper.
-    _CONTRACT_PER_CAP = 3_000   # chars per contract
-    _CONTRACT_TOTAL_CAP = 12_000  # total chars for all contracts
-    relevant_types = set()
-    for f in tier_files:
-        for prefix, types in _CONTRACT_RELEVANCE.items():
-            fp = f["path"]
-            if fp.startswith(prefix) or fp.replace("backend/", "").startswith(prefix):
-                relevant_types.update(types)
-    # Always include the core contracts coders need
-    relevant_types.update(["stack", "physics", "boundaries", "schema"])
-
-    _contract_parts: list[str] = []
-    _contract_total = 0
-    # Prioritise key types first
-    _priority_order = ["stack", "physics", "boundaries", "schema"]
-    _sorted_contracts = sorted(
-        contracts,
-        key=lambda c: (
-            _priority_order.index(c.get("contract_type", ""))
-            if c.get("contract_type", "") in _priority_order
-            else 100
-        ),
-    )
-    for c in _sorted_contracts:
-        ctype = c.get("contract_type", "")
-        if ctype not in relevant_types:
-            continue
-        content = (c.get("content", "") or "").strip()
-        if not content:
-            continue
-        if len(content) > _CONTRACT_PER_CAP:
-            content = content[:_CONTRACT_PER_CAP] + "\n[...truncated]"
-        if _contract_total + len(content) > _CONTRACT_TOTAL_CAP:
-            break
-        _contract_parts.append(f"### {ctype}\n{content}")
-        _contract_total += len(content)
-
-    contracts_summary = (
-        "## Project Contracts (pre-loaded)\n"
-        + "\n\n".join(_contract_parts)
-    ) if _contract_parts else ""
-
-    # Slimmed contract summary for test-heavy batches (just stack info)
-    _test_contract_parts = [p for p in _contract_parts[:1]]  # stack only
-    contracts_summary_slim = (
-        "## Project Contracts (slim — test batch)\n"
-        + "\n\n".join(_test_contract_parts)
-    ) if _test_contract_parts else ""
+    # Pull-first: agents fetch contracts on demand via forge tools.
+    # No contract pre-loading needed — builder_contract.md is injected
+    # into system prompts by run_sub_agent() for caching.
 
     # Per-file builder pipeline (sequential for now — switch to 3+ for production)
     _semaphore = asyncio.Semaphore(1)
@@ -1671,13 +1622,8 @@ async def execute_tier(
         if interface_map:
             context_files["interface_map.md"] = interface_map
 
-        # Select contracts: skip for config-only, slim for test files
-        if _is_config_only:
-            _contracts_list: list[str] = []
-        elif _is_test:
-            _contracts_list = [contracts_summary_slim] if contracts_summary_slim else []
-        else:
-            _contracts_list = [contracts_summary] if contracts_summary else []
+        # Pull-first: agents fetch contracts via tools; pass empty list
+        _contracts_list: list[str] = []
 
         # Broadcast file_generating
         _agent_id = f"builder-{file_idx}"

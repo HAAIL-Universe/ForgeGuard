@@ -13,13 +13,8 @@ Output contract
 ---------------
 ``generate_file()`` returns a ``str``:
   - Complete file content ready to write to disk.
-  - No markdown code fences (stripped by CODER single-shot parser).
-  - Trailing newline ensured by the CODER writer.
-
-The downstream code in ``_run_build_plan_execute()`` expects exactly this
-contract — it writes the string directly to disk and does not post-process it.
-That second disk write is idempotent; the CODER sub-agent already wrote the
-file as a side effect of its single-shot runner.
+  - The CODER sub-agent writes the file via write_file tool during its
+    tool loop. The downstream disk write is idempotent.
 """
 
 from __future__ import annotations

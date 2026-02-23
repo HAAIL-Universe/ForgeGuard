@@ -7,15 +7,18 @@ of specialist sub-agents for each file in the build plan:
 
   SCOUT → CODER → AUDITOR → FIXER (if FAIL) → BuilderResult
 
-Each sub-agent is dispatched via run_sub_agent() from subagent.py, which
-handles all LLM calls, tool execution, WS broadcasts, and DB logging.
+All agents use pull-first contract delivery: contracts are fetched on demand
+via forge tools. Only the universal builder_contract.md is injected into
+system prompts (for caching). Each sub-agent is dispatched via
+run_sub_agent() from subagent.py, which handles all LLM calls, tool
+execution, WS broadcasts, and DB logging.
 
 Usage (programmatic):
     from builder.builder_agent import run_builder, BuilderResult, BuilderError
 
     result = await run_builder(
         file_entry={"path": "app/main.py", "purpose": "Entry point", ...},
-        contracts=["## Stack\\n...", "## Boundaries\\n..."],
+        contracts=[],
         context=[],
         phase_deliverables=["FastAPI app with health endpoint"],
         working_dir="/workspace/my-project",
@@ -107,10 +110,6 @@ def _accumulate_tokens(
 # Context assembly helpers
 # ---------------------------------------------------------------------------
 
-
-def _contracts_text(contracts: list[str]) -> str:
-    """Join contract strings into a single block for handoff.contracts_text."""
-    return "\n\n---\n\n".join(contracts) if contracts else ""
 
 
 def _phase_deliverables_text(phase_deliverables: list[str]) -> str:
@@ -215,7 +214,6 @@ async def run_builder(
     # Shared state across the pipeline
     total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     sub_agent_results: list[SubAgentResult] = []
-    contracts_text = _contracts_text(contracts)
     deliverables_text = _phase_deliverables_text(phase_deliverables)
 
     if verbose:
@@ -312,7 +310,7 @@ async def run_builder(
         ),
         files=[file_path],
         context_files=coder_context,
-        contracts_text=contracts_text,    # pre-loaded per CODER prompt design
+        contracts_text="",               # pull-first: Coder fetches via tools
         phase_deliverables=deliverables_text,
         build_mode=build_mode,
     )
@@ -390,7 +388,7 @@ async def run_builder(
             assignment=f"Audit {file_path} for structural issues and contract compliance.",
             files=[file_path],
             context_files=auditor_context,
-            contracts_text=contracts_text,
+            contracts_text="",               # pull-first: Auditor fetches via tools
             phase_deliverables=deliverables_text,
             build_mode=build_mode,
         )
@@ -454,7 +452,7 @@ async def run_builder(
             ),
             files=[file_path],
             context_files=auditor_context,
-            contracts_text=contracts_text,
+            contracts_text="",               # pull-first: Fixer uses forge_get_build_contracts
             phase_deliverables=deliverables_text,
             error_context=last_audit_findings,
             build_mode=build_mode,

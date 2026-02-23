@@ -346,46 +346,6 @@ async def test_get_build_logs(mock_build_repo, mock_project_repo):
 
 
 # ---------------------------------------------------------------------------
-# Tests: _build_directive
-# ---------------------------------------------------------------------------
-
-
-def test_build_directive_format():
-    """_build_directive inlines all contracts except phases."""
-    contracts = [
-        {"contract_type": "manifesto", "content": "# Manifesto"},
-        {"contract_type": "blueprint", "content": "# Blueprint"},
-    ]
-
-    result = build_service._build_directive(contracts)
-
-    # Should include governance heading
-    assert "Forge Governance" in result
-    # Full contract content SHOULD be inlined
-    assert "# Manifesto" in result
-    assert "# Blueprint" in result
-
-
-def test_build_directive_excludes_phases():
-    """_build_directive inlines all contracts but excludes phases (uses window)."""
-    contracts = [
-        {"contract_type": "blueprint", "content": "blueprint-content"},
-        {"contract_type": "schema", "content": "schema-content"},
-        {"contract_type": "phases", "content": "phase-content-should-not-appear"},
-    ]
-    result = build_service._build_directive(contracts)
-    assert "blueprint-content" in result
-    assert "schema-content" in result
-    # phases excluded — handled by _extract_phase_window
-    assert "phase-content-should-not-appear" not in result
-
-
-# ---------------------------------------------------------------------------
-# Tests: _write_contracts_to_workdir
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Tests: _extract_phase_window
 # ---------------------------------------------------------------------------
 

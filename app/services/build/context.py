@@ -179,43 +179,6 @@ def _compact_conversation(
     return [directive, summary_msg] + tail
 
 
-def _build_directive(contracts: list[dict]) -> str:
-    """Assemble the builder directive from project contracts.
-
-    Includes the universal builder_contract.md and all per-project
-    contracts **except** ``phases`` (which uses a sliding window).
-    """
-    parts = ["# Forge Governance & Project Contracts\n"]
-
-    builder_contract_path = FORGE_CONTRACTS_DIR / "builder_contract.md"
-    if builder_contract_path.exists():
-        parts.append("\n---\n## builder_contract (universal governance)\n")
-        parts.append(builder_contract_path.read_text(encoding="utf-8"))
-        parts.append("\n")
-    else:
-        logger.warning("builder_contract.md not found at %s", builder_contract_path)
-
-    parts.append("\n---\n# Per-Project Contracts\n")
-    type_order = [
-        "blueprint", "manifesto", "stack", "schema", "physics",
-        "boundaries", "ui", "builder_directive",
-    ]
-    sorted_contracts = sorted(
-        contracts,
-        key=lambda c: (
-            type_order.index(c["contract_type"])
-            if c["contract_type"] in type_order
-            else len(type_order)
-        ),
-    )
-    for contract in sorted_contracts:
-        if contract["contract_type"] == "phases":
-            continue
-        parts.append(f"\n---\n## {contract['contract_type']}\n")
-        parts.append(contract["content"])
-        parts.append("\n")
-    return "\n".join(parts)
-
 
 # ---------------------------------------------------------------------------
 # .gitignore injection — Phase 46

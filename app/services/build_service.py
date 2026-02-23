@@ -122,7 +122,6 @@ from app.services.build.context import (  # noqa: E402
     _parse_file_blocks,
     _strip_code_fence,
     _compact_conversation,
-    _build_directive,
     write_forge_config_to_workdir,
     _extract_phase_window,
     inject_forge_gitignore,
