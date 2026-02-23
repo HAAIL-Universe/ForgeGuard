@@ -91,6 +91,20 @@ async def update_project_status(project_id: UUID, status: str) -> None:
     )
 
 
+async def update_build_mode(project_id: UUID, build_mode: str, status: str) -> None:
+    """Update build_mode and status atomically (for upgrade path)."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE projects SET build_mode = $2, status = $3, updated_at = now()
+        WHERE id = $1
+        """,
+        project_id,
+        build_mode,
+        status,
+    )
+
+
 async def get_cached_plan(project_id: UUID) -> dict | None:
     """Return the cached plan dict for a project, or None if not set."""
     pool = await get_pool()

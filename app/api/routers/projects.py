@@ -143,6 +143,41 @@ async def remove_project(
 
 
 # ---------------------------------------------------------------------------
+# Upgrade path (mini → full)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{project_id}/upgrade")
+async def upgrade_to_full(
+    project_id: UUID,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Upgrade a mini project to full build mode.
+
+    Preserves existing questionnaire answers (product_intent, ui_requirements).
+    Resets status to 'questionnaire' so the user can complete the remaining
+    5 sections (tech_stack, database_schema, api_endpoints, architectural_boundaries,
+    deployment_target). Contracts will be regenerated after the full questionnaire.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if str(project["user_id"]) != str(current_user["id"]):
+        raise HTTPException(status_code=403, detail="Not your project")
+    if project.get("build_mode") != "mini":
+        raise HTTPException(status_code=400, detail="Project is already in full build mode")
+
+    # Update build_mode and reset status to questionnaire
+    await project_repo.update_build_mode(project_id, "full", "questionnaire")
+
+    return {
+        "status": "upgraded",
+        "build_mode": "full",
+        "message": "Project upgraded to full build. Complete the remaining questionnaire sections.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Questionnaire
 # ---------------------------------------------------------------------------
 

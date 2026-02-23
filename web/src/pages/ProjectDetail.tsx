@@ -75,6 +75,7 @@ function ProjectDetail() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   const [contractsExpanded, setContractsExpanded] = useState(false);
   const [showRegenerate, setShowRegenerate] = useState(false);
@@ -971,6 +972,48 @@ function ProjectDetail() {
             </>
           )}
         </div>
+
+        {/* Upgrade mini → full */}
+        {project?.build_mode === 'mini' && !buildActive && (
+          <div style={{ marginBottom: '16px' }}>
+            <button
+              onClick={async () => {
+                setUpgrading(true);
+                try {
+                  const res = await fetch(`${API_BASE}/projects/${projectId}/upgrade`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Upgrade failed');
+                  }
+                  addToast('Upgraded to Full Build — complete the remaining questionnaire sections.', 'success');
+                  // Reload project data to reflect new build_mode + status
+                  window.location.reload();
+                } catch (e: any) {
+                  addToast(e.message || 'Upgrade failed', 'error');
+                } finally {
+                  setUpgrading(false);
+                }
+              }}
+              disabled={upgrading}
+              style={{
+                background: 'transparent',
+                color: '#A78BFA',
+                border: '1px solid #7C3AED',
+                borderRadius: '6px',
+                padding: '8px 16px',
+                cursor: upgrading ? 'wait' : 'pointer',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                opacity: upgrading ? 0.6 : 1,
+              }}
+            >
+              {upgrading ? 'Upgrading...' : '🔮 Upgrade to Full Build'}
+            </button>
+          </div>
+        )}
 
         {/* Build History */}
         {buildHistory.length > 0 && (
