@@ -1512,6 +1512,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   })));
                   setTotalTasks(_gateCachedPhases.length);
                   setPlanReady(true);
+                  // Populate phase files from cached plan manifest
+                  const initPFgate: Record<number, PhaseFile[]> = {};
+                  for (const ph of _gateCachedPhases) {
+                    if (ph.file_manifest?.length) {
+                      initPFgate[ph.number] = ph.file_manifest.map((f: any) => ({
+                        path: f.path, committed: false, status: 'pending' as const,
+                        action: f.action, description: f.description,
+                      }));
+                    }
+                  }
+                  if (Object.keys(initPFgate).length > 0) setPhaseFiles(initPFgate);
                 }
               } else {
                 // Still warming up — wait for forge_ide_ready via WS
@@ -1650,25 +1661,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   status: 'pending' as const,
                 })));
                 setTotalTasks(_prCachedPhases.length);
-                const planText = formatPlanText(_prCachedPhases);
-                setLogs((prev) => {
-                  if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
-                  return [...prev, {
-                    timestamp: new Date().toISOString(),
-                    source: 'reasoning' as const,
-                    level: 'info',
-                    message: `📋 Plan — ${_prCachedPhases.length} phase${_prCachedPhases.length !== 1 ? 's' : ''} (saved)`,
-                    worker: 'sonnet' as const,
-                    reasoning: {
-                      text: planText,
-                      textLength: planText.length,
-                      turn: 0,
-                      phase: `${_prCachedPhases.length} phase${_prCachedPhases.length !== 1 ? 's' : ''}`,
-                      isActualThinking: false,
-                      isPlanBox: true,
-                    },
-                  }];
-                });
+                // Populate phase files from cached plan manifest
+                const initPFpr: Record<number, PhaseFile[]> = {};
+                for (const ph of _prCachedPhases) {
+                  if (ph.file_manifest?.length) {
+                    initPFpr[ph.number] = ph.file_manifest.map((f: any) => ({
+                      path: f.path, committed: false, status: 'pending' as const,
+                      action: f.action, description: f.description,
+                    }));
+                  }
+                }
+                if (Object.keys(initPFpr).length > 0) setPhaseFiles(initPFpr);
+                // No plan box — phase sidebar now shows files directly
               }
             }
             else setStatus('ready');
@@ -1752,27 +1756,24 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   message: '✔ IDE ready — type /start to begin the build',
                   worker: 'system',
                 }];
-                // If we have a saved plan, inject the PLAN box right after the welcome msg.
-                if (_pendingGateCachedPhases.length === 0 || withWelcome.some((l) => (l as any).reasoning?.isPlanBox)) {
-                  return withWelcome;
-                }
-                const planText = formatPlanText(_pendingGateCachedPhases);
-                return [...withWelcome, {
-                  timestamp: new Date().toISOString(),
-                  source: 'reasoning' as const,
-                  level: 'info',
-                  message: `📋 Plan — ${_pendingGateCachedPhases.length} phase${_pendingGateCachedPhases.length !== 1 ? 's' : ''} (saved)`,
-                  worker: 'sonnet' as const,
-                  reasoning: {
-                    text: planText,
-                    textLength: planText.length,
-                    turn: 0,
-                    phase: `${_pendingGateCachedPhases.length} phase${_pendingGateCachedPhases.length !== 1 ? 's' : ''}`,
-                    isActualThinking: false,
-                    isPlanBox: true,
-                  },
-                }];
+                // No plan box — phase sidebar shows files directly
+                return withWelcome;
               });
+              // Ensure phaseFiles populated (safety net if ide_gate_pending path missed it)
+              if (_pendingGateCachedPhases.length > 0) {
+                const initPFdeferred: Record<number, PhaseFile[]> = {};
+                for (const ph of _pendingGateCachedPhases) {
+                  if (ph.file_manifest?.length) {
+                    initPFdeferred[ph.number] = ph.file_manifest.map((f: any) => ({
+                      path: f.path, committed: false, status: 'pending' as const,
+                      action: f.action, description: f.description,
+                    }));
+                  }
+                }
+                if (Object.keys(initPFdeferred).length > 0) {
+                  setPhaseFiles((prev) => Object.keys(prev).length > 0 ? prev : initPFdeferred);
+                }
+              }
             }
           }
         } catch { /* silent */ }
@@ -2039,6 +2040,23 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   status: f.status === 'done' ? 'passed' as const : 'pending' as const,
                 })),
               );
+              {
+                // Also populate phaseFiles as fallback for any path that missed init
+                const fmPhaseNum = parseInt(((p.phase || '') as string).match(/\d+/)?.[0] || '0', 10);
+                setPhaseFiles((prev) => {
+                  if (prev[fmPhaseNum]?.length) return prev; // already populated from plan
+                  return {
+                    ...prev,
+                    [fmPhaseNum]: (p.files || []).map((f: any) => ({
+                      path: f.path || f.file,
+                      committed: false,
+                      status: 'pending' as const,
+                      action: f.action,
+                      description: f.purpose || '',
+                    })),
+                  };
+                });
+              }
               break;
 
             /* file_generating handled below with agent tracking */
