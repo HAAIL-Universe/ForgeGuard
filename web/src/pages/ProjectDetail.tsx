@@ -1306,6 +1306,7 @@ function ProjectDetail() {
                   if (res.ok) setProject(await res.json());
                 } catch { /* ignore */ }
               }}
+              buildMode={project.build_mode === 'mini' ? 'mini' : 'full'}
             />
           </div>
         </div>

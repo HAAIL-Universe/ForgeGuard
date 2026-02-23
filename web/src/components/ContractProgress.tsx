@@ -80,6 +80,8 @@ interface Props {
   onComplete: () => void;
   /** Contracts already completed — skip POST, just listen to WS */
   initialDone?: string[];
+  /** Mini builds skip phases contract */
+  buildMode?: 'mini' | 'full';
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,13 +130,18 @@ const meterBarOuter: React.CSSProperties = {
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
-export default function ContractProgress({ projectId, tokenUsage: initialTokenUsage, model, onComplete, initialDone }: Props) {
+export default function ContractProgress({ projectId, tokenUsage: initialTokenUsage, model, onComplete, initialDone, buildMode = 'full' }: Props) {
   const { token } = useAuth();
+  // Mini builds skip phases contract
+  const visibleContracts = buildMode === 'mini' ? LLM_CONTRACTS.filter((c) => c !== 'phases') : LLM_CONTRACTS;
   const reconnecting = !!(initialDone && initialDone.length > 0);
   const [statuses, setStatuses] = useState<Record<string, ContractStatus>>(() =>
     Object.fromEntries(ALL_CONTRACTS.map((c) => [
       c,
-      initialDone?.includes(c) ? 'done' as const : 'pending' as const,
+      // Mini builds skip phases — mark as done so it doesn't block completion
+      initialDone?.includes(c) ? 'done' as const
+        : (buildMode === 'mini' && c === 'phases') ? 'done' as const
+        : 'pending' as const,
     ])),
   );
   const [log, setLog] = useState<LogEntry[]>(() =>
@@ -319,7 +326,7 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
   const totalTokens = runningInput + runningOutput;
   const ctxPercent = Math.min(100, (totalTokens / contextWindow) * 100);
   const doneCount = Object.values(statuses).filter((s) => s === 'done').length;
-  const llmDoneCount = LLM_CONTRACTS.filter((ct) => statuses[ct] === 'done').length;
+  const llmDoneCount = visibleContracts.filter((ct) => statuses[ct] === 'done').length;
 
   /* Timer computations */
   const totalElapsedS = (() => {
@@ -348,7 +355,7 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h4 style={{ margin: 0, fontSize: '0.9rem', color: '#F8FAFC' }}>
-          {allDone ? '✓ Contracts Ready' : `Generating Contracts… (${llmDoneCount}/${LLM_CONTRACTS.length})`}
+          {allDone ? '✓ Contracts Ready' : `Generating Contracts… (${llmDoneCount}/${visibleContracts.length})`}
         </h4>
         {(generating || allDone) && genStartedAtRef.current && (
           <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: allDone ? '#22C55E' : '#94A3B8' }}>
@@ -384,7 +391,7 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
 
       {/* Step list */}
       <div>
-        {LLM_CONTRACTS.map((ct) => {
+        {visibleContracts.map((ct) => {
           const st = statuses[ct];
           const icon = st === 'done' ? '✅' : st === 'generating' ? '⏳' : '○';
           const color = st === 'done' ? '#22C55E' : st === 'generating' ? '#F59E0B' : '#475569';
@@ -510,7 +517,7 @@ export default function ContractProgress({ projectId, tokenUsage: initialTokenUs
       {cancelled && !allDone && (
         <div style={{ textAlign: 'center' }}>
           <p style={{ color: '#F59E0B', fontSize: '0.8rem', margin: '0 0 8px' }}>
-            Generation cancelled — {LLM_CONTRACTS.filter((ct) => statuses[ct] === 'done').length} of {LLM_CONTRACTS.length} contracts were generated.
+            Generation cancelled — {visibleContracts.filter((ct) => statuses[ct] === 'done').length} of {visibleContracts.length} contracts were generated.
           </p>
           <button
             onClick={onComplete}

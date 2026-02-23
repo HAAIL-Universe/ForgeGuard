@@ -55,6 +55,10 @@ CONTRACT_TYPES = [
     "builder_directive",
 ]
 
+# Mini builds skip phases — the planner enforces the fixed 2-phase structure at
+# build time, so generating phases during the questionnaire wastes ~3-5K tokens.
+MINI_CONTRACT_TYPES = [ct for ct in CONTRACT_TYPES if ct != "phases"]
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "contracts"
 BUILDER_EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "templates" / "builder_examples"
 
@@ -705,6 +709,7 @@ async def generate_contracts(
     qs = project.get("questionnaire_state") or {}
     completed = qs.get("completed_sections", [])
     build_mode = project.get("build_mode", "full")
+    contract_types = MINI_CONTRACT_TYPES if build_mode == "mini" else CONTRACT_TYPES
     sections = _sections_for_mode(build_mode)
     remaining = [s for s in sections if s not in completed]
 
@@ -746,7 +751,7 @@ async def generate_contracts(
     existing_map: dict[str, dict] = {c["contract_type"]: c for c in existing}
 
     # If we have a complete set, snapshot and regenerate from scratch
-    all_exist = all(ct in existing_map for ct in CONTRACT_TYPES)
+    all_exist = all(ct in existing_map for ct in contract_types)
     if all_exist:
         batch = await snapshot_contracts(project_id)
         if batch:
@@ -759,12 +764,12 @@ async def generate_contracts(
     # Seed prior_contracts from existing contracts for chaining continuity
     prior_contracts: dict[str, str] = {
         ct: existing_map[ct]["content"]
-        for ct in CONTRACT_TYPES
+        for ct in contract_types
         if ct in existing_map
     }
-    total = len(CONTRACT_TYPES)
+    total = len(contract_types)
     try:
-        for idx, contract_type in enumerate(CONTRACT_TYPES):
+        for idx, contract_type in enumerate(contract_types):
             # Check cancellation between contracts
             if cancel_event.is_set():
                 logger.info("Contract generation cancelled for project %s", pid)

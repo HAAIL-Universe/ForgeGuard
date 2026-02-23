@@ -708,6 +708,7 @@ function QuestionnaireModal({ projectId, projectName, buildMode = 'full', onClos
               model="claude-sonnet-4-5"
               onComplete={onContractsGenerated}
               initialDone={initialDoneContracts}
+              buildMode={buildMode}
             />
           </div>
         )}

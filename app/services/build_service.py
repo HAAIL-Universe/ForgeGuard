@@ -4880,6 +4880,11 @@ async def get_build_phases(project_id: UUID, user_id: UUID) -> list[dict]:
     if not project or str(project["user_id"]) != str(user_id):
         raise ValueError("Project not found")
 
+    # Mini builds skip the phases contract — the planner enforces a fixed
+    # 2-phase structure at build time, so return empty here.
+    if project.get("build_mode") == "mini":
+        return []
+
     phases_contract = await project_repo.get_contract_by_type(project_id, "phases")
     if not phases_contract:
         raise ValueError("No phases contract found")
