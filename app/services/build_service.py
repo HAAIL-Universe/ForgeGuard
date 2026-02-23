@@ -2668,6 +2668,19 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
 
     latest = await build_repo.get_latest_build_for_project(project_id)
     if not latest:
+        # No build row exists — check whether a saved plan is available so the
+        # IDE can restore the plan panel without re-running the planner.
+        from app.repos.project_repo import get_cached_plan as _gcp_nb
+        _plan_nb = await _gcp_nb(project_id)
+        if _plan_nb:
+            return {
+                "status": "plan_ready",
+                "plan_only": True,
+                "id": None,
+                "phase": None,
+                "completed_phases": -1,
+                "cached_plan_phases": _plan_nb.get("phases", []),
+            }
         raise ValueError("No builds found for this project")
 
     result = dict(latest)
@@ -2676,6 +2689,12 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
     # (e.g. user navigated to the build page after forge_ide_ready was broadcast).
     if latest["status"] == "pending" and str(latest["id"]) in _ide_ready_events:
         result["ide_gate_pending"] = True
+        # Also include cached plan phases so the IDE can show the PLAN box
+        # immediately at the gate without the user needing to type /plan.
+        from app.repos.project_repo import get_cached_plan as _gcp_gate
+        _cached_gate = await _gcp_gate(project_id)
+        if _cached_gate:
+            result["cached_plan_phases"] = _cached_gate.get("phases", [])
     # If the build is paused at plan-review (completed_phases == -1 or unset),
     # include the cached plan phases so the IDE can repopulate the phases panel
     # on reconnect without needing to re-broadcast plan_complete.

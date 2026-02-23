@@ -53,6 +53,7 @@ interface ProjectDetailData {
   created_at: string;
   updated_at: string;
   contracts: { contract_type: string; version: number; updated_at: string }[];
+  has_saved_plan?: boolean;
   latest_build: {
     id: string;
     phase: string;
@@ -558,7 +559,9 @@ function ProjectDetail() {
             <span style={{ color: '#94A3B8', fontSize: '0.7rem' }}>
               {project.latest_build
                 ? `${project.latest_build.phase} — ${project.latest_build.status}`
-                : 'No builds yet'}
+                : project.has_saved_plan
+                  ? 'Plan ready — continue build'
+                  : 'No builds yet'}
             </span>
           </Link>
 
@@ -880,7 +883,29 @@ function ProjectDetail() {
 
         {/* Build Actions */}
         <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
-          {!buildActive && (
+          {!buildActive && project?.has_saved_plan && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>⏸ Plan ready</span>
+              <button
+                onClick={handleStartBuild}
+                disabled={starting}
+                style={{
+                  background: '#581C87',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '10px 20px',
+                  cursor: starting ? 'wait' : 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  opacity: starting ? 0.6 : 1,
+                }}
+              >
+                {starting ? 'Starting...' : 'Continue Build'}
+              </button>
+            </div>
+          )}
+          {!buildActive && !project?.has_saved_plan && (
             <button
               onClick={handleStartBuild}
               disabled={starting}

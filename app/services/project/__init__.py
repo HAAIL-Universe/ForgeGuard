@@ -144,6 +144,12 @@ async def get_project_detail(user_id: UUID, project_id: UUID) -> dict:
     else:
         project["latest_build"] = None
 
+    # Signal whether a saved plan exists so the UI can show "Continue Build"
+    # even when there is no active build row (e.g. after a server restart).
+    from app.repos.project_repo import get_cached_plan as _gcp_detail
+    _saved_plan = await _gcp_detail(project_id)
+    project["has_saved_plan"] = bool(_saved_plan)
+
     return project
 
 

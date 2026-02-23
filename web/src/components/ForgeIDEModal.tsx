@@ -1287,6 +1287,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         // Track ide_gate_pending so setupEndIndex is set AFTER seed load
         // (setting it to 0 before seeds arrive leaves the setup section empty)
         let _pendingGate = false;
+        type _CachedPhase = { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] };
+        let _pendingGateCachedPhases: _CachedPhase[] = [];
         // 1. Fetch phases → map to tasks
         try {
           const phasesRes = await fetch(`${API_BASE}/projects/${projectId}/build/phases`, { headers: hdr });
@@ -1373,6 +1375,24 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 // instead of 0 (which would leave the setup section empty).
                 setStatus('ready');
                 _pendingGate = true;
+                // Capture saved plan phases so we can inject the PLAN box AFTER seed load
+                // (setLogs(seedLogs) at seed step would overwrite anything injected here).
+                const _gateCachedPhases = (sd as any).cached_plan_phases as _CachedPhase[] | undefined;
+                if (_gateCachedPhases && _gateCachedPhases.length > 0) {
+                  _pendingGateCachedPhases = _gateCachedPhases;
+                  setPhases(_gateCachedPhases as any);
+                  setTasks(_gateCachedPhases.map((ph) => ({
+                    id: `phase_${ph.number}`,
+                    name: `Phase ${ph.number}: ${ph.name}`,
+                    priority: 'high' as const,
+                    effort: 'large' as const,
+                    forge_automatable: true,
+                    category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                    status: 'pending' as const,
+                  })));
+                  setTotalTasks(_gateCachedPhases.length);
+                  setPlanReady(true);
+                }
               } else {
                 // Still warming up — wait for forge_ide_ready via WS
                 setStatus('preparing');
@@ -1426,6 +1446,45 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             }
             else if (sd.status === 'completed') { setStatus('completed'); setCompletedTasks(phases.length); }
             else if (sd.status === 'failed') setStatus('error');
+            else if (sd.status === 'plan_ready') {
+              // No active build — only a saved plan exists (e.g. after server restart).
+              // Show plan approval UI immediately; no seed logs will arrive (no build).
+              setStatus('ready');
+              setPlanReady(true);
+              const _prCachedPhases = (sd as any).cached_plan_phases as _CachedPhase[] | undefined;
+              if (_prCachedPhases && _prCachedPhases.length > 0) {
+                setPhases(_prCachedPhases as any);
+                setTasks(_prCachedPhases.map((ph) => ({
+                  id: `phase_${ph.number}`,
+                  name: `Phase ${ph.number}: ${ph.name}`,
+                  priority: 'high' as const,
+                  effort: 'large' as const,
+                  forge_automatable: true,
+                  category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                  status: 'pending' as const,
+                })));
+                setTotalTasks(_prCachedPhases.length);
+                const planText = formatPlanText(_prCachedPhases);
+                setLogs((prev) => {
+                  if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
+                  return [...prev, {
+                    timestamp: new Date().toISOString(),
+                    source: 'reasoning' as const,
+                    level: 'info',
+                    message: `📋 Plan — ${_prCachedPhases.length} phase${_prCachedPhases.length !== 1 ? 's' : ''} (saved)`,
+                    worker: 'sonnet' as const,
+                    reasoning: {
+                      text: planText,
+                      textLength: planText.length,
+                      turn: 0,
+                      phase: `${_prCachedPhases.length} phase${_prCachedPhases.length !== 1 ? 's' : ''}`,
+                      isActualThinking: false,
+                      isPlanBox: true,
+                    },
+                  }];
+                });
+              }
+            }
             else setStatus('ready');
           } else {
             setStatus('ready');
@@ -1500,12 +1559,34 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             // we know the correct index — everything before this point is setup.
             if (_pendingGate) {
               setSetupEndIndex(seedLogs.length);
-              setLogs((prev) => [...prev, {
-                timestamp: new Date().toISOString(),
-                source: 'system', level: 'info',
-                message: '✔ IDE ready — type /start to begin the build',
-                worker: 'system',
-              }]);
+              setLogs((prev) => {
+                const withWelcome = [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system' as const, level: 'info',
+                  message: '✔ IDE ready — type /start to begin the build',
+                  worker: 'system',
+                }];
+                // If we have a saved plan, inject the PLAN box right after the welcome msg.
+                if (_pendingGateCachedPhases.length === 0 || withWelcome.some((l) => (l as any).reasoning?.isPlanBox)) {
+                  return withWelcome;
+                }
+                const planText = formatPlanText(_pendingGateCachedPhases);
+                return [...withWelcome, {
+                  timestamp: new Date().toISOString(),
+                  source: 'reasoning' as const,
+                  level: 'info',
+                  message: `📋 Plan — ${_pendingGateCachedPhases.length} phase${_pendingGateCachedPhases.length !== 1 ? 's' : ''} (saved)`,
+                  worker: 'sonnet' as const,
+                  reasoning: {
+                    text: planText,
+                    textLength: planText.length,
+                    turn: 0,
+                    phase: `${_pendingGateCachedPhases.length} phase${_pendingGateCachedPhases.length !== 1 ? 's' : ''}`,
+                    isActualThinking: false,
+                    isPlanBox: true,
+                  },
+                }];
+              });
             }
           }
         } catch { /* silent */ }
