@@ -44,8 +44,8 @@ MINI_DEFAULTS: dict[str, dict] = {
         "forbidden_imports": "Routes must not import repos directly",
     },
     "deployment_target": {
-        "runtime": "Docker-ready",
-        "local_dev": "docker-compose single-stack",
+        "runtime": "Dev-ready (local)",
+        "local_dev": "pip install + uvicorn / npm run dev",
     },
 }
 

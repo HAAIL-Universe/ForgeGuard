@@ -173,15 +173,15 @@ function Build() {
           <p style={{ margin: '0 0 12px', color: '#CBD5E1', fontSize: '0.85rem', lineHeight: 1.5 }}>
             Get a working proof-of-concept in minutes. The mini build runs a
             shortened questionnaire (product intent + UI flow), auto-selects a
-            tech stack, and produces a Docker-ready scaffold — backend, frontend,
-            database, and API — in just 2 phases.
+            tech stack, and produces a dev-ready scaffold — backend, frontend,
+            database, and API — in just 2 phases. Run locally with pip + uvicorn.
           </p>
           <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-end' }}>
             {[
               { label: '~5 min', sublabel: 'Questionnaire' },
               { label: '2 phases', sublabel: 'Scaffold' },
               { label: '~$1-3', sublabel: 'Token cost' },
-              { label: 'Docker-ready', sublabel: 'Output' },
+              { label: 'Dev-ready', sublabel: 'Output' },
             ].map((stat) => (
               <div key={stat.label}>
                 <div style={{ fontSize: '1rem', fontWeight: 700, color: '#F8FAFC' }}>

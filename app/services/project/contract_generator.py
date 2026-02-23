@@ -227,7 +227,7 @@ Generate a concise blueprint for a 2-phase mini build:
 2) Core invariants — 3-5 MUST-hold rules (one line each)
 3) MVP scope — features that fit in 2 phases AND not-in-scope list
 4) Layer boundaries — one line per layer (routes → services → repos)
-5) Deployment — Docker-ready local dev
+5) Deployment — Dev-ready local (pip install + uvicorn / npm run dev)
 
 FORMAT RULES:
 - One line per item. No prose paragraphs.
@@ -248,7 +248,7 @@ Generate a tech stack for a 2-phase proof-of-concept:
 - Backend (language, framework, version, key libraries)
 - Database (engine, version)
 - Frontend (framework, bundler, key libraries)
-- Deployment (Docker Compose)
+- Deployment (local dev: pip install + uvicorn / npm run dev — NO Docker)
 - Environment Variables table (name, description, required/optional)
 
 FORMAT RULES:
