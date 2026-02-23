@@ -248,7 +248,7 @@ async def approve_plan(
             project_id, user["id"], action=body.action
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ── POST /projects/{project_id}/build/commit-plan ───────────────────────

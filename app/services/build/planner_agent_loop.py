@@ -514,14 +514,22 @@ async def run_phase_planner_agent(
     client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
     system_blocks = _build_system_prompt()
 
-    # --- Assemble project contracts text (not cached — changes per project) ---
+    # --- Append project contracts to system prompt (cached across turns) ---
+    # Project contracts are stable for the entire phase planning session.
+    # Putting them in the system prompt means turns 2+ pay ~10% via cache READ
+    # instead of full price on every turn in the user message.
     contract_parts: list[str] = []
     for c in contracts:
         ctype = c.get("contract_type", "")
         content = c.get("content", "")
         if ctype and content:
             contract_parts.append(f"## Project Contract: {ctype}\n{content}\n")
-    project_contracts_text = "\n".join(contract_parts) if contract_parts else "(no project contracts)"
+    if contract_parts:
+        system_blocks.append({
+            "type": "text",
+            "text": "=== PROJECT CONTRACTS ===\n\n" + "\n".join(contract_parts),
+            "cache_control": {"type": "ephemeral"},
+        })
 
     # --- Deliverables text ---
     phase_deliverables = (
@@ -536,7 +544,7 @@ async def run_phase_planner_agent(
     if prior_phase_context:
         prior_section = f"\n## Prior Phase Context\n{prior_phase_context}\n"
 
-    # --- Initial user message ---
+    # --- Initial user message (lightweight — contracts are in system prompt) ---
     initial_message = f"""\
 Plan the file manifest and chunk breakdown for the following phase.
 
@@ -545,9 +553,6 @@ Plan the file manifest and chunk breakdown for the following phase.
 ## Current Workspace
 {workspace_info or "(empty workspace)"}
 {prior_section}
-## Project Contracts
-{project_contracts_text}
-
 INSTRUCTIONS:
 1. Call list_directory(".") to survey the workspace root.
 2. Read relevant existing files if you need to understand current interfaces.
