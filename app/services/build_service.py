@@ -3798,6 +3798,7 @@ async def _run_build_plan_execute(
                             "name": p["name"],
                             "objective": p.get("purpose", ""),
                             "deliverables": p.get("acceptance_criteria", []),
+                            "file_manifest": p.get("file_manifest", []),
                         }
                         for p in _prep_result["plan"].get("phases", [])
                     ]
@@ -3869,6 +3870,7 @@ async def _run_build_plan_execute(
                     "name": p["name"],
                     "objective": p.get("purpose", ""),
                     "deliverables": p.get("acceptance_criteria", []),
+                    "file_manifest": p.get("file_manifest", []),
                 }
                 for p in _db_plan["phases"]
             ]
@@ -3893,6 +3895,7 @@ async def _run_build_plan_execute(
                             "name": p["name"],
                             "objective": p.get("purpose", ""),
                             "deliverables": p.get("acceptance_criteria", []),
+                            "file_manifest": p.get("file_manifest", []),
                         }
                         for p in _plan_result["plan"].get("phases", [])
                     ]
