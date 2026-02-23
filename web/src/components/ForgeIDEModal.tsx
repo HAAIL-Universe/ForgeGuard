@@ -2358,7 +2358,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             /* ---- Scratchpad writes (from any agent) ---- */
             case 'scratchpad_write': {
               const spWorker: 'sonnet' | 'opus' = p.source === 'sonnet' ? 'sonnet' : 'opus';
-              const preview = (p.summary as string) || (p.content_preview as string) || '';
+              const preview = (p.summary as string) || (p.content as string) || '';
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: p.role || 'agent',
@@ -2367,7 +2367,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 worker: spWorker,
                 scratchpad: {
                   key: p.key as string,
-                  content: (p.content_preview as string) || '',
+                  content: (p.content as string) || '',
                   fullLength: (p.full_length as number) || 0,
                   role: (p.role as string) || 'agent',
                 },
