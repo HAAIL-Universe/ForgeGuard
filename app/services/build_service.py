@@ -4813,6 +4813,64 @@ async def _run_build_plan_execute(
                             "source": "audit", "level": "info" if _fail_count == 0 else "warn",
                         })
 
+                    # ── Step 5.5: Integration audit (cross-file checks) ──
+                    if chunk_written:
+                        try:
+                            from app.services.build.integration_audit import run_integration_audit
+                            await _broadcast_build_event(user_id, build_id, "integration_audit_start", {
+                                "chunk": chunk_idx,
+                                "file_count": len(chunk_written),
+                            })
+                            _integ_issues = await run_integration_audit(
+                                working_dir=working_dir,
+                                chunk_files=chunk_written,
+                                all_files=all_files_written,
+                                build_id=build_id,
+                                user_id=user_id,
+                            )
+                            if _integ_issues:
+                                _integ_errors = [i for i in _integ_issues if i.severity == "error"]
+                                _integ_warns = [i for i in _integ_issues if i.severity == "warning"]
+                                for issue in _integ_errors:
+                                    blocking_files.append((issue.file_path, issue.message))
+                                await _broadcast_build_event(user_id, build_id, "integration_audit_result", {
+                                    "chunk": chunk_idx,
+                                    "status": "failed" if _integ_errors else "warned",
+                                    "errors": len(_integ_errors),
+                                    "warnings": len(_integ_warns),
+                                    "issues": [
+                                        {
+                                            "file": i.file_path,
+                                            "severity": i.severity,
+                                            "message": i.message,
+                                            "related_file": i.related_file,
+                                            "check": i.check_name,
+                                        }
+                                        for i in _integ_issues
+                                    ],
+                                })
+                                await _broadcast_build_event(user_id, build_id, "build_log", {
+                                    "message": (
+                                        f"Integration audit: {len(_integ_errors)} error(s), "
+                                        f"{len(_integ_warns)} warning(s) across chunk {chunk_idx}"
+                                    ),
+                                    "source": "integration_audit",
+                                    "level": "warn" if _integ_errors else "info",
+                                })
+                            else:
+                                await _broadcast_build_event(user_id, build_id, "integration_audit_result", {
+                                    "chunk": chunk_idx,
+                                    "status": "passed",
+                                    "errors": 0,
+                                    "warnings": 0,
+                                    "issues": [],
+                                })
+                        except Exception as _integ_exc:
+                            logger.warning(
+                                "Integration audit failed (non-blocking, chunk %d): %s",
+                                chunk_idx, _integ_exc,
+                            )
+
                     # ── Step 6: Fix any audit failures ──
                     if not _fix_queue.empty():
                         _touch_progress(build_id)
@@ -6078,6 +6136,18 @@ async def _run_build_plan_execute(
             )
         )
 
+        # --- LLM integration audit (background, non-blocking) ---
+        asyncio.create_task(
+            _run_integration_llm_audit(
+                build_id=build_id,
+                project_id=project_id,
+                phase_number=phase_num,
+                phase_files=list(phase_files_written.keys()),
+                phase_file_contents=dict(phase_files_written),
+                contracts=contracts,
+            )
+        )
+
         # --- Auto-clear context between phases ---
         # Each phase is independent; prior-phase files live on disk and
         # will be loaded on demand via the context budget system.
@@ -6213,3 +6283,58 @@ async def _run_phase_audit(
         logger.info("[PHASE_AUDIT] Phase %d: %s (%d issues)", phase_number, status_str, issue_count)
     except Exception as exc:
         logger.warning("[PHASE_AUDIT] Non-blocking failure (phase %d): %s", phase_number, exc)
+
+
+async def _run_integration_llm_audit(
+    build_id: UUID,
+    project_id: UUID,
+    phase_number: int,
+    phase_files: list[str],
+    phase_file_contents: dict[str, str],
+    contracts: list[dict],
+) -> None:
+    """Fire-and-forget LLM integration audit — catches semantic cross-file issues.
+
+    Runs alongside _run_phase_audit after each phase. Focuses on behavioral
+    and API contract coherence that deterministic checks cannot detect.
+    Failures are logged but never propagate.
+    """
+    _auditor_dir = Path(__file__).resolve().parent.parent.parent / "auditor"
+    if not _auditor_dir.exists():
+        logger.debug("[INTEGRATION_LLM_AUDIT] Auditor directory not found, skipping")
+        return
+
+    import sys as _sys
+    if str(_auditor_dir) not in _sys.path:
+        _sys.path.insert(0, str(_auditor_dir))
+
+    try:
+        from auditor_agent import run_auditor  # type: ignore[import]
+
+        _index = {c["contract_type"]: c.get("content", "") for c in (contracts or [])}
+
+        def _fetcher(contract_type: str):
+            return _index.get(contract_type)
+
+        result = await run_auditor(
+            mode="integration",
+            build_id=build_id,
+            project_id=project_id,
+            phase_number=phase_number,
+            phase_files=phase_files,
+            contract_fetcher=_fetcher,
+            file_contents=phase_file_contents,
+            deterministic_issues=[],  # Already handled by blocking step
+            verbose=False,
+        )
+        status_str = result.status if hasattr(result, "status") else "unknown"
+        issue_count = len(result.issues) if hasattr(result, "issues") else 0
+        logger.info(
+            "[INTEGRATION_LLM_AUDIT] Phase %d: %s (%d issues)",
+            phase_number, status_str, issue_count,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[INTEGRATION_LLM_AUDIT] Non-blocking failure (phase %d): %s",
+            phase_number, exc,
+        )

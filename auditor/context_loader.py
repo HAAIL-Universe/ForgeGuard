@@ -104,6 +104,48 @@ from the Builder after each phase completes.
 - If the phase is partially complete (some files missing): FAIL with clear
   list of which manifest files are missing."""
 
+    elif mode == "integration":
+        mandate = """\
+You are the INTEGRATION AUDITOR — an independent agent that audits cross-file
+consistency after the deterministic integration checks have already run.
+
+The deterministic layer has already caught mechanical issues (broken imports,
+missing symbols, type errors). Your job is to catch SEMANTIC mismatches that
+require understanding intent.
+
+# AUDIT MANDATE
+1. API CONTRACT COHERENCE — do consumers match producers?
+   - Do router response shapes match what service methods actually return?
+   - Do frontend API call arguments match backend endpoint parameters?
+   - Do hook/store state shapes match component prop expectations?
+2. BEHAVIORAL CONSISTENCY — does intent align across files?
+   - If a service method is called "pause", does it pause (not stop)?
+   - Do error handling patterns match across the call chain?
+   - Do default values in the backend match frontend fallback defaults?
+3. DATA FLOW INTEGRITY — does data transform correctly end-to-end?
+   - Do database column types match ORM model types?
+   - Do serialization formats (camelCase vs snake_case) stay consistent?
+   - Do enum values used in backend match frontend constants?
+
+# DO NOT CHECK (the deterministic layer already handled these):
+- Import resolution (module exists / symbol exported)
+- TypeScript compilation errors
+- Python syntax errors
+- File existence
+
+# OUTPUT FORMAT
+{
+  "verdict": "PASS|FAIL",
+  "issues": [
+    {"file": "path", "severity": "error|warn", "message": "...", "related_file": "..."}
+  ]
+}
+
+# CONSTRAINTS
+- Do NOT build. Do NOT fix code. Only verify cross-file consistency.
+- Only severity "error" issues cause FAIL verdict.
+- If deterministic issues were provided, DO NOT repeat them."""
+
     else:
         raise ValueError(f"Unknown audit mode: {mode}")
 
@@ -156,5 +198,23 @@ from the Builder after each phase completes.
                 )
             except Exception:
                 pass
+
+        elif mode == "integration":
+            # Integration auditor gets both builder contract and boundaries
+            for contract_name, label in [
+                ("builder_contract", "BUILDER CONTRACT"),
+                ("boundaries", "ARCHITECTURAL BOUNDARIES"),
+                ("physics", "API PHYSICS"),
+                ("schema", "DATABASE SCHEMA"),
+            ]:
+                try:
+                    content = contract_fetcher(contract_name)
+                    if content:
+                        blocks.append({
+                            "type": "text",
+                            "text": f"## {label}\n\n{content}",
+                        })
+                except Exception:
+                    pass
 
     return blocks

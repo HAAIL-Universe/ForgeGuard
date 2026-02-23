@@ -69,6 +69,26 @@ PHASE {phase_number} OUTPUT:
 Begin your audit now.
 """
 
+INITIAL_USER_TURN_INTEGRATION = """\
+You are auditing cross-file integration for phase {phase_number}. Use the audit_complete tool when done.
+
+FILES TO AUDIT:
+{phase_files}
+
+DETERMINISTIC ISSUES ALREADY FOUND (do NOT repeat these):
+{deterministic_issues}
+
+FILE CONTENTS (key files for cross-referencing):
+{file_contents}
+
+Focus on SEMANTIC mismatches the deterministic layer cannot catch:
+- API contract coherence (do response shapes match across layers?)
+- Behavioral consistency (do names/actions align across files?)
+- Data flow integrity (do types/formats transform correctly end-to-end?)
+
+Begin your audit now.
+"""
+
 
 class AuditorError(Exception):
     """Raised when auditor encounters an error."""
@@ -87,6 +107,9 @@ async def run_auditor(
     violations: Optional[list[dict]] = None,
     contract_fetcher: Optional[Callable] = None,
     verbose: bool = True,
+    # Integration mode extras
+    file_contents: Optional[dict[str, str]] = None,
+    deterministic_issues: Optional[list[dict]] = None,
 ) -> AuditResult:
     """
     Run auditor in specified mode.
@@ -132,6 +155,28 @@ async def run_auditor(
             phase_files=", ".join(phase_files or [])[:500],
             test_coverage=test_coverage or 0,
             violations_list=violations_str if violations else "(none)",
+        )
+    elif mode == "integration":
+        # Build file contents section (truncated to fit context)
+        _fc_parts: list[str] = []
+        _fc_budget = 12_000  # characters
+        for fp, content in (file_contents or {}).items():
+            snippet = content[:2000] if len(content) > 2000 else content
+            entry = f"### {fp}\n```\n{snippet}\n```\n"
+            if len("\n".join(_fc_parts)) + len(entry) > _fc_budget:
+                break
+            _fc_parts.append(entry)
+
+        det_str = "\n".join(
+            f"  - [{d.get('severity', '?')}] {d.get('file', '?')}: {d.get('message', '?')}"
+            for d in (deterministic_issues or [])
+        )
+
+        user_turn = INITIAL_USER_TURN_INTEGRATION.format(
+            phase_number=phase_number or 0,
+            phase_files=", ".join(phase_files or [])[:500],
+            deterministic_issues=det_str if det_str else "(none)",
+            file_contents="\n".join(_fc_parts) if _fc_parts else "(not provided)",
         )
     else:
         raise AuditorError(f"Unknown mode: {mode}")
