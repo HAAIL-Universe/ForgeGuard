@@ -2710,7 +2710,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 timestamp: new Date().toISOString(),
                 source: p.role || 'agent',
                 level: 'info',
-                message: `🤖 Sub-agent [${p.role}] started — ${p.file_count || 0} files`,
+                message: `🤖 Sub-agent [${p.role}] started — ${(p.files as string[])?.length || p.file_count || 0} files`,
                 worker: 'opus',
               }]);
               break;

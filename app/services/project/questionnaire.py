@@ -27,11 +27,13 @@ QUESTIONNAIRE_SECTIONS = [
     "ui_requirements",
     "architectural_boundaries",
     "deployment_target",
+    "dev_platform",
 ]
 
 MINI_QUESTIONNAIRE_SECTIONS = [
     "product_intent",
     "ui_requirements",
+    "dev_platform",
 ]
 
 _SYSTEM_PROMPT = """\
@@ -47,6 +49,7 @@ The questionnaire has these sections (in order):
 5. ui_requirements — Pages, components, design system, responsive needs
 6. architectural_boundaries — Layer rules, forbidden imports, separation concerns
 7. deployment_target — Where it runs, CI/CD, infrastructure
+8. dev_platform — What OS the user develops/tests on. Ask ONE question with three choices: Windows (CMD), Windows (PowerShell), or macOS/Linux. This determines the boot script format.
 
 NOTE: Do NOT ask the user about implementation phases. Phases are auto-derived
 architecturally during contract generation based on all gathered information.
@@ -68,20 +71,24 @@ CRITICAL RULES:
   extracted_data must NEVER be empty or null when section_complete is true.
 - The user sees a progress bar. Every response MUST advance it. If the user
   answered your question, section_complete MUST be true.
-- When all 7 sections are done, set section to "complete".
+- When all 8 sections are done, set section to "complete".
 """
 
 _MINI_SYSTEM_PROMPT = """\
 You are a project intake specialist for Forge, an autonomous build system.
 This is a MINI BUILD — a quick proof-of-concept scaffold.
 
-Your job is to collect just two things from the user:
+Your job is to collect three things from the user:
 1. product_intent — What the product does, who it’s for, the core problem it
    solves, and the 2-3 key features that define the experience.
 2. ui_requirements — Design style, layout preferences, colour scheme,
    responsive needs, and overall look-and-feel.
+3. dev_platform — What OS the user develops/tests on. Ask ONE question with
+   three choices: Windows (CMD), Windows (PowerShell), or macOS/Linux.
+   This determines the boot script format. Set section_complete=true immediately
+   after they answer.
 
-That’s it. Only these two sections exist. There are NO other sections.
+Only these three sections exist. There are NO other sections.
 Do NOT ask about tech stack, backend, frontend framework, database, APIs,
 architectural boundaries, or deployment. Those are auto-resolved by Forge.
 
@@ -97,14 +104,14 @@ CRITICAL RULES:
 - Your response MUST be ONLY valid JSON — no markdown fences, no extra text:
   {
     "reply": "<your message>",
-    "section": "<product_intent | ui_requirements | complete>",
+    "section": "<product_intent | ui_requirements | dev_platform | complete>",
     "section_complete": true|false,
     "extracted_data": { <key-value pairs of captured information> }
   }
-- The "section" field MUST be one of: "product_intent", "ui_requirements", or
-  "complete". Never use any other value.
+- The "section" field MUST be one of: "product_intent", "ui_requirements",
+  "dev_platform", or "complete". Never use any other value.
 - When section_complete is true, extracted_data MUST contain the captured data.
-- When both sections are done, set section to "complete".
+- When all three sections are done, set section to "complete".
 """
 
 

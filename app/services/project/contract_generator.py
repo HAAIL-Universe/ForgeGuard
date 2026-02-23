@@ -1259,6 +1259,7 @@ def _extract_answers_data(project: dict, answers: dict) -> dict:
         "ui_requirements",
         "architectural_boundaries",
         "deployment_target",
+        "dev_platform",
     ):
         val = answers.get(key)
         if val:

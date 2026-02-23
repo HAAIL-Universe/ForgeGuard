@@ -142,25 +142,75 @@ def _load_third_party_packages(working_dir: str) -> set[str]:
         except Exception:
             pass
 
-    # Parse package.json for JS/TS packages
-    pkg_json = wd / "package.json"
-    if not pkg_json.exists():
-        # Check web/ subdirectory
-        pkg_json = wd / "web" / "package.json"
-    if pkg_json.exists():
-        try:
-            import json
-            data = json.loads(pkg_json.read_text(encoding="utf-8"))
-            for section in ("dependencies", "devDependencies"):
-                for dep_name in data.get(section, {}):
-                    packages.add(dep_name.lower())
-        except Exception:
-            pass
+    # Parse package.json for JS/TS packages — scan ALL subdirectories
+    _parse_package_json_deps(wd / "package.json", packages)
+    for subdir in ("web", "frontend", "client", "ui", "backend", "server", "api"):
+        _parse_package_json_deps(wd / subdir / "package.json", packages)
 
     # Add well-known reverse mappings
     packages.update(_IMPORT_TO_PACKAGE.keys())
 
     return packages
+
+
+def _parse_package_json_deps(pkg_json: Path, packages: set[str]) -> None:
+    """Parse a package.json and add deps/devDeps to the package set."""
+    if not pkg_json.exists():
+        return
+    try:
+        import json
+        data = json.loads(pkg_json.read_text(encoding="utf-8"))
+        for section in ("dependencies", "devDependencies", "peerDependencies"):
+            for dep_name in data.get(section, {}):
+                packages.add(dep_name.lower())
+    except Exception:
+        pass
+
+
+def _load_js_deps_by_directory(working_dir: str) -> dict[str, set[str]]:
+    """Load JS dependencies per directory for precise import validation.
+
+    Returns {dir_path: {dep_name, ...}} where dir_path is relative.
+    Each file's imports are checked against the nearest package.json's deps.
+    """
+    wd = Path(working_dir)
+    deps_by_dir: dict[str, set[str]] = {}
+
+    # Scan root and common subdirectories
+    for subdir in (".", "web", "frontend", "client", "ui", "backend", "server", "api"):
+        pkg_json = wd / subdir / "package.json"
+        if not pkg_json.exists():
+            continue
+        try:
+            import json
+            data = json.loads(pkg_json.read_text(encoding="utf-8"))
+            dep_set: set[str] = set()
+            for section in ("dependencies", "devDependencies", "peerDependencies"):
+                for dep_name in data.get(section, {}):
+                    dep_set.add(dep_name.lower())
+            # Also add Node.js built-in modules
+            dep_set.update(_NODE_BUILTINS)
+            deps_by_dir[subdir if subdir != "." else ""] = dep_set
+        except Exception:
+            pass
+
+    return deps_by_dir
+
+
+# Common Node.js built-in modules (not listed in package.json)
+_NODE_BUILTINS: set[str] = {
+    "assert", "buffer", "child_process", "cluster", "console", "constants",
+    "crypto", "dgram", "dns", "domain", "events", "fs", "http", "http2",
+    "https", "module", "net", "os", "path", "perf_hooks", "process",
+    "punycode", "querystring", "readline", "repl", "stream", "string_decoder",
+    "sys", "timers", "tls", "tty", "url", "util", "v8", "vm", "wasi",
+    "worker_threads", "zlib", "node:fs", "node:path", "node:url",
+    "node:http", "node:https", "node:crypto", "node:stream", "node:util",
+    "node:os", "node:events", "node:buffer", "node:child_process",
+    "node:net", "node:readline", "node:worker_threads", "node:zlib",
+    # Also treat 'react' style imports that come via CDN/bundler as OK
+    # when they ARE in the package.json (handled by dep_set)
+}
 
 
 # ---------------------------------------------------------------------------
@@ -322,30 +372,59 @@ async def _check_typescript(
     chunk_files: dict[str, str],
     all_files: dict[str, str],
 ) -> list[IntegrationIssue]:
-    """Check TypeScript integration — tsc if available, regex fallback."""
+    """Check TypeScript/JavaScript integration — tsc if available, regex fallback."""
     wd = Path(working_dir)
     issues: list[IntegrationIssue] = []
 
-    # Find the frontend directory (common patterns)
+    # Find the frontend directory — first try tsconfig.json (TS projects)
     ts_root = None
+    has_tsconfig = False
     for candidate in ("web", "frontend", "client", "ui", "."):
         tsconfig = wd / candidate / "tsconfig.json"
         if tsconfig.exists():
             ts_root = wd / candidate
+            has_tsconfig = True
             break
 
+    # Fallback: detect plain JS projects via package.json + JS/JSX source files
     if ts_root is None:
-        return issues  # No TypeScript project found
+        for candidate in ("frontend", "client", "web", "ui", "."):
+            pkg_json = wd / candidate / "package.json"
+            if pkg_json.exists():
+                # Verify it has JS/JSX source files (not just a config package)
+                candidate_dir = wd / candidate
+                has_js = any(
+                    f.suffix in (".js", ".jsx", ".ts", ".tsx")
+                    for f in candidate_dir.rglob("src/*")
+                    if "node_modules" not in str(f)
+                )
+                if has_js:
+                    ts_root = candidate_dir
+                    break
+
+        # Also check all_files for JS/JSX content if no directory found
+        if ts_root is None:
+            js_files_in_chunk = [
+                f for f in chunk_files
+                if any(f.endswith(ext) for ext in (".js", ".jsx", ".ts", ".tsx"))
+                and "node_modules" not in f
+            ]
+            if js_files_in_chunk:
+                # Use working_dir root as the JS root
+                ts_root = wd
+
+    if ts_root is None:
+        return issues  # No TypeScript or JavaScript project found
 
     has_node_modules = (ts_root / "node_modules").exists()
 
-    if has_node_modules:
-        # Try tsc --noEmit
+    # Only try tsc if we have a tsconfig.json AND node_modules
+    if has_tsconfig and has_node_modules:
         tsc_issues = await _run_tsc(ts_root)
         if tsc_issues is not None:
             return tsc_issues
 
-    # Fallback: regex-based TS import checking
+    # Regex-based import checking (works for both TS and plain JS/JSX)
     return _check_ts_imports_regex(ts_root, chunk_files, all_files, working_dir)
 
 
@@ -407,19 +486,19 @@ def _check_ts_imports_regex(
     all_files: dict[str, str],
     working_dir: str,
 ) -> list[IntegrationIssue]:
-    """Regex-based TS/JS import checking when tsc is not available."""
+    """Regex-based TS/JS import checking — works for TS and plain JS/JSX."""
     issues: list[IntegrationIssue] = []
     wd = Path(working_dir)
 
-    # Build set of all TS/JS files
-    ts_files: set[str] = set()
-    for fp in all_files:
-        if any(fp.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")):
-            ts_files.add(fp)
-    for ts_file in ts_root.rglob("*"):
-        if ts_file.suffix in (".ts", ".tsx", ".js", ".jsx"):
-            rel = str(ts_file.relative_to(wd)).replace("\\", "/")
-            ts_files.add(rel)
+    # Build set of ALL project files (not just JS — includes CSS, JSON, etc.)
+    all_project_files: set[str] = set(all_files.keys())
+    for project_file in wd.rglob("*"):
+        if project_file.is_file() and "node_modules" not in str(project_file):
+            rel = str(project_file.relative_to(wd)).replace("\\", "/")
+            all_project_files.add(rel)
+
+    # Load per-directory JS deps for non-relative import validation
+    js_deps_by_dir = _load_js_deps_by_directory(working_dir)
 
     for file_path, content in chunk_files.items():
         if not any(file_path.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")):
@@ -429,23 +508,44 @@ def _check_ts_imports_regex(
             named = match.group(1)
             from_path = match.group(4)
 
-            # Only check relative imports (starting with . or ..)
+            # --- Non-relative imports: validate against package.json ---
             if not from_path.startswith("."):
+                pkg_name = from_path.split("/")[0]
+                # Skip Node builtins
+                if pkg_name in _NODE_BUILTINS or pkg_name.startswith("node:"):
+                    continue
+                # Find the nearest package.json deps for this file
+                _nearest_deps = _find_nearest_js_deps(file_path, js_deps_by_dir)
+                if _nearest_deps is not None and pkg_name.lower() not in _nearest_deps:
+                    issues.append(IntegrationIssue(
+                        file_path=file_path,
+                        severity="error",
+                        message=(
+                            f"Package `{pkg_name}` imported but not listed in "
+                            f"package.json dependencies"
+                        ),
+                        check_name="missing_js_dependency",
+                    ))
                 continue
 
-            # Resolve the import path relative to the importing file
+            # --- Relative imports: resolve against filesystem ---
             file_dir = str(Path(file_path).parent).replace("\\", "/")
             resolved = os.path.normpath(os.path.join(file_dir, from_path)).replace("\\", "/")
 
-            # Try common extensions
+            # Try code extensions first, then asset extensions
+            _code_exts = ("", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js", "/index.jsx")
+            _asset_exts = (".css", ".scss", ".sass", ".less", ".json", ".svg", ".png", ".jpg", ".gif", ".module.css")
+
             found = False
-            for ext in ("", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"):
+            for ext in (*_code_exts, *_asset_exts):
                 candidate = resolved + ext
-                if candidate in ts_files or candidate in all_files:
+                if candidate in all_project_files or candidate in all_files:
                     found = True
 
-                    # If named imports, verify they exist in the target file
-                    if named and candidate in all_files:
+                    # If named imports on a code file, verify exports
+                    if named and candidate in all_files and not any(
+                        candidate.endswith(ae) for ae in _asset_exts
+                    ):
                         _verify_ts_named_exports(
                             file_path, named, candidate,
                             all_files[candidate], issues,
@@ -460,7 +560,46 @@ def _check_ts_imports_regex(
                     check_name="ts_unresolved_import",
                 ))
 
+    # Also check bare imports: import './style.css' (no from clause)
+    _bare_import_re = re.compile(r"""import\s+['"]([^'"]+)['"]""", re.MULTILINE)
+    for file_path, content in chunk_files.items():
+        if not any(file_path.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")):
+            continue
+        for match in _bare_import_re.finditer(content):
+            from_path = match.group(1)
+            if not from_path.startswith("."):
+                continue  # Package bare imports (e.g., import 'dotenv/config')
+            file_dir = str(Path(file_path).parent).replace("\\", "/")
+            resolved = os.path.normpath(os.path.join(file_dir, from_path)).replace("\\", "/")
+            _all_exts = ("", ".css", ".scss", ".sass", ".less", ".json", ".js", ".jsx", ".ts", ".tsx")
+            found = any(
+                (resolved + ext) in all_project_files or (resolved + ext) in all_files
+                for ext in _all_exts
+            )
+            if not found:
+                issues.append(IntegrationIssue(
+                    file_path=file_path,
+                    severity="error",
+                    message=f"Unresolved bare import: `{from_path}` — file not found",
+                    check_name="ts_unresolved_import",
+                ))
+
     return issues
+
+
+def _find_nearest_js_deps(file_path: str, deps_by_dir: dict[str, set[str]]) -> set[str] | None:
+    """Find the package.json deps that apply to a given file path.
+
+    Walks up from the file's directory to find the nearest match in deps_by_dir.
+    Returns None if no package.json was found (skip validation).
+    """
+    parts = file_path.replace("\\", "/").split("/")
+    # Try progressively shorter prefixes
+    for i in range(len(parts) - 1, -1, -1):
+        prefix = "/".join(parts[:i]) if i > 0 else ""
+        if prefix in deps_by_dir:
+            return deps_by_dir[prefix]
+    return None
 
 
 def _verify_ts_named_exports(
@@ -664,6 +803,50 @@ def _extract_ts_interface_fields(source: str) -> dict[str, set[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Check 5: JavaScript/JSX syntax validation
+# ---------------------------------------------------------------------------
+
+
+def _check_js_syntax(
+    chunk_files: dict[str, str],
+) -> list[IntegrationIssue]:
+    """Validate JS/JSX file syntax to catch cross-language contamination.
+
+    Detects Python-style syntax in JavaScript files (e.g. triple-quote
+    docstrings, decorators without transpiler, etc.) by checking for
+    patterns that are valid Python but invalid JavaScript.
+    """
+    issues: list[IntegrationIssue] = []
+
+    # Patterns that indicate Python syntax contamination in JS files
+    _PYTHON_IN_JS = [
+        (re.compile(r'"""'), "Python triple-quote docstring detected in JavaScript file"),
+        (re.compile(r"'''"), "Python triple-quote string detected in JavaScript file"),
+        (re.compile(r"^\s*def\s+\w+\s*\(", re.MULTILINE), "Python function definition (`def`) in JavaScript file"),
+        (re.compile(r"^\s*class\s+\w+.*:\s*$", re.MULTILINE), "Python-style class with colon in JavaScript file"),
+        (re.compile(r"\bprint\s*\(", re.MULTILINE), "Python `print()` call in JavaScript file (use console.log)"),
+        (re.compile(r"\bself\.\w+", re.MULTILINE), "Python `self.` reference in JavaScript file (use `this.`)"),
+    ]
+
+    for file_path, content in chunk_files.items():
+        if not any(file_path.endswith(ext) for ext in (".js", ".jsx", ".mjs", ".cjs")):
+            continue
+
+        for pattern, message in _PYTHON_IN_JS:
+            matches = pattern.findall(content)
+            if matches:
+                issues.append(IntegrationIssue(
+                    file_path=file_path,
+                    severity="error",
+                    message=message,
+                    check_name="js_syntax_contamination",
+                ))
+                break  # One issue per file for contamination
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -708,18 +891,24 @@ async def run_integration_audit(
     except Exception as e:
         logger.warning("[INTEGRATION_AUDIT] Python symbol check failed: %s", e)
 
-    # Check 3: TypeScript integration
+    # Check 3: TypeScript/JavaScript integration
     try:
         ts_issues = await _check_typescript(working_dir, chunk_files, all_files)
         issues.extend(ts_issues)
     except Exception as e:
-        logger.warning("[INTEGRATION_AUDIT] TypeScript check failed: %s", e)
+        logger.warning("[INTEGRATION_AUDIT] TypeScript/JS check failed: %s", e)
 
     # Check 4: Backend↔frontend schema alignment
     try:
         issues.extend(_check_schema_alignment(all_files))
     except Exception as e:
         logger.warning("[INTEGRATION_AUDIT] Schema alignment check failed: %s", e)
+
+    # Check 5: JavaScript syntax validation (cross-language contamination)
+    try:
+        issues.extend(_check_js_syntax(chunk_files))
+    except Exception as e:
+        logger.warning("[INTEGRATION_AUDIT] JS syntax check failed: %s", e)
 
     if issues:
         error_count = sum(1 for i in issues if i.severity == "error")

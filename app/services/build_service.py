@@ -50,6 +50,23 @@ def _get_workspace_dir(project_id: UUID | str) -> Path:
     return ws_base / str(project_id)
 
 
+def _resolve_dev_platform(raw: dict | str | None) -> str:
+    """Normalize questionnaire dev_platform answer to a StackInfo enum.
+
+    Returns one of: "unix", "windows_cmd", "windows_ps".
+    """
+    if not raw:
+        return "unix"
+    text = json.dumps(raw).lower() if isinstance(raw, dict) else str(raw).lower()
+    if "powershell" in text or "ps1" in text or "windows_ps" in text:
+        return "windows_ps"
+    if "cmd" in text or "bat" in text or "windows_cmd" in text or "command prompt" in text:
+        return "windows_cmd"
+    if "windows" in text:
+        return "windows_cmd"  # default Windows to CMD
+    return "unix"
+
+
 # ---------------------------------------------------------------------------
 # Sub-module imports (R7 decomposition)
 # ---------------------------------------------------------------------------
@@ -6212,6 +6229,35 @@ async def _run_build_plan_execute(
         build_id, "Build completed successfully (plan-execute mode)",
         source="system", level="info",
     )
+
+    # ── Build sign-off: generate README, boot script, USER_INSTRUCTIONS ──
+    try:
+        from app.services.signoff import run_signoff
+
+        # Extract dev_platform from questionnaire answers
+        _signoff_project = await project_repo.get_project_by_id(project_id)
+        _qs = (_signoff_project or {}).get("questionnaire_state") or {}
+        _dev_platform_raw = _qs.get("answers", {}).get("dev_platform", {})
+        _dev_platform = _resolve_dev_platform(_dev_platform_raw)
+
+        await run_signoff(
+            build_id=build_id,
+            project_id=project_id,
+            user_id=user_id,
+            contracts=contracts,
+            working_dir=working_dir,
+            access_token=access_token,
+            branch=branch,
+            target_type=target_type,
+            api_key=api_key,
+            dev_platform=_dev_platform,
+            broadcast_fn=_broadcast_build_event,
+            log_fn=lambda bid, msg, src, lvl: build_repo.append_build_log(
+                bid, msg, source=src, level=lvl,
+            ),
+        )
+    except Exception as _signoff_exc:
+        logger.warning("Sign-off failed (non-fatal): %s", _signoff_exc)
 
     cost_summary = await build_repo.get_build_cost_summary(build_id)
     await _broadcast_build_event(user_id, build_id, "build_complete", {

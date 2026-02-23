@@ -906,6 +906,20 @@ async def run_sub_agent(
         },
     )
 
+    # 5b. Broadcast LLM thinking event — shows SYSTEM PROMPT / USER MESSAGE in Opus panel
+    _model_label = "opus" if handoff.role in (SubAgentRole.CODER, SubAgentRole.FIXER) else "sonnet"
+    await _state._broadcast_build_event(
+        handoff.user_id, handoff.build_id, "llm_thinking", {
+            "model": _model_label,
+            "purpose": f"Building {handoff.files[0] if handoff.files else 'file'}",
+            "system_prompt": sys_prompt[:2000],
+            "user_message_preview": user_message[:800],
+            "user_message_length": len(user_message),
+            "file": handoff.files[0] if handoff.files else "",
+            "context_files": list(handoff.context_files.keys()) if handoff.context_files else [],
+        },
+    )
+
     # Save handoff to disk for debugging
     try:
         save_handoff(working_dir, handoff)
