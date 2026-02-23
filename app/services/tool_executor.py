@@ -1245,21 +1245,24 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_contract",
         "description": (
-            "Fetch a project contract from the database. "
-            "Returns the full content of the requested contract. "
-            "Use this to fetch project specifications (blueprint, stack, schema, physics, "
-            "boundaries, manifesto, ui, builder_directive, builder_contract). "
-            "Note: 'phases' is blocked — use forge_get_phase_window instead."
+            "Read a project contract by name. Returns the full contract content "
+            "from the database. Use this to understand project requirements "
+            "(blueprint), tech stack (stack), data model (schema), constraints "
+            "(physics, boundaries), UI spec (ui), or build directives "
+            "(builder_directive). 'phases' is blocked — use "
+            "forge_get_phase_window instead."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": (
-                        "Contract name (e.g. 'blueprint', 'stack', 'schema', 'physics', "
-                        "'boundaries', 'manifesto', 'ui', 'builder_directive')."
-                    ),
+                    "description": "Contract name to fetch.",
+                    "enum": [
+                        "manifesto", "blueprint", "stack", "schema",
+                        "physics", "boundaries", "ui",
+                        "builder_directive", "builder_contract",
+                    ],
                 },
             },
             "required": ["name"],
@@ -1268,9 +1271,10 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_phase_window",
         "description": (
-            "Get the deliverables for a specific build phase (current + next phase). "
-            "Call this at the START of each phase to understand what to build. "
-            "Returns ~1-3K tokens instead of the full phases contract."
+            "Get deliverables for a build phase. Returns the current phase + "
+            "the next phase (~1-3K tokens) so you know exactly what files to "
+            "create and what acceptance criteria to meet. Call this at the "
+            "START of each phase before writing any code."
         ),
         "input_schema": {
             "type": "object",
@@ -1278,8 +1282,8 @@ FORGE_TOOLS = [
                 "phase_number": {
                     "type": "integer",
                     "description": (
-                        "The phase number to retrieve (0-based). "
-                        "Returns this phase + the next phase for context."
+                        "0-based phase number. Returns this phase + next "
+                        "phase for lookahead context."
                     ),
                 },
             },
@@ -1289,9 +1293,10 @@ FORGE_TOOLS = [
     {
         "name": "forge_list_contracts",
         "description": (
-            "List all available project contracts from the database. "
-            "Returns names and sizes. Use this to discover what contracts exist "
-            "before fetching specific ones."
+            "List all project contracts stored in the database. Returns "
+            "contract names, sizes (chars), and last-updated timestamps. "
+            "Call this to discover which contracts exist before fetching "
+            "specific ones with forge_get_contract."
         ),
         "input_schema": {
             "type": "object",
@@ -1301,9 +1306,10 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_summary",
         "description": (
-            "Get a compact overview of the Forge governance framework. "
-            "Returns available contracts, architecture layers, key rules, and tool descriptions. "
-            "Call this FIRST to orient yourself before fetching specific contracts."
+            "Get a governance overview for this project. Returns the list of "
+            "available contracts, architecture layer names, critical build "
+            "rules, and available tool descriptions. Call this FIRST when "
+            "starting a build to orient yourself."
         ),
         "input_schema": {
             "type": "object",
@@ -1313,11 +1319,10 @@ FORGE_TOOLS = [
     {
         "name": "forge_scratchpad",
         "description": (
-            "Persistent scratchpad for storing reasoning, decisions, and notes that "
-            "survive context compaction. Use this to record architectural decisions, "
-            "known issues, and progress notes across phases. "
-            "Operations: read (get value), write (set value), append (add to value), "
-            "list (show all keys)."
+            "Persistent key-value scratchpad that survives context compaction. "
+            "Store architectural decisions, known issues, and progress notes "
+            "that must persist across phases. Data is saved to disk and "
+            "survives agent restarts."
         ),
         "input_schema": {
             "type": "object",
@@ -1325,7 +1330,10 @@ FORGE_TOOLS = [
                 "operation": {
                     "type": "string",
                     "enum": ["read", "write", "append", "list"],
-                    "description": "Operation to perform.",
+                    "description": (
+                        "read: get a key's value. write: set/overwrite a key. "
+                        "append: add text to existing key. list: show all keys."
+                    ),
                 },
                 "key": {
                     "type": "string",
@@ -1346,18 +1354,18 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_project_context",
         "description": (
-            "Get a combined manifest for the current project — project info, "
-            "list of available generated contracts (types, versions, sizes), "
-            "build count, and latest snapshot batch. Returns METADATA only, "
-            "not full contract content. Call this first to see what contracts "
-            "are available, then fetch specific ones with forge_get_project_contract."
+            "Get the project manifest — metadata, available contracts "
+            "(types, versions, sizes), build count, and latest snapshot "
+            "batch. Returns METADATA only, not full contract content. "
+            "Call this to discover what exists, then use "
+            "forge_get_project_contract to fetch specific contracts."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project identifier (UUID). Optional if session is set.",
+                    "description": "Project UUID. Optional if session is set.",
                 },
             },
             "required": [],
@@ -1366,16 +1374,16 @@ FORGE_TOOLS = [
     {
         "name": "forge_list_project_contracts",
         "description": (
-            "List all generated contracts for the current project — contract "
-            "types, versions, and last updated timestamps. Lighter than "
-            "forge_get_project_context when you only need the contract list."
+            "List generated contracts for the current project — types, "
+            "versions, and timestamps. Lighter than forge_get_project_context "
+            "when you only need the contract list."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project identifier (UUID). Optional if session is set.",
+                    "description": "Project UUID. Optional if session is set.",
                 },
             },
             "required": [],
@@ -1384,25 +1392,26 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_project_contract",
         "description": (
-            "Fetch a single generated contract for the current project from "
-            "the database. Returns the full content, version, and source. "
-            "Use forge_list_project_contracts to see available types first. "
-            "Common types: manifesto, stack, physics, boundaries, blueprint, "
-            "builder_directive, schema, ui."
+            "Fetch a single generated contract from the database. Returns "
+            "the full content, version, and source. Use this to read the "
+            "project's requirements (blueprint), tech choices (stack), data "
+            "model (schema), constraints (physics, boundaries), or UI spec."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "contract_type": {
                     "type": "string",
-                    "description": (
-                        "Contract type — e.g. manifesto, stack, physics, "
-                        "boundaries, blueprint, builder_directive, schema, ui."
-                    ),
+                    "description": "Contract type to fetch.",
+                    "enum": [
+                        "manifesto", "blueprint", "stack", "schema",
+                        "physics", "boundaries", "ui", "phases",
+                        "builder_directive",
+                    ],
                 },
                 "project_id": {
                     "type": "string",
-                    "description": "Project identifier (UUID). Optional if session is set.",
+                    "description": "Project UUID. Optional if session is set.",
                 },
             },
             "required": ["contract_type"],
@@ -1411,18 +1420,17 @@ FORGE_TOOLS = [
     {
         "name": "forge_get_build_contracts",
         "description": (
-            "Fetch the pinned contract snapshot for a specific build. "
-            "Returns all contracts that were frozen when the build started. "
-            "These are immutable — mid-build edits don't affect them. "
-            "Used by the Fixer role to reference the exact contracts the "
-            "build was executed against."
+            "Fetch the pinned contract snapshot for this build. Returns all "
+            "contracts frozen at build start — immutable, unaffected by "
+            "mid-build edits. Use this to verify code against the exact "
+            "contracts the build was planned against."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "build_id": {
                     "type": "string",
-                    "description": "Build identifier (UUID). Optional if session is set.",
+                    "description": "Build UUID. Optional if session is set.",
                 },
             },
             "required": [],
@@ -1431,33 +1439,32 @@ FORGE_TOOLS = [
     {
         "name": "forge_ask_clarification",
         "description": (
-            "Ask the user a clarifying question when you encounter genuine ambiguity "
-            "that cannot be resolved from the available contracts, scout data, or "
-            "renovation plan. The build pauses until the user answers. "
-            "Use SPARINGLY — only when the implementation direction depends on a "
-            "user preference that cannot be inferred. Do NOT ask about obvious "
-            "choices or things already specified in contracts. Max 10 per build."
+            "Pause the build and ask the user a clarifying question. Use "
+            "SPARINGLY — only when the implementation direction depends on "
+            "a user preference that cannot be inferred from contracts, "
+            "scout data, or the plan. Max 10 per build. Do NOT ask about "
+            "obvious choices or things already specified in contracts."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "The question to ask (max 200 characters, concise).",
+                    "description": "Concise question (max 200 chars).",
                 },
                 "context": {
                     "type": "string",
                     "description": (
-                        "Brief explanation of WHY you need to know (max 300 chars). "
-                        "e.g. 'Implementing the login endpoint — choosing auth strategy.'"
+                        "Why you need to know (max 300 chars). "
+                        "e.g. 'Implementing login — choosing auth strategy.'"
                     ),
                 },
                 "options": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Optional 2–4 suggested answers as chips for the user. "
-                        "Always include a 'Let AI decide' option if providing choices."
+                        "2-4 suggested answers. Always include "
+                        "'Let AI decide' if providing choices."
                     ),
                 },
             },
