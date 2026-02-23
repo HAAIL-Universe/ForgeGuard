@@ -1,5 +1,6 @@
 """Projects router -- project CRUD, questionnaire chat, contract management."""
 
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -140,6 +141,92 @@ async def remove_project(
     """Delete a project."""
     await delete_user_project(current_user["id"], project_id)
     return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Restart (delete builds, keep contracts)
+# ---------------------------------------------------------------------------
+
+
+class RestartRequest(BaseModel):
+    delete_repo: bool = False
+
+
+@router.post("/{project_id}/restart")
+async def restart_project(
+    project_id: UUID,
+    body: RestartRequest = RestartRequest(),
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Reset a project for a fresh build — deletes all builds but keeps
+    contracts and questionnaire data intact.
+
+    If delete_repo=true, also deletes the GitHub repository (requires
+    delete_repo scope on the user's GitHub token).
+
+    Sets project status back to 'contracts_ready' so the user can start
+    a new build from the planning step.
+    """
+    from app.repos import project_repo, build_repo, user_repo
+
+    project = await project_repo.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if str(project["user_id"]) != str(current_user["id"]):
+        raise HTTPException(status_code=403, detail="Not your project")
+
+    if await build_repo.has_active_builds(project_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot restart while a build is running. Stop or cancel it first.",
+        )
+
+    # Delete all builds for this project
+    builds = await build_repo.get_builds_for_project(project_id)
+    if builds:
+        build_ids = [b["id"] for b in builds]
+        deleted = await build_repo.delete_builds(build_ids)
+    else:
+        deleted = 0
+
+    # Optionally delete the GitHub repo
+    repo_deleted = False
+    repo_full_name = project.get("repo_full_name")
+    if body.delete_repo and repo_full_name:
+        try:
+            from app.clients import github_client
+            user = await user_repo.get_user_by_id(current_user["id"])
+            access_token = (user or {}).get("access_token", "")
+            if access_token:
+                repo_deleted = await github_client.delete_github_repo(
+                    access_token, repo_full_name,
+                )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to delete GitHub repo: {exc}",
+            )
+
+    # Clean up workspace directory on disk
+    if builds:
+        import shutil
+        for b in builds:
+            wd = b.get("working_dir")
+            if wd and Path(wd).exists():
+                try:
+                    shutil.rmtree(wd, ignore_errors=True)
+                except Exception:
+                    pass
+
+    # Reset project status to contracts_ready
+    await project_repo.update_project_status(project_id, "contracts_ready")
+
+    return {
+        "status": "restarted",
+        "builds_deleted": deleted,
+        "repo_deleted": repo_deleted,
+        "message": "Project reset. Contracts preserved — ready for a fresh build.",
+    }
 
 
 # ---------------------------------------------------------------------------

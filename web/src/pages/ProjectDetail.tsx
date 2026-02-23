@@ -9,6 +9,7 @@ import { useToast } from '../context/ToastContext';
 import AppShell from '../components/AppShell';
 import Skeleton from '../components/Skeleton';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ProjectManageModal from '../components/ProjectManageModal';
 import QuestionnaireModal from '../components/QuestionnaireModal';
 import ContractProgress from '../components/ContractProgress';
 import BuildTargetModal, { type BuildTarget } from '../components/BuildTargetModal';
@@ -439,9 +440,17 @@ function ProjectDetail() {
     }
   };
 
-  const handleDeleteProject = async () => {
+  const handleDeleteProject = async (deleteRepo: boolean) => {
     setDeleting(true);
     try {
+      // If deleteRepo requested, restart first to clean up GitHub repo
+      if (deleteRepo && project?.repo_full_name) {
+        await fetch(`${API_BASE}/projects/${projectId}/restart`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ delete_repo: true }),
+        });
+      }
       const res = await fetch(`${API_BASE}/projects/${projectId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -455,6 +464,31 @@ function ProjectDetail() {
       }
     } catch {
       addToast('Network error removing project');
+    } finally {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
+  const handleRestartProject = async (deleteRepo: boolean) => {
+    setDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/restart`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete_repo: deleteRepo }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        addToast(data.message || 'Project restarted', 'success');
+        // Reload the page to reflect new state
+        window.location.reload();
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to restart project' }));
+        addToast(data.detail || 'Failed to restart project');
+      }
+    } catch {
+      addToast('Network error restarting project');
     } finally {
       setDeleting(false);
       setShowDeleteConfirm(false);
@@ -1203,11 +1237,12 @@ function ProjectDetail() {
       )}
 
       {showDeleteConfirm && (
-        <ConfirmDialog
-          title="Remove Project"
-          message={`Are you sure you want to remove "${project.name}"? This will delete all contracts, builds, and questionnaire data. This cannot be undone.`}
-          confirmLabel={deleting ? 'Removing...' : 'Remove Project'}
-          onConfirm={handleDeleteProject}
+        <ProjectManageModal
+          projectName={project?.name || ''}
+          hasRepo={!!project?.repo_full_name}
+          loading={deleting}
+          onRestart={(deleteRepo) => handleRestartProject(deleteRepo)}
+          onRemove={(deleteRepo) => handleDeleteProject(deleteRepo)}
           onCancel={() => setShowDeleteConfirm(false)}
         />
       )}

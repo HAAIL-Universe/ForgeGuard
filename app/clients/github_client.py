@@ -175,6 +175,29 @@ async def create_github_repo(
     }
 
 
+async def delete_github_repo(
+    access_token: str,
+    full_name: str,
+) -> bool:
+    """Delete a GitHub repository by full name (e.g. 'owner/repo').
+
+    Requires the token to have 'delete_repo' scope.
+    Returns True if deleted, False if not found.
+    Raises on other errors.
+    """
+    client = _get_client()
+    response = await client.delete(
+        f"{GITHUB_API_BASE}/repos/{full_name}",
+        headers=_auth_headers(access_token),
+    )
+    if response.status_code == 204:
+        return True
+    if response.status_code == 404:
+        return False
+    response.raise_for_status()
+    return False
+
+
 async def create_webhook(
     access_token: str,
     full_name: str,
