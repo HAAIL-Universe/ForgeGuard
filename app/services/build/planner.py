@@ -1560,7 +1560,7 @@ async def execute_tier(
     await _state._broadcast_build_event(user_id, build_id, "tier_start", {
         "tier": tier_index,
         "file_count": len(tier_files),
-        "batch_count": min(len(tier_files), 3),  # capped by _semaphore concurrency
+        "batch_count": 1,  # sequential mode — increase with _semaphore for production
         "files": all_paths,
         "common_prefix": common_prefix,
         "agents": [
@@ -1625,8 +1625,8 @@ async def execute_tier(
         + "\n\n".join(_test_contract_parts)
     ) if _test_contract_parts else ""
 
-    # Per-file builder pipeline (max 3 concurrent)
-    _semaphore = asyncio.Semaphore(3)
+    # Per-file builder pipeline (sequential for now — switch to 3+ for production)
+    _semaphore = asyncio.Semaphore(1)
 
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
         fp = file_entry["path"]
