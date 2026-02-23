@@ -2443,7 +2443,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: 'planner', level: 'info',
-                message: `⚡ Tier ${p.tier}: Building ${p.file_count || tierFiles.length} files in ${p.batch_count || 1} parallel agents`,
+                message: `⚡ Tier ${p.tier}: Building ${p.file_count || tierFiles.length} files in ${p.batch_count || 1} concurrent pipelines`,
                 worker: 'opus',
                 tier: {
                   index: p.tier as number,
@@ -2558,7 +2558,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 timestamp: new Date().toISOString(),
                 source: p.role || 'agent',
                 level: 'info',
-                message: `✔ Sub-agent [${p.role}] done — ${(p.files_written as string[])?.length || 0} files written`,
+                message: `✔ Sub-agent [${p.role}] done — ${(p.summary as string) || `${(p.files_written as string[])?.length || 0} files written`}`,
                 worker: 'opus',
               }]);
               break;

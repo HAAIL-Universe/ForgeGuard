@@ -1026,7 +1026,7 @@ async def run_sub_agent(
                                     "source": "opus" if handoff.role in (SubAgentRole.CODER, SubAgentRole.FIXER) else "sonnet",
                                     "role": handoff.role.value,
                                     "summary": f"{handoff.role.value.title()} wrote to scratchpad: {_sp_key}",
-                                    "content": str(_sp_val)[:2000],
+                                    "content": str(_sp_val)[:6000],
                                     "full_length": len(str(_sp_val)),
                                 },
                             )
@@ -1094,13 +1094,22 @@ async def run_sub_agent(
         + Decimal(usage.output_tokens) * output_rate
     )
 
-    # 8. Broadcast completion
+    # 8. Broadcast completion (role-specific summary for clearer UI)
+    _done_summary = f"{len(result.files_written)} files written"
+    if handoff.role == SubAgentRole.SCOUT:
+        _done_summary = "context gathered"
+    elif handoff.role == SubAgentRole.AUDITOR:
+        _verdict = (result.structured_output or {}).get("verdict", "unknown")
+        _done_summary = f"verdict: {_verdict}"
+    elif handoff.role == SubAgentRole.FIXER:
+        _done_summary = f"{len(result.files_written)} files patched"
     await _state._broadcast_build_event(
         handoff.user_id, handoff.build_id, "subagent_done", {
             "role": handoff.role.value,
             "handoff_id": handoff.handoff_id,
             "status": result.status.value,
             "files_written": result.files_written,
+            "summary": _done_summary,
             "duration_s": round(result.duration_seconds, 1),
             "tokens": result.input_tokens + result.output_tokens,
             "error": result.error[:200] if result.error else "",
@@ -1482,6 +1491,7 @@ async def _run_coder_single_shot(
             "handoff_id": handoff.handoff_id,
             "status": result.status.value,
             "files_written": result.files_written,
+            "summary": f"{len(result.files_written)} files written",
             "duration_s": round(result.duration_seconds, 1),
             "tokens": result.input_tokens + result.output_tokens,
             "mode": "single_shot",

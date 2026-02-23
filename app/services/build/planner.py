@@ -1560,7 +1560,7 @@ async def execute_tier(
     await _state._broadcast_build_event(user_id, build_id, "tier_start", {
         "tier": tier_index,
         "file_count": len(tier_files),
-        "batch_count": len(tier_files),  # one "batch" per file in new pipeline
+        "batch_count": min(len(tier_files), 3),  # capped by _semaphore concurrency
         "files": all_paths,
         "common_prefix": common_prefix,
         "agents": [
