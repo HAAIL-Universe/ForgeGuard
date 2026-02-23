@@ -1141,13 +1141,17 @@ def _trim_scout_output(data: dict) -> dict:
 
     Prevents Scout from returning bloated summaries that inflate the
     context of every downstream CODER and AUDITOR handoff.
+
+    Limits match the caps defined in the Scout system prompt.
     """
     _MAX_TREE = 500
-    _MAX_INTERFACES = 6
+    _MAX_INTERFACES = 10
     _MAX_INTERFACE_EXPORTS = 150
     _MAX_PATTERN_KEYS = 4
     _MAX_PATTERN_VALUE = 150
-    _MAX_IMPORTS = 6
+    _MAX_IMPORTS = 10
+    _MAX_DIRECTIVES = 10
+    _MAX_DIRECTIVE_LEN = 200
     _MAX_RECOMMENDATIONS = 400
 
     out: dict = {}
@@ -1172,6 +1176,9 @@ def _trim_scout_output(data: dict) -> dict:
     if "imports_map" in data:
         imap = data.get("imports_map") or {}
         out["imports_map"] = dict(list(imap.items())[:_MAX_IMPORTS])
+    if "directives" in data:
+        dirs = (data["directives"] or [])[:_MAX_DIRECTIVES]
+        out["directives"] = [str(d)[:_MAX_DIRECTIVE_LEN] for d in dirs]
     if "recommendations" in data:
         out["recommendations"] = str(data["recommendations"])[:_MAX_RECOMMENDATIONS]
     return out

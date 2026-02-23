@@ -6655,8 +6655,8 @@ async def _run_build_plan_execute(
                 ))
                 _seq_since_commit += 1
 
-                # Incremental commit every 3 sequential files
-                if _seq_since_commit >= 3:
+                # Incremental commit after every audited file (max safety)
+                if _seq_since_commit >= 1:
                     _seq_audits = pending_file_audits[_seq_audit_start:]
                     if _seq_audits:
                         _seq_raw = await asyncio.gather(
@@ -6696,7 +6696,7 @@ async def _run_build_plan_execute(
                             elif not any(bp == fpath for bp, _ in blocking_files):
                                 blocking_files.append((fpath, ffindings))
                     await _incremental_commit_push(
-                        f"batch {_incr_commit_count + 1}",
+                        file_path,
                         _seq_since_commit,
                     )
                     _seq_since_commit = 0
