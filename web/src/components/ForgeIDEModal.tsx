@@ -121,6 +121,29 @@ interface LogEntry {
   };
 }
 
+interface FindingEntry {
+  id: string;
+  timestamp: string;
+  type: 'file_audit' | 'integration_audit' | 'governance_check';
+  file?: string;
+  severity: 'error' | 'warning' | 'pass';
+  message: string;
+  check?: string;
+  relatedFile?: string;
+  phase?: string;
+  verdict?: string;
+}
+
+interface ScratchpadEntry {
+  id: string;
+  timestamp: string;
+  key: string;
+  role: string;
+  content: string;
+  fullLength: number;
+  worker: 'sonnet' | 'opus';
+}
+
 function classifyWorker(msg: string): 'sonnet' | 'opus' | 'system' {
   if (msg.includes('[Sonnet]')) return 'sonnet';
   if (msg.includes('[Opus]') || msg.includes('[Opus-2]')) return 'opus';
@@ -1192,8 +1215,10 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [totalTasks, setTotalTasks] = useState(0);
   const [completedTasks, setCompletedTasks] = useState(0);
   const [expandedDiff, setExpandedDiff] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'activity' | 'changes' | 'errors'>('activity');
+  const [activeTab, setActiveTab] = useState<'activity' | 'changes' | 'findings' | 'scratchpad' | 'errors'>('activity');
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([]);
+  const [findings, setFindings] = useState<FindingEntry[]>([]);
+  const [scratchpadEntries, setScratchpadEntries] = useState<ScratchpadEntry[]>([]);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKENS });
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
   const [leftTab, setLeftTab] = useState<'tasks' | 'chat'>('tasks');
@@ -1322,11 +1347,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   }, [_rawSystemLogs, logs, setupEndIndex, setupCollapsed]);
 
   const sonnetLogs = useMemo(
-    () => logs.filter(l => l.worker === 'sonnet'),
+    () => logs.filter(l => l.worker === 'sonnet' && !l.scratchpad),
     [logs],
   );
   const opusLogs = useMemo(
-    () => logs.filter(l => l.worker === 'opus'),
+    () => logs.filter(l => l.worker === 'opus' && !l.scratchpad),
     [logs],
   );
 
@@ -1975,6 +2000,17 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               setFileChecklist((prev) => prev.map((c) =>
                 c.file === p.path ? { ...c, status: p.verdict === 'PASS' ? 'passed' as const : 'failed' as const } : c
               ));
+              if (p.verdict === 'FAIL' || ((p.findings as string) || '').length > 0) {
+                setFindings((prev) => [...prev, {
+                  id: `fa-${Date.now()}-${prev.length}`,
+                  timestamp: new Date().toISOString(),
+                  type: 'file_audit',
+                  file: p.path as string,
+                  severity: p.verdict === 'FAIL' ? 'error' : 'warning',
+                  message: (p.findings as string) || `Audit ${p.verdict}`,
+                  verdict: p.verdict as string,
+                }]);
+              }
               break;
 
             case 'file_created':
@@ -2377,6 +2413,40 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               }]);
               break;
 
+            case 'governance_check': {
+              const govResult = p.result as string;
+              if (govResult !== 'PASS') {
+                setFindings((prev) => [...prev, {
+                  id: `gc-${Date.now()}-${prev.length}`,
+                  timestamp: new Date().toISOString(),
+                  type: 'governance_check',
+                  severity: govResult === 'FAIL' ? 'error' : 'warning',
+                  message: `[${p.code}] ${p.name}: ${p.detail}`,
+                  check: p.code as string,
+                  phase: p.phase as string,
+                  verdict: govResult,
+                }]);
+              }
+              break;
+            }
+
+            case 'integration_audit_result': {
+              const issues = (p.issues as any[]) || [];
+              for (const issue of issues) {
+                setFindings((prev) => [...prev, {
+                  id: `ia-${Date.now()}-${prev.length}`,
+                  timestamp: new Date().toISOString(),
+                  type: 'integration_audit',
+                  file: issue.file as string,
+                  severity: issue.severity === 'error' ? 'error' : 'warning',
+                  message: issue.message as string,
+                  check: issue.check as string,
+                  relatedFile: issue.related_file as string,
+                }]);
+              }
+              break;
+            }
+
             /* ---- Scratchpad writes (from any agent) ---- */
             case 'scratchpad_write': {
               const spWorker: 'sonnet' | 'opus' = p.source === 'sonnet' ? 'sonnet' : 'opus';
@@ -2393,6 +2463,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   fullLength: (p.full_length as number) || 0,
                   role: (p.role as string) || 'agent',
                 },
+              }]);
+              setScratchpadEntries((prev) => [...prev, {
+                id: `sp-${Date.now()}-${prev.length}`,
+                timestamp: new Date().toISOString(),
+                key: p.key as string,
+                role: (p.role as string) || 'agent',
+                content: (p.content as string) || '',
+                fullLength: (p.full_length as number) || 0,
+                worker: spWorker,
               }]);
               break;
             }
@@ -4011,7 +4090,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             >
               ⧉
             </button>
-            {(['activity', 'changes', 'errors'] as const).map((tab) => (
+            {(['activity', 'changes', 'findings', 'scratchpad', 'errors'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -4028,13 +4107,33 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   ? `Activity (${logs.length})`
                   : tab === 'changes'
                     ? `Changes (${fileDiffs.length})`
-                    : `Errors (${buildErrors.filter(e => !e.resolved).length})`}
+                    : tab === 'findings'
+                      ? `Findings (${findings.length})`
+                      : tab === 'scratchpad'
+                        ? `Scratchpad (${scratchpadEntries.length})`
+                        : `Errors (${buildErrors.filter(e => !e.resolved).length})`}
                 {/* Red badge for unresolved errors */}
                 {tab === 'errors' && buildErrors.filter(e => !e.resolved).length > 0 && activeTab !== 'errors' && (
                   <span className="forge-error-badge-pulse" style={{
                     position: 'absolute', top: '2px', right: '2px',
                     width: '7px', height: '7px', borderRadius: '50%',
                     background: '#EF4444',
+                  }} />
+                )}
+                {/* Red badge for findings with errors */}
+                {tab === 'findings' && findings.some(f => f.severity === 'error') && activeTab !== 'findings' && (
+                  <span className="forge-error-badge-pulse" style={{
+                    position: 'absolute', top: '2px', right: '2px',
+                    width: '7px', height: '7px', borderRadius: '50%',
+                    background: '#EF4444',
+                  }} />
+                )}
+                {/* Amber dot for new scratchpad entries */}
+                {tab === 'scratchpad' && scratchpadEntries.length > 0 && activeTab !== 'scratchpad' && (
+                  <span style={{
+                    position: 'absolute', top: '2px', right: '2px',
+                    width: '7px', height: '7px', borderRadius: '50%',
+                    background: '#F59E0B',
                   }} />
                 )}
               </button>
@@ -4728,6 +4827,177 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                           )}
                         </div>
                       )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* Findings tab */}
+          {activeTab === 'findings' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+              {findings.length === 0 ? (
+                <div style={{ color: '#475569', padding: '20px 0', fontSize: '0.8rem' }}>
+                  {status === 'running' ? 'Audit findings will appear here as files are checked...' : 'No findings recorded.'}
+                </div>
+              ) : (
+                findings.map((f) => {
+                  const isError = f.severity === 'error';
+                  const severityColor = isError ? '#EF4444' : '#F59E0B';
+                  const severityLabel = isError ? 'ERROR' : 'WARN';
+                  const typeLabel = f.type === 'file_audit' ? 'FILE AUDIT'
+                    : f.type === 'integration_audit' ? 'INTEGRATION'
+                    : 'GOVERNANCE';
+                  const ts = f.timestamp ? new Date(f.timestamp).toLocaleTimeString([], {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  }) : '';
+
+                  return (
+                    <div key={f.id} style={{
+                      marginBottom: '6px', background: '#0F172A',
+                      borderRadius: '6px', border: `1px solid ${isError ? '#7F1D1D' : '#78350F'}`,
+                      padding: '10px 14px',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                        <span style={{
+                          width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                          background: severityColor,
+                        }} />
+                        <span style={{
+                          fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                          borderRadius: '4px', background: severityColor + '22', color: severityColor,
+                          textTransform: 'uppercase',
+                        }}>
+                          {severityLabel}
+                        </span>
+                        <span style={{
+                          fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                          borderRadius: '4px', background: '#22D3EE22', color: '#22D3EE',
+                          textTransform: 'uppercase',
+                        }}>
+                          {typeLabel}
+                        </span>
+                        {f.check && (
+                          <span style={{ color: '#94A3B8', fontSize: '0.72rem', fontWeight: 600 }}>
+                            {f.check}
+                          </span>
+                        )}
+                        {f.file && (
+                          <span style={{
+                            color: '#60A5FA', fontSize: '0.72rem', fontFamily: '"Cascadia Code", monospace',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            maxWidth: '300px',
+                          }}>
+                            {f.file}
+                          </span>
+                        )}
+                        {f.relatedFile && (
+                          <>
+                            <span style={{ color: '#475569', fontSize: '0.65rem' }}>related:</span>
+                            <span style={{
+                              color: '#A78BFA', fontSize: '0.72rem', fontFamily: '"Cascadia Code", monospace',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              maxWidth: '200px',
+                            }}>
+                              {f.relatedFile}
+                            </span>
+                          </>
+                        )}
+                        <span style={{ flex: 1 }} />
+                        <span style={{ color: '#475569', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
+                          {ts}
+                        </span>
+                      </div>
+                      <div style={{
+                        color: '#CBD5E1', fontSize: '0.75rem', lineHeight: 1.5,
+                        fontFamily: '"Cascadia Code", monospace',
+                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      }}>
+                        {f.message}
+                      </div>
+                      {f.phase && (
+                        <div style={{ color: '#64748B', fontSize: '0.65rem', marginTop: '4px' }}>
+                          Phase: {f.phase}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* Scratchpad tab */}
+          {activeTab === 'scratchpad' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+              {scratchpadEntries.length === 0 ? (
+                <div style={{ color: '#475569', padding: '20px 0', fontSize: '0.8rem' }}>
+                  {status === 'running' ? 'Scratchpad entries will appear here as agents write notes...' : 'No scratchpad entries.'}
+                </div>
+              ) : (
+                scratchpadEntries.map((sp) => {
+                  const ts = sp.timestamp ? new Date(sp.timestamp).toLocaleTimeString([], {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  }) : '';
+                  const workerColor = sp.worker === 'opus' ? '#D946EF' : '#38BDF8';
+
+                  return (
+                    <div key={sp.id} style={{
+                      marginBottom: '6px', background: '#0F172A',
+                      borderRadius: '6px', border: '1px solid #78350F',
+                      overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                        padding: '8px 14px',
+                        background: '#F59E0B08',
+                        borderBottom: '1px solid #78350F44',
+                      }}>
+                        <span style={{
+                          width: '6px', height: '6px', borderRadius: '50%',
+                          background: '#F59E0B', flexShrink: 0,
+                        }} />
+                        <span style={{
+                          color: '#F59E0B', fontSize: '0.75rem', fontWeight: 700,
+                          fontFamily: '"Cascadia Code", monospace',
+                        }}>
+                          {sp.key}
+                        </span>
+                        <span style={{
+                          fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                          borderRadius: '4px', background: workerColor + '22', color: workerColor,
+                          textTransform: 'uppercase',
+                        }}>
+                          {sp.role}
+                        </span>
+                        <span style={{ flex: 1 }} />
+                        <span style={{ color: '#64748B', fontSize: '0.65rem' }}>
+                          {sp.fullLength} chars
+                        </span>
+                        <span style={{ color: '#475569', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
+                          {ts}
+                        </span>
+                      </div>
+                      <pre style={{
+                        margin: 0,
+                        padding: '10px 14px',
+                        color: '#CBD5E1',
+                        fontSize: '0.72rem',
+                        lineHeight: 1.5,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: '400px',
+                        overflowY: 'auto',
+                        fontFamily: '"Cascadia Code", "Fira Code", monospace',
+                      }}>
+                        <code>{sp.content}</code>
+                        {sp.fullLength > sp.content.length && (
+                          <div style={{ color: '#64748B', fontStyle: 'italic', marginTop: '4px' }}>
+                            ... truncated ({sp.fullLength - sp.content.length} more chars)
+                          </div>
+                        )}
+                      </pre>
                     </div>
                   );
                 })
