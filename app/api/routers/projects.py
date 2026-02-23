@@ -201,6 +201,11 @@ async def restart_project(
                 repo_deleted = await github_client.delete_github_repo(
                     access_token, repo_full_name,
                 )
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail=str(exc),
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=502,

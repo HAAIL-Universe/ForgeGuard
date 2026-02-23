@@ -483,6 +483,9 @@ function ProjectDetail() {
         addToast(data.message || 'Project restarted', 'success');
         // Reload the page to reflect new state
         window.location.reload();
+      } else if (res.status === 403) {
+        const data = await res.json().catch(() => ({ detail: '' }));
+        addToast(data.detail || 'GitHub token lacks permission. Log out and re-authenticate.');
       } else {
         const data = await res.json().catch(() => ({ detail: 'Failed to restart project' }));
         addToast(data.detail || 'Failed to restart project');

@@ -194,6 +194,12 @@ async def delete_github_repo(
         return True
     if response.status_code == 404:
         return False
+    if response.status_code == 403:
+        raise PermissionError(
+            "GitHub token lacks 'delete_repo' scope. "
+            "Re-authenticate with the delete_repo permission to enable this, "
+            "or delete the repo manually from GitHub."
+        )
     response.raise_for_status()
     return False
 

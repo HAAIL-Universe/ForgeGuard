@@ -44,7 +44,7 @@ async def github_oauth_redirect() -> dict:
     params = urlencode({
         "client_id": settings.GITHUB_CLIENT_ID,
         "redirect_uri": f"{settings.FRONTEND_URL}/auth/callback",
-        "scope": "read:user repo workflow",
+        "scope": "read:user repo workflow delete_repo",
         "state": state,
     })
 
