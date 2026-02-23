@@ -1539,6 +1539,7 @@ async def execute_tier(
     """
     from .subagent import build_context_pack, SubAgentResult
     from .verification import _is_test_file
+    from .integration_audit import run_integration_audit as _run_integ_audit
     from builder.builder_agent import run_builder, BuilderError  # noqa: E402
 
     # Compute common path prefix for display stripping
@@ -1634,6 +1635,22 @@ async def execute_tier(
             "common_prefix": common_prefix,
         })
 
+        # Integration check callback — runs between AUDITOR and FIXER per file
+        async def _per_file_integration_check(file_path_to_check: str) -> list:
+            """Cross-file validation for a single file against all written files."""
+            _file_abs = Path(working_dir) / file_path_to_check
+            if not _file_abs.exists():
+                return []
+            _content = _file_abs.read_text(encoding="utf-8")
+            _combined = {**all_files_written, **tier_written, file_path_to_check: _content}
+            return await _run_integ_audit(
+                working_dir=working_dir,
+                chunk_files={file_path_to_check: _content},
+                all_files=_combined,
+                build_id=build_id,
+                user_id=user_id,
+            )
+
         async with _semaphore:
             result = await run_builder(
                 file_entry=file_entry,
@@ -1647,6 +1664,7 @@ async def execute_tier(
                 audit_api_key=audit_api_key,
                 phase_plan_context="",
                 build_mode=build_mode,
+                integration_check=_per_file_integration_check,
             )
 
         if result.status == "completed" and result.content:

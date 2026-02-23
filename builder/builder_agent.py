@@ -5,7 +5,7 @@ Mirrors planner/planner_agent.py in structure and standalone usability.
 The orchestrator does NOT call the LLM directly — it coordinates a pipeline
 of specialist sub-agents for each file in the build plan:
 
-  SCOUT → CODER → AUDITOR → FIXER (if FAIL) → BuilderResult
+  SCOUT → CODER → AUDITOR → INTEGRATION → FIXER (if needed) → BuilderResult
 
 All agents use pull-first contract delivery: contracts are fetched on demand
 via forge tools. Only the universal builder_contract.md is injected into
@@ -175,12 +175,13 @@ async def run_builder(
     verbose: bool = True,
     turn_callback: "callable | None" = None,
     stop_event: "threading.Event | None" = None,
+    integration_check: "callable | None" = None,
 ) -> BuilderResult:
     """
     Run the Builder Agent pipeline for a single file.
 
-    Dispatches SCOUT → CODER → AUDITOR → FIXER (if needed) and returns
-    a BuilderResult containing the final file content and audit trail.
+    Dispatches SCOUT → CODER → AUDITOR → INTEGRATION → FIXER (if needed)
+    and returns a BuilderResult containing the final file content and audit trail.
 
     Args:
         file_entry:         Dict with keys: path, purpose, estimated_lines, language.
@@ -416,8 +417,42 @@ async def run_builder(
                 "tokens": auditor_result.input_tokens + auditor_result.output_tokens,
             })
 
-        # PASS → done
-        if audit_verdict != "FAIL":
+        # --- INTEGRATION CHECK (cross-file validation) ---
+        integration_findings = ""
+        if integration_check is not None:
+            if verbose:
+                print(f"[BUILDER]   INTEGRATION: cross-file check for {file_path}")
+            try:
+                _integ_issues = await integration_check(file_path)
+                _integ_errors = [i for i in _integ_issues if i.severity == "error"]
+                if _integ_errors:
+                    integration_findings = "Integration audit findings:\n" + "\n".join(
+                        f"  [{i.severity}] {i.message}"
+                        + (f" (related: {i.related_file})" if i.related_file else "")
+                        for i in _integ_errors
+                    )
+                    if verbose:
+                        print(f"[BUILDER]   INTEGRATION: {len(_integ_errors)} error(s) found")
+                elif verbose:
+                    print(f"[BUILDER]   INTEGRATION: passed")
+            except Exception as _integ_exc:
+                logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
+
+        if turn_callback is not None and integration_findings:
+            turn_callback({
+                "role": "integration",
+                "status": "failed",
+                "tokens": 0,
+            })
+
+        # Combine auditor + integration findings for FIXER
+        needs_fix = audit_verdict == "FAIL" or bool(integration_findings)
+        combined_findings = last_audit_findings
+        if integration_findings:
+            combined_findings = (combined_findings + "\n\n" + integration_findings).strip()
+
+        # PASS on both → done
+        if not needs_fix:
             break
 
         # FAIL + retries exhausted → give up
@@ -438,23 +473,28 @@ async def run_builder(
                 iterations=len(sub_agent_results),
             )
 
-        # --- FIXER ---
+        # --- FIXER (receives combined audit + integration findings) ---
         if verbose:
-            print(f"[BUILDER]   FIXER: applying fixes (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
+            _fix_sources = []
+            if audit_verdict == "FAIL":
+                _fix_sources.append("audit")
+            if integration_findings:
+                _fix_sources.append("integration")
+            print(f"[BUILDER]   FIXER: applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
 
         fixer_handoff = SubAgentHandoff(
             role=SubAgentRole.FIXER,
             build_id=_build_uuid,
             user_id=_user_uuid,
             assignment=(
-                f"Fix {file_path}: apply surgical edits to resolve the audit findings. "
+                f"Fix {file_path}: apply surgical edits to resolve the findings below. "
                 "Use edit_file only — do NOT rewrite the entire file with write_file."
             ),
             files=[file_path],
             context_files=auditor_context,
             contracts_text="",               # pull-first: Fixer uses forge_get_build_contracts
             phase_deliverables=deliverables_text,
-            error_context=last_audit_findings,
+            error_context=combined_findings,
             build_mode=build_mode,
         )
 

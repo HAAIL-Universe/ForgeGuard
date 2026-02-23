@@ -4830,7 +4830,10 @@ async def _run_build_plan_execute(
                             "source": "audit", "level": "info" if _fail_count == 0 else "warn",
                         })
 
-                    # ── Step 5.5: Integration audit (cross-file checks) ──
+                    # ── Step 5.5: Integration audit verification (re-check after all fixes) ──
+                    # Primary integration checks run per-file inside run_builder()
+                    # between AUDITOR and FIXER. This pass catches any remaining
+                    # cross-file issues after the chunk-level FIXER completes.
                     if chunk_written:
                         try:
                             from app.services.build.integration_audit import run_integration_audit
