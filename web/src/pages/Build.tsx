@@ -103,6 +103,11 @@ function Build() {
     (p) => p.build_mode === 'mini' && p.status === 'contracts_ready',
   );
 
+  // Find active full build with contracts ready
+  const activeFull = projects.find(
+    (p) => p.build_mode === 'full' && p.status === 'contracts_ready',
+  );
+
   // Card hover helpers
   const cardBase: React.CSSProperties = {
     background: '#1E293B',
@@ -219,43 +224,81 @@ function Build() {
           </button>
         </div>
 
-        {/* ── Full Build coming soon ───────────────────────────────── */}
+        {/* ── Full Build ──────────────────────────────────────────── */}
         <div
           style={{
-            background: '#1E293B',
+            background: 'linear-gradient(135deg, #1E293B 0%, #1a1f3a 100%)',
             borderRadius: '12px',
             padding: '24px',
             marginBottom: '32px',
-            border: '1px dashed #334155',
-            opacity: 0.75,
+            border: '1px solid #3B3F6B',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-            <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700 }}>
-              🔮 Full Build
-            </h2>
-            <span
-              style={{
-                background: '#334155',
-                color: '#94A3B8',
-                fontSize: '0.65rem',
-                fontWeight: 700,
-                padding: '3px 10px',
-                borderRadius: '10px',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}
-            >
-              Coming Soon
-            </span>
+          <div
+            style={{
+              display: 'inline-block',
+              background: '#7C3AED',
+              color: '#fff',
+              fontSize: '0.6rem',
+              fontWeight: 700,
+              padding: '3px 10px',
+              borderRadius: '10px',
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+              marginBottom: '8px',
+            }}
+          >
+            Deploy-Ready
           </div>
-          <p style={{ margin: 0, color: '#94A3B8', fontSize: '0.85rem', lineHeight: 1.5 }}>
-            The full build expands the questionnaire to 7 sections, generates
-            production-depth contracts, and works through 6-12 phases with
-            comprehensive test suites, governance audits, and a Forge Seal
-            certificate on completion. Everything the mini build does, but at
-            production scale.
+          <h2 style={{ margin: '0 0 8px', fontSize: '1.1rem', fontWeight: 700 }}>
+            🔮 Full Build
+          </h2>
+          <p style={{ margin: '0 0 12px', color: '#CBD5E1', fontSize: '0.85rem', lineHeight: 1.5 }}>
+            The full build runs a 7-section questionnaire, generates production-depth
+            contracts, and works through 6-12 phases with Docker, CI/CD, comprehensive
+            tests, governance audits, and a Forge Seal certificate on completion.
           </p>
+          <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-end' }}>
+            {[
+              { label: '~10 min', sublabel: 'Questionnaire' },
+              { label: '6-12 phases', sublabel: 'Production' },
+              { label: '~$5-15', sublabel: 'Token cost' },
+              { label: 'Docker-ready', sublabel: 'Output' },
+            ].map((stat) => (
+              <div key={stat.label}>
+                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#F8FAFC' }}>
+                  {stat.label}
+                </div>
+                <div style={{ fontSize: '0.7rem', color: '#64748B' }}>{stat.sublabel}</div>
+              </div>
+            ))}
+            {activeFull && (
+              <div style={{ marginLeft: 'auto' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ color: '#22C55E', fontSize: '1rem', lineHeight: 1 }}>✓</span>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#22C55E' }}>
+                    Contracts Generated
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => activeFull ? navigate(`/projects/${activeFull.id}`) : navigate('/projects')}
+            style={{
+              background: activeFull ? '#22C55E' : '#7C3AED',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '10px 20px',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              transition: 'background 0.2s',
+            }}
+          >
+            {activeFull ? 'Continue Full Build →' : 'Start a Full Build →'}
+          </button>
         </div>
 
         {/* ── How it works ─────────────────────────────────────────── */}
