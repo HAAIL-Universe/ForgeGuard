@@ -70,6 +70,30 @@ logger = logging.getLogger(__name__)
 MAX_FIX_RETRIES = 2
 
 # ---------------------------------------------------------------------------
+# ANSI colour tags for console readability
+# ---------------------------------------------------------------------------
+
+_C_RESET = "\033[0m"
+_C_BOLD = "\033[1m"
+_C_DIM = "\033[2m"
+
+# Role colours — chosen for contrast on dark terminals (PowerShell, cmd, etc.)
+_C_BUILDER = "\033[97m"       # bright white  — orchestrator-level messages
+_C_SCOUT = "\033[36m"         # cyan          — context mapping
+_C_CODER = "\033[32m"         # green         — code generation
+_C_AUDITOR = "\033[33m"       # yellow        — review/audit
+_C_FIXER = "\033[35m"         # magenta       — fix application
+_C_INTEG = "\033[34m"         # blue          — integration checks
+_C_TOKENS = "\033[90m"        # grey          — token/cost info
+
+_TAG_BUILDER = f"{_C_BOLD}{_C_BUILDER}[BUILDER]{_C_RESET}"
+_TAG_SCOUT = f"{_C_BOLD}{_C_SCOUT}[SCOUT]{_C_RESET}"
+_TAG_CODER = f"{_C_BOLD}{_C_CODER}[CODER]{_C_RESET}"
+_TAG_AUDITOR = f"{_C_BOLD}{_C_AUDITOR}[AUDITOR]{_C_RESET}"
+_TAG_FIXER = f"{_C_BOLD}{_C_FIXER}[FIXER]{_C_RESET}"
+_TAG_INTEG = f"{_C_BOLD}{_C_INTEG}[INTEG]{_C_RESET}"
+
+# ---------------------------------------------------------------------------
 # Trivial file detection — files that can be generated deterministically
 # ---------------------------------------------------------------------------
 
@@ -265,17 +289,17 @@ def _print_summary(result: BuilderResult) -> None:
     cache_create = u.get("cache_creation_tokens", 0)
     fresh = inp - cache_read - cache_create
 
-    print(f"\n[BUILDER] ════════════════════════════════════")
-    print(f"[BUILDER] FILE {'COMPLETE' if result.status == 'completed' else 'FAILED'}")
-    print(f"[BUILDER]   File:       {result.file_path}")
-    print(f"[BUILDER]   Status:     {result.status}")
+    _status_color = _C_CODER if result.status == "completed" else "\033[31m"  # green / red
+    print(f"\n{_TAG_BUILDER} ════════════════════════════════════")
+    print(f"{_TAG_BUILDER} FILE {_status_color}{_C_BOLD}{'COMPLETE' if result.status == 'completed' else 'FAILED'}{_C_RESET}")
+    print(f"{_TAG_BUILDER}   File:       {result.file_path}")
+    print(f"{_TAG_BUILDER}   Status:     {_status_color}{result.status}{_C_RESET}")
     if result.error:
-        print(f"[BUILDER]   Error:      {result.error}")
-    print(f"[BUILDER]   Iterations: {result.iterations}  (sub-agent calls)")
-    print(f"[BUILDER] TOKEN USAGE:")
-    print(f"[BUILDER]   Input:      {inp:>10,}  (fresh: {fresh:,} | cached: {cache_read:,} | cache-create: {cache_create:,})")
-    print(f"[BUILDER]   Output:     {out:>10,}")
-    print(f"[BUILDER] ════════════════════════════════════")
+        print(f"{_TAG_BUILDER}   Error:      \033[31m{result.error}{_C_RESET}")
+    print(f"{_TAG_BUILDER}   Iterations: {result.iterations}  (sub-agent calls)")
+    print(f"{_C_TOKENS}[TOKENS]   Input:      {inp:>10,}  (fresh: {fresh:,} | cached: {cache_read:,} | cache-create: {cache_create:,}){_C_RESET}")
+    print(f"{_C_TOKENS}[TOKENS]   Output:     {out:>10,}{_C_RESET}")
+    print(f"{_TAG_BUILDER} ════════════════════════════════════")
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +325,8 @@ async def run_builder(
     lessons_learned: str = "",
     phase_index: int = -1,
     tier_scout_context: dict | None = None,
+    project_id: str = "",
+    context_files: dict[str, str] | None = None,
 ) -> BuilderResult:
     """
     Run the Builder Agent pipeline for a single file.
@@ -336,13 +362,20 @@ async def run_builder(
     except ValueError as e:
         raise BuilderError(f"Invalid build_id or user_id UUID: {e}") from e
 
+    _project_uuid: UUID | None = None
+    if project_id:
+        try:
+            _project_uuid = UUID(project_id)
+        except ValueError:
+            pass  # non-UUID project_id — tools will get empty string
+
     # Shared state across the pipeline
     total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     sub_agent_results: list[SubAgentResult] = []
     deliverables_text = _phase_deliverables_text(phase_deliverables)
 
     if verbose:
-        print(f"\n[BUILDER] ── Building: {file_path} ──")
+        print(f"\n{_TAG_BUILDER} ── Building: {_C_BOLD}{file_path}{_C_RESET} ──")
 
     # ────────────────────────────────────────────────────────────────────────
     # (0) PRE-CHECK STOP SIGNAL
@@ -357,7 +390,7 @@ async def run_builder(
     # ────────────────────────────────────────────────────────────────────────
     if _is_trivial_file(file_path, file_purpose):
         if verbose:
-            print(f"[BUILDER]   TRIVIAL: {file_path} — deterministic generation (0 tokens)")
+            print(f"{_TAG_BUILDER} {_C_DIM}TRIVIAL: {file_path} — deterministic generation (0 tokens){_C_RESET}")
         file_abs = working_dir / file_path
         file_abs.parent.mkdir(parents=True, exist_ok=True)
         file_abs.write_text("", encoding="utf-8")
@@ -393,7 +426,7 @@ async def run_builder(
             # Tier-level deterministic scout — synthesize per-file result (0 tokens)
             scout_result = _synthesize_file_scout(tier_scout_context, file_entry)
             if verbose:
-                print(f"[BUILDER]   [1/3+] SCOUT: TIER-SCOUT (deterministic, 0 tokens) for {file_path}")
+                print(f"{_TAG_SCOUT}   [1/3+] TIER-SCOUT (deterministic, 0 tokens) for {file_path}")
             if turn_callback is not None:
                 turn_callback({"role": "scout", "status": "tier-scout", "tokens": 0})
         else:
@@ -404,12 +437,12 @@ async def run_builder(
                     _reason = "config/static file"
                 else:
                     _reason = "init-with-exports"
-                print(f"[BUILDER]   [1/3+] SCOUT: SKIPPED ({_reason}) for {file_path}")
+                print(f"{_TAG_SCOUT}   [1/3+] SKIPPED ({_reason}) for {file_path}")
             if turn_callback is not None:
                 turn_callback({"role": "scout", "status": "skipped", "tokens": 0})
     else:
         if verbose:
-            print(f"[BUILDER]   [1/3+] SCOUT: mapping context for {file_path}")
+            print(f"{_TAG_SCOUT}   [1/3+] Mapping context for {file_path}")
 
         scout_context: dict[str, str] = {}
         if lessons_learned:
@@ -424,6 +457,7 @@ async def run_builder(
                 f"Purpose: {file_entry.get('purpose', 'unknown')}. "
                 "Read the project structure and identify patterns relevant to writing this file."
             ),
+            project_id=_project_uuid,
             files=[file_path],
             context_files=scout_context,
             contracts_text="",
@@ -442,7 +476,7 @@ async def run_builder(
 
         if verbose:
             status_str = scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status)
-            print(f"[BUILDER]   SCOUT done: {status_str} ({scout_result.input_tokens + scout_result.output_tokens} tokens)")
+            print(f"{_TAG_SCOUT}   Done: {status_str} {_C_TOKENS}({scout_result.input_tokens + scout_result.output_tokens} tokens){_C_RESET}")
 
         if turn_callback is not None:
             turn_callback({
@@ -469,16 +503,21 @@ async def run_builder(
     # (3) CODER — generate the file (single-shot mode)
     # ────────────────────────────────────────────────────────────────────────
     if verbose:
-        print(f"[BUILDER]   [2/3+] CODER: generating {file_path}")
+        print(f"{_TAG_CODER}   [2/3+] Generating {file_path}")
 
-    # Merge scout's structured output + provided context into coder's context_files
+    # Merge scout's structured output + provided context into coder's context_files.
+    # Labeled context_files dict preserves contract names (contract_stack.md etc.)
+    # so agents can identify pre-loaded contracts and skip redundant tool fetches.
     coder_context: dict[str, str] = {}
     if scout_result is not None and scout_result.structured_output:
         coder_context["scout_analysis.json"] = json.dumps(
             scout_result.structured_output, indent=2
         )
-    for i, ctx_content in enumerate(context):
-        coder_context[f"context_{i + 1}.txt"] = ctx_content
+    if context_files:
+        coder_context.update(context_files)
+    elif context:
+        for i, ctx_content in enumerate(context):
+            coder_context[f"context_{i + 1}.txt"] = ctx_content
     if lessons_learned:
         coder_context["lessons_learned.md"] = lessons_learned
 
@@ -491,6 +530,7 @@ async def run_builder(
             f"Estimated lines: {file_entry.get('estimated_lines', 'unknown')}. "
             f"Language: {file_entry.get('language', 'unknown')}."
         ),
+        project_id=_project_uuid,
         files=[file_path],
         context_files=coder_context,
         contracts_text="",               # pull-first: Coder fetches via tools
@@ -510,7 +550,7 @@ async def run_builder(
     if verbose:
         status_str = coder_result.status.value if hasattr(coder_result.status, "value") else str(coder_result.status)
         files_written = coder_result.files_written
-        print(f"[BUILDER]   CODER done: {status_str} (wrote {files_written}, {coder_result.input_tokens + coder_result.output_tokens} tokens)")
+        print(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
 
     if turn_callback is not None:
         turn_callback({
@@ -527,7 +567,7 @@ async def run_builder(
     if coder_result.status == HandoffStatus.FAILED:
         if Path(file_path).name == "__init__.py":
             if verbose:
-                print(f"[BUILDER]   CODER returned empty/failed for {file_path} — fallback to empty __init__.py")
+                print(f"{_TAG_CODER}   {_C_DIM}Empty/failed for {file_path} — fallback to empty __init__.py{_C_RESET}")
             file_abs = working_dir / file_path
             file_abs.parent.mkdir(parents=True, exist_ok=True)
             file_abs.write_text("", encoding="utf-8")
@@ -581,7 +621,7 @@ async def run_builder(
             else "init-with-exports"
         )
         if verbose:
-            print(f"[BUILDER]   AUDITOR: auto-pass ({_reason}) for {file_path}")
+            print(f"{_TAG_AUDITOR}   Auto-pass ({_reason}) for {file_path}")
         last_audit_findings = f"auto-pass ({_reason})"
         if turn_callback is not None:
             turn_callback({"role": "auditor", "status": "auto-pass", "verdict": "PASS", "tokens": 0})
@@ -609,16 +649,24 @@ async def run_builder(
                 except Exception as e:
                     logger.warning("Could not read %s for auditor: %s", file_abs, e)
 
+            # Pre-load contracts into auditor context to eliminate redundant
+            # MCP/HTTP tool fetches (which 404 — see contract_fetching plan).
+            if context_files:
+                for k, v in context_files.items():
+                    if k.startswith("contract_") and k not in auditor_context:
+                        auditor_context[k] = v
+
             # --- AUDITOR ---
             if verbose:
                 label = f"[{fix_attempt + 3}/3+]" if fix_attempt == 0 else f"[re-audit {fix_attempt}]"
-                print(f"[BUILDER]   {label} AUDITOR: reviewing {file_path}")
+                print(f"{_TAG_AUDITOR}   {label} Reviewing {file_path}")
 
             auditor_handoff = SubAgentHandoff(
                 role=SubAgentRole.AUDITOR,
                 build_id=_build_uuid,
                 user_id=_user_uuid,
                 assignment=f"Audit {file_path} for structural issues and contract compliance.",
+                project_id=_project_uuid,
                 files=[file_path],
                 context_files=auditor_context,
                 contracts_text="",
@@ -663,7 +711,8 @@ async def run_builder(
             if verbose:
                 _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
                 status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
-                print(f"[BUILDER]   AUDITOR done: verdict={audit_verdict}{_skip_tag} ({auditor_result.input_tokens + auditor_result.output_tokens} tokens)")
+                _v_color = _C_CODER if audit_verdict == "PASS" else "\033[31m"
+                print(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
 
             if turn_callback is not None:
                 turn_callback({
@@ -678,7 +727,7 @@ async def run_builder(
             _integ_error_count = 0
             if integration_check is not None:
                 if verbose:
-                    print(f"[BUILDER]   INTEGRATION: cross-file check for {file_path}")
+                    print(f"{_TAG_INTEG}   Cross-file check for {file_path}")
                 try:
                     _integ_issues = await integration_check(file_path)
                     _integ_errors = [i for i in _integ_issues if i.severity == "error"]
@@ -690,9 +739,9 @@ async def run_builder(
                             for i in _integ_errors
                         )
                         if verbose:
-                            print(f"[BUILDER]   INTEGRATION: {_integ_error_count} error(s) found")
+                            print(f"{_TAG_INTEG}   \033[31m{_integ_error_count} error(s) found{_C_RESET}")
                     elif verbose:
-                        print(f"[BUILDER]   INTEGRATION: passed")
+                        print(f"{_TAG_INTEG}   {_C_CODER}Passed{_C_RESET}")
                 except Exception as _integ_exc:
                     logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
 
@@ -718,7 +767,7 @@ async def run_builder(
             # FAIL + retries exhausted -> give up
             if fix_attempt >= MAX_FIX_RETRIES:
                 if verbose:
-                    print(f"[BUILDER]   Max fix retries ({MAX_FIX_RETRIES}) reached for {file_path}")
+                    print(f"{_TAG_FIXER}   \033[31mMax fix retries ({MAX_FIX_RETRIES}) reached for {file_path}{_C_RESET}")
                 break
 
             # Check stop signal before dispatching fixer
@@ -743,7 +792,7 @@ async def run_builder(
                     _fix_sources.append("audit")
                 if integration_findings:
                     _fix_sources.append("integration")
-                print(f"[BUILDER]   FIXER: applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
+                print(f"{_TAG_FIXER}   Applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
 
             fixer_handoff = SubAgentHandoff(
                 role=SubAgentRole.FIXER,
@@ -753,6 +802,7 @@ async def run_builder(
                     f"Fix {file_path}: apply surgical edits to resolve the findings below. "
                     "Use edit_file only — do NOT rewrite the entire file with write_file."
                 ),
+                project_id=_project_uuid,
                 files=[file_path],
                 context_files=auditor_context,
                 contracts_text="",
@@ -772,7 +822,7 @@ async def run_builder(
 
             if verbose:
                 status_str = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
-                print(f"[BUILDER]   FIXER done: {status_str} ({fixer_result.input_tokens + fixer_result.output_tokens} tokens)")
+                print(f"{_TAG_FIXER}   Done: {status_str} {_C_TOKENS}({fixer_result.input_tokens + fixer_result.output_tokens} tokens){_C_RESET}")
 
             if turn_callback is not None:
                 turn_callback({
