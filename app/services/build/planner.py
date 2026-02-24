@@ -20,6 +20,8 @@ from ._state import (
 )
 from .cost import _accumulate_cost, _get_token_rates
 
+from app.config import get_model_for_role as _get_model_for_role
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -341,7 +343,7 @@ async def _run_recovery_planner(
 
     result = await llm_chat(
         api_key=api_key,
-        model=_state.settings.LLM_PLANNER_MODEL,
+        model=_get_model_for_role("planner"),
         system_prompt=system_prompt,
         messages=[{"role": "user", "content": user_message}],
         max_tokens=4096,
@@ -362,7 +364,7 @@ async def _run_recovery_planner(
 
     input_t = planner_usage.get("input_tokens", 0)
     output_t = planner_usage.get("output_tokens", 0)
-    model = _state.settings.LLM_PLANNER_MODEL
+    model = _get_model_for_role("planner")
     input_rate, output_rate = _get_token_rates(model)
     cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
     await _state.build_repo.record_build_cost(
@@ -817,7 +819,7 @@ Rules:
     try:
         result = await llm_chat(
             api_key=api_key,
-            model=_state.settings.LLM_PLANNER_MODEL,
+            model=_get_model_for_role("planner"),
             system_prompt=_imap_sys,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2048,
@@ -831,7 +833,7 @@ Rules:
         # Record cost
         input_t = usage.get("input_tokens", 0)
         output_t = usage.get("output_tokens", 0)
-        model = _state.settings.LLM_PLANNER_MODEL
+        model = _get_model_for_role("planner")
         input_rate, output_rate = _get_token_rates(model)
         cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
         await _state.build_repo.record_build_cost(
@@ -997,7 +999,7 @@ async def _review_written_files(
     try:
         result = await llm_chat(
             api_key=api_key,
-            model=_state.settings.LLM_PLANNER_MODEL,
+            model=_get_model_for_role("planner"),
             system_prompt=_REVIEW_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
@@ -1011,7 +1013,7 @@ async def _review_written_files(
         # Record cost
         input_t = usage.get("input_tokens", 0)
         output_t = usage.get("output_tokens", 0)
-        model = _state.settings.LLM_PLANNER_MODEL
+        model = _get_model_for_role("planner")
         input_rate, output_rate = _get_token_rates(model)
         cost = Decimal(input_t) * input_rate + Decimal(output_t) * output_rate
         await _state.build_repo.record_build_cost(
@@ -1404,7 +1406,7 @@ async def _generate_fix_manifest(
     try:
         result = await llm_chat(
             api_key=api_key,
-            model=_state.settings.LLM_PLANNER_MODEL,
+            model=_get_model_for_role("planner"),
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             max_tokens=4096,
@@ -1418,7 +1420,7 @@ async def _generate_fix_manifest(
         _fm_usage = result.get("usage", {}) if isinstance(result, dict) else {}
         _fm_in = _fm_usage.get("input_tokens", 0)
         _fm_out = _fm_usage.get("output_tokens", 0)
-        _fm_model = _state.settings.LLM_PLANNER_MODEL
+        _fm_model = _get_model_for_role("planner")
         if _fm_in or _fm_out:
             _fm_rate_in, _fm_rate_out = _get_token_rates(_fm_model)
             _fm_cost = Decimal(_fm_in) * _fm_rate_in + Decimal(_fm_out) * _fm_rate_out
