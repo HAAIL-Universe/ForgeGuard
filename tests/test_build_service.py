@@ -319,6 +319,112 @@ async def test_get_build_status_no_builds(mock_build_repo, mock_project_repo):
         await build_service.get_build_status(_PROJECT_ID, _USER_ID)
 
 
+@pytest.mark.asyncio
+@patch("app.repos.project_repo.get_cached_plan", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_status_cancelled_with_progress_is_resumable(
+    mock_build_repo, mock_project_repo, mock_get_cached_plan
+):
+    """A cancelled build with completed_phases >= 0 is resumable."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="cancelled", completed_phases=2)
+    )
+    mock_get_cached_plan.return_value = {"phases": [{"number": 0}, {"number": 1}]}
+
+    result = await build_service.get_build_status(_PROJECT_ID, _USER_ID)
+
+    assert result["status"] == "cancelled"
+    assert result.get("resumable") is True
+    assert result.get("has_progress") is True
+
+
+@pytest.mark.asyncio
+@patch("app.repos.project_repo.get_cached_plan", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_status_cancelled_no_progress_with_plan_is_resumable(
+    mock_build_repo, mock_project_repo, mock_get_cached_plan
+):
+    """A cancelled build with no completed phases but a saved plan is resumable.
+
+    This is the crash-recovery scenario: planner finished, server crashed before
+    any phase completed. The user should be able to /start from the IDE.
+    """
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="cancelled", completed_phases=-1)
+    )
+    mock_get_cached_plan.return_value = {"phases": [{"number": 0}, {"number": 1}]}
+
+    result = await build_service.get_build_status(_PROJECT_ID, _USER_ID)
+
+    assert result["status"] == "cancelled"
+    assert result.get("resumable") is True
+    assert result.get("has_progress") is not True  # no phase progress
+
+
+@pytest.mark.asyncio
+@patch("app.repos.project_repo.get_cached_plan", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_status_cancelled_no_progress_no_plan_not_resumable(
+    mock_build_repo, mock_project_repo, mock_get_cached_plan
+):
+    """A cancelled build with no progress AND no saved plan is not resumable."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="cancelled", completed_phases=-1)
+    )
+    mock_get_cached_plan.return_value = None
+
+    result = await build_service.get_build_status(_PROJECT_ID, _USER_ID)
+
+    assert result["status"] == "cancelled"
+    assert "resumable" not in result
+
+
+@pytest.mark.asyncio
+@patch("app.repos.project_repo.get_cached_plan", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_status_failed_with_plan_is_resumable(
+    mock_build_repo, mock_project_repo, mock_get_cached_plan
+):
+    """A failed build with a saved plan is resumable."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="failed", completed_phases=-1)
+    )
+    mock_get_cached_plan.return_value = {"phases": [{"number": 0}]}
+
+    result = await build_service.get_build_status(_PROJECT_ID, _USER_ID)
+
+    assert result["status"] == "failed"
+    assert result.get("resumable") is True
+
+
+@pytest.mark.asyncio
+@patch("app.repos.project_repo.get_cached_plan", new_callable=AsyncMock)
+@patch("app.services.build_service.project_repo")
+@patch("app.services.build_service.build_repo")
+async def test_get_build_status_completed_is_not_resumable(
+    mock_build_repo, mock_project_repo, mock_get_cached_plan
+):
+    """A completed build is never resumable, even with a plan."""
+    mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+    mock_build_repo.get_latest_build_for_project = AsyncMock(
+        return_value=_build(status="completed", completed_phases=5)
+    )
+    mock_get_cached_plan.return_value = {"phases": [{"number": 0}]}
+
+    result = await build_service.get_build_status(_PROJECT_ID, _USER_ID)
+
+    assert result["status"] == "completed"
+    assert "resumable" not in result
+
+
 # ---------------------------------------------------------------------------
 # Tests: get_build_logs
 # ---------------------------------------------------------------------------

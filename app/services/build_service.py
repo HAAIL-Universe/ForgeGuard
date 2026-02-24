@@ -2964,18 +2964,25 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
         _cached2 = await _gcp2(project_id)
         if _cached2:
             result["cached_plan_phases"] = _cached2.get("phases", [])
-    # For terminal builds (cancelled/failed/completed) with real progress,
-    # include the cached plan phases so the IDE can display the plan, show
-    # completed phases, and offer /start to resume.
+    # For terminal builds (cancelled/failed/completed), include the cached
+    # plan phases so the IDE can display the plan, show completed phases,
+    # and offer /start to resume.
     if latest["status"] in ("cancelled", "failed", "completed"):
         _cp = latest.get("completed_phases")
         if _cp is not None and _cp >= 0:
             result["has_progress"] = True
-            result["resumable"] = latest["status"] != "completed"
         from app.repos.project_repo import get_cached_plan as _gcp_term
         _cached_term = await _gcp_term(project_id)
         if _cached_term:
             result["cached_plan_phases"] = _cached_term.get("phases", [])
+        # A cancelled/failed build is resumable if it has phase progress OR
+        # a saved plan exists (e.g. planner finished but build was interrupted
+        # before any phase completed — common after server crash/restart).
+        if latest["status"] != "completed":
+            has_progress = _cp is not None and _cp >= 0
+            has_plan = bool(_cached_term and _cached_term.get("phases"))
+            if has_progress or has_plan:
+                result["resumable"] = True
 
     # --- Persisted gate state (survives server restarts) ---
     # If the build has a pending_gate persisted in DB, include it so the
