@@ -89,9 +89,13 @@ class TestRunBuilderReturnsBuildResult:
         auditor_r = _make_sub_agent_result("auditor", verdict="PASS",
                                             input_tokens=80, output_tokens=40)
 
-        # Write a placeholder file so the auditor context read succeeds
+        # Write a placeholder file so the auditor context read succeeds.
+        # Must be > 50 chars stripped to avoid _audit_auto_pass.
         (tmp_path / "app").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "app" / "main.py").write_text("# generated\n", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n",
+            encoding="utf-8",
+        )
 
         call_sequence = [scout_r, coder_r, auditor_r]
         call_idx = 0
@@ -128,7 +132,7 @@ class TestRunBuilderReturnsBuildResult:
         from builder.builder_agent import run_builder
 
         (tmp_path / "app").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "app" / "main.py").write_text("# content\n", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n", encoding="utf-8")
 
         dispatch_order: list[str] = []
 
@@ -314,7 +318,7 @@ class TestAuditorFailTriggersFixer:
         from builder.builder_agent import run_builder
 
         (tmp_path / "app").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "app" / "main.py").write_text("# content\n", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n", encoding="utf-8")
 
         dispatch_order: list[str] = []
         auditor_call_count = 0
@@ -357,7 +361,10 @@ class TestAuditorFailTriggersFixer:
         from builder.builder_agent import MAX_FIX_RETRIES, run_builder
 
         (tmp_path / "app").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "app" / "main.py").write_text("# broken\n", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n",
+            encoding="utf-8",
+        )
 
         async def mock_run_sub_agent(handoff, working_dir, api_key, **kwargs):
             role = handoff.role.value
@@ -394,7 +401,7 @@ class TestTokenAccounting:
         from builder.builder_agent import run_builder
 
         (tmp_path / "app").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "app" / "main.py").write_text("# content\n", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n", encoding="utf-8")
 
         sub_agent_tokens = {
             "scout":   (100, 50),
@@ -432,7 +439,7 @@ class TestTokenAccounting:
         from builder.builder_agent import run_builder
 
         (tmp_path / "app").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "app" / "main.py").write_text("# content\n", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n", encoding="utf-8")
 
         auditor_call_count = 0
 

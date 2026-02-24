@@ -45,6 +45,44 @@ from . import _state
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Module-level builder contract loading — loaded once, stripped per role
+# ---------------------------------------------------------------------------
+
+_bc_path = _state.FORGE_CONTRACTS_DIR / "builder_contract.md"
+_BUILDER_CONTRACT_FULL = _bc_path.read_text(encoding="utf-8") if _bc_path.exists() else ""
+
+# Core: strip §10 AEM (planner-only logic, ~4K tokens / 37% of contract)
+_BUILDER_CONTRACT_CORE = _re.sub(
+    r'## 10\) Autonomous Execution Mode \(AEM\).*?(?=## 11\))',
+    '', _BUILDER_CONTRACT_FULL, flags=_re.DOTALL,
+)
+
+# Scout: also strip §1 (contract read gate) + §9 (verification hierarchy)
+_BUILDER_CONTRACT_SCOUT = _re.sub(
+    r'## 9\) Verification hierarchy.*?(?=## 1[0-9]\))',
+    '', _BUILDER_CONTRACT_CORE, flags=_re.DOTALL,
+)
+_BUILDER_CONTRACT_SCOUT = _re.sub(
+    r'## 1\) Contract read gate.*?(?=## 2\))',
+    '', _BUILDER_CONTRACT_SCOUT, flags=_re.DOTALL,
+)
+
+# Fixer: also strip §9 (verification hierarchy)
+_BUILDER_CONTRACT_FIXER = _re.sub(
+    r'## 9\) Verification hierarchy.*?(?=## 1[0-9]\))',
+    '', _BUILDER_CONTRACT_CORE, flags=_re.DOTALL,
+)
+
+
+def _contract_for_role(role: "SubAgentRole") -> str:
+    """Return the role-appropriate builder contract text."""
+    if role.value == "scout":
+        return _BUILDER_CONTRACT_SCOUT
+    if role.value == "fixer":
+        return _BUILDER_CONTRACT_FIXER
+    return _BUILDER_CONTRACT_CORE  # Coder + Auditor
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -864,13 +902,13 @@ async def run_sub_agent(
     role_tools = tools_for_role(handoff.role, BUILDER_TOOLS)
     allowed_names = tool_names_for_role(handoff.role)
 
-    # 3. Build system prompt — inject only the universal builder_contract
-    #    so it benefits from Anthropic prompt caching (same for all projects).
-    #    Project-specific contracts are pulled on demand via forge tools.
+    # 3. Build system prompt — inject role-specific builder contract slice.
+    #    §10 AEM stripped for all sub-agents; Scout/Fixer also lose §9/§1.
+    #    Loaded once at module level for Anthropic prompt caching benefit.
     sys_prompt = system_prompt_for_role(handoff.role, build_mode=handoff.build_mode)
-    _bc_path = _state.FORGE_CONTRACTS_DIR / "builder_contract.md"
-    if _bc_path.exists():
-        sys_prompt += f"\n\n## builder_contract (governance)\n{_bc_path.read_text(encoding='utf-8')}"
+    _contract_text = _contract_for_role(handoff.role)
+    if _contract_text:
+        sys_prompt += f"\n\n## builder_contract (governance)\n{_contract_text}"
 
     # 4. Build user message
     parts: list[str] = []

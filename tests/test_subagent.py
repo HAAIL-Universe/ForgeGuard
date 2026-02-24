@@ -757,9 +757,9 @@ class TestRunSubAgent:
             user_id=USER_ID,
             assignment="Map project",
         )
-        output = 'Analysis complete.\n```json\n{"directory_tree": "app/", "key_interfaces": ["Config"]}\n```'
+        output = 'Analysis complete.\n```json\n{"directory_tree": "app/", "key_interfaces": [{"file": "config.py", "exports": "Config"}]}\n```'
         result = await self._run_with_stream(h, [output])
-        assert result.structured_output.get("key_interfaces") == ["Config"]
+        assert result.structured_output.get("key_interfaces") == [{"file": "config.py", "exports": "Config"}]
 
     @pytest.mark.asyncio
     async def test_stream_error_marks_failed(self):
