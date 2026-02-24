@@ -1140,6 +1140,7 @@ async def run_sub_agent(
 
     # 9. Broadcast completion (role-specific summary for clearer UI)
     _done_summary = f"{len(result.files_written)} files written"
+    _verdict: str | None = None
     if handoff.role == SubAgentRole.SCOUT:
         _done_summary = "context gathered"
     elif handoff.role == SubAgentRole.AUDITOR:
@@ -1152,8 +1153,10 @@ async def run_sub_agent(
             "role": handoff.role.value,
             "handoff_id": handoff.handoff_id,
             "status": result.status.value,
+            "files": handoff.files,              # target files from handoff
             "files_written": result.files_written,
             "summary": _done_summary,
+            "verdict": _verdict,                 # PASS/FAIL/unknown for auditor, None for others
             "duration_s": round(result.duration_seconds, 1),
             "tokens": result.input_tokens + result.output_tokens,
             "error": result.error[:200] if result.error else "",

@@ -2896,6 +2896,22 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 message: `✔ Sub-agent [${p.role}] done — ${(p.summary as string) || `${(p.files_written as string[])?.length || 0} files written`}`,
                 worker: doneWorker,
               }]);
+
+              // Live-update phase file status from sub-agent completions
+              const targetFiles = (p.files as string[]) || [];
+              if (p.role === 'coder' && targetFiles.length > 0) {
+                // Coder done → file is written
+                for (const fp of targetFiles) {
+                  updatePhaseFileStatus(fp, { status: 'written' });
+                }
+              } else if (p.role === 'auditor' && targetFiles.length > 0) {
+                // Auditor done → file passed or failed
+                const verdict = p.verdict as string;
+                const auditStatus = verdict === 'FAIL' ? 'failed' : verdict === 'PASS' ? 'passed' : 'written';
+                for (const fp of targetFiles) {
+                  updatePhaseFileStatus(fp, { status: auditStatus as 'passed' | 'failed' | 'written' });
+                }
+              }
               break;
             }
           }
