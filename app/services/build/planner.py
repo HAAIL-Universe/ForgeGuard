@@ -1716,6 +1716,18 @@ async def execute_tier(
         # Pull-first: agents fetch remaining contracts via tools as needed
         _contracts_list: list[str] = []
 
+        # --- Context assembly metric ---
+        _ctx_keys = list(context_files.keys())
+        _contract_keys = [k for k in _ctx_keys if k.startswith("contract_")]
+        _ctx_total_chars = sum(len(v) for v in context_files.values())
+        logger.debug(
+            "METRIC | type=context_assembly | file=%s | "
+            "context_files=%d | context_chars=%d | contracts=%s | deps=%d",
+            fp, len(_ctx_keys), _ctx_total_chars,
+            "+".join(_contract_keys) if _contract_keys else "none",
+            len(file_entry.get("depends_on", [])),
+        )
+
         # Broadcast file_generating
         _agent_id = f"builder-{file_idx}"
         await _state._broadcast_build_event(user_id, build_id, "file_generating", {
