@@ -1236,6 +1236,19 @@ async def run_sub_agent(
     user_message = "\n".join(parts)
     messages: list[dict] = [{"role": "user", "content": user_message}]
 
+    # --- Context load metric ---
+    _ctx_keys = list(handoff.context_files.keys()) if handoff.context_files else []
+    _contract_keys = [k for k in _ctx_keys if k.startswith("contract_")]
+    _ctx_total_chars = sum(len(v) for v in handoff.context_files.values()) if handoff.context_files else 0
+    logger.debug(
+        "METRIC | type=context_load | role=%s | file=%s | "
+        "context_files=%d | contract_files=%d | contracts=%s | total_chars=%d",
+        handoff.role.value, (handoff.files[0] if handoff.files else "?"),
+        len(_ctx_keys), len(_contract_keys),
+        "+".join(_contract_keys) if _contract_keys else "none",
+        _ctx_total_chars,
+    )
+
     # 5. Broadcast start
     await _state._broadcast_build_event(
         handoff.user_id, handoff.build_id, "subagent_start", {
@@ -1322,6 +1335,13 @@ async def run_sub_agent(
                 )
 
             tool_calls_this_round: list[dict] = []
+
+            # Snapshot token counts before this round for per-round delta
+            _round_t0 = time.monotonic()
+            _pre_in = usage.input_tokens
+            _pre_out = usage.output_tokens
+            _pre_cache_read = usage.cache_read_input_tokens
+            _pre_cache_create = usage.cache_creation_input_tokens
 
             async for event in stream_agent(
                 api_key=api_key,
@@ -1475,6 +1495,26 @@ async def run_sub_agent(
             messages.append({"role": "user", "content": tool_result_blocks})
 
             tool_rounds += 1
+
+            # --- Per-round token metric ---
+            _round_elapsed = time.monotonic() - _round_t0
+            _delta_in = usage.input_tokens - _pre_in
+            _delta_out = usage.output_tokens - _pre_out
+            _delta_cache_read = usage.cache_read_input_tokens - _pre_cache_read
+            _delta_cache_create = usage.cache_creation_input_tokens - _pre_cache_create
+            _delta_fresh = _delta_in - _delta_cache_read - _delta_cache_create
+            _tools_this_round = [tc["name"] for tc in tool_calls_this_round]
+            logger.debug(
+                "METRIC | type=round_tokens | role=%s | round=%d/%d | "
+                "fresh=%d | cached=%d | cache_create=%d | out=%d | "
+                "tools=%s | tool_count=%d | wall_ms=%.0f | msgs=%d",
+                handoff.role.value, tool_rounds, max_tool_rounds,
+                _delta_fresh, _delta_cache_read, _delta_cache_create, _delta_out,
+                "+".join(_tools_this_round) if _tools_this_round else "none",
+                len(_tools_this_round),
+                _round_elapsed * 1000, len(messages),
+            )
+
             text_chunks.clear()
 
             # Compact old tool results to bound O(n²) context growth
