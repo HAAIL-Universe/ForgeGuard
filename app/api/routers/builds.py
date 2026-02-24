@@ -52,8 +52,13 @@ class ClarifyRequest(BaseModel):
 
 
 class ApprovePlanRequest(BaseModel):
-    """Request body for approving or rejecting a build plan."""
-    action: str = "approve"  # "approve" | "reject"
+    """Request body for approving a build plan."""
+    action: str = "approve"  # "approve"
+
+
+class PhaseReviewRequest(BaseModel):
+    """Request body for responding to a phase review gate."""
+    action: str = "continue"  # "continue" | "fix"
 
 
 class CommenceBuildRequest(BaseModel):
@@ -245,6 +250,30 @@ async def approve_plan(
     """
     try:
         return await build_service.approve_plan(
+            project_id, user["id"], action=body.action
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ── POST /projects/{project_id}/build/phase-review ──────────────────────
+
+
+@router.post("/{project_id}/build/phase-review")
+async def phase_review(
+    project_id: UUID,
+    body: PhaseReviewRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Respond to a phase review gate — continue building or fix issues.
+
+    After a phase completes with issues (status ``partial``), the build
+    pauses and waits for this call.  ``continue`` accepts the issues and
+    moves to the next phase; ``fix`` runs the fixer pipeline on the
+    affected files and re-verifies.
+    """
+    try:
+        return await build_service.respond_phase_review(
             project_id, user["id"], action=body.action
         )
     except ValueError as exc:

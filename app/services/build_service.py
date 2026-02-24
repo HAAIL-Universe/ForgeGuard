@@ -109,6 +109,10 @@ from app.services.build._state import (  # noqa: E402
     register_plan_review,
     pop_plan_review_response,
     cleanup_plan_review,
+    register_phase_review,
+    pop_phase_review_response,
+    resolve_phase_review,
+    cleanup_phase_review,
     _ide_ready_events,
     register_ide_ready,
     pop_ide_ready_response,
@@ -1318,6 +1322,90 @@ async def approve_plan(
             logger.warning("approve_plan: plan git commit skipped: %s", exc)
 
     return {"ok": True, "build_id": build_id, "action": action, "sha": sha}
+
+
+def _identify_files_to_fix(
+    governance: dict,
+    verification: dict,
+    phase_files: dict[str, str],
+) -> list[str]:
+    """Extract file paths that need fixing from governance + verification results.
+
+    Parses governance check detail strings (G1-G3 format) and verification
+    syntax error entries to identify specific files.  Falls back to all
+    phase files if no specific files can be identified.
+    """
+    files: set[str] = set()
+
+    # Governance: parse file paths from G1-G3 detail strings
+    for check in governance.get("checks", []):
+        if check.get("result") != "FAIL":
+            continue
+        detail = check.get("detail", "")
+        # G3 format: "app/config.py imports 'pydantic_settings' (not in requirements.txt)"
+        # G1 format: "Missing on disk: app/foo.py"
+        # G2 format: "app/routers/auth.py imports app.services.user (forbidden)"
+        for part in detail.split(";"):
+            part = part.strip()
+            for word in part.split():
+                if "/" in word and not word.startswith("("):
+                    files.add(word.strip("'\""))
+                    break
+
+    # Verification: syntax error files
+    for se in verification.get("syntax_error_details", []):
+        if se.get("file"):
+            files.add(se["file"])
+
+    # Only fix files that exist in this phase
+    result = [f for f in files if f in phase_files]
+
+    # Fallback: if no specific files identified (or none survive the phase
+    # filter), fix all phase files so the fix pass isn't a no-op.
+    if not result:
+        result = list(phase_files.keys())
+
+    return result
+
+
+async def respond_phase_review(
+    project_id: UUID,
+    user_id: UUID,
+    action: str = "continue",
+) -> dict:
+    """Submit user's decision on a phase review gate.
+
+    Args:
+        action: ``"continue"`` to accept issues and move on,
+                ``"fix"`` to run the fixer pipeline on the affected files.
+
+    Raises:
+        ValueError: If no active build or no pending phase review.
+    """
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project.get("user_id")) != str(user_id):
+        raise ValueError("Project not found")
+
+    build = await build_repo.get_latest_build_for_project(project_id)
+    if not build:
+        raise ValueError("No active build found")
+
+    build_id = str(build["id"])
+
+    if action not in ("continue", "fix"):
+        raise ValueError(f"Invalid action: {action}. Must be continue or fix.")
+
+    resolved = resolve_phase_review(build_id, {"action": action})
+    if not resolved:
+        raise ValueError("No pending phase review for this build")
+
+    await build_repo.append_build_log(
+        build["id"],
+        f"Phase review: user chose '{action}'",
+        source="user", level="info",
+    )
+
+    return {"ok": True, "build_id": build_id, "action": action}
 
 
 async def commit_plan_to_git(project_id: UUID, user_id: UUID) -> dict:
@@ -6125,6 +6213,132 @@ async def _run_build_plan_execute(
                 "verification": verification,
                 "governance": governance_result,
             })
+
+            # --- Phase review gate: pause and let user choose continue vs fix ---
+            _max_fix_rounds = 3
+            _fix_round = 0
+
+            while True:
+                _phase_review_event = register_phase_review(str(build_id))
+                await _broadcast_build_event(user_id, build_id, "phase_review", {
+                    "phase": phase_name,
+                    "phase_number": phase_num,
+                    "verification": verification,
+                    "governance": governance_result,
+                    "options": ["continue", "fix"],
+                    "fix_round": _fix_round,
+                    "max_fix_rounds": _max_fix_rounds,
+                })
+                _touch_progress(build_id)
+
+                try:
+                    await asyncio.wait_for(
+                        _phase_review_event.wait(),
+                        timeout=settings.BUILD_PAUSE_TIMEOUT_MINUTES * 60,
+                    )
+                except asyncio.TimeoutError:
+                    await _fail_build(build_id, user_id, "Phase review timed out — no response from user")
+                    return
+
+                _phase_response = pop_phase_review_response(str(build_id))
+                _phase_action = (_phase_response or {}).get("action", "continue")
+
+                if _phase_action == "continue":
+                    break  # Accept issues, move to next phase
+
+                # --- User chose "fix" ---
+                _fix_round += 1
+                if _fix_round > _max_fix_rounds:
+                    _max_msg = f"⚠ Max fix rounds ({_max_fix_rounds}) reached — continuing with remaining issues"
+                    await build_repo.append_build_log(build_id, _max_msg, source="system", level="warn")
+                    await _broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _max_msg, "source": "system", "level": "warn",
+                    })
+                    break
+
+                _fix_msg = f"🔧 Running fix pass {_fix_round}/{_max_fix_rounds} for {phase_name}..."
+                await build_repo.append_build_log(build_id, _fix_msg, source="system", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _fix_msg, "source": "system", "level": "info",
+                })
+
+                # Collect issues into a findings string for the fixer
+                _fix_issues: list[str] = []
+                for _chk in governance_result.get("checks", []):
+                    if _chk.get("result") == "FAIL":
+                        _fix_issues.append(f"[{_chk['code']}] {_chk['name']}: {_chk['detail']}")
+                if verification.get("tests_failed", 0) > 0:
+                    _fix_issues.append(f"Test failures: {verification.get('test_output', 'see pytest output')}")
+                if verification.get("syntax_errors", 0) > 0:
+                    for _se in verification.get("syntax_error_details", []):
+                        _fix_issues.append(f"Syntax error in {_se.get('file', '?')}: {_se.get('error', '?')}")
+
+                _findings_text = "\n".join(_fix_issues)
+                _files_to_fix = _identify_files_to_fix(governance_result, verification, phase_files_written)
+
+                _fix_count = 0
+                for _fpath in _files_to_fix:
+                    try:
+                        await _broadcast_build_event(user_id, build_id, "fix_attempt_start", {
+                            "tier": 1, "attempt": _fix_count + 1,
+                            "max_attempts": len(_files_to_fix), "file": _fpath,
+                        })
+                        await _fix_single_file(
+                            build_id, user_id, api_key,
+                            _fpath, _findings_text, working_dir,
+                            label="phase_review",
+                        )
+                        _fix_count += 1
+                        await _broadcast_build_event(user_id, build_id, "fix_attempt_result", {
+                            "passed": True, "file": _fpath,
+                        })
+                    except Exception as _fix_exc:
+                        logger.warning("Phase review fix failed for %s: %s", _fpath, _fix_exc)
+                        await _broadcast_build_event(user_id, build_id, "fix_attempt_result", {
+                            "passed": False, "file": _fpath, "error": str(_fix_exc),
+                        })
+
+                # Re-verify after fixes
+                _rv_msg = f"🔍 Re-verifying {phase_name} after fix round {_fix_round}..."
+                await build_repo.append_build_log(build_id, _rv_msg, source="system", level="info")
+                await _broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": _rv_msg, "source": "system", "level": "info",
+                })
+
+                verification = await _verify_phase_output(
+                    build_id, user_id, api_key,
+                    manifest, working_dir, contracts,
+                    touched_files,
+                )
+                governance_result = await _run_governance_checks(
+                    build_id, user_id, api_key,
+                    manifest, working_dir, contracts,
+                    touched_files, phase_name,
+                )
+
+                verification_clean = (
+                    verification.get("syntax_errors", 0) == 0
+                    and verification.get("tests_failed", 0) == 0
+                )
+                governance_clean = governance_result.get("passed", True)
+
+                _new_status = "pass" if verification_clean and governance_clean else "partial"
+                await _broadcast_build_event(user_id, build_id, "phase_complete", {
+                    "phase": phase_name,
+                    "status": _new_status,
+                    "files": _phase_file_list,
+                    "committed": _phase_committed,
+                    "verification": verification if _new_status == "partial" else None,
+                    "governance": governance_result if _new_status == "partial" else None,
+                    "fix_applied": True,
+                    "fixes_count": _fix_count,
+                })
+
+                if _new_status == "pass":
+                    break  # Fixed! Continue to next phase
+                # else: loop back to phase review gate
+            # --- End phase review gate loop ---
+
             # Still lock in phase so /continue works — verification issues
             # can accumulate and be fixed across phases
             await build_repo.update_completed_phases(build_id, phase_num)

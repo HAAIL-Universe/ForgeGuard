@@ -2049,6 +2049,16 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
+            case 'phase_review': {
+              // Build is paused at phase review gate — user must choose continue or fix
+              setLastPhaseIssues({
+                phase: (p.phase || '') as string,
+                verification: p.verification || { syntax_errors: 0, tests_passed: 0, tests_failed: 0 },
+                governance: p.governance || { blocking_failures: 0, warnings: 0, checks: [] },
+              });
+              break;
+            }
+
             case 'phase_transition': {
               const msg = (p.message ?? '') as string;
               if (msg) {
@@ -3377,6 +3387,25 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const respondToPlanReviewRef = useRef(respondToPlanReview);
   respondToPlanReviewRef.current = respondToPlanReview;
 
+  /* Respond to a phase review gate — continue with issues or trigger fix pass */
+  const respondToPhaseReview = useCallback(async (action: 'continue' | 'fix') => {
+    setLogs((prev) => [...prev, {
+      timestamp: new Date().toISOString(),
+      source: 'user', level: 'system',
+      message: action === 'fix' ? '> Fix issues 🔧' : '> Continue with issues ▶',
+    }]);
+    try {
+      await fetch(`${API_BASE}/projects/${projectId}/build/phase-review`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      if (action === 'fix') {
+        setLastPhaseIssues(null);  // Clear issues display while fixing
+      }
+    } catch { /* WS events confirm */ }
+  }, [projectId, token]);
+
   /* Save plan to database as a project contract */
   const savePlan = useCallback(async () => {
     try {
@@ -4563,25 +4592,25 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   {/* Buttons */}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button
-                      onClick={() => respondToPlanReview('approve')}
+                      onClick={() => lastPhaseIssues ? respondToPhaseReview('continue') : respondToPlanReview('approve')}
                       style={{
                         flex: 1, background: '#065F46', border: '1px solid #22C55E66',
                         borderRadius: '4px', color: '#22C55E', fontSize: '0.75rem',
                         padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                       }}
                     >
-                      ✅ Approve & Build
+                      {lastPhaseIssues ? '▶ Continue' : '✅ Approve & Build'}
                     </button>
                     {lastPhaseIssues ? (
                       <button
-                        onClick={() => setActiveTab('errors')}
+                        onClick={() => respondToPhaseReview('fix')}
                         style={{
-                          background: '#451A03', border: '1px solid #F59E0B66',
-                          borderRadius: '4px', color: '#FBBF24', fontSize: '0.75rem',
+                          background: '#1E3A5F', border: '1px solid #60A5FA66',
+                          borderRadius: '4px', color: '#60A5FA', fontSize: '0.75rem',
                           padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                         }}
                       >
-                        ⚠ Review Issues ({(lastPhaseIssues.verification.tests_failed || 0) + (lastPhaseIssues.governance.blocking_failures || 0)})
+                        🔧 Fix Issues
                       </button>
                     ) : (
                       <button
@@ -4595,16 +4624,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         {planSaved ? '✓ Saved' : '💾 Save'}
                       </button>
                     )}
-                    <button
-                      onClick={() => respondToPlanReview('reject')}
-                      style={{
-                        background: '#3B1114', border: '1px solid #EF444466',
-                        borderRadius: '4px', color: '#EF4444', fontSize: '0.75rem',
-                        padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
-                      }}
-                    >
-                      ❌ Reject
-                    </button>
                   </div>
                 </div>
               )}
@@ -4825,22 +4844,30 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     )}
                     <div style={{ display: 'flex', gap: '8px', paddingTop: '4px' }}>
                       <button
-                        onClick={() => { respondToPlanReview('approve'); setPlanReady(false); setShowPlanModal(false); }}
+                        onClick={() => {
+                          if (lastPhaseIssues) {
+                            respondToPhaseReview('continue');
+                          } else {
+                            respondToPlanReview('approve');
+                          }
+                          setPlanReady(false);
+                          setShowPlanModal(false);
+                        }}
                         style={{
                           flex: 1, background: '#065F46', border: '1px solid #22C55E66',
                           borderRadius: '4px', color: '#22C55E', fontSize: '0.75rem',
                           padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                         }}
-                      >✅ Approve Plan</button>
+                      >{lastPhaseIssues ? '▶ Continue' : '✅ Approve Plan'}</button>
                       {lastPhaseIssues ? (
                         <button
-                          onClick={() => { setActiveTab('errors'); setShowPlanModal(false); }}
+                          onClick={() => { respondToPhaseReview('fix'); setShowPlanModal(false); }}
                           style={{
-                            background: '#451A03', border: '1px solid #F59E0B66',
-                            borderRadius: '4px', color: '#FBBF24', fontSize: '0.75rem',
+                            background: '#1E3A5F', border: '1px solid #60A5FA66',
+                            borderRadius: '4px', color: '#60A5FA', fontSize: '0.75rem',
                             padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
                           }}
-                        >⚠ Review Issues ({(lastPhaseIssues.verification.tests_failed || 0) + (lastPhaseIssues.governance.blocking_failures || 0)})</button>
+                        >🔧 Fix Issues</button>
                       ) : (
                         <button
                           onClick={savePlan}
@@ -4851,14 +4878,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                           }}
                         >{planSaved ? '✓ Saved' : '💾 Save'}</button>
                       )}
-                      <button
-                        onClick={() => { respondToPlanReview('reject'); setShowPlanModal(false); }}
-                        style={{
-                          background: '#3B1114', border: '1px solid #EF444466',
-                          borderRadius: '4px', color: '#EF4444', fontSize: '0.75rem',
-                          padding: '6px 12px', cursor: 'pointer', fontWeight: 600,
-                        }}
-                      >❌ Reject</button>
                     </div>
                   </div>
                 )}

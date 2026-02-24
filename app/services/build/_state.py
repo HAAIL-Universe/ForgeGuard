@@ -121,6 +121,10 @@ _plan_review_responses: dict[str, dict] = {}           # build_id → {"action":
 _ide_ready_events:      dict[str, asyncio.Event] = {}  # build_id → Event
 _ide_ready_responses:   dict[str, dict] = {}           # build_id → {"action": "commence"|"cancel"}
 
+# Phase-review gate state (user decides continue vs fix after partial phase)
+_phase_review_events:    dict[str, asyncio.Event] = {}  # build_id → Event
+_phase_review_responses: dict[str, dict] = {}           # build_id → {"action": "continue"|"fix"}
+
 
 # ---------------------------------------------------------------------------
 # Tiny helpers used by many sub-modules
@@ -227,6 +231,47 @@ def cleanup_plan_review(build_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase-review gate helpers (pause after partial phase completion)
+# ---------------------------------------------------------------------------
+
+
+def register_phase_review(build_id: str) -> asyncio.Event:
+    """Create and register a phase-review wait event for a build."""
+    event = asyncio.Event()
+    _phase_review_events[str(build_id)] = event
+    return event
+
+
+def resolve_phase_review(build_id: str, response: dict) -> bool:
+    """Store user's phase-review decision and unblock the waiting build.
+
+    *response* should be ``{"action": "continue"|"fix"}``.
+    Returns False if no pending review exists for *build_id*.
+    """
+    bid = str(build_id)
+    event = _phase_review_events.get(bid)
+    if not event:
+        return False
+    _phase_review_responses[bid] = response
+    event.set()
+    return True
+
+
+def pop_phase_review_response(build_id: str) -> dict | None:
+    """Consume the stored phase-review response and clear event state."""
+    bid = str(build_id)
+    _phase_review_events.pop(bid, None)
+    return _phase_review_responses.pop(bid, None)
+
+
+def cleanup_phase_review(build_id: str) -> None:
+    """Remove all phase-review state for a build."""
+    bid = str(build_id)
+    _phase_review_events.pop(bid, None)
+    _phase_review_responses.pop(bid, None)
+
+
+# ---------------------------------------------------------------------------
 # IDE-ready gate helpers
 # ---------------------------------------------------------------------------
 
@@ -300,6 +345,7 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     _build_activity_status.pop(bid, None)
     cleanup_clarification(bid)
     cleanup_plan_review(bid)
+    cleanup_phase_review(bid)
     cleanup_ide_ready(bid)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(

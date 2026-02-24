@@ -265,3 +265,146 @@ class TestUnderscoreHyphenFallback:
         imp = "os"
         alt = imp.replace("_", "-")
         assert alt == imp  # No change, so fallback is skipped
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase review gate + _identify_files_to_fix
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.build._state import (
+    register_phase_review,
+    resolve_phase_review,
+    pop_phase_review_response,
+    cleanup_phase_review,
+)
+from app.services.build_service import _identify_files_to_fix
+
+
+class TestPhaseReviewGate:
+    """Phase review gate should follow the plan_review gate pattern."""
+
+    def test_register_creates_event(self):
+        event = register_phase_review("test-build-1")
+        assert event is not None
+        assert not event.is_set()
+        cleanup_phase_review("test-build-1")
+
+    def test_resolve_sets_event(self):
+        event = register_phase_review("test-build-2")
+        result = resolve_phase_review("test-build-2", {"action": "continue"})
+        assert result is True
+        assert event.is_set()
+        cleanup_phase_review("test-build-2")
+
+    def test_resolve_nonexistent_returns_false(self):
+        result = resolve_phase_review("nonexistent-build", {"action": "fix"})
+        assert result is False
+
+    def test_pop_returns_response(self):
+        register_phase_review("test-build-3")
+        resolve_phase_review("test-build-3", {"action": "fix"})
+        response = pop_phase_review_response("test-build-3")
+        assert response == {"action": "fix"}
+
+    def test_pop_cleans_up(self):
+        register_phase_review("test-build-4")
+        resolve_phase_review("test-build-4", {"action": "continue"})
+        pop_phase_review_response("test-build-4")
+        # Second pop should return None
+        assert pop_phase_review_response("test-build-4") is None
+
+    def test_cleanup_removes_all_state(self):
+        register_phase_review("test-build-5")
+        resolve_phase_review("test-build-5", {"action": "fix"})
+        cleanup_phase_review("test-build-5")
+        assert pop_phase_review_response("test-build-5") is None
+
+
+class TestIdentifyFilesToFix:
+    """_identify_files_to_fix should extract file paths from governance + verification."""
+
+    def test_g3_dependency_gate_extracts_file(self):
+        governance = {
+            "checks": [{
+                "code": "G3", "name": "Dependency gate", "result": "FAIL",
+                "detail": "app/config.py imports 'pydantic_settings' (not in requirements.txt)",
+            }],
+        }
+        verification = {}
+        phase_files = {"app/config.py": "content", "app/main.py": "content"}
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        assert "app/config.py" in result
+
+    def test_g2_boundary_extracts_file(self):
+        governance = {
+            "checks": [{
+                "code": "G2", "name": "Boundary compliance", "result": "FAIL",
+                "detail": "app/routers/auth.py imports app.services.user (forbidden)",
+            }],
+        }
+        verification = {}
+        phase_files = {"app/routers/auth.py": "content"}
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        assert "app/routers/auth.py" in result
+
+    def test_syntax_error_extracts_file(self):
+        governance = {"checks": []}
+        verification = {
+            "syntax_error_details": [{"file": "app/models.py", "error": "SyntaxError: invalid syntax"}],
+        }
+        phase_files = {"app/models.py": "content"}
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        assert "app/models.py" in result
+
+    def test_fallback_to_all_phase_files(self):
+        """When no specific files identified, fall back to all phase files."""
+        governance = {"checks": []}
+        verification = {}
+        phase_files = {"app/a.py": "a", "app/b.py": "b"}
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        assert set(result) == {"app/a.py", "app/b.py"}
+
+    def test_only_returns_phase_files(self):
+        """Files not in the current phase should be excluded."""
+        governance = {
+            "checks": [{
+                "code": "G3", "name": "Dependency gate", "result": "FAIL",
+                "detail": "app/config.py imports 'foo' (not in requirements.txt)",
+            }],
+        }
+        verification = {}
+        phase_files = {"app/main.py": "content"}  # config.py NOT in this phase
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        # config.py is not in phase_files, so falls back to all phase files
+        assert "app/main.py" in result
+
+    def test_pass_checks_ignored(self):
+        """PASS checks should not contribute files."""
+        governance = {
+            "checks": [
+                {"code": "G1", "name": "Scope", "result": "PASS", "detail": "all files present"},
+                {"code": "G3", "name": "Dependency gate", "result": "FAIL",
+                 "detail": "app/config.py imports 'x' (not in requirements.txt)"},
+            ],
+        }
+        verification = {}
+        phase_files = {"app/config.py": "content", "app/main.py": "content"}
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        assert result == ["app/config.py"]
+
+    def test_multiple_issues_combined(self):
+        """Multiple governance failures and syntax errors should all be collected."""
+        governance = {
+            "checks": [{
+                "code": "G3", "name": "Dependency gate", "result": "FAIL",
+                "detail": "app/config.py imports 'x'; app/main.py imports 'y'",
+            }],
+        }
+        verification = {
+            "syntax_error_details": [{"file": "app/utils.py", "error": "SyntaxError"}],
+        }
+        phase_files = {"app/config.py": "c", "app/main.py": "m", "app/utils.py": "u"}
+        result = _identify_files_to_fix(governance, verification, phase_files)
+        assert "app/config.py" in result
+        assert "app/main.py" in result
+        assert "app/utils.py" in result
