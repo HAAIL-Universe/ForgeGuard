@@ -916,13 +916,24 @@ async def run_sub_agent(
     }
     _purpose_verb = _PURPOSE_BY_ROLE.get(handoff.role, "Processing")
     _purpose_file = handoff.files[0] if handoff.files else "file"
+
+    # Build a useful preview: role-specific instructions first (what differs
+    # between agents), then a constitution summary.  The actual LLM receives
+    # the full untruncated sys_prompt — this is display-only.
+    _role_section = _ROLE_SYSTEM_PROMPTS.get(handoff.role, "")
+    _sys_preview = (
+        f"# ROLE: {handoff.role.value.upper()}\n{_role_section}\n\n"
+        f"# CONSTITUTION (shared — {len(CONSTITUTION)} chars)\n"
+        f"{CONSTITUTION[:600]}...\n"
+    )
+
     await _state._broadcast_build_event(
         handoff.user_id, handoff.build_id, "llm_thinking", {
             "model": _model_label,
             "role": handoff.role.value,
             "purpose": f"{_purpose_verb} {_purpose_file}",
-            "system_prompt": sys_prompt[:2000],
-            "user_message_preview": user_message[:800],
+            "system_prompt": _sys_preview[:6000],
+            "user_message_preview": user_message[:4000],
             "user_message_length": len(user_message),
             "file": _purpose_file,
             "context_files": list(handoff.context_files.keys()) if handoff.context_files else [],
@@ -1120,7 +1131,14 @@ async def run_sub_agent(
         + Decimal(usage.output_tokens) * output_rate
     )
 
-    # 8. Broadcast completion (role-specific summary for clearer UI)
+    # 8. Parse structured JSON BEFORE broadcast so verdict is available
+    result.structured_output = _extract_json_block(result.text_output)
+
+    # Hard-enforce Scout output limits so its summary never bloats downstream handoffs
+    if handoff.role == SubAgentRole.SCOUT and result.structured_output:
+        result.structured_output = _trim_scout_output(result.structured_output)
+
+    # 9. Broadcast completion (role-specific summary for clearer UI)
     _done_summary = f"{len(result.files_written)} files written"
     if handoff.role == SubAgentRole.SCOUT:
         _done_summary = "context gathered"
@@ -1174,13 +1192,6 @@ async def run_sub_agent(
         )
     except Exception:
         pass
-
-    # Try to parse structured JSON from the tail of the output
-    result.structured_output = _extract_json_block(result.text_output)
-
-    # Hard-enforce Scout output limits so its summary never bloats downstream handoffs
-    if handoff.role == SubAgentRole.SCOUT and result.structured_output:
-        result.structured_output = _trim_scout_output(result.structured_output)
 
     return result
 

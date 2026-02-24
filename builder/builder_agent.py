@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -410,12 +411,37 @@ async def run_builder(
         sub_agent_results.append(auditor_result)
         _accumulate_tokens(total_usage, auditor_result)
 
-        audit_verdict = auditor_result.structured_output.get("verdict", "PASS")
+        audit_verdict = auditor_result.structured_output.get("verdict", "")
+        _audit_skipped = False
+
+        if not audit_verdict:
+            # JSON parsing failed — try regex fallback on the raw text output
+            _text = auditor_result.text_output or ""
+            _m = re.search(r'\bverdict["\s:]*\b(PASS|FAIL)\b', _text, re.IGNORECASE)
+            if _m:
+                audit_verdict = _m.group(1).upper()
+                logger.info("Auditor verdict recovered from text: %s (file: %s)", audit_verdict, file_path)
+            else:
+                # No verdict recoverable — flag as skipped, don't silently PASS
+                audit_verdict = "PASS"
+                _audit_skipped = True
+                logger.warning(
+                    "Auditor produced no parseable verdict for %s — audit skipped "
+                    "(text_output length: %d chars)",
+                    file_path, len(_text),
+                )
+
         last_audit_findings = _format_audit_findings(auditor_result.structured_output)
+        if _audit_skipped:
+            last_audit_findings = (
+                "⚠ AUDIT_SKIPPED: Auditor did not produce structured JSON verdict. "
+                "File was not formally reviewed.\n" + last_audit_findings
+            )
 
         if verbose:
+            _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
             status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
-            print(f"[BUILDER]   AUDITOR done: verdict={audit_verdict} ({auditor_result.input_tokens + auditor_result.output_tokens} tokens)")
+            print(f"[BUILDER]   AUDITOR done: verdict={audit_verdict}{_skip_tag} ({auditor_result.input_tokens + auditor_result.output_tokens} tokens)")
 
         if turn_callback is not None:
             turn_callback({
