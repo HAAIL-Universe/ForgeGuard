@@ -1663,8 +1663,10 @@ class TestCompactToolHistory:
             *_make_tool_round(2),
         ]
         original_content = messages[2]["content"][0]["content"]  # round 1 result
-        _compact_tool_history(messages, keep_recent=2)
+        compacted, saved = _compact_tool_history(messages, keep_recent=2)
         assert messages[2]["content"][0]["content"] == original_content
+        assert compacted == 0
+        assert saved == 0
 
     def test_compacts_old_rounds(self):
         """Old tool_result content is replaced with [Compacted] summary."""
@@ -1677,13 +1679,15 @@ class TestCompactToolHistory:
             *_make_tool_round(3),  # idx 5,6 — recent, keep
             *_make_tool_round(4),  # idx 7,8 — recent, keep
         ]
-        _compact_tool_history(messages, keep_recent=2)
+        compacted, saved = _compact_tool_history(messages, keep_recent=2)
         # Round 1 result (idx 2) should be compacted
         r1 = messages[2]["content"][0]["content"]
         assert r1.startswith("[Compacted]")
         # Round 2 result (idx 4) should be compacted
         r2 = messages[4]["content"][0]["content"]
         assert r2.startswith("[Compacted]")
+        assert compacted == 2
+        assert saved > 0
 
     def test_preserves_recent_rounds(self):
         """Last keep_recent rounds are untouched."""
@@ -1698,9 +1702,10 @@ class TestCompactToolHistory:
         ]
         r3_original = messages[6]["content"][0]["content"]
         r4_original = messages[8]["content"][0]["content"]
-        _compact_tool_history(messages, keep_recent=2)
+        compacted, saved = _compact_tool_history(messages, keep_recent=2)
         assert messages[6]["content"][0]["content"] == r3_original
         assert messages[8]["content"][0]["content"] == r4_original
+        assert compacted == 2
 
     def test_preserves_initial_user_message(self):
         """First user message (the assignment) is never compacted."""
@@ -1713,8 +1718,9 @@ class TestCompactToolHistory:
             *_make_tool_round(2),
             *_make_tool_round(3),
         ]
-        _compact_tool_history(messages, keep_recent=1)
+        compacted, _ = _compact_tool_history(messages, keep_recent=1)
         assert messages[0]["content"] == long_assignment
+        assert compacted == 2
 
     def test_preserves_assistant_text(self):
         """Assistant text blocks within tool rounds are never modified."""
@@ -1727,9 +1733,10 @@ class TestCompactToolHistory:
             *_make_tool_round(3),
         ]
         asst_text = messages[1]["content"][0]["text"]  # round 1 assistant text
-        _compact_tool_history(messages, keep_recent=1)
+        compacted, _ = _compact_tool_history(messages, keep_recent=1)
         # Assistant text should be unchanged
         assert messages[1]["content"][0]["text"] == asst_text
+        assert compacted == 2
 
     def test_summary_capped_at_chars(self):
         """Compacted content length is bounded by summary_chars + prefix."""
@@ -1742,11 +1749,13 @@ class TestCompactToolHistory:
             *_make_tool_round(2),
             *_make_tool_round(3),
         ]
-        _compact_tool_history(messages, keep_recent=1, summary_chars=100)
+        rounds_compacted, chars_saved = _compact_tool_history(messages, keep_recent=1, summary_chars=100)
         compacted = messages[2]["content"][0]["content"]
         assert compacted.startswith("[Compacted]")
         # "[Compacted] " = 12 chars, then 100 chars of content, then "..."
         assert len(compacted) <= 12 + 100 + 3
+        assert rounds_compacted == 2
+        assert chars_saved > 0
 
 
 # ---------------------------------------------------------------------------

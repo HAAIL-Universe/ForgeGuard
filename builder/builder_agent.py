@@ -490,7 +490,7 @@ async def run_builder(
 
         if verbose:
             status_str = scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status)
-            _blog(f"{_TAG_SCOUT}   Done: {status_str} {_C_TOKENS}({scout_result.input_tokens + scout_result.output_tokens} tokens){_C_RESET}")
+            _blog(f"{_TAG_SCOUT}   Done: {status_str} [{scout_result.tool_rounds}/4r] {_C_TOKENS}({scout_result.input_tokens + scout_result.output_tokens} tokens){_C_RESET}")
 
         if turn_callback is not None:
             turn_callback({
@@ -564,7 +564,7 @@ async def run_builder(
     if verbose:
         status_str = coder_result.status.value if hasattr(coder_result.status, "value") else str(coder_result.status)
         files_written = coder_result.files_written
-        _blog(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
+        _blog(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) [{coder_result.tool_rounds}/8r] {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
 
     if turn_callback is not None:
         turn_callback({
@@ -726,7 +726,7 @@ async def run_builder(
                 _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
                 status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
                 _v_color = _C_CODER if audit_verdict == "PASS" else "\033[31m"
-                _blog(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
+                _blog(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} [{auditor_result.tool_rounds}/8r] {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
 
             # --- Audit findings metric ---
             _findings = auditor_result.structured_output.get("findings", []) if auditor_result.structured_output else []
@@ -854,7 +854,7 @@ async def run_builder(
 
             if verbose:
                 status_str = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
-                _blog(f"{_TAG_FIXER}   Done: {status_str} {_C_TOKENS}({fixer_result.input_tokens + fixer_result.output_tokens} tokens){_C_RESET}")
+                _blog(f"{_TAG_FIXER}   Done: {status_str} [{fixer_result.tool_rounds}/10r] {_C_TOKENS}({fixer_result.input_tokens + fixer_result.output_tokens} tokens){_C_RESET}")
 
             if turn_callback is not None:
                 turn_callback({

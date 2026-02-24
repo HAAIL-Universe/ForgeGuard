@@ -658,6 +658,9 @@ class SubAgentResult:
     finished_at: float = 0.0
     duration_seconds: float = 0.0
 
+    # Rounds
+    tool_rounds: int = 0
+
     # Errors
     error: str = ""
 
@@ -1519,7 +1522,14 @@ async def run_sub_agent(
 
             # Compact old tool results to bound O(n²) context growth
             if tool_rounds > 2:
-                _compact_tool_history(messages, keep_recent=2)
+                _compacted, _saved = _compact_tool_history(messages, keep_recent=2)
+                if _compacted > 0:
+                    logger.debug(
+                        "METRIC | type=compaction | role=%s | round=%d | "
+                        "rounds_compacted=%d | chars_saved=%d | msgs_after=%d",
+                        handoff.role.value, tool_rounds,
+                        _compacted, _saved, len(messages),
+                    )
 
         # Success
         result.text_output = "".join(text_chunks)
@@ -1537,6 +1547,7 @@ async def run_sub_agent(
     # 7. Finalise result
     result.finished_at = time.time()
     result.duration_seconds = result.finished_at - result.started_at
+    result.tool_rounds = tool_rounds
     # Include ALL input tokens (fresh + cache_read + cache_creation) so the
     # UI token counter reflects actual API usage, not just fresh tokens.
     result.input_tokens = (
@@ -1660,7 +1671,7 @@ def _compact_tool_history(
     *,
     keep_recent: int = 2,
     summary_chars: int = 200,
-) -> None:
+) -> tuple[int, int]:
     """Replace old tool result content with brief summaries to bound context growth.
 
     Multi-turn agentic loops re-send full message history every round, causing
@@ -1671,6 +1682,8 @@ def _compact_tool_history(
 
     Mutates *messages* in place.  Never touches the first user message (the
     original assignment at index 0) or assistant text blocks.
+
+    Returns ``(rounds_compacted, chars_saved)`` for observability.
     """
     # Identify tool-round boundaries: a round is an assistant message with
     # tool_use blocks followed by a user message with tool_result blocks.
@@ -1688,10 +1701,11 @@ def _compact_tool_history(
             round_indices.append((i, i + 1))
 
     if len(round_indices) <= keep_recent:
-        return  # nothing to compact
+        return (0, 0)  # nothing to compact
 
     # Compact all rounds except the last `keep_recent`
     rounds_to_compact = round_indices[: len(round_indices) - keep_recent]
+    _chars_saved = 0
     for _asst_idx, user_idx in rounds_to_compact:
         user_msg = messages[user_idx]
         content = user_msg.get("content")
@@ -1700,11 +1714,15 @@ def _compact_tool_history(
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     raw = block.get("content", "")
                     if isinstance(raw, str) and len(raw) > summary_chars + 20:
-                        block["content"] = (
-                            f"[Compacted] {raw[:summary_chars]}..."
-                        )
+                        _new = f"[Compacted] {raw[:summary_chars]}..."
+                        _chars_saved += len(raw) - len(_new)
+                        block["content"] = _new
         elif isinstance(content, str) and len(content) > summary_chars + 20:
-            user_msg["content"] = f"[Compacted] {content[:summary_chars]}..."
+            _new = f"[Compacted] {content[:summary_chars]}..."
+            _chars_saved += len(content) - len(_new)
+            user_msg["content"] = _new
+
+    return (len(rounds_to_compact), _chars_saved)
 
 
 def _trim_scout_output(data: dict) -> dict:
