@@ -27,6 +27,7 @@ export default defineConfig({
       '/repos': apiProxy,
       '/projects': apiProxy,
       '/scout': apiProxy,
+      '/transcribe': 'http://localhost:8000',
       '/webhooks': 'http://localhost:8000',
       '/ws': {
         target: 'http://localhost:8000',
