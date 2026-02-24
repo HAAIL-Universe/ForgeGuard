@@ -393,6 +393,8 @@ async def stream_agent(
         in_tool_block: bool = False
 
         try:
+            _api_t0 = time.monotonic()
+            _first_event_logged = False
             async with httpx.AsyncClient(timeout=300.0) as client:
                 async with client.stream(
                     "POST",
@@ -402,6 +404,14 @@ async def stream_agent(
                 ) as response:
                     if response.status_code in _RETRYABLE_CODES:
                         wait = _retry_wait(response, attempt)
+                        _api_elapsed = time.monotonic() - _api_t0
+                        logger.debug(
+                            "METRIC | type=api_retry | model=%s | status=%d | "
+                            "attempt=%d/%d | wait_s=%.1f | ms=%.0f",
+                            model, response.status_code,
+                            attempt + 1, MAX_RETRIES + 1, wait,
+                            _api_elapsed * 1000,
+                        )
                         if attempt < MAX_RETRIES:
                             logger.warning(
                                 "Agent stream %d (attempt %d/%d), retrying in %.1fs",
@@ -415,6 +425,21 @@ async def stream_agent(
                     response.raise_for_status()
 
                     async for line in response.aiter_lines():
+                        if not _first_event_logged and line and line.startswith("data: "):
+                            _ttft = time.monotonic() - _api_t0
+                            _first_event_logged = True
+                            if _ttft > 5.0:
+                                logger.info(
+                                    "METRIC | type=api_slow_start | model=%s | "
+                                    "ttft_s=%.1f | attempt=%d",
+                                    model, _ttft, attempt + 1,
+                                )
+                            else:
+                                logger.debug(
+                                    "METRIC | type=api_ttft | model=%s | "
+                                    "ttft_s=%.1f | attempt=%d",
+                                    model, _ttft, attempt + 1,
+                                )
                         if not line or not line.startswith("data: "):
                             continue
                         data = line[6:]  # strip "data: " prefix

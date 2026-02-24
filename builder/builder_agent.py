@@ -767,6 +767,7 @@ async def run_builder(
             # --- INTEGRATION CHECK (cross-file validation) ---
             integration_findings = ""
             _integ_error_count = 0
+            _integ_issues: list = []
             if integration_check is not None:
                 if verbose:
                     _blog(f"{_TAG_INTEG}   Cross-file check for {file_path}")
@@ -786,6 +787,20 @@ async def run_builder(
                         _blog(f"{_TAG_INTEG}   {_C_CODER}Passed{_C_RESET}")
                 except Exception as _integ_exc:
                     logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
+
+                _integ_warns = [i for i in _integ_issues if i.severity == "warning"]
+                _integ_detail_items = _integ_errors if _integ_error_count else _integ_warns
+                _integ_summary = "; ".join(
+                    f"{i.check_name}:{i.message[:60]}" for i in _integ_detail_items[:5]
+                )
+                logger.info(
+                    "METRIC | type=integration_check | file=%s | status=%s | "
+                    "errors=%d | warnings=%d | findings=%s",
+                    file_path,
+                    "fail" if integration_findings else "pass",
+                    _integ_error_count, len(_integ_warns),
+                    _integ_summary[:300] if _integ_summary else "clean",
+                )
 
                 if turn_callback is not None:
                     turn_callback({

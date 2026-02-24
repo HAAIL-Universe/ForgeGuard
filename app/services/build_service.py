@@ -6022,6 +6022,16 @@ async def _run_build_plan_execute(
             _touch_progress(build_id)
             loop_count = await build_repo.increment_loop_count(build_id)
 
+            _blocking_paths = [bp for bp, _ in blocking_files]
+            logger.info(
+                "METRIC | type=recovery_attempt | build=%s | phase=%d | "
+                "attempt=%d/%d | blocking_files=%d | files=%s",
+                str(build_id)[:8], phase_num,
+                audit_attempts, settings.PAUSE_THRESHOLD,
+                len(blocking_files),
+                "+".join(_blocking_paths[:10]),
+            )
+
             await build_repo.append_build_log(
                 build_id,
                 f"Audit FAIL for {phase_name} (attempt {audit_attempts})",
@@ -6503,6 +6513,26 @@ async def _run_build_plan_execute(
             and verification.get("tests_failed", 0) == 0
         )
         governance_clean = governance_result.get("passed", True)
+
+        _verdict_status = (
+            "pass" if (audit_verdict == "PASS" and verification_clean and governance_clean)
+            else "partial" if audit_verdict == "PASS"
+            else "fail"
+        )
+        logger.info(
+            "METRIC | type=phase_verdict | build=%s | phase=%d | "
+            "audit=%s | verification_clean=%s | governance_clean=%s | "
+            "syntax_errors=%d | tests_passed=%d | tests_failed=%d | "
+            "gov_checks=%d | gov_blocking=%d | verdict=%s",
+            str(build_id)[:8], phase_num,
+            audit_verdict, verification_clean, governance_clean,
+            verification.get("syntax_errors", 0),
+            verification.get("tests_passed", 0),
+            verification.get("tests_failed", 0),
+            len(governance_result.get("checks", [])),
+            governance_result.get("blocking_failures", 0),
+            _verdict_status,
+        )
 
         if audit_verdict == "PASS" and verification_clean and governance_clean:
             _gov_summary = f", governance {len(governance_result.get('checks', []))} checks"
