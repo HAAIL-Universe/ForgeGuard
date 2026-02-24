@@ -77,7 +77,34 @@ async def lifespan(application: FastAPI):
 
     _handler = logging.StreamHandler(sys.stderr)
     _handler.setFormatter(_ColorFormatter())
-    logging.basicConfig(level=_log_level, handlers=[_handler])
+    _handlers: list[logging.Handler] = [_handler]
+
+    # Persistent file log — readable by Claude Code for build analysis.
+    # Set LOG_FILE in .env (e.g. LOG_FILE=Z:/ForgeCollection/logs/forge.log).
+    if settings.LOG_FILE:
+        from logging.handlers import RotatingFileHandler
+        from pathlib import Path as _LogPath
+        _log_path = _LogPath(settings.LOG_FILE)
+        _log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        class _PlainFormatter(logging.Formatter):
+            """Plain-text formatter for file logs (no ANSI codes)."""
+            def format(self, record: logging.LogRecord) -> str:
+                ts = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
+                name = record.name.split(".")[-1][:20]
+                msg = record.getMessage()
+                return f"{ts} {record.levelname:<8s} [{name:>20s}] {msg}"
+
+        _file_handler = RotatingFileHandler(
+            str(_log_path),
+            maxBytes=10 * 1024 * 1024,  # 10 MB per file
+            backupCount=3,
+            encoding="utf-8",
+        )
+        _file_handler.setFormatter(_PlainFormatter())
+        _handlers.append(_file_handler)
+
+    logging.basicConfig(level=_log_level, handlers=_handlers)
 
     # Quiet noisy loggers — uvicorn access logs flood the terminal
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)

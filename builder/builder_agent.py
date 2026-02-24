@@ -93,6 +93,20 @@ _TAG_AUDITOR = f"{_C_BOLD}{_C_AUDITOR}[AUDITOR]{_C_RESET}"
 _TAG_FIXER = f"{_C_BOLD}{_C_FIXER}[FIXER]{_C_RESET}"
 _TAG_INTEG = f"{_C_BOLD}{_C_INTEG}[INTEG]{_C_RESET}"
 
+# Regex to strip ANSI escape codes for file logging
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _blog(msg: str) -> None:
+    """Print to console AND log to file (ANSI-stripped).
+
+    All builder pipeline output goes through this so it appears in both
+    the terminal (colored) and the persistent log file (plain text).
+    """
+    print(msg)
+    # Also emit through the logging system so the file handler picks it up
+    logger.info(_ANSI_RE.sub("", msg))
+
 # ---------------------------------------------------------------------------
 # Trivial file detection — files that can be generated deterministically
 # ---------------------------------------------------------------------------
@@ -290,16 +304,16 @@ def _print_summary(result: BuilderResult) -> None:
     fresh = inp - cache_read - cache_create
 
     _status_color = _C_CODER if result.status == "completed" else "\033[31m"  # green / red
-    print(f"\n{_TAG_BUILDER} ════════════════════════════════════")
-    print(f"{_TAG_BUILDER} FILE {_status_color}{_C_BOLD}{'COMPLETE' if result.status == 'completed' else 'FAILED'}{_C_RESET}")
-    print(f"{_TAG_BUILDER}   File:       {result.file_path}")
-    print(f"{_TAG_BUILDER}   Status:     {_status_color}{result.status}{_C_RESET}")
+    _blog(f"\n{_TAG_BUILDER} ════════════════════════════════════")
+    _blog(f"{_TAG_BUILDER} FILE {_status_color}{_C_BOLD}{'COMPLETE' if result.status == 'completed' else 'FAILED'}{_C_RESET}")
+    _blog(f"{_TAG_BUILDER}   File:       {result.file_path}")
+    _blog(f"{_TAG_BUILDER}   Status:     {_status_color}{result.status}{_C_RESET}")
     if result.error:
-        print(f"{_TAG_BUILDER}   Error:      \033[31m{result.error}{_C_RESET}")
-    print(f"{_TAG_BUILDER}   Iterations: {result.iterations}  (sub-agent calls)")
-    print(f"{_C_TOKENS}[TOKENS]   Input:      {inp:>10,}  (fresh: {fresh:,} | cached: {cache_read:,} | cache-create: {cache_create:,}){_C_RESET}")
-    print(f"{_C_TOKENS}[TOKENS]   Output:     {out:>10,}{_C_RESET}")
-    print(f"{_TAG_BUILDER} ════════════════════════════════════")
+        _blog(f"{_TAG_BUILDER}   Error:      \033[31m{result.error}{_C_RESET}")
+    _blog(f"{_TAG_BUILDER}   Iterations: {result.iterations}  (sub-agent calls)")
+    _blog(f"{_C_TOKENS}[TOKENS]   Input:      {inp:>10,}  (fresh: {fresh:,} | cached: {cache_read:,} | cache-create: {cache_create:,}){_C_RESET}")
+    _blog(f"{_C_TOKENS}[TOKENS]   Output:     {out:>10,}{_C_RESET}")
+    _blog(f"{_TAG_BUILDER} ════════════════════════════════════")
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +389,7 @@ async def run_builder(
     deliverables_text = _phase_deliverables_text(phase_deliverables)
 
     if verbose:
-        print(f"\n{_TAG_BUILDER} ── Building: {_C_BOLD}{file_path}{_C_RESET} ──")
+        _blog(f"\n{_TAG_BUILDER} ── Building: {_C_BOLD}{file_path}{_C_RESET} ──")
 
     # ────────────────────────────────────────────────────────────────────────
     # (0) PRE-CHECK STOP SIGNAL
@@ -390,7 +404,7 @@ async def run_builder(
     # ────────────────────────────────────────────────────────────────────────
     if _is_trivial_file(file_path, file_purpose):
         if verbose:
-            print(f"{_TAG_BUILDER} {_C_DIM}TRIVIAL: {file_path} — deterministic generation (0 tokens){_C_RESET}")
+            _blog(f"{_TAG_BUILDER} {_C_DIM}TRIVIAL: {file_path} — deterministic generation (0 tokens){_C_RESET}")
         file_abs = working_dir / file_path
         file_abs.parent.mkdir(parents=True, exist_ok=True)
         file_abs.write_text("", encoding="utf-8")
@@ -426,7 +440,7 @@ async def run_builder(
             # Tier-level deterministic scout — synthesize per-file result (0 tokens)
             scout_result = _synthesize_file_scout(tier_scout_context, file_entry)
             if verbose:
-                print(f"{_TAG_SCOUT}   [1/3+] TIER-SCOUT (deterministic, 0 tokens) for {file_path}")
+                _blog(f"{_TAG_SCOUT}   [1/3+] TIER-SCOUT (deterministic, 0 tokens) for {file_path}")
             if turn_callback is not None:
                 turn_callback({"role": "scout", "status": "tier-scout", "tokens": 0})
         else:
@@ -437,12 +451,12 @@ async def run_builder(
                     _reason = "config/static file"
                 else:
                     _reason = "init-with-exports"
-                print(f"{_TAG_SCOUT}   [1/3+] SKIPPED ({_reason}) for {file_path}")
+                _blog(f"{_TAG_SCOUT}   [1/3+] SKIPPED ({_reason}) for {file_path}")
             if turn_callback is not None:
                 turn_callback({"role": "scout", "status": "skipped", "tokens": 0})
     else:
         if verbose:
-            print(f"{_TAG_SCOUT}   [1/3+] Mapping context for {file_path}")
+            _blog(f"{_TAG_SCOUT}   [1/3+] Mapping context for {file_path}")
 
         scout_context: dict[str, str] = {}
         if lessons_learned:
@@ -476,7 +490,7 @@ async def run_builder(
 
         if verbose:
             status_str = scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status)
-            print(f"{_TAG_SCOUT}   Done: {status_str} {_C_TOKENS}({scout_result.input_tokens + scout_result.output_tokens} tokens){_C_RESET}")
+            _blog(f"{_TAG_SCOUT}   Done: {status_str} {_C_TOKENS}({scout_result.input_tokens + scout_result.output_tokens} tokens){_C_RESET}")
 
         if turn_callback is not None:
             turn_callback({
@@ -503,7 +517,7 @@ async def run_builder(
     # (3) CODER — generate the file (single-shot mode)
     # ────────────────────────────────────────────────────────────────────────
     if verbose:
-        print(f"{_TAG_CODER}   [2/3+] Generating {file_path}")
+        _blog(f"{_TAG_CODER}   [2/3+] Generating {file_path}")
 
     # Merge scout's structured output + provided context into coder's context_files.
     # Labeled context_files dict preserves contract names (contract_stack.md etc.)
@@ -550,7 +564,7 @@ async def run_builder(
     if verbose:
         status_str = coder_result.status.value if hasattr(coder_result.status, "value") else str(coder_result.status)
         files_written = coder_result.files_written
-        print(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
+        _blog(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
 
     if turn_callback is not None:
         turn_callback({
@@ -567,7 +581,7 @@ async def run_builder(
     if coder_result.status == HandoffStatus.FAILED:
         if Path(file_path).name == "__init__.py":
             if verbose:
-                print(f"{_TAG_CODER}   {_C_DIM}Empty/failed for {file_path} — fallback to empty __init__.py{_C_RESET}")
+                _blog(f"{_TAG_CODER}   {_C_DIM}Empty/failed for {file_path} — fallback to empty __init__.py{_C_RESET}")
             file_abs = working_dir / file_path
             file_abs.parent.mkdir(parents=True, exist_ok=True)
             file_abs.write_text("", encoding="utf-8")
@@ -621,7 +635,7 @@ async def run_builder(
             else "init-with-exports"
         )
         if verbose:
-            print(f"{_TAG_AUDITOR}   Auto-pass ({_reason}) for {file_path}")
+            _blog(f"{_TAG_AUDITOR}   Auto-pass ({_reason}) for {file_path}")
         last_audit_findings = f"auto-pass ({_reason})"
         if turn_callback is not None:
             turn_callback({"role": "auditor", "status": "auto-pass", "verdict": "PASS", "tokens": 0})
@@ -659,7 +673,7 @@ async def run_builder(
             # --- AUDITOR ---
             if verbose:
                 label = f"[{fix_attempt + 3}/3+]" if fix_attempt == 0 else f"[re-audit {fix_attempt}]"
-                print(f"{_TAG_AUDITOR}   {label} Reviewing {file_path}")
+                _blog(f"{_TAG_AUDITOR}   {label} Reviewing {file_path}")
 
             auditor_handoff = SubAgentHandoff(
                 role=SubAgentRole.AUDITOR,
@@ -712,7 +726,7 @@ async def run_builder(
                 _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
                 status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
                 _v_color = _C_CODER if audit_verdict == "PASS" else "\033[31m"
-                print(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
+                _blog(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
 
             if turn_callback is not None:
                 turn_callback({
@@ -727,7 +741,7 @@ async def run_builder(
             _integ_error_count = 0
             if integration_check is not None:
                 if verbose:
-                    print(f"{_TAG_INTEG}   Cross-file check for {file_path}")
+                    _blog(f"{_TAG_INTEG}   Cross-file check for {file_path}")
                 try:
                     _integ_issues = await integration_check(file_path)
                     _integ_errors = [i for i in _integ_issues if i.severity == "error"]
@@ -739,9 +753,9 @@ async def run_builder(
                             for i in _integ_errors
                         )
                         if verbose:
-                            print(f"{_TAG_INTEG}   \033[31m{_integ_error_count} error(s) found{_C_RESET}")
+                            _blog(f"{_TAG_INTEG}   \033[31m{_integ_error_count} error(s) found{_C_RESET}")
                     elif verbose:
-                        print(f"{_TAG_INTEG}   {_C_CODER}Passed{_C_RESET}")
+                        _blog(f"{_TAG_INTEG}   {_C_CODER}Passed{_C_RESET}")
                 except Exception as _integ_exc:
                     logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
 
@@ -767,7 +781,7 @@ async def run_builder(
             # FAIL + retries exhausted -> give up
             if fix_attempt >= MAX_FIX_RETRIES:
                 if verbose:
-                    print(f"{_TAG_FIXER}   \033[31mMax fix retries ({MAX_FIX_RETRIES}) reached for {file_path}{_C_RESET}")
+                    _blog(f"{_TAG_FIXER}   \033[31mMax fix retries ({MAX_FIX_RETRIES}) reached for {file_path}{_C_RESET}")
                 break
 
             # Check stop signal before dispatching fixer
@@ -792,7 +806,7 @@ async def run_builder(
                     _fix_sources.append("audit")
                 if integration_findings:
                     _fix_sources.append("integration")
-                print(f"{_TAG_FIXER}   Applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
+                _blog(f"{_TAG_FIXER}   Applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
 
             fixer_handoff = SubAgentHandoff(
                 role=SubAgentRole.FIXER,
@@ -822,7 +836,7 @@ async def run_builder(
 
             if verbose:
                 status_str = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
-                print(f"{_TAG_FIXER}   Done: {status_str} {_C_TOKENS}({fixer_result.input_tokens + fixer_result.output_tokens} tokens){_C_RESET}")
+                _blog(f"{_TAG_FIXER}   Done: {status_str} {_C_TOKENS}({fixer_result.input_tokens + fixer_result.output_tokens} tokens){_C_RESET}")
 
             if turn_callback is not None:
                 turn_callback({
