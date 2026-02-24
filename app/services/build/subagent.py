@@ -196,6 +196,113 @@ def tool_names_for_role(role: SubAgentRole) -> frozenset[str]:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic round caps — proportional to file complexity
+# ---------------------------------------------------------------------------
+
+# Files that are structurally simple and never need many tool rounds.
+_SIMPLE_FILE_NAMES = frozenset({
+    "requirements.txt", ".env", ".env.example", "dockerfile",
+    "docker-compose.yml", "docker-compose.yaml",
+    "pyproject.toml", "setup.py", "setup.cfg",
+    ".gitignore", "alembic.ini", "conftest.py",
+    "manifest.json", "robots.txt", "favicon.ico",
+    ".dockerignore", "Procfile", "runtime.txt",
+})
+
+# Default round caps per role (used when no per-file override).
+_DEFAULT_TOOL_ROUNDS: dict[SubAgentRole, int] = {
+    SubAgentRole.SCOUT: 4,
+    SubAgentRole.CODER: 8,
+    SubAgentRole.AUDITOR: 8,
+    SubAgentRole.FIXER: 10,
+}
+
+
+def max_rounds_for_file(role: SubAgentRole, file_entry: dict) -> int:
+    """Compute a round cap proportional to file complexity.
+
+    The planner provides ``estimated_lines``, ``depends_on``, and the file
+    path.  Simple files get fewer rounds; complex files keep the full budget.
+
+    Scout and Fixer caps are fixed (scouts are already deterministic for most
+    tiers; fixers need room to iterate on findings).
+
+    Returns the round cap integer.
+    """
+    if role == SubAgentRole.SCOUT:
+        return 4
+    if role == SubAgentRole.FIXER:
+        return 10
+
+    est_lines = file_entry.get("estimated_lines", 100)
+    deps = len(file_entry.get("depends_on", []))
+    name = Path(file_entry.get("path", "")).name.lower()
+
+    # Trivial/simple files: 3 rounds (write + syntax + scratchpad)
+    if name in _SIMPLE_FILE_NAMES or est_lines <= 30:
+        return 3
+    # Standard files: 5 rounds
+    if est_lines <= 150 and deps < 3:
+        return 5
+    # Complex files: full budget
+    return _DEFAULT_TOOL_ROUNDS.get(role, 8)
+
+
+def _build_batch_audit_sysprompt(build_mode: str = "full") -> str:
+    """Build system prompt for batch auditor: Constitution + batch prompt."""
+    parts = [CONSTITUTION, BATCH_AUDITOR_PROMPT]
+    if build_mode == "mini":
+        parts.append(_MINI_BUILD_CONTEXT)
+    return "\n\n".join(parts)
+
+
+def build_batch_auditor_handoff(
+    build_id: UUID,
+    user_id: UUID,
+    tier_files: dict[str, str],
+    *,
+    project_id: UUID | None = None,
+    contracts: dict[str, str] | None = None,
+    build_mode: str = "full",
+) -> SubAgentHandoff:
+    """Create a SubAgentHandoff for batch auditing all files in a tier.
+
+    ``tier_files`` is ``{relative_path: file_content}``.  Each file is injected
+    into ``context_files`` so the auditor sees everything in one call.
+
+    Uses ``SubAgentRole.AUDITOR`` (same tools + model) but swaps the system
+    prompt via ``system_prompt_override`` to the multi-file batch prompt.
+    """
+    context_files: dict[str, str] = {}
+    # Inject the actual code files with clear labelling
+    for path, content in tier_files.items():
+        context_files[path] = content
+    # Inject pre-fetched contracts
+    if contracts:
+        for k, v in contracts.items():
+            if k not in context_files:
+                context_files[k] = v
+
+    file_list = ", ".join(tier_files.keys())
+    return SubAgentHandoff(
+        role=SubAgentRole.AUDITOR,
+        build_id=build_id,
+        user_id=user_id,
+        assignment=(
+            f"Batch audit {len(tier_files)} files: {file_list}. "
+            "Review all files for structural issues and contract compliance. "
+            "Output a single JSON with per-file verdicts."
+        ),
+        project_id=project_id,
+        files=list(tier_files.keys()),
+        context_files=context_files,
+        build_mode=build_mode,
+        system_prompt_override=_build_batch_audit_sysprompt(build_mode),
+        max_tool_rounds=5,  # batch audit: read contracts + review, then output
+    )
+
+
+# ---------------------------------------------------------------------------
 # System prompt templates per role
 # ---------------------------------------------------------------------------
 
@@ -381,10 +488,16 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         '{\n  "files_written": ["path/to/file.py"],\n'
         '  "decisions": "brief non-obvious choices made",\n'
         '  "known_issues": "none | list of issues"\n}\n```\n\n'
-        "# SCRATCHPAD PROTOCOL — MANDATORY\n"
-        "Before your JSON output, ALWAYS write a brief summary to scratchpad:\n"
-        "  forge_scratchpad(\"write\", \"coder_<filename_stem>\", \"<what was built, key patterns used, contract decisions — max 300 chars>\")\n"
-        "This is REQUIRED — the Auditor reads this to understand your intent.\n"
+        "# PRIOR FILES CONTEXT\n"
+        "If your Context Files include `prior_files.md`, it contains summaries of\n"
+        "files already built in this tier. Use this to:\n"
+        "- Match established import patterns (import from the paths shown)\n"
+        "- Reuse naming conventions (if User model uses UUID pk, so should Project)\n"
+        "- Avoid conflicts (don't redefine exports that already exist)\n\n"
+        "# ACTIVITY LOG — MANDATORY\n"
+        "Before your JSON output, log what you did to the build scratchpad:\n"
+        "  forge_scratchpad(\"write\", \"coder_<filename_stem>\", \"<what was built — max 300 chars>\")\n"
+        "This is displayed to the user in the build activity panel.\n"
     ),
     SubAgentRole.AUDITOR: (
         "You are an **Auditor** sub-agent in the Forge build system.\n\n"
@@ -464,10 +577,15 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "  and mock imports are acceptable even if not in stack contract).\n"
         "- If you cannot determine whether an import is valid: set severity to\n"
         "  \"warn\" not \"error\" — let the Fixer investigate rather than false-failing.\n\n"
-        "# SCRATCHPAD PROTOCOL — MANDATORY\n"
-        "Before your JSON output, ALWAYS write your verdict to scratchpad:\n"
+        "# PRIOR FILES CONTEXT\n"
+        "If your Context Files include `prior_files.md`, use it to verify:\n"
+        "- Imports reference files that actually exist (listed in prior_files.md)\n"
+        "- Exports don't conflict with already-built files\n"
+        "- Naming conventions are consistent across the tier\n\n"
+        "# ACTIVITY LOG — MANDATORY\n"
+        "Before your JSON output, log your verdict to scratchpad:\n"
         "  forge_scratchpad(\"write\", \"audit_<filename_stem>\", \"PASS|FAIL: <key findings or 'clean' — max 200 chars>\")\n"
-        "This is REQUIRED — the Builder and Fixer need your verdict for pipeline decisions.\n"
+        "This is displayed to the user in the build activity panel.\n"
     ),
     SubAgentRole.FIXER: (
         "You are a **Fixer** sub-agent in the Forge build system.\n\n"
@@ -534,10 +652,10 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         '  "edits_applied": 3,\n'
         '  "remaining_issues": "none | description of unfixable issues"\n'
         '}\n```\n\n'
-        "# SCRATCHPAD PROTOCOL\n"
-        "ALWAYS record what was changed after fixing:\n"
+        "# ACTIVITY LOG\n"
+        "After fixing, log what was changed to scratchpad:\n"
         "  forge_scratchpad(\"write\", \"fixes_applied\", \"<path:line — what was fixed>\")\n"
-        "This is MANDATORY — call forge_scratchpad BEFORE your JSON output.\n"
+        "This is displayed to the user in the build activity panel.\n"
         "Keep under 300 chars total.\n"
     ),
 }
@@ -555,6 +673,83 @@ This is a rapid scaffold, NOT a production build. Adjust your output accordingly
 - No CI/CD configuration or deployment scripts
 - Minimal dependencies — only what the core feature needs
 """
+
+
+# ---------------------------------------------------------------------------
+# Batch auditor prompt — reviews all tier files in a single LLM call
+# ---------------------------------------------------------------------------
+
+BATCH_AUDITOR_PROMPT = (
+    "You are a **Batch Auditor** sub-agent in the Forge build system.\n\n"
+    "# ROLE\n"
+    "Review ALL files for a build tier in a single pass. You have READ-ONLY\n"
+    "access — you CANNOT modify any files. Your per-file verdicts determine\n"
+    "which files ship and which get sent to the Fixer.\n\n"
+    "# INPUTS\n"
+    "All files for this tier are provided in your **Context Files** section.\n"
+    "Do NOT re-read them with read_file — they are already in your context.\n\n"
+    "# PROCESS\n"
+    "Step 1. Review the contracts in your Context Files section (contract_stack.md,\n"
+    "  contract_boundaries.md are pre-loaded). Fetch ONLY missing contracts:\n"
+    "  - `forge_get_contract('physics')` — if checking API endpoints\n"
+    "  - `forge_get_contract('schema')` — if checking DB models\n"
+    "  Do NOT use forge_get_project_contract — use forge_get_contract instead.\n"
+    "Step 2. For EACH file, check against the severity table below.\n"
+    "Step 3. Output your batch verdict JSON.\n\n"
+    "# SEVERITY TABLE — what triggers FAIL vs PASS\n\n"
+    "## FAIL (severity: \"error\") — these MUST be fixed:\n"
+    "- Import references a module that does not exist in workspace or stack\n"
+    "- Function/class referenced but never defined or imported\n"
+    "- Layer boundary violation (router imports repo, service imports router)\n"
+    "- API endpoint shape doesn't match physics contract\n"
+    "- Database table/column doesn't match schema contract\n"
+    "- Syntax error (missing colon, unmatched brackets, invalid Python)\n"
+    "- File doesn't match its stated purpose at all\n"
+    "- Missing return type on public function signatures\n"
+    "- Hardcoded secrets or credentials (not env vars)\n\n"
+    "## PASS with WARNING (severity: \"warn\") — note but do NOT fail:\n"
+    "- Minor naming inconsistency\n"
+    "- Missing error handling on a non-critical path\n"
+    "- Unused import\n"
+    "- TODO marker left by Coder\n\n"
+    "## IGNORE — do NOT flag these:\n"
+    "- Style preferences (quotes, commas)\n"
+    "- Missing docstrings or comments\n"
+    "- Code that works but could be \"more elegant\"\n"
+    "- Test file structure or naming conventions\n\n"
+    "A file with only warnings gets verdict PASS. Only errors trigger FAIL.\n\n"
+    "# CROSS-FILE CHECKS (batch advantage)\n"
+    "Because you see ALL tier files at once, also check:\n"
+    "- Imports between files in this tier resolve correctly\n"
+    "- Shared types/interfaces are consistent across files\n"
+    "- No circular imports within the tier\n\n"
+    "# OUTPUT FORMAT — MANDATORY\n"
+    "Output exactly this JSON structure with one entry per file:\n"
+    "```json\n"
+    '{\n'
+    '  "files": [\n'
+    '    {\n'
+    '      "path": "relative/path/to/file.py",\n'
+    '      "verdict": "PASS",\n'
+    '      "findings": []\n'
+    '    },\n'
+    '    {\n'
+    '      "path": "relative/path/to/other.py",\n'
+    '      "verdict": "FAIL",\n'
+    '      "findings": [\n'
+    '        {"line": 42, "severity": "error", "message": "concise description"}\n'
+    '      ]\n'
+    '    }\n'
+    '  ]\n'
+    '}\n```\n\n'
+    "IMPORTANT: Include ALL files from Context Files in your output, even if PASS.\n"
+    "If a file is structurally sound: verdict=PASS, findings=[].\n\n"
+    "# CONSTRAINTS\n"
+    "- Do NOT re-read files — use context provided\n"
+    "- Review ALL files, do not skip any\n"
+    "- Be efficient — one pass through all files, then output\n"
+    "- Do NOT flag style issues as errors\n"
+)
 
 
 def system_prompt_for_role(
@@ -610,8 +805,10 @@ class SubAgentHandoff:
     # Config overrides
     model: str = ""  # empty → use default for role
     max_tokens: int = 16_384
+    max_tool_rounds: int = 0  # 0 → use default for role; >0 → override
     timeout_seconds: float = 600.0
     build_mode: str = "full"  # "mini" or "full" — affects prompt scoping
+    system_prompt_override: str = ""  # non-empty → replaces role-based system prompt
 
     # Metadata
     handoff_id: str = ""  # auto-assigned if empty
@@ -1214,7 +1411,12 @@ async def run_sub_agent(
     # 3. Build system prompt — inject role-specific builder contract slice.
     #    §10 AEM stripped for all sub-agents; Scout/Fixer also lose §9/§1.
     #    Loaded once at module level for Anthropic prompt caching benefit.
-    sys_prompt = system_prompt_for_role(handoff.role, build_mode=handoff.build_mode)
+    #    system_prompt_override allows batch auditor to use a custom prompt.
+    sys_prompt = (
+        handoff.system_prompt_override
+        if handoff.system_prompt_override
+        else system_prompt_for_role(handoff.role, build_mode=handoff.build_mode)
+    )
     _contract_text = _contract_for_role(handoff.role)
     if _contract_text:
         sys_prompt += f"\n\n## builder_contract (governance)\n{_contract_text}"
@@ -1309,14 +1511,22 @@ async def run_sub_agent(
     # conversations.  Each round re-sends full message history, so cumulative
     # token cost across rounds grows quadratically.  Capping rounds is the
     # primary defense against runaway costs.
-    _MAX_TOOL_ROUNDS: dict[SubAgentRole, int] = {
-        SubAgentRole.SCOUT: 4,     # list_dir + read_file + search_code (fallback path only)
-        SubAgentRole.CODER: 8,     # contracts pre-loaded; write + syntax check + fix cycles
-        SubAgentRole.AUDITOR: 8,   # fetch contracts + review
-        SubAgentRole.FIXER: 10,    # read + edit + syntax check per finding (2-3 findings typical)
-    }
-    max_tool_rounds = _MAX_TOOL_ROUNDS.get(handoff.role, 25)
+    #
+    # The handoff can carry a per-file override (from max_rounds_for_file()).
+    # If not set (0), fall back to the role default.
+    max_tool_rounds = (
+        handoff.max_tool_rounds
+        if handoff.max_tool_rounds > 0
+        else _DEFAULT_TOOL_ROUNDS.get(handoff.role, 25)
+    )
     tool_rounds = 0
+
+    # Early-termination tracking for CODER role.
+    # Once the file is written and syntax checks clean, allow 1 grace round
+    # (for scratchpad + summary JSON) then stop — prevents wasted rounds.
+    _et_wrote_file = False
+    _et_syntax_clean = False
+    _et_grace_rounds = 1  # how many rounds to allow after task completion
 
     try:
         while tool_rounds < max_tool_rounds:
@@ -1519,6 +1729,32 @@ async def run_sub_agent(
             )
 
             text_chunks.clear()
+
+            # ── Early termination for CODER ──
+            # Once write_file has been called and check_syntax passed, the task
+            # is functionally done.  Allow a grace round for scratchpad/summary
+            # then break — saves 2-5 wasted rounds on simple files.
+            if handoff.role == SubAgentRole.CODER:
+                for tc in tool_calls_this_round:
+                    if tc["name"] == "write_file":
+                        _et_wrote_file = True
+                    if tc["name"] == "check_syntax":
+                        _res = str(tc.get("result", "")).lower()
+                        if "error" not in _res and "syntax" not in _res:
+                            _et_syntax_clean = True
+                        else:
+                            _et_syntax_clean = False  # reset on failure
+
+                if _et_wrote_file and _et_syntax_clean:
+                    _et_grace_rounds -= 1
+                    if _et_grace_rounds < 0:
+                        logger.debug(
+                            "Early termination: CODER for %s — file written + syntax clean, "
+                            "stopping after round %d/%d",
+                            handoff.files[0] if handoff.files else "?",
+                            tool_rounds, max_tool_rounds,
+                        )
+                        break
 
             # Compact old tool results to bound O(n²) context growth
             if tool_rounds > 2:

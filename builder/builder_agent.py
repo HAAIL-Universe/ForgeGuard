@@ -62,7 +62,22 @@ from app.services.build.subagent import (  # noqa: E402
     SubAgentHandoff,
     SubAgentResult,
     SubAgentRole,
+    max_rounds_for_file,
     run_sub_agent,
+)
+from app.services.build.pipeline_state import (  # noqa: E402
+    FilePipelineState,
+    PipelineStateManager,
+    HandoffData,
+    SCOUT_READ_KEYS,
+    CODER_READ_KEYS,
+    AUDITOR_READ_KEYS,
+    FIXER_READ_KEYS,
+    SCOUT_TO_CODER_FILTER,
+    CODER_TO_AUDITOR_FILTER,
+    AUDITOR_TO_FIXER_FILTER,
+    _state_to_context_files,
+    _extract_exports,
 )
 
 logger = logging.getLogger(__name__)
@@ -242,6 +257,8 @@ class BuilderResult:
     sub_agent_results: list = field(default_factory=list)
     iterations: int = 0
     fixed_findings: str = ""                    # Summary of issues FIXER resolved (for lessons learned)
+    audit_verdict: str = ""                     # "PASS" | "FAIL" | "PENDING" (batch mode)
+    pipeline_state_mgr: Any = None              # PipelineStateManager — for lesson/export extraction
 
 
 class BuilderError(Exception):
@@ -342,6 +359,7 @@ async def run_builder(
     tier_scout_context: dict | None = None,
     project_id: str = "",
     context_files: dict[str, str] | None = None,
+    skip_audit: bool = False,
 ) -> BuilderResult:
     """
     Run the Builder Agent pipeline for a single file.
@@ -390,6 +408,26 @@ async def run_builder(
     total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     sub_agent_results: list[SubAgentResult] = []
     deliverables_text = _phase_deliverables_text(phase_deliverables)
+
+    # Typed pipeline state — source of truth for agent context assembly
+    _contracts_for_state: dict[str, str] = {}
+    if context_files:
+        _contracts_for_state = {k: v for k, v in context_files.items() if k.startswith("contract_")}
+    state_mgr = PipelineStateManager(FilePipelineState, {
+        "file_path": file_path,
+        "file_entry": file_entry,
+        "build_id": build_id,
+        "project_id": project_id,
+        "phase_index": phase_index,
+        "contracts": _contracts_for_state,
+        "phase_deliverables": deliverables_text,
+        "audit_findings": [],
+        "fixes_applied": [],
+        "integration_findings": [],
+        "prior_file_summaries": [],
+        "artifact_trail": {},
+        "errors": [],
+    })
 
     if verbose:
         _blog(f"\n{_TAG_BUILDER} ── Building: {_C_BOLD}{file_path}{_C_RESET} ──")
@@ -505,6 +543,17 @@ async def run_builder(
 
     _role_timings["scout"] = _time_mod.monotonic() - _scout_t0
 
+    # Update pipeline state with scout findings
+    if scout_result is not None and scout_result.structured_output:
+        _so = scout_result.structured_output
+        state_mgr.apply_update({
+            "scout_analysis": _so,
+            "scout_directives": _so.get("directives", []),
+            "scout_interfaces": _so.get("key_interfaces", []),
+            "scout_patterns": _so.get("patterns", {}),
+            "scout_imports_map": _so.get("imports_map", {}),
+        })
+
     # ────────────────────────────────────────────────────────────────────────
     # (2) CHECK STOP SIGNAL
     # ────────────────────────────────────────────────────────────────────────
@@ -526,16 +575,19 @@ async def run_builder(
     if verbose:
         _blog(f"{_TAG_CODER}   [2/3+] Generating {file_path}")
 
-    # Merge scout's structured output + provided context into coder's context_files.
-    # Labeled context_files dict preserves contract names (contract_stack.md etc.)
-    # so agents can identify pre-loaded contracts and skip redundant tool fetches.
-    coder_context: dict[str, str] = {}
-    if scout_result is not None and scout_result.structured_output:
-        coder_context["scout_analysis.json"] = json.dumps(
-            scout_result.structured_output, indent=2
-        )
+    # Build CODER's context from pipeline state (typed, scoped)
+    _coder_handoff_data = SCOUT_TO_CODER_FILTER(HandoffData(
+        pipeline_state=state_mgr.scoped_read(CODER_READ_KEYS),
+        prior_stage_output=scout_result.structured_output if scout_result else {},
+        tool_call_log=scout_result.files_read if scout_result else [],
+        text_output=scout_result.text_output if scout_result else "",
+    ))
+    coder_context: dict[str, str] = _state_to_context_files(_coder_handoff_data.pipeline_state)
+    # Merge non-contract context_files (dependencies, disk context, interface_map)
     if context_files:
-        coder_context.update(context_files)
+        for k, v in context_files.items():
+            if k not in coder_context:
+                coder_context[k] = v
     elif context:
         for i, ctx_content in enumerate(context):
             coder_context[f"context_{i + 1}.txt"] = ctx_content
@@ -557,6 +609,7 @@ async def run_builder(
         contracts_text="",               # pull-first: Coder fetches via tools
         phase_deliverables=deliverables_text,
         build_mode=build_mode,
+        max_tool_rounds=max_rounds_for_file(SubAgentRole.CODER, file_entry),
     )
 
     coder_result = await run_sub_agent(
@@ -571,7 +624,8 @@ async def run_builder(
     if verbose:
         status_str = coder_result.status.value if hasattr(coder_result.status, "value") else str(coder_result.status)
         files_written = coder_result.files_written
-        _blog(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) [{coder_result.tool_rounds}/8r] {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
+        _coder_cap = coder_handoff.max_tool_rounds or 8
+        _blog(f"{_TAG_CODER}   Done: {status_str} (wrote {files_written}) [{coder_result.tool_rounds}/{_coder_cap}r] {_C_TOKENS}({coder_result.input_tokens + coder_result.output_tokens} tokens){_C_RESET}")
 
     if turn_callback is not None:
         turn_callback({
@@ -611,6 +665,64 @@ async def run_builder(
         )
 
     _role_timings["coder"] = _time_mod.monotonic() - _coder_t0
+
+    # Update pipeline state with coder output
+    _file_abs_for_state = working_dir / file_path
+    _generated_code = ""
+    if _file_abs_for_state.exists():
+        try:
+            _generated_code = _file_abs_for_state.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    _coder_so = coder_result.structured_output or {}
+    state_mgr.apply_update({
+        "generated_code": _generated_code,
+        "coder_decisions": _coder_so.get("decisions", ""),
+        "coder_known_issues": _coder_so.get("known_issues", ""),
+        "files_written": coder_result.files_written,
+        "artifact_trail": {file_path: "created"},
+    })
+
+    # ────────────────────────────────────────────────────────────────────────
+    # (3b) BATCH AUDIT MODE — skip per-file auditing, defer to tier-level batch
+    # ────────────────────────────────────────────────────────────────────────
+    if skip_audit:
+        file_abs = working_dir / file_path
+        final_content = ""
+        if file_abs.exists():
+            try:
+                final_content = file_abs.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.error("Could not read %s for skip_audit return: %s", file_abs, e)
+        if verbose:
+            _blog(f"{_TAG_AUDITOR}   {_C_DIM}Deferred to batch audit{_C_RESET} for {file_path}")
+        result = BuilderResult(
+            file_path=file_path,
+            content=final_content,
+            status="completed",
+            audit_verdict="PENDING",
+            token_usage=total_usage,
+            sub_agent_results=sub_agent_results,
+            iterations=len(sub_agent_results),
+        )
+        if verbose:
+            _print_summary(result)
+        _pipeline_elapsed = _time_mod.monotonic() - _pipeline_t0
+        _ext = Path(file_path).suffix or "none"
+        _total_in = total_usage.get("input_tokens", 0)
+        _total_out = total_usage.get("output_tokens", 0)
+        _total_cost = sum(getattr(sar, "cost_usd", 0.0) for sar in sub_agent_results)
+        logger.info(
+            "METRIC | type=file_pipeline | file=%s | ext=%s | status=%s | "
+            "verdict=%s | fixer_ran=false | first_pass=deferred | "
+            "scout_s=%.1f | coder_s=%.1f | auditor_s=0.0 | fixer_s=0.0 | "
+            "wall_s=%.1f | in=%d | out=%d | cost_usd=%.4f",
+            file_path, _ext, "completed",
+            "PENDING",
+            _role_timings["scout"], _role_timings["coder"],
+            _pipeline_elapsed, _total_in, _total_out, _total_cost,
+        )
+        return result
 
     # ────────────────────────────────────────────────────────────────────────
     # (4) AUDITOR → FIXER loop (max MAX_FIX_RETRIES fix attempts)
@@ -664,17 +776,28 @@ async def run_builder(
                     iterations=len(sub_agent_results),
                 )
 
-            # Read the file from disk for auditor context
+            # Refresh generated_code in state from disk (fixer may have changed it)
             file_abs = working_dir / file_path
-            auditor_context: dict[str, str] = {}
             if file_abs.exists():
                 try:
-                    auditor_context[file_path] = file_abs.read_text(encoding="utf-8")
+                    state_mgr.apply_update({
+                        "generated_code": file_abs.read_text(encoding="utf-8"),
+                    })
                 except Exception as e:
                     logger.warning("Could not read %s for auditor: %s", file_abs, e)
 
-            # Pre-load contracts into auditor context to eliminate redundant
-            # MCP/HTTP tool fetches (which 404 — see contract_fetching plan).
+            # Build AUDITOR's context from pipeline state (typed, scoped)
+            _auditor_handoff_data = CODER_TO_AUDITOR_FILTER(HandoffData(
+                pipeline_state=state_mgr.scoped_read(AUDITOR_READ_KEYS),
+                prior_stage_output=coder_result.structured_output or {},
+                tool_call_log=[],
+                text_output=coder_result.text_output if coder_result else "",
+            ))
+            auditor_context: dict[str, str] = _state_to_context_files(
+                _auditor_handoff_data.pipeline_state,
+            )
+            # Auditor gets only contracts from context_files (not deps)
+            # — the file under review + contracts are already in state
             if context_files:
                 for k, v in context_files.items():
                     if k.startswith("contract_") and k not in auditor_context:
@@ -696,6 +819,7 @@ async def run_builder(
                 contracts_text="",
                 phase_deliverables=deliverables_text,
                 build_mode=build_mode,
+                max_tool_rounds=max_rounds_for_file(SubAgentRole.AUDITOR, file_entry),
             )
 
             auditor_result = await run_sub_agent(
@@ -732,11 +856,20 @@ async def run_builder(
                     "File was not formally reviewed.\n" + last_audit_findings
                 )
 
+            # Update pipeline state with audit results (findings APPEND via reducer)
+            _audit_findings_list = auditor_result.structured_output.get("findings", []) if auditor_result.structured_output else []
+            state_mgr.apply_update({
+                "audit_verdict": audit_verdict,
+                "audit_findings": _audit_findings_list,
+                "audit_cycle": fix_attempt,
+            })
+
             if verbose:
                 _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
                 status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
                 _v_color = _C_CODER if audit_verdict == "PASS" else "\033[31m"
-                _blog(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} [{auditor_result.tool_rounds}/8r] {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
+                _audit_cap = auditor_handoff.max_tool_rounds or 8
+                _blog(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} [{auditor_result.tool_rounds}/{_audit_cap}r] {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
 
             # --- Audit findings metric ---
             _findings = auditor_result.structured_output.get("findings", []) if auditor_result.structured_output else []
@@ -851,6 +984,28 @@ async def run_builder(
             if verbose:
                 _blog(f"{_TAG_FIXER}   Applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
 
+            # Update integration findings in state if present
+            if integration_findings:
+                state_mgr.apply_update({
+                    "integration_findings": [{"severity": "error", "message": integration_findings}],
+                })
+
+            # Build FIXER's context from pipeline state (typed, scoped)
+            _fixer_handoff_data = AUDITOR_TO_FIXER_FILTER(HandoffData(
+                pipeline_state=state_mgr.scoped_read(FIXER_READ_KEYS),
+                prior_stage_output=auditor_result.structured_output or {},
+                tool_call_log=[],
+                text_output=auditor_result.text_output if auditor_result else "",
+            ))
+            fixer_context: dict[str, str] = _state_to_context_files(
+                _fixer_handoff_data.pipeline_state,
+            )
+            # Fixer gets only contracts from context_files (not deps)
+            if context_files:
+                for k, v in context_files.items():
+                    if k.startswith("contract_") and k not in fixer_context:
+                        fixer_context[k] = v
+
             fixer_handoff = SubAgentHandoff(
                 role=SubAgentRole.FIXER,
                 build_id=_build_uuid,
@@ -861,7 +1016,7 @@ async def run_builder(
                 ),
                 project_id=_project_uuid,
                 files=[file_path],
-                context_files=auditor_context,
+                context_files=fixer_context,
                 contracts_text="",
                 phase_deliverables=deliverables_text,
                 error_context=combined_findings,
@@ -889,6 +1044,15 @@ async def run_builder(
                     "status": fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status),
                     "tokens": fixer_result.input_tokens + fixer_result.output_tokens,
                 })
+
+            # Update pipeline state with fixer results (fixes APPEND via reducer)
+            state_mgr.apply_update({
+                "fixes_applied": [{
+                    "finding_ref": combined_findings[:200],
+                    "change": f"fixer attempt {fix_attempt + 1}",
+                }],
+                "artifact_trail": {file_path: "modified"},
+            })
 
             # --- Fixer detail metric ---
             _fixer_status = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
@@ -933,6 +1097,8 @@ async def run_builder(
             sub_agent_results=sub_agent_results,
             iterations=iterations,
             fixed_findings=_last_combined_findings if _fixer_ran else "",
+            audit_verdict="FAIL",
+            pipeline_state_mgr=state_mgr,
         )
     else:
         result = BuilderResult(
@@ -943,6 +1109,8 @@ async def run_builder(
             sub_agent_results=sub_agent_results,
             iterations=iterations,
             fixed_findings=_resolved_findings,
+            audit_verdict=audit_verdict,
+            pipeline_state_mgr=state_mgr,
         )
 
     if verbose:

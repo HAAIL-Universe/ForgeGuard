@@ -1555,7 +1555,10 @@ async def execute_tier(
     Returns ``(written_files, lessons_learned)`` — written_files is ``{path: content}``,
     lessons_learned is accumulated findings summary for downstream tiers/chunks.
     """
-    from .subagent import build_context_pack, SubAgentResult
+    from .subagent import (
+        build_context_pack, SubAgentResult, SubAgentRole,
+        build_batch_auditor_handoff, run_sub_agent, SubAgentHandoff,
+    )
     from .verification import _is_test_file
     from .integration_audit import run_integration_audit as _run_integ_audit
     from builder.builder_agent import run_builder, BuilderError  # noqa: E402
@@ -1660,8 +1663,24 @@ async def execute_tier(
     if lessons_learned:
         _lessons_parts.append(lessons_learned)
 
+    # Structured tier state — typed lessons + completed file summaries
+    from app.services.build.pipeline_state import (
+        TierState, PipelineStateManager,
+        _extract_exports, _extract_lessons_from_result, _lessons_to_context,
+        make_empty_lessons,
+    )
+    _tier_state_mgr = PipelineStateManager(TierState, {
+        "tier_index": tier_index,
+        "phase_index": phase_index,
+        "build_id": str(build_id),
+        "completed_files": [],
+        "lessons": make_empty_lessons(),
+        "tier_scout": _tier_scout or {},
+        "contracts": _tier_contracts,
+    })
+
     tier_written: dict[str, str] = {}
-    _tier_lock = asyncio.Lock()  # protects tier_written
+    _tier_lock = asyncio.Lock()  # protects tier_written + _tier_state_mgr
     _tier_costs: list[float] = []  # per-file costs for tier summary
 
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
@@ -1777,11 +1796,33 @@ async def execute_tier(
                 )
 
         async with _semaphore:
-            # Build lessons snapshot under lock
+            # Build lessons snapshot under lock (structured + legacy string)
             async with _lessons_lock:
                 _current_lessons = "\n".join(_lessons_parts)
                 if len(_current_lessons) > _LESSONS_CAP:
                     _current_lessons = _current_lessons[-_LESSONS_CAP:]
+
+            # Inject structured lessons + prior file summaries into context
+            async with _tier_lock:
+                _tier_snapshot = _tier_state_mgr.state
+            _structured_lessons = _tier_snapshot.get("lessons", {})
+            _prior_summaries = _tier_snapshot.get("completed_files", [])
+
+            # Override lessons_learned with structured version if available
+            _lessons_text = _lessons_to_context(_structured_lessons)
+            _effective_lessons = _lessons_text if _lessons_text.strip() else _current_lessons
+
+            # Inject prior file summaries into context_files
+            if _prior_summaries:
+                _summary_lines = []
+                for s in _prior_summaries[-10:]:
+                    _exports = ", ".join(s.get("key_exports", [])[:5])
+                    _summary_lines.append(
+                        f"- `{s['path']}`: {s.get('purpose', '')} — exports: {_exports}"
+                    )
+                context_files["prior_files.md"] = (
+                    "## Previously Built Files\n" + "\n".join(_summary_lines)
+                )
 
             result = await run_builder(
                 file_entry=file_entry,
@@ -1796,12 +1837,13 @@ async def execute_tier(
                 build_mode=build_mode,
                 integration_check=_per_file_integration_check,
                 turn_callback=_on_builder_turn,
-                lessons_learned=_current_lessons,
+                lessons_learned=_effective_lessons,
                 stop_event=stop_event,
                 phase_index=phase_index,
                 tier_scout_context=_tier_scout,
                 project_id=str(project_id) if project_id else "",
                 context_files=context_files,
+                skip_audit=True,
             )
 
         if result.status == "completed" and result.content:
@@ -1848,6 +1890,25 @@ async def execute_tier(
                     f"[{fp}] Fixed: {result.fixed_findings[:300]}"
                 )
 
+        # Structured lessons + completed file summaries (tier state)
+        async with _tier_lock:
+            # Extract structured lessons from pipeline state manager
+            if getattr(result, "pipeline_state_mgr", None) is not None:
+                _file_lessons = _extract_lessons_from_result(result, result.pipeline_state_mgr)
+                _tier_state_mgr.apply_update({"lessons": _file_lessons})
+
+            # Add file summary for cross-file context
+            _file_exports = _extract_exports(result.content) if result.content else []
+            _tier_state_mgr.apply_update({
+                "completed_files": [{
+                    "path": fp,
+                    "purpose": file_entry.get("purpose", ""),
+                    "key_exports": _file_exports,
+                    "patterns_used": [],
+                    "audit_verdict": getattr(result, "audit_verdict", ""),
+                }],
+            })
+
         # Accumulate cost from all sub-agents in the pipeline
         _file_cost = 0.0
         for sar in result.sub_agent_results:
@@ -1878,6 +1939,215 @@ async def execute_tier(
         run_one_file(fe, idx) for idx, fe in enumerate(tier_files)
     ], return_exceptions=False)
 
+    # ────────────────────────────────────────────────────────────────────────
+    # BATCH AUDIT — one LLM call reviews all tier files, fixers for failures
+    # ────────────────────────────────────────────────────────────────────────
+    if tier_written:
+        # Filter out trivial files that don't need auditing
+        _audit_files: dict[str, str] = {}
+        for _fp, _content in tier_written.items():
+            _stripped = _content.strip()
+            if len(_stripped) < 50:
+                continue  # trivial content — auto-pass
+            if _is_test_file(_fp):
+                continue  # test files — auto-pass
+            _audit_files[_fp] = _content
+
+        if _audit_files:
+            await _state._broadcast_build_event(user_id, build_id, "build_log", {
+                "message": (
+                    f"Tier {tier_index}: batch audit — {len(_audit_files)} file(s) "
+                    f"(skipped {len(tier_written) - len(_audit_files)} trivial/test)"
+                ),
+                "source": "auditor",
+                "level": "info",
+            })
+
+            _batch_handoff = build_batch_auditor_handoff(
+                build_id=build_id,
+                user_id=user_id,
+                tier_files=_audit_files,
+                project_id=project_id,
+                contracts=_tier_contracts,
+                build_mode=build_mode,
+            )
+            _batch_result = await run_sub_agent(
+                _batch_handoff,
+                working_dir,
+                audit_api_key or api_key,
+                stop_event=stop_event,
+            )
+
+            # Accumulate batch audit cost
+            if isinstance(_batch_result, SubAgentResult):
+                _tier_costs.append(_batch_result.cost_usd)
+                try:
+                    await _accumulate_cost(
+                        build_id,
+                        _batch_result.input_tokens, _batch_result.output_tokens,
+                        _batch_result.model,
+                        Decimal(str(_batch_result.cost_usd)),
+                    )
+                except Exception:
+                    pass
+
+            # Parse batch audit verdicts
+            _batch_verdicts: dict[str, dict] = {}  # {path: {verdict, findings}}
+            _batch_output = _batch_result.structured_output or {}
+            _batch_files_list = _batch_output.get("files", [])
+            if not _batch_files_list and _batch_result.text_output:
+                # Try to parse from text output (fallback)
+                try:
+                    import re as _re_local
+                    _json_match = _re_local.search(
+                        r'\{[\s\S]*"files"[\s\S]*\}',
+                        _batch_result.text_output,
+                    )
+                    if _json_match:
+                        _parsed = json.loads(_json_match.group())
+                        _batch_files_list = _parsed.get("files", [])
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            for _fv in _batch_files_list:
+                _fv_path = _fv.get("path", "")
+                if _fv_path:
+                    _batch_verdicts[_fv_path] = {
+                        "verdict": _fv.get("verdict", "PASS"),
+                        "findings": _fv.get("findings", []),
+                    }
+
+            # Log batch audit results
+            _fail_count = sum(
+                1 for v in _batch_verdicts.values() if v["verdict"] == "FAIL"
+            )
+            _pass_count = len(_batch_verdicts) - _fail_count
+            # Files not mentioned in batch output default to PASS
+            _unmentioned = set(_audit_files.keys()) - set(_batch_verdicts.keys())
+            _pass_count += len(_unmentioned)
+
+            logger.info(
+                "METRIC | type=batch_audit | build=%s | tier=%d | "
+                "files_reviewed=%d | pass=%d | fail=%d | unmentioned=%d | "
+                "in=%d | out=%d | cost_usd=%.4f",
+                str(build_id)[:8], tier_index,
+                len(_audit_files), _pass_count, _fail_count, len(_unmentioned),
+                _batch_result.input_tokens, _batch_result.output_tokens,
+                _batch_result.cost_usd,
+            )
+
+            await _state._broadcast_build_event(user_id, build_id, "build_log", {
+                "message": (
+                    f"Tier {tier_index}: batch audit done — "
+                    f"{_pass_count} PASS, {_fail_count} FAIL"
+                ),
+                "source": "auditor",
+                "level": "info" if _fail_count == 0 else "warn",
+            })
+
+            # --- Dispatch per-file FIXER for failures ---
+            _failed_files = {
+                fp: info for fp, info in _batch_verdicts.items()
+                if info["verdict"] == "FAIL"
+            }
+            if _failed_files:
+                _MAX_BATCH_FIX_RETRIES = 2
+
+                for _fix_fp, _fix_info in _failed_files.items():
+                    _findings_text = "\n".join(
+                        f"  L{f.get('line', '?')} [{f.get('severity', '?')}]: "
+                        f"{f.get('message', '')}"
+                        for f in _fix_info.get("findings", [])
+                    )
+                    if not _findings_text:
+                        _findings_text = f"Batch audit verdict: FAIL for {_fix_fp}"
+
+                    await _state._broadcast_build_event(
+                        user_id, build_id, "build_log", {
+                            "message": f"Tier {tier_index}: fixing {_fix_fp}",
+                            "source": "fixer",
+                            "level": "info",
+                        },
+                    )
+
+                    # Read current file content for fixer context
+                    _fix_context: dict[str, str] = {}
+                    _fix_abs = Path(working_dir) / _fix_fp
+                    if _fix_abs.exists():
+                        try:
+                            _fix_context[_fix_fp] = _fix_abs.read_text(
+                                encoding="utf-8"
+                            )
+                        except Exception:
+                            pass
+                    # Include pre-fetched contracts
+                    for _ck, _cv in _tier_contracts.items():
+                        if _ck not in _fix_context:
+                            _fix_context[_ck] = _cv
+
+                    _fixer_handoff = SubAgentHandoff(
+                        role=SubAgentRole.FIXER,
+                        build_id=build_id,
+                        user_id=user_id,
+                        assignment=(
+                            f"Fix {_fix_fp}: apply surgical edits to resolve "
+                            f"the findings below. Use edit_file only — do NOT "
+                            f"rewrite the entire file with write_file."
+                        ),
+                        project_id=project_id,
+                        files=[_fix_fp],
+                        context_files=_fix_context,
+                        error_context=_findings_text,
+                        build_mode=build_mode,
+                    )
+
+                    _fixer_result = await run_sub_agent(
+                        _fixer_handoff,
+                        working_dir,
+                        audit_api_key or api_key,
+                        stop_event=stop_event,
+                    )
+
+                    # Accumulate fixer cost
+                    if isinstance(_fixer_result, SubAgentResult):
+                        _tier_costs.append(_fixer_result.cost_usd)
+                        try:
+                            await _accumulate_cost(
+                                build_id,
+                                _fixer_result.input_tokens,
+                                _fixer_result.output_tokens,
+                                _fixer_result.model,
+                                Decimal(str(_fixer_result.cost_usd)),
+                            )
+                        except Exception:
+                            pass
+
+                    logger.info(
+                        "METRIC | type=fixer_detail | file=%s | attempt=1/%d | "
+                        "status=%s | source=batch_audit",
+                        _fix_fp, _MAX_BATCH_FIX_RETRIES,
+                        _fixer_result.status.value
+                        if hasattr(_fixer_result.status, "value")
+                        else str(_fixer_result.status),
+                    )
+
+                    # Re-read fixed content and update tier_written
+                    if _fix_abs.exists():
+                        try:
+                            _fixed_content = _fix_abs.read_text(encoding="utf-8")
+                            async with _tier_lock:
+                                tier_written[_fix_fp] = _fixed_content
+                        except Exception:
+                            pass
+
+                    # Accumulate fixer lessons
+                    if _findings_text:
+                        async with _lessons_lock:
+                            _lessons_parts.append(
+                                f"[{_fix_fp}] Fixed (batch): "
+                                f"{_findings_text[:300]}"
+                            )
+
     # --- Tier summary metric ---
     _tier_elapsed = _time_mod.monotonic() - _tier_t0
     logger.info(
@@ -1904,9 +2174,14 @@ async def execute_tier(
         "file_count": len(tier_written),
     })
 
-    # Build final lessons string (capped)
-    _final_lessons = "\n".join(_lessons_parts)
-    if len(_final_lessons) > _LESSONS_CAP:
-        _final_lessons = _final_lessons[-_LESSONS_CAP:]
+    # Build final lessons — prefer structured, fall back to legacy string
+    _structured_final = _tier_state_mgr.state.get("lessons", {})
+    _structured_text = _lessons_to_context(_structured_final)
+    if _structured_text.strip():
+        _final_lessons = _structured_text
+    else:
+        _final_lessons = "\n".join(_lessons_parts)
+        if len(_final_lessons) > _LESSONS_CAP:
+            _final_lessons = _final_lessons[-_LESSONS_CAP:]
 
     return tier_written, _final_lessons

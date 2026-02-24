@@ -1766,31 +1766,30 @@ class TestCompactToolHistory:
 class TestMandatoryScratchpad:
     """Verify prompt updates: mandatory scratchpad, pre-loaded contracts, DB-direct tools."""
 
-    def test_coder_prompt_mandatory_scratchpad(self):
-        """CODER prompt must contain MANDATORY scratchpad protocol."""
+    def test_coder_prompt_activity_log(self):
+        """CODER prompt must contain ACTIVITY LOG section with scratchpad instruction."""
         from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
 
         prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.CODER]
         assert "MANDATORY" in prompt
-        assert "ALWAYS" in prompt
+        assert "ACTIVITY LOG" in prompt
         assert "coder_<filename_stem>" in prompt
 
-    def test_auditor_prompt_mandatory_scratchpad(self):
-        """AUDITOR prompt must contain MANDATORY scratchpad protocol."""
+    def test_auditor_prompt_activity_log(self):
+        """AUDITOR prompt must contain ACTIVITY LOG section with scratchpad instruction."""
         from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
 
         prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.AUDITOR]
         assert "MANDATORY" in prompt
-        assert "ALWAYS" in prompt
+        assert "ACTIVITY LOG" in prompt
         assert "audit_<filename_stem>" in prompt
 
-    def test_fixer_prompt_mandatory_scratchpad(self):
-        """FIXER prompt already had MANDATORY scratchpad — verify it still does."""
+    def test_fixer_prompt_activity_log(self):
+        """FIXER prompt contains ACTIVITY LOG section."""
         from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
 
         prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.FIXER]
-        assert "MANDATORY" in prompt
-        assert "ALWAYS" in prompt
+        assert "ACTIVITY LOG" in prompt
 
     def test_coder_prompt_contracts_preloaded(self):
         """CODER prompt says contracts are pre-loaded, not fetched via tools."""
@@ -1817,3 +1816,27 @@ class TestMandatoryScratchpad:
         assert "forge_get_contract" in prompt
         # forge_get_build_contracts only appears as a "Do NOT use" instruction
         assert "Do NOT use forge_get_build_contracts" in prompt
+
+    def test_coder_prior_files_context(self):
+        """CODER prompt includes PRIOR FILES CONTEXT section."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.CODER]
+        assert "PRIOR FILES CONTEXT" in prompt
+        assert "prior_files.md" in prompt
+
+    def test_auditor_prior_files_context(self):
+        """AUDITOR prompt includes PRIOR FILES CONTEXT section."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.AUDITOR]
+        assert "PRIOR FILES CONTEXT" in prompt
+        assert "prior_files.md" in prompt
+
+    def test_no_false_auditor_reads_scratchpad(self):
+        """Prompts should NOT claim auditor reads scratchpad (was dishonest)."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        coder_prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.CODER]
+        assert "Auditor reads this" not in coder_prompt
+        assert "the Auditor reads" not in coder_prompt
