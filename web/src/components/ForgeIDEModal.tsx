@@ -119,6 +119,10 @@ interface LogEntry {
     tools: { name: string; arg: string }[];
     turn: number;
   };
+  /** Unique ID for transient "done" entries that flash then move to LOG */
+  _flashId?: string;
+  /** True while the entry is in its flash period (panel → LOG transition) */
+  _transient?: boolean;
 }
 
 interface FindingEntry {
@@ -601,8 +605,9 @@ const AgentPanel = memo(function AgentPanel({
               const ts = log.timestamp ? fmtTs(log.timestamp) : '';
               const isLLMThinking = !!log.thinking;
               const isExpanded = isLLMThinking && expandedThinking.has(i);
+              const isTransient = !!log._transient;
               return (
-                <div key={i}>
+                <div key={i} style={isTransient ? { animation: 'flashDone 2.5s ease-out forwards', borderRadius: '3px' } : undefined}>
                   <div
                     style={{
                       display: 'flex', flexDirection: 'column',
@@ -947,6 +952,7 @@ const LogPane = memo(function LogPane({
             : isReasoning ? expandedReasoning.has(i)
             : isToolGroup ? expandedToolGroups.has(i) : false;
 
+          const isTransient = !!log._transient;
           const thinkingColor = isLLMThinking
             ? (log.worker === 'opus' ? '#D946EF' : '#38BDF8')
             : undefined;
@@ -955,7 +961,7 @@ const LogPane = memo(function LogPane({
           const reasoningColor = '#475569';
 
           return (
-            <div key={i}>
+            <div key={i} style={isTransient ? { animation: 'flashDone 2.5s ease-out forwards', borderRadius: '3px' } : undefined}>
               {!isReasoning && <div
                 style={{
                   color: isLLMThinking ? thinkingColor : isReasoning ? reasoningColor : color,
@@ -2998,13 +3004,27 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'subagent_done': {
               const doneWorker: 'sonnet' | 'opus' = (p.role === 'scout' || p.role === 'auditor') ? 'sonnet' : 'opus';
+              const _fid = `flash-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+              // Add to panel with transient flag — flashes briefly then migrates to LOG
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
                 source: p.role || 'agent',
                 level: 'info',
                 message: `✔ Sub-agent [${p.role}] done — ${(p.summary as string) || `${(p.files_written as string[])?.length || 0} files written`}`,
                 worker: doneWorker,
+                _flashId: _fid,
+                _transient: true,
               }]);
+
+              // After 2.5s, migrate from panel → LOG
+              setTimeout(() => {
+                setLogs((prev) => prev.map((l) =>
+                  l._flashId === _fid
+                    ? { ...l, worker: 'system' as const, _transient: false }
+                    : l
+                ));
+              }, 2500);
 
               // Live-update phase file status from sub-agent completions
               const targetFiles = (p.files as string[]) || [];
@@ -5315,6 +5335,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       )}
 
       <style>{`
+        @keyframes flashDone {
+          0% { opacity: 1; background: rgba(56, 189, 248, 0.15); }
+          70% { opacity: 1; background: rgba(56, 189, 248, 0.05); }
+          100% { opacity: 0.3; background: transparent; }
+        }
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
