@@ -602,6 +602,7 @@ class SubAgentHandoff:
     files: list[str] = field(default_factory=list)  # target file paths
 
     # Context (kept slim on purpose)
+    project_id: UUID | None = None  # needed for forge_get_contract DB-direct tool
     context_files: dict[str, str] = field(default_factory=dict)
     contracts_text: str = ""
     phase_deliverables: str = ""
@@ -1361,6 +1362,7 @@ async def run_sub_agent(
                         else:
                             tool_result = await execute_tool_async(
                                 event.name, event.input, working_dir,
+                                project_id=str(handoff.project_id) if handoff.project_id else "",
                                 build_id=str(handoff.build_id),
                             )
                     except Exception as te:
@@ -1476,6 +1478,10 @@ async def run_sub_agent(
             tool_rounds += 1
             text_chunks.clear()
 
+            # Compact old tool results to bound O(n²) context growth
+            if tool_rounds > 2:
+                _compact_tool_history(messages, keep_recent=2)
+
         # Success
         result.text_output = "".join(text_chunks)
         result.status = HandoffStatus.COMPLETED
@@ -1587,6 +1593,58 @@ async def run_sub_agent(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _compact_tool_history(
+    messages: list[dict],
+    *,
+    keep_recent: int = 2,
+    summary_chars: int = 200,
+) -> None:
+    """Replace old tool result content with brief summaries to bound context growth.
+
+    Multi-turn agentic loops re-send full message history every round, causing
+    O(n^2) token growth.  This function compacts tool results from older rounds
+    to short summaries, transforming the growth to O(n).
+
+    Industry precedent: LangChain ``trim_messages``, AutoGen ``clear_history``.
+
+    Mutates *messages* in place.  Never touches the first user message (the
+    original assignment at index 0) or assistant text blocks.
+    """
+    # Identify tool-round boundaries: a round is an assistant message with
+    # tool_use blocks followed by a user message with tool_result blocks.
+    round_indices: list[tuple[int, int]] = []  # (assistant_idx, user_idx)
+    for i in range(1, len(messages) - 1):
+        msg = messages[i]
+        next_msg = messages[i + 1] if i + 1 < len(messages) else None
+        if (
+            msg.get("role") == "assistant"
+            and isinstance(msg.get("content"), list)
+            and any(b.get("type") == "tool_use" for b in msg["content"] if isinstance(b, dict))
+            and next_msg
+            and next_msg.get("role") == "user"
+        ):
+            round_indices.append((i, i + 1))
+
+    if len(round_indices) <= keep_recent:
+        return  # nothing to compact
+
+    # Compact all rounds except the last `keep_recent`
+    rounds_to_compact = round_indices[: len(round_indices) - keep_recent]
+    for _asst_idx, user_idx in rounds_to_compact:
+        user_msg = messages[user_idx]
+        content = user_msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    raw = block.get("content", "")
+                    if isinstance(raw, str) and len(raw) > summary_chars + 20:
+                        block["content"] = (
+                            f"[Compacted] {raw[:summary_chars]}..."
+                        )
+        elif isinstance(content, str) and len(content) > summary_chars + 20:
+            user_msg["content"] = f"[Compacted] {content[:summary_chars]}..."
 
 
 def _trim_scout_output(data: dict) -> dict:

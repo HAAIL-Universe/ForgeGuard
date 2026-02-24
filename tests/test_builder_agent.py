@@ -1367,3 +1367,383 @@ class TestPerRoleToolRoundCaps:
 
         expected = {SubAgentRole.FIXER: 10}
         assert expected[SubAgentRole.FIXER] == 10
+
+
+# ---------------------------------------------------------------------------
+# 15. project_id threading through the build pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestProjectIdThreading:
+    """Verify project_id flows from SubAgentHandoff through to execute_tool_async."""
+
+    def test_project_id_on_handoff(self):
+        """SubAgentHandoff accepts project_id field."""
+        from app.services.build.subagent import SubAgentHandoff, SubAgentRole
+
+        pid = uuid4()
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=uuid4(),
+            user_id=uuid4(),
+            project_id=pid,
+            assignment="Write app/main.py",
+        )
+        assert h.project_id == pid
+
+    def test_project_id_defaults_to_none(self):
+        """project_id is optional — defaults to None for backward compat."""
+        from app.services.build.subagent import SubAgentHandoff, SubAgentRole
+
+        h = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=uuid4(),
+            user_id=uuid4(),
+            assignment="Write app/main.py",
+        )
+        assert h.project_id is None
+
+    @pytest.mark.asyncio
+    async def test_project_id_passed_to_execute_tool(self, tmp_path):
+        """run_sub_agent passes project_id to execute_tool_async."""
+        from app.services.build.subagent import (
+            SubAgentHandoff, SubAgentRole, run_sub_agent,
+        )
+
+        pid = uuid4()
+        handoff = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=uuid4(),
+            user_id=uuid4(),
+            project_id=pid,
+            assignment="Write app/main.py",
+            files=["app/main.py"],
+            build_mode="mini",
+        )
+
+        # Track what project_id execute_tool_async receives
+        captured_project_ids: list[str] = []
+
+        async def mock_execute_tool(name, inp, wd, project_id="", **kw):
+            captured_project_ids.append(project_id)
+            return "OK: wrote app/main.py"
+
+        # Mock stream_agent to simulate a single write_file tool call then stop
+        from app.clients.agent_client import ToolCall
+
+        async def mock_stream(*args, **kwargs):
+            yield ToolCall(id="tc_1", name="write_file", input={"path": "app/main.py", "content": "# test"})
+
+        with patch("app.services.build.subagent.execute_tool_async", side_effect=mock_execute_tool), \
+             patch("app.services.build.subagent.stream_agent", side_effect=mock_stream), \
+             patch("app.services.build.subagent._state", MagicMock(_broadcast_build_event=AsyncMock())):
+            result = await run_sub_agent(handoff, str(tmp_path), "sk-test")
+
+        assert len(captured_project_ids) >= 1
+        assert captured_project_ids[0] == str(pid)
+
+    @pytest.mark.asyncio
+    async def test_project_id_none_passes_empty_string(self, tmp_path):
+        """When project_id is None, execute_tool_async receives empty string."""
+        from app.services.build.subagent import (
+            SubAgentHandoff, SubAgentRole, run_sub_agent,
+        )
+
+        handoff = SubAgentHandoff(
+            role=SubAgentRole.CODER,
+            build_id=uuid4(),
+            user_id=uuid4(),
+            # project_id not set — defaults to None
+            assignment="Write app/main.py",
+            files=["app/main.py"],
+            build_mode="mini",
+        )
+
+        captured_project_ids: list[str] = []
+
+        async def mock_execute_tool(name, inp, wd, project_id="", **kw):
+            captured_project_ids.append(project_id)
+            return "OK: wrote app/main.py"
+
+        from app.clients.agent_client import ToolCall
+
+        async def mock_stream(*args, **kwargs):
+            yield ToolCall(id="tc_1", name="write_file", input={"path": "app/main.py", "content": "# test"})
+
+        with patch("app.services.build.subagent.execute_tool_async", side_effect=mock_execute_tool), \
+             patch("app.services.build.subagent.stream_agent", side_effect=mock_stream), \
+             patch("app.services.build.subagent._state", MagicMock(_broadcast_build_event=AsyncMock())):
+            result = await run_sub_agent(handoff, str(tmp_path), "sk-test")
+
+        assert len(captured_project_ids) >= 1
+        assert captured_project_ids[0] == ""
+
+
+# ---------------------------------------------------------------------------
+# 16. Labeled context_files dict in run_builder
+# ---------------------------------------------------------------------------
+
+
+class TestLabeledContext:
+    """Verify context_files dict is used over flat list, contracts reach agents."""
+
+    @pytest.mark.asyncio
+    async def test_context_files_dict_used_over_list(self, tmp_path):
+        """When context_files dict is provided, coder_context uses real keys."""
+        from builder.builder_agent import run_builder, BuilderResult
+
+        captured_handoffs: list = []
+
+        async def mock_run_sub_agent(handoff, working_dir, api_key, **kwargs):
+            captured_handoffs.append(handoff)
+            if handoff.role.value == "coder":
+                r = _make_sub_agent_result("coder", files_written=["app/main.py"])
+                return r
+            elif handoff.role.value == "auditor":
+                return _make_sub_agent_result("auditor", verdict="PASS")
+            return _make_sub_agent_result("scout")
+
+        (tmp_path / "app").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "app" / "main.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n",
+            encoding="utf-8",
+        )
+
+        with patch("builder.builder_agent.run_sub_agent", side_effect=mock_run_sub_agent):
+            await run_builder(
+                file_entry=FILE_ENTRY,
+                contracts=[],
+                context=[],
+                phase_deliverables=[],
+                working_dir=str(tmp_path),
+                build_id=BUILD_ID,
+                user_id=USER_ID,
+                api_key=API_KEY,
+                verbose=False,
+                context_files={"contract_stack.md": "Python FastAPI", "dep_file.py": "# dep"},
+            )
+
+        # Find the CODER handoff
+        coder_handoffs = [h for h in captured_handoffs if h.role.value == "coder"]
+        assert len(coder_handoffs) == 1
+        coder_ctx = coder_handoffs[0].context_files
+        assert "contract_stack.md" in coder_ctx
+        assert "dep_file.py" in coder_ctx
+        # Should NOT have generic context_1.txt
+        assert "context_1.txt" not in coder_ctx
+
+    @pytest.mark.asyncio
+    async def test_backward_compat_list_context(self, tmp_path):
+        """When context_files=None, falls back to context list with generic labels."""
+        from builder.builder_agent import run_builder
+
+        captured_handoffs: list = []
+
+        async def mock_run_sub_agent(handoff, working_dir, api_key, **kwargs):
+            captured_handoffs.append(handoff)
+            if handoff.role.value == "coder":
+                return _make_sub_agent_result("coder", files_written=["app/main.py"])
+            elif handoff.role.value == "auditor":
+                return _make_sub_agent_result("auditor", verdict="PASS")
+            return _make_sub_agent_result("scout")
+
+        (tmp_path / "app").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "app" / "main.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n",
+            encoding="utf-8",
+        )
+
+        with patch("builder.builder_agent.run_sub_agent", side_effect=mock_run_sub_agent):
+            await run_builder(
+                file_entry=FILE_ENTRY,
+                contracts=[],
+                context=["# existing code here"],
+                phase_deliverables=[],
+                working_dir=str(tmp_path),
+                build_id=BUILD_ID,
+                user_id=USER_ID,
+                api_key=API_KEY,
+                verbose=False,
+                # context_files not provided — uses default None
+            )
+
+        coder_handoffs = [h for h in captured_handoffs if h.role.value == "coder"]
+        assert len(coder_handoffs) == 1
+        coder_ctx = coder_handoffs[0].context_files
+        assert "context_1.txt" in coder_ctx
+
+    @pytest.mark.asyncio
+    async def test_contracts_injected_into_auditor(self, tmp_path):
+        """Auditor context includes pre-loaded contract_ keys from context_files."""
+        from builder.builder_agent import run_builder
+
+        captured_handoffs: list = []
+
+        async def mock_run_sub_agent(handoff, working_dir, api_key, **kwargs):
+            captured_handoffs.append(handoff)
+            if handoff.role.value == "coder":
+                return _make_sub_agent_result("coder", files_written=["app/main.py"])
+            elif handoff.role.value == "auditor":
+                return _make_sub_agent_result("auditor", verdict="PASS")
+            return _make_sub_agent_result("scout")
+
+        (tmp_path / "app").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "app" / "main.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health(): return {'ok': True}\n",
+            encoding="utf-8",
+        )
+
+        with patch("builder.builder_agent.run_sub_agent", side_effect=mock_run_sub_agent):
+            await run_builder(
+                file_entry=FILE_ENTRY,
+                contracts=[],
+                context=[],
+                phase_deliverables=[],
+                working_dir=str(tmp_path),
+                build_id=BUILD_ID,
+                user_id=USER_ID,
+                api_key=API_KEY,
+                verbose=False,
+                context_files={
+                    "contract_stack.md": "Python FastAPI",
+                    "contract_boundaries.md": "routers -> services -> repos",
+                    "some_dep.py": "# not a contract",
+                },
+            )
+
+        auditor_handoffs = [h for h in captured_handoffs if h.role.value == "auditor"]
+        assert len(auditor_handoffs) == 1
+        auditor_ctx = auditor_handoffs[0].context_files
+        # Contract keys should be injected
+        assert "contract_stack.md" in auditor_ctx
+        assert "contract_boundaries.md" in auditor_ctx
+        # Non-contract context should NOT be injected
+        assert "some_dep.py" not in auditor_ctx
+        # File being audited should still be there
+        assert "app/main.py" in auditor_ctx
+
+
+# ---------------------------------------------------------------------------
+# 17. _compact_tool_history — bounds O(n²) context growth
+# ---------------------------------------------------------------------------
+
+
+def _make_tool_round(round_num: int, result_text: str = "") -> list[dict]:
+    """Helper: build a (assistant tool_use, user tool_result) message pair."""
+    tid = f"tc_{round_num}"
+    if not result_text:
+        result_text = f"Result from round {round_num} " + ("x" * 300)
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": f"Calling tool round {round_num}"},
+                {"type": "tool_use", "id": tid, "name": "write_file", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": tid, "content": result_text},
+            ],
+        },
+    ]
+
+
+class TestCompactToolHistory:
+    """Verify _compact_tool_history bounds context growth correctly."""
+
+    def test_noop_when_few_rounds(self):
+        """Messages unchanged when total rounds <= keep_recent."""
+        from app.services.build.subagent import _compact_tool_history
+
+        messages = [
+            {"role": "user", "content": "Build app/main.py"},
+            *_make_tool_round(1),
+            *_make_tool_round(2),
+        ]
+        original_content = messages[2]["content"][0]["content"]  # round 1 result
+        _compact_tool_history(messages, keep_recent=2)
+        assert messages[2]["content"][0]["content"] == original_content
+
+    def test_compacts_old_rounds(self):
+        """Old tool_result content is replaced with [Compacted] summary."""
+        from app.services.build.subagent import _compact_tool_history
+
+        messages = [
+            {"role": "user", "content": "Build app/main.py"},
+            *_make_tool_round(1),  # idx 1,2 — should be compacted
+            *_make_tool_round(2),  # idx 3,4 — should be compacted
+            *_make_tool_round(3),  # idx 5,6 — recent, keep
+            *_make_tool_round(4),  # idx 7,8 — recent, keep
+        ]
+        _compact_tool_history(messages, keep_recent=2)
+        # Round 1 result (idx 2) should be compacted
+        r1 = messages[2]["content"][0]["content"]
+        assert r1.startswith("[Compacted]")
+        # Round 2 result (idx 4) should be compacted
+        r2 = messages[4]["content"][0]["content"]
+        assert r2.startswith("[Compacted]")
+
+    def test_preserves_recent_rounds(self):
+        """Last keep_recent rounds are untouched."""
+        from app.services.build.subagent import _compact_tool_history
+
+        messages = [
+            {"role": "user", "content": "Build app/main.py"},
+            *_make_tool_round(1),
+            *_make_tool_round(2),
+            *_make_tool_round(3),
+            *_make_tool_round(4),
+        ]
+        r3_original = messages[6]["content"][0]["content"]
+        r4_original = messages[8]["content"][0]["content"]
+        _compact_tool_history(messages, keep_recent=2)
+        assert messages[6]["content"][0]["content"] == r3_original
+        assert messages[8]["content"][0]["content"] == r4_original
+
+    def test_preserves_initial_user_message(self):
+        """First user message (the assignment) is never compacted."""
+        from app.services.build.subagent import _compact_tool_history
+
+        long_assignment = "Build this file: " + ("y" * 500)
+        messages = [
+            {"role": "user", "content": long_assignment},
+            *_make_tool_round(1),
+            *_make_tool_round(2),
+            *_make_tool_round(3),
+        ]
+        _compact_tool_history(messages, keep_recent=1)
+        assert messages[0]["content"] == long_assignment
+
+    def test_preserves_assistant_text(self):
+        """Assistant text blocks within tool rounds are never modified."""
+        from app.services.build.subagent import _compact_tool_history
+
+        messages = [
+            {"role": "user", "content": "Build app/main.py"},
+            *_make_tool_round(1),
+            *_make_tool_round(2),
+            *_make_tool_round(3),
+        ]
+        asst_text = messages[1]["content"][0]["text"]  # round 1 assistant text
+        _compact_tool_history(messages, keep_recent=1)
+        # Assistant text should be unchanged
+        assert messages[1]["content"][0]["text"] == asst_text
+
+    def test_summary_capped_at_chars(self):
+        """Compacted content length is bounded by summary_chars + prefix."""
+        from app.services.build.subagent import _compact_tool_history
+
+        long_result = "A" * 2000
+        messages = [
+            {"role": "user", "content": "Build app/main.py"},
+            *_make_tool_round(1, result_text=long_result),
+            *_make_tool_round(2),
+            *_make_tool_round(3),
+        ]
+        _compact_tool_history(messages, keep_recent=1, summary_chars=100)
+        compacted = messages[2]["content"][0]["content"]
+        assert compacted.startswith("[Compacted]")
+        # "[Compacted] " = 12 chars, then 100 chars of content, then "..."
+        assert len(compacted) <= 12 + 100 + 3
