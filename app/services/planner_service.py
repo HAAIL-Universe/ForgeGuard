@@ -144,37 +144,63 @@ async def run_project_planner(
     _heartbeat = asyncio.create_task(
         _planner_heartbeat(user_id, build_id, _broadcast_build_event, interval=30)
     )
-    try:
-        result = await loop.run_in_executor(
-            None,
-            lambda: _call_planner_sync(
-                run_planner_fn=run_planner,
-                PlannerError=PlannerError,
-                project_request=project_manifest,
-                api_key=api_key,
-                stop_event=_stop_event,
-                model=_planner_model,
-                turn_callback=turn_callback,
-                stream_callback=stream_callback,
-                thinking_budget=_planner_thinking_budget,
-                thinking_model=_planner_thinking_model,
-                max_phases=max_phases,
-                contract_fetcher=contract_fetcher,
-            ),
-        )
-    except asyncio.CancelledError:
-        _stop_event.set()
-        _heartbeat.cancel()
-        raise
-    except Exception as exc:
-        await _log(f"Project planner crashed: {exc}", "error")
-        return None
-    finally:
-        _heartbeat.cancel()
+
+    # Retry with exponential backoff for transient API errors (overloaded,
+    # rate-limited, 5xx).  Max 3 attempts with 5s / 15s waits.
+    _MAX_RETRIES = 3
+    _BACKOFF_SECS = [5, 15]  # wait before retry 2, retry 3
+    _TRANSIENT_MARKERS = ("overloaded", "rate_limit", "529", "500", "502", "503")
+
+    result = None
+    for _attempt in range(1, _MAX_RETRIES + 1):
         try:
-            await _heartbeat
+            result = await loop.run_in_executor(
+                None,
+                lambda: _call_planner_sync(
+                    run_planner_fn=run_planner,
+                    PlannerError=PlannerError,
+                    project_request=project_manifest,
+                    api_key=api_key,
+                    stop_event=_stop_event,
+                    model=_planner_model,
+                    turn_callback=turn_callback,
+                    stream_callback=stream_callback,
+                    thinking_budget=_planner_thinking_budget,
+                    thinking_model=_planner_thinking_model,
+                    max_phases=max_phases,
+                    contract_fetcher=contract_fetcher,
+                ),
+            )
+            break  # success — exit retry loop
         except asyncio.CancelledError:
-            pass
+            _stop_event.set()
+            _heartbeat.cancel()
+            raise
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            is_transient = any(m in exc_str for m in _TRANSIENT_MARKERS)
+            if is_transient and _attempt < _MAX_RETRIES:
+                wait = _BACKOFF_SECS[_attempt - 1]
+                await _log(
+                    f"Planner API transient error (attempt {_attempt}/{_MAX_RETRIES}): "
+                    f"{exc} — retrying in {wait}s…",
+                    "warn",
+                )
+                await asyncio.sleep(wait)
+                continue
+            await _log(f"Project planner crashed: {exc}", "error")
+            _heartbeat.cancel()
+            try:
+                await _heartbeat
+            except asyncio.CancelledError:
+                pass
+            return None
+
+    _heartbeat.cancel()
+    try:
+        await _heartbeat
+    except asyncio.CancelledError:
+        pass
 
     if result is None:
         await _log("Project planner failed to produce a plan.", "error")

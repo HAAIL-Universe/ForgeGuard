@@ -33,11 +33,57 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Application lifespan: startup and shutdown hooks."""
-    # Configure root log level from settings
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
-    )
+    # Configure root log level with colored output for terminal readability.
+    # ANSI colors: red=errors, yellow=warnings, cyan=debug, green=info, bold white=critical.
+    _log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+
+    class _ColorFormatter(logging.Formatter):
+        """ANSI-colored log formatter for terminal output."""
+
+        _COLORS = {
+            logging.DEBUG:    "\033[36m",     # cyan
+            logging.INFO:     "\033[32m",     # green
+            logging.WARNING:  "\033[33m",     # yellow
+            logging.ERROR:    "\033[31m",     # red
+            logging.CRITICAL: "\033[1;31m",   # bold red
+        }
+        _RESET = "\033[0m"
+        _DIM = "\033[2m"
+
+        def format(self, record: logging.LogRecord) -> str:
+            color = self._COLORS.get(record.levelno, "")
+            ts = self.formatTime(record, "%H:%M:%S")
+            name = record.name.split(".")[-1][:20]
+            msg = record.getMessage()
+            return (
+                f"{self._DIM}{ts}{self._RESET} "
+                f"{color}{record.levelname:<8s}{self._RESET} "
+                f"{self._DIM}[{name:>20s}]{self._RESET} "
+                f"{color}{msg}{self._RESET}"
+            )
+
+    # Enable ANSI escape codes on Windows 10+ (virtual terminal processing)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            # STD_ERROR_HANDLE = -12, ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            handle = kernel32.GetStdHandle(-12)
+            mode = ctypes.c_ulong()
+            kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        except Exception:
+            pass  # Fallback: ANSI codes will show as raw text
+
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(_ColorFormatter())
+    logging.basicConfig(level=_log_level, handlers=[_handler])
+
+    # Quiet noisy loggers — uvicorn access logs flood the terminal
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     if "pytest" not in sys.modules:
         try:
             pool = await get_pool()

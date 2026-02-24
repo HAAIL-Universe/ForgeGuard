@@ -627,24 +627,47 @@ no files beyond what you list.
             "thinking_model": _thinking_model if _thinking_budget > 0 else None,
         })
 
-        try:
-            _create_kwargs: dict = dict(
-                model=_api_model,
-                max_tokens=max(_MAX_TOKENS, _thinking_budget + 4096) if _thinking_budget > 0 else _MAX_TOKENS,
-                system=system_blocks,
-                tools=_TOOL_DEFINITIONS,
-                messages=messages,
-            )
-            if _thinking_budget > 0:
-                _create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _thinking_budget}
+        _create_kwargs: dict = dict(
+            model=_api_model,
+            max_tokens=max(_MAX_TOKENS, _thinking_budget + 4096) if _thinking_budget > 0 else _MAX_TOKENS,
+            system=system_blocks,
+            tools=_TOOL_DEFINITIONS,
+            messages=messages,
+        )
+        if _thinking_budget > 0:
+            _create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _thinking_budget}
 
-            response = client.messages.create(**_create_kwargs)
-        except Exception as exc:
-            logger.error("Planner agent API error (turn %d): %s", iteration, exc)
-            await _state._broadcast_build_event(user_id, build_id, "build_log", {
-                "message": f"[Sonnet] Planner API error on turn {iteration}: {exc}",
-                "source": "planner", "level": "error",
-            })
+        # Retry with backoff for transient API errors (overloaded, rate-limited)
+        _TRANSIENT = ("overloaded", "rate_limit", "529", "500", "502", "503")
+        _RETRY_WAITS = [5, 15]
+        response = None
+        for _api_attempt in range(3):
+            try:
+                response = client.messages.create(**_create_kwargs)
+                break
+            except Exception as exc:
+                exc_lower = str(exc).lower()
+                is_transient = any(m in exc_lower for m in _TRANSIENT)
+                if is_transient and _api_attempt < 2:
+                    wait = _RETRY_WAITS[_api_attempt]
+                    await _state._broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": (
+                            f"[Sonnet] Planner API transient error (turn {iteration}, "
+                            f"attempt {_api_attempt + 1}/3): {exc} — retrying in {wait}s…"
+                        ),
+                        "source": "planner", "level": "warn",
+                    })
+                    import asyncio as _aio
+                    await _aio.sleep(wait)
+                    continue
+                logger.error("Planner agent API error (turn %d): %s", iteration, exc)
+                await _state._broadcast_build_event(user_id, build_id, "build_log", {
+                    "message": f"[Sonnet] Planner API error on turn {iteration}: {exc}",
+                    "source": "planner", "level": "error",
+                })
+                return None
+
+        if response is None:
             return None
 
         # (2) Accumulate token usage
