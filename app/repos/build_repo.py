@@ -21,10 +21,21 @@ _FILE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Governance-style patterns: "[G3] ... : app/config.py imports ..."
+# and "Failed to generate app/services/__init__.py: ..."
+_GOV_FILE_RE = re.compile(
+    r"""(?::\s*|gate:\s*|generate\s+)"""                    # prefix (colon, gate:, generate)
+    r"""([\w./\\-]+\.(?:tsx|jsx|yaml|json|toml|yml|py|ts|js|sql|md))""",  # path
+    re.IGNORECASE,
+)
+
 
 def _extract_file_path(message: str) -> str | None:
     """Best-effort file path extraction from an error message."""
     m = _FILE_RE.search(message)
+    if m:
+        return m.group(1)
+    m = _GOV_FILE_RE.search(message)
     return m.group(1) if m else None
 
 

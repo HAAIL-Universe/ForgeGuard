@@ -532,6 +532,54 @@ class TestIsTrivialRegen:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# File path extraction from error messages (build_repo._extract_file_path)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestExtractFilePath:
+    """Verify _extract_file_path handles all error message formats."""
+
+    def test_standard_python_traceback(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = 'File "app/config.py", line 12, in <module>'
+        assert _extract_file_path(msg) == "app/config.py"
+
+    def test_governance_g3_format(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = "[G3] Dependency gate: app/config.py imports 'pydantic_settings' (not in requirements.txt)"
+        assert _extract_file_path(msg) == "app/config.py"
+
+    def test_governance_g1_format(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = "[G1] Missing on disk: app/models/user.py"
+        # G1 has ": " before the path
+        result = _extract_file_path(msg)
+        assert result == "app/models/user.py"
+
+    def test_failed_to_generate_format(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = "Failed to generate tests/__init__.py: Empty response from Anthropic API"
+        result = _extract_file_path(msg)
+        assert result == "tests/__init__.py"
+
+    def test_failed_to_generate_nested(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = "Failed to generate app/services/__init__.py: Empty response from Anthropic API"
+        result = _extract_file_path(msg)
+        assert result == "app/services/__init__.py"
+
+    def test_no_file_path(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = "INVARIANT VIOLATION: backend_test_count Expected: >= 53 Actual: 0"
+        assert _extract_file_path(msg) is None
+
+    def test_in_prefix(self):
+        from app.repos.build_repo import _extract_file_path
+        msg = "SyntaxError in app/main.py at line 42"
+        assert _extract_file_path(msg) == "app/main.py"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Gate Persistence — interrupt_stale_builds split, _fail_build cleanup
 # ═══════════════════════════════════════════════════════════════════════════
 

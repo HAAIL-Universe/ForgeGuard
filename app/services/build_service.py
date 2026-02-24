@@ -1546,6 +1546,10 @@ async def fix_build_error(
     if category == "fixable":
         file_path = error.get("file_path")
         if not file_path:
+            # Try extracting from the error message (e.g. G3: "app/config.py imports ...")
+            from app.repos.build_repo import _extract_file_path as _efp, _GOV_FILE_RE
+            file_path = _efp(error.get("message", ""))
+        if not file_path:
             raise ValueError("Cannot fix: no file path associated with this error")
 
         await _broadcast_build_event(user_id, bid, "build_log", {
@@ -5803,7 +5807,7 @@ async def _run_build_plan_execute(
                 _file_err_msg = f"Failed to generate {file_path}: {exc}"
                 await build_repo.append_build_log(
                     build_id, _file_err_msg,
-                    source="system", level="error",
+                    source="file_generation", level="error",
                 )
                 await _broadcast_build_event(user_id, build_id, "build_error", {
                     "error_detail": _file_err_msg,
