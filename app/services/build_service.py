@@ -5275,6 +5275,7 @@ async def _run_build_plan_execute(
                         lessons_learned=_accumulated_lessons,
                         stop_event=_stop_event,
                         phase_index=phase_num,
+                        project_id=project_id,
                     )
 
                     # ── Step 3: Merge results (skip background audit — inline AUDITOR already ran)
