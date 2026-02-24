@@ -5103,6 +5103,8 @@ async def _run_build_plan_execute(
                     tier_written: dict[str, str],
                     tier_files_ref: list[dict],
                     tier_idx_ref: int,
+                    *,
+                    inline_audited: bool = False,
                 ) -> None:
                     for fp, content in tier_written.items():
                         phase_files_written[fp] = content
@@ -5131,6 +5133,11 @@ async def _run_build_plan_execute(
                             f"Wrote {fp} ({len(content.encode('utf-8'))} bytes)",
                             metadata={"file_path": fp, "size_bytes": len(content.encode('utf-8'))},
                         )
+
+                        # Skip background audit for files that already passed
+                        # inline AUDITOR inside execute_tier → run_builder()
+                        if inline_audited:
+                            continue
 
                         _purpose = next(
                             (f.get("purpose", "") for f in tier_files_ref if f["path"] == fp), "",
@@ -5263,9 +5270,9 @@ async def _run_build_plan_execute(
                         phase_index=phase_num,
                     )
 
-                    # ── Step 3: Merge results + audit ──
+                    # ── Step 3: Merge results (skip background audit — inline AUDITOR already ran)
                     _chunk_audit_start = len(pending_file_audits)
-                    await _merge_tier_results(chunk_written, chunk_files, chunk_idx)
+                    await _merge_tier_results(chunk_written, chunk_files, chunk_idx, inline_audited=True)
                     _chunk_audit_tasks = pending_file_audits[_chunk_audit_start:]
 
                     # Broadcast how many audits are in-flight so UI doesn't go quiet
