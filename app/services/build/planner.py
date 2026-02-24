@@ -1529,6 +1529,7 @@ async def execute_tier(
     audit_api_key: str | None = None,
     build_mode: str = "full",
     lessons_learned: str = "",
+    stop_event: "asyncio.Event | None" = None,
 ) -> tuple[dict[str, str], str]:
     """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
@@ -1698,10 +1699,30 @@ async def execute_tier(
                 integration_check=_per_file_integration_check,
                 turn_callback=_on_builder_turn,
                 lessons_learned=_current_lessons,
+                stop_event=stop_event,
             )
 
         if result.status == "completed" and result.content:
             tier_written[fp] = result.content
+
+        # Auto-broadcast scratchpad entry for this file so the UI always
+        # shows per-file builder activity, even when the LLM skips the
+        # optional forge_scratchpad tool call.
+        _sp_summary = f"Phase {tier_index}: {fp} ({len(result.content) if result.content else 0} bytes)"
+        if result.fixed_findings:
+            _sp_summary += f"\nFixes: {result.fixed_findings[:300]}"
+        _sp_status = result.status if hasattr(result.status, "value") else str(result.status)
+        _sp_key = f"phase_{tier_index}_{Path(fp).stem}"
+        await _state._broadcast_build_event(
+            user_id, build_id, "scratchpad_write", {
+                "key": _sp_key,
+                "source": "opus",
+                "role": "builder",
+                "summary": f"Builder {_sp_status}: {fp}",
+                "content": _sp_summary,
+                "full_length": len(_sp_summary),
+            },
+        )
 
         # Accumulate lessons from FIXER findings (confirmed-fixed patterns)
         if result.fixed_findings:

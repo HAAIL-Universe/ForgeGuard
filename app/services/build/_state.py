@@ -87,6 +87,11 @@ _cancel_flags: set[str] = set()   # build IDs that should cancel ASAP
 _pause_flags: set[str] = set()    # build IDs that should pause after current file
 _compact_flags: set[str] = set()  # build IDs that should compact context ASAP
 
+# Stop events — asyncio.Event per build, checked by sub-agents between LLM rounds.
+# Set by cancel_build() so execute_tier → run_builder → run_sub_agent can bail out
+# without waiting for the current Anthropic API call to finish.
+_build_stop_events: dict[str, asyncio.Event] = {}  # build_id -> event
+
 # Tracks which file is currently being generated per build
 _current_generating: dict[str, str] = {}  # build_id -> file path
 
@@ -290,6 +295,7 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)
     _compact_flags.discard(bid)
+    _build_stop_events.pop(bid, None)
     _current_generating.pop(bid, None)
     _build_activity_status.pop(bid, None)
     cleanup_clarification(bid)

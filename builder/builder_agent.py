@@ -261,6 +261,7 @@ async def run_builder(
         scout_handoff,
         str(working_dir),
         api_key,
+        stop_event=stop_event,
     )
     sub_agent_results.append(scout_result)
     _accumulate_tokens(total_usage, scout_result)
@@ -327,6 +328,7 @@ async def run_builder(
         coder_handoff,
         str(working_dir),
         api_key,
+        stop_event=stop_event,
     )
     sub_agent_results.append(coder_result)
     _accumulate_tokens(total_usage, coder_result)
@@ -407,6 +409,7 @@ async def run_builder(
             auditor_handoff,
             str(working_dir),
             audit_api_key or api_key,
+            stop_event=stop_event,
         )
         sub_agent_results.append(auditor_result)
         _accumulate_tokens(total_usage, auditor_result)
@@ -543,6 +546,7 @@ async def run_builder(
             fixer_handoff,
             str(working_dir),
             audit_api_key or api_key,
+            stop_event=stop_event,
         )
         sub_agent_results.append(fixer_result)
         _accumulate_tokens(total_usage, fixer_result)

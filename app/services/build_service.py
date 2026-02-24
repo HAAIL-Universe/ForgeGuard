@@ -89,6 +89,7 @@ from app.services.build._state import (  # noqa: E402
     _cancel_flags,
     _pause_flags,
     _compact_flags,
+    _build_stop_events,
     _current_generating,
     _build_activity_status,
     _build_heartbeat_tasks,
@@ -844,6 +845,11 @@ async def cancel_build(project_id: UUID, user_id: UUID) -> dict:
     _cancel_flags.add(str(build_id))
     _pause_flags.discard(str(build_id))
 
+    # Signal stop event so sub-agents bail out between LLM rounds
+    stop_ev = _build_stop_events.get(str(build_id))
+    if stop_ev:
+        stop_ev.set()
+
     # If paused, signal the pause event to unblock the wait
     event = _pause_events.get(str(build_id))
     if event:
@@ -902,6 +908,11 @@ async def force_cancel_build(project_id: UUID, user_id: UUID) -> dict:
     # Kill everything
     _cancel_flags.add(bid)
     _pause_flags.discard(bid)
+
+    # Signal stop event so sub-agents bail out
+    stop_ev = _build_stop_events.pop(bid, None)
+    if stop_ev:
+        stop_ev.set()
 
     # Cancel the watchdog
     watchdog = _build_heartbeat_tasks.pop(bid, None)
@@ -4008,6 +4019,10 @@ async def _run_build_plan_execute(
             ],
         })
 
+    # Create stop event for this build — checked by sub-agents between LLM rounds
+    _stop_event = asyncio.Event()
+    _build_stop_events[str(build_id)] = _stop_event
+
     for phase in phases:
         phase_num = phase["number"]
         phase_name = f"Phase {phase_num}"
@@ -4507,12 +4522,16 @@ async def _run_build_plan_execute(
                     for c in _phase_chunks
                     if any(f in _pending_paths for f in c.get("files", []))
                 ]
-                # Fallback: one chunk for all pending files if agent gave none
+                # Fallback: re-chunk pending manifest into ≤5-file groups
+                # (mirrors _adapt_project_manifest's _CHUNK_SIZE = 5)
                 if not chunks:
-                    chunks = [{
-                        "name": f"{phase_name} files",
-                        "files": [f["path"] for f in _pending_manifest],
-                    }]
+                    _FALLBACK_CHUNK_SIZE = 5
+                    for _fci in range(0, len(_pending_manifest), _FALLBACK_CHUNK_SIZE):
+                        _batch = _pending_manifest[_fci:_fci + _FALLBACK_CHUNK_SIZE]
+                        chunks.append({
+                            "name": f"Chunk {_fci // _FALLBACK_CHUNK_SIZE + 1}",
+                            "files": [f["path"] for f in _batch],
+                        })
                 _chunk_log = f"Planner divided phase into {len(chunks)} chunks"
                 await build_repo.append_build_log(build_id, _chunk_log, source="planner", level="info")
                 await _broadcast_build_event(user_id, build_id, "build_log", {
@@ -4788,6 +4807,7 @@ async def _run_build_plan_execute(
                         audit_api_key=_audit_key,
                         build_mode=_build_mode,
                         lessons_learned=_accumulated_lessons,
+                        stop_event=_stop_event,
                     )
 
                     # ── Step 3: Merge results + audit ──
@@ -6264,6 +6284,7 @@ async def _run_build_plan_execute(
     _cancel_flags.discard(bid)
     _pause_flags.discard(bid)
     _compact_flags.discard(bid)
+    _build_stop_events.pop(bid, None)
     _current_generating.pop(bid, None)
     _build_activity_status.pop(bid, None)
 

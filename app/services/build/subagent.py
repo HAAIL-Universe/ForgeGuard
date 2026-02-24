@@ -506,8 +506,9 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         '  "remaining_issues": "none | description of unfixable issues"\n'
         '}\n```\n\n'
         "# SCRATCHPAD PROTOCOL\n"
-        "After fixing, record what was changed:\n"
+        "ALWAYS record what was changed after fixing:\n"
         "  forge_scratchpad(\"write\", \"fixes_applied\", \"<path:line — what was fixed>\")\n"
+        "This is MANDATORY — call forge_scratchpad BEFORE your JSON output.\n"
         "Keep under 300 chars total.\n"
     ),
 }
@@ -820,6 +821,7 @@ async def run_sub_agent(
     api_key: str,
     *,
     key_pool: Any | None = None,
+    stop_event: "Any | None" = None,
 ) -> SubAgentResult:
     """Execute a sub-agent with its role-specific tools and context.
 
@@ -954,6 +956,23 @@ async def run_sub_agent(
 
     try:
         while tool_rounds < max_tool_rounds:
+            # ── Check stop event before each LLM round ──
+            # This is the fastest bail-out point: if the user clicked Stop,
+            # we skip the next API call entirely instead of burning tokens.
+            if stop_event is not None and stop_event.is_set():
+                logger.info(
+                    "Sub-agent %s interrupted by stop_event before round %d",
+                    handoff.role.value, tool_rounds,
+                )
+                return SubAgentResult(
+                    status=HandoffStatus.FAILED,
+                    structured_output={"error": "Build stopped by user"},
+                    text_output="",
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                )
+
             tool_calls_this_round: list[dict] = []
 
             async for event in stream_agent(
