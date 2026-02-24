@@ -1591,12 +1591,16 @@ async def execute_tier(
     # No contract pre-loading needed — builder_contract.md is injected
     # into system prompts by run_sub_agent() for caching.
 
-    # Per-file builder pipeline (sequential for now — switch to 3+ for production)
-    _semaphore = asyncio.Semaphore(1)
+    # Per-file builder pipeline — up to 3 concurrent file builds per tier
+    _semaphore = asyncio.Semaphore(3)
     _LESSONS_CAP = 2000  # max chars for accumulated lessons string
-    _lessons_parts: list[str] = []  # mutable — shared across sequential file runs
+    _lessons_parts: list[str] = []  # mutable — shared across concurrent file runs
+    _lessons_lock = asyncio.Lock()   # protects _lessons_parts
     if lessons_learned:
         _lessons_parts.append(lessons_learned)
+
+    tier_written: dict[str, str] = {}
+    _tier_lock = asyncio.Lock()  # protects tier_written
 
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
         fp = file_entry["path"]
@@ -1663,7 +1667,8 @@ async def execute_tier(
             if not _file_abs.exists():
                 return []
             _content = _file_abs.read_text(encoding="utf-8")
-            _combined = {**all_files_written, **tier_written, file_path_to_check: _content}
+            async with _tier_lock:
+                _combined = {**all_files_written, **tier_written, file_path_to_check: _content}
             return await _run_integ_audit(
                 working_dir=working_dir,
                 chunk_files={file_path_to_check: _content},
@@ -1693,10 +1698,11 @@ async def execute_tier(
                 )
 
         async with _semaphore:
-            # Build lessons snapshot BEFORE acquiring builder
-            _current_lessons = "\n".join(_lessons_parts)
-            if len(_current_lessons) > _LESSONS_CAP:
-                _current_lessons = _current_lessons[-_LESSONS_CAP:]
+            # Build lessons snapshot under lock
+            async with _lessons_lock:
+                _current_lessons = "\n".join(_lessons_parts)
+                if len(_current_lessons) > _LESSONS_CAP:
+                    _current_lessons = _current_lessons[-_LESSONS_CAP:]
 
             result = await run_builder(
                 file_entry=file_entry,
@@ -1717,7 +1723,8 @@ async def execute_tier(
             )
 
         if result.status == "completed" and result.content:
-            tier_written[fp] = result.content
+            async with _tier_lock:
+                tier_written[fp] = result.content
 
         # Auto-broadcast scratchpad entry for this file so the UI always
         # shows per-file builder activity, even when the LLM skips the
@@ -1740,9 +1747,10 @@ async def execute_tier(
 
         # Accumulate lessons from FIXER findings (confirmed-fixed patterns)
         if result.fixed_findings:
-            _lessons_parts.append(
-                f"[{fp}] Fixed: {result.fixed_findings[:300]}"
-            )
+            async with _lessons_lock:
+                _lessons_parts.append(
+                    f"[{fp}] Fixed: {result.fixed_findings[:300]}"
+                )
 
         # Accumulate cost from all sub-agents in the pipeline
         for sar in result.sub_agent_results:
@@ -1766,9 +1774,7 @@ async def execute_tier(
             "status": result.status,
         })
 
-    tier_written: dict[str, str] = {}
-
-    # Run all files (semaphore limits to 3 concurrent)
+    # Run all files concurrently (semaphore caps at 3 simultaneous builders)
     await asyncio.gather(*[
         run_one_file(fe, idx) for idx, fe in enumerate(tier_files)
     ], return_exceptions=False)
