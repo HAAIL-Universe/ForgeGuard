@@ -297,10 +297,11 @@ async def set_remote(
 ) -> None:
     """Set or update the remote URL for a repo."""
     try:
-        await _run_git(["remote", "add", remote_name, remote_url], cwd=repo_path)
-    except RuntimeError:
-        # Remote already exists, update it
+        # Try set-url first (common case: remote already exists from prior build)
         await _run_git(["remote", "set-url", remote_name, remote_url], cwd=repo_path)
+    except RuntimeError:
+        # Remote doesn't exist yet (fresh repo), add it
+        await _run_git(["remote", "add", remote_name, remote_url], cwd=repo_path)
 
 
 async def get_file_list(repo_path: str | Path) -> list[str]:

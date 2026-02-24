@@ -50,27 +50,36 @@ MAX_ITERATIONS = 5  # Safety valve — prevent runaway loops
 
 # Initial user turns for each mode
 INITIAL_USER_TURN_PLAN = """\
-You are auditing the plan below. Use the audit_complete tool when done.
+You are auditing the plan below.
+
+CRITICAL: You MUST call the audit_complete tool to finish. Do NOT end your turn
+with text — the ONLY way to report results is via the audit_complete tool call.
 
 PLAN TO AUDIT:
 {plan_json}
 
-Begin your audit now.
+Begin your audit now. When done, call audit_complete with your results.
 """
 
 INITIAL_USER_TURN_PHASE = """\
-You are auditing the builder phase output below. Use the audit_complete tool when done.
+You are auditing the builder phase output below.
+
+CRITICAL: You MUST call the audit_complete tool to finish. Do NOT end your turn
+with text — the ONLY way to report results is via the audit_complete tool call.
 
 PHASE {phase_number} OUTPUT:
 - Files: {phase_files}
 - Test coverage: {test_coverage}%
 - Pre-detected violations: {violations_list}
 
-Begin your audit now.
+Begin your audit now. When done, call audit_complete with your results.
 """
 
 INITIAL_USER_TURN_INTEGRATION = """\
-You are auditing cross-file integration for phase {phase_number}. Use the audit_complete tool when done.
+You are auditing cross-file integration for phase {phase_number}.
+
+CRITICAL: You MUST call the audit_complete tool to finish. Do NOT end your turn
+with text — the ONLY way to report results is via the audit_complete tool call.
 
 FILES TO AUDIT:
 {phase_files}
@@ -86,7 +95,7 @@ Focus on SEMANTIC mismatches the deterministic layer cannot catch:
 - Behavioral consistency (do names/actions align across files?)
 - Data flow integrity (do types/formats transform correctly end-to-end?)
 
-Begin your audit now.
+Begin your audit now. When done, call audit_complete with your results.
 """
 
 
