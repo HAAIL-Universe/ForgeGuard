@@ -70,8 +70,9 @@ async def test_init_repo(mock_run):
 
 
 @pytest.mark.asyncio
+@patch("app.clients.git_client.has_repo", return_value=True)
 @patch("app.clients.git_client._run_git", new_callable=AsyncMock)
-async def test_add_all(mock_run):
+async def test_add_all(mock_run, _mock_has_repo):
     """add_all stages all changes."""
     await git_client.add_all("/tmp/test")
 
@@ -80,14 +81,22 @@ async def test_add_all(mock_run):
     assert "add" in args
 
 
+@pytest.mark.asyncio
+async def test_add_all_no_repo(tmp_path):
+    """add_all skips gracefully when .git/ is missing."""
+    result = await git_client.add_all(str(tmp_path))
+    assert result is None  # returns None, no error raised
+
+
 # ---------------------------------------------------------------------------
 # Tests: commit
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
+@patch("app.clients.git_client.has_repo", return_value=True)
 @patch("app.clients.git_client._run_git", new_callable=AsyncMock)
-async def test_commit(mock_run):
+async def test_commit(mock_run, _mock_has_repo):
     """commit runs git commit with the given message."""
     await git_client.commit("/tmp/test", "test commit")
 
@@ -98,6 +107,13 @@ async def test_commit(mock_run):
     assert len(commit_calls) >= 1
 
 
+@pytest.mark.asyncio
+async def test_commit_no_repo(tmp_path):
+    """commit returns None when .git/ is missing."""
+    result = await git_client.commit(str(tmp_path), "test")
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # Tests: clone_repo
 # ---------------------------------------------------------------------------
@@ -106,16 +122,15 @@ async def test_commit(mock_run):
 @pytest.mark.asyncio
 @patch("app.clients.git_client._run_git", new_callable=AsyncMock)
 async def test_clone_repo(mock_run):
-    """clone_repo clones with access token injected into URL."""
+    """clone_repo clones with access token via GIT_ASKPASS env."""
     await git_client.clone_repo("https://github.com/owner/repo.git", "/tmp/dest", access_token="ghp_testtoken")
 
-    mock_run.assert_called_once()
-    args = mock_run.call_args[0][0]  # command list
+    # clone calls _run_git for clone + strip_token_from_remote
+    assert mock_run.call_count >= 1
+    clone_calls = [c for c in mock_run.call_args_list if "clone" in c[0][0]]
+    assert len(clone_calls) == 1
+    args = clone_calls[0][0][0]
     assert "clone" in args
-    # Token should be in the URL arg
-    url_arg = [a for a in args if "github.com" in str(a)]
-    assert len(url_arg) > 0
-    assert "ghp_testtoken" in str(url_arg[0])
 
 
 # ---------------------------------------------------------------------------
@@ -124,14 +139,22 @@ async def test_clone_repo(mock_run):
 
 
 @pytest.mark.asyncio
+@patch("app.clients.git_client.has_repo", return_value=True)
 @patch("app.clients.git_client._run_git", new_callable=AsyncMock)
-async def test_push(mock_run):
+async def test_push(mock_run, _mock_has_repo):
     """push runs git push."""
     await git_client.push("/tmp/test")
 
-    mock_run.assert_called_once()
-    args = mock_run.call_args[0][0]
-    assert "push" in args
+    # push calls _run_git for push + strip_token_from_remote
+    assert mock_run.call_count >= 1
+    push_calls = [c for c in mock_run.call_args_list if "push" in c[0][0]]
+    assert len(push_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_push_no_repo(tmp_path):
+    """push skips gracefully when .git/ is missing."""
+    await git_client.push(str(tmp_path))  # should not raise
 
 
 # ---------------------------------------------------------------------------

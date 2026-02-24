@@ -4042,9 +4042,35 @@ async def _run_build_plan_execute(
                 "Working directory no longer exists — cannot continue. Use /start for a fresh build.",
             )
             return
+
+        # If .git/ is missing (e.g. after a project reset/nuke), re-clone
+        # for GitHub targets or init a fresh repo so commits don't fail later.
+        _git_dir = Path(working_dir) / ".git"
+        if not _git_dir.is_dir():
+            logger.info("Workspace exists but .git/ missing — re-initialising git repo in %s", working_dir)
+            if target_type in ("github_new", "github_existing") and target_ref and access_token:
+                try:
+                    clone_url = f"https://github.com/{target_ref}.git"
+                    shutil.rmtree(working_dir, ignore_errors=True)
+                    await git_client.clone_repo(
+                        clone_url, working_dir,
+                        access_token=access_token, shallow=False,
+                    )
+                    _log_msg = f"Re-cloned {target_ref} (workspace had no .git/)"
+                    logger.info(_log_msg)
+                    await build_repo.append_build_log(
+                        build_id, _log_msg, source="system", level="info",
+                    )
+                except Exception as _clone_exc:
+                    logger.warning("Re-clone failed, falling back to git init: %s", _clone_exc)
+                    Path(working_dir).mkdir(parents=True, exist_ok=True)
+                    await git_client.init_repo(working_dir)
+            else:
+                Path(working_dir).mkdir(parents=True, exist_ok=True)
+                await git_client.init_repo(working_dir)
+
         # If .git exists but source files are missing (e.g. a prior failed
         # resume wiped them via shutil.rmtree), restore from git HEAD.
-        _git_dir = Path(working_dir) / ".git"
         if _git_dir.is_dir():
             _src_count = sum(
                 1 for f in Path(working_dir).rglob("*")
@@ -4913,6 +4939,10 @@ async def _run_build_plan_execute(
                             "Incremental push attempt %d/%d failed (%s): %s",
                             _pa, settings.GIT_PUSH_MAX_RETRIES, label, _pe,
                         )
+                        _pe_str = str(_pe)
+                        _permanent = ("not a git repository", "does not exist", "No configured push destination")
+                        if any(p in _pe_str for p in _permanent):
+                            break
                         if _pa < settings.GIT_PUSH_MAX_RETRIES:
                             await asyncio.sleep(2 ** _pa)
             return sha
@@ -6816,6 +6846,7 @@ async def _run_build_plan_execute(
                     _push_ok = True
                     break
                 except Exception as exc:
+                    _exc_str = str(exc)
                     logger.warning(
                         "Git push attempt %d/%d failed for %s: %s",
                         _push_attempt, settings.GIT_PUSH_MAX_RETRIES, phase_name, exc,
@@ -6827,6 +6858,11 @@ async def _run_build_plan_execute(
                     await _broadcast_build_event(user_id, build_id, "build_log", {
                         "message": _fail_msg, "source": "system", "level": "warn",
                     })
+                    # Don't retry permanent errors (no repo, no remote, bad config)
+                    _permanent = ("not a git repository", "does not exist", "No configured push destination")
+                    if any(p in _exc_str for p in _permanent):
+                        logger.warning("Push error is permanent — skipping remaining retries")
+                        break
                     if _push_attempt < settings.GIT_PUSH_MAX_RETRIES:
                         await asyncio.sleep(2 ** _push_attempt)
 

@@ -165,6 +165,11 @@ async def exclude_contracts_from_staging(repo_path: str | Path) -> None:
         logger.debug("git rm --cached Forge/ failed (non-fatal) in %s", repo_path)
 
 
+def has_repo(repo_path: str | Path) -> bool:
+    """Return True if *repo_path* contains an initialised git repository."""
+    return (Path(repo_path) / ".git").is_dir()
+
+
 async def add_all(repo_path: str | Path, *, include_contracts: bool = False) -> None:
     """Stage all changes in the repo.
 
@@ -172,6 +177,9 @@ async def add_all(repo_path: str | Path, *, include_contracts: bool = False) -> 
     (belt-and-suspenders guard for builds).  Pass ``include_contracts=True``
     when the intent is to commit contracts themselves (e.g. push-to-repo).
     """
+    if not has_repo(repo_path):
+        logger.warning("add_all skipped — no .git/ in %s", repo_path)
+        return
     await _run_git(["add", "-A"], cwd=repo_path)
     if include_contracts:
         # Force-add contracts past .gitignore so they are always staged
@@ -193,6 +201,10 @@ async def commit(
     Pass ``include_contracts=True`` when the commit should include Forge
     contract files (e.g. the push-contracts-to-repo flow).
     """
+    if not has_repo(repo_path):
+        logger.warning("commit skipped — no .git/ in %s", repo_path)
+        return None
+
     # Check if there are staged changes
     try:
         status = await _run_git(["status", "--porcelain"], cwd=repo_path)
@@ -230,6 +242,10 @@ async def push(
     force_with_lease: bool = False,
 ) -> None:
     """Push all commits to the remote."""
+    if not has_repo(repo_path):
+        logger.warning("push skipped — no .git/ in %s", repo_path)
+        return
+
     env: dict[str, str] = {}
     if access_token:
         env = _make_askpass_env(access_token)
