@@ -67,8 +67,8 @@ _MAX_ITERATIONS = 20
 # Templates (blueprint_template.md etc.) are for the questionnaire flow that
 # generates user contracts, NOT for planning or building. Removing them saves
 # ~8,100 tokens per phase planning call with no loss of planning quality.
-# Project contracts (blueprint, stack, schema…) are passed in via the
-# `contracts` parameter and included in the user message, not the system prompt.
+# Project contracts (blueprint, stack, schema…) are pulled on demand by the
+# agent via forge_get_project_contract tool calls (pull-first model).
 _GOVERNANCE_FILES = [
     "builder_contract.md",
 ]
@@ -135,14 +135,16 @@ You must produce:
   2. A CHUNK PLAN — how to group those files for parallel Opus builders
 
 TOOLS AVAILABLE:
-  read_file(path)          — read a file in the project workspace
-  list_directory(path)     — list a directory in the project workspace
-  write_phase_plan(...)    — output manifest + chunks and end the session
+  read_file(path)                          — read a file in the project workspace
+  list_directory(path)                     — list a directory in the project workspace
+  forge_get_project_contract(contract_type) — fetch a project contract by type
+  write_phase_plan(...)                    — output manifest + chunks and end the session
 
 WORKFLOW:
-  Step 1. Use list_directory to understand the current workspace structure.
-  Step 2. Read specific files if needed (imports, interfaces, prior phase output).
-  Step 3. When you have enough context, call write_phase_plan.
+  Step 1. Call forge_get_project_contract for ALL contracts in the manifest — in parallel.
+  Step 2. Use list_directory to understand the current workspace structure.
+  Step 3. Read specific files if needed (imports, interfaces, prior phase output).
+  Step 4. When you have enough context, call write_phase_plan.
 
 MANIFEST RULES (builder_contract.md §9):
   - List every file the builder must CREATE or MODIFY in this phase.
@@ -220,6 +222,28 @@ _TOOL_DEFINITIONS: list[dict] = [
                 }
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "forge_get_project_contract",
+        "description": (
+            "Fetch the content of a project contract by type. "
+            "Call this for every contract listed in the manifest — "
+            "make ALL calls in parallel in your first turn."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "description": (
+                        "Contract type to fetch. One of: "
+                        "blueprint, stack, schema, manifesto, physics, "
+                        "boundaries, ui, phases, builder_directive"
+                    ),
+                },
+            },
+            "required": ["contract_type"],
         },
     },
     {
@@ -514,22 +538,20 @@ async def run_phase_planner_agent(
     client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
     system_blocks = _build_system_prompt()
 
-    # --- Append project contracts to system prompt (cached across turns) ---
-    # Project contracts are stable for the entire phase planning session.
-    # Putting them in the system prompt means turns 2+ pay ~10% via cache READ
-    # instead of full price on every turn in the user message.
-    contract_parts: list[str] = []
-    for c in contracts:
-        ctype = c.get("contract_type", "")
-        content = c.get("content", "")
-        if ctype and content:
-            contract_parts.append(f"## Project Contract: {ctype}\n{content}\n")
-    if contract_parts:
-        system_blocks.append({
-            "type": "text",
-            "text": "=== PROJECT CONTRACTS ===\n\n" + "\n".join(contract_parts),
-            "cache_control": {"type": "ephemeral"},
-        })
+    # --- Build in-memory contract index (pull model) ---
+    # Contracts are NOT pushed into the system prompt. Instead the agent
+    # receives a lightweight manifest (names + char counts) and fetches
+    # full content on demand via forge_get_project_contract tool calls.
+    _contract_index: dict[str, str] = {
+        c.get("contract_type", ""): c.get("content", "")
+        for c in contracts
+        if c.get("contract_type") and c.get("content")
+    }
+
+    _manifest_lines = ["Available project contracts (fetch via forge_get_project_contract):"]
+    for ctype in sorted(_contract_index):
+        _manifest_lines.append(f"  - {ctype} (~{len(_contract_index[ctype]):,} chars)")
+    _manifest_text = "\n".join(_manifest_lines)
 
     # --- Deliverables text ---
     phase_deliverables = (
@@ -544,19 +566,24 @@ async def run_phase_planner_agent(
     if prior_phase_context:
         prior_section = f"\n## Prior Phase Context\n{prior_phase_context}\n"
 
-    # --- Initial user message (lightweight — contracts are in system prompt) ---
+    # --- Initial user message (pull model — manifest only, no contract content) ---
     initial_message = f"""\
 Plan the file manifest and chunk breakdown for the following phase.
 
 {phase_deliverables}
 
+## Contract Manifest
+{_manifest_text}
+
 ## Current Workspace
 {workspace_info or "(empty workspace)"}
 {prior_section}
 INSTRUCTIONS:
-1. Call list_directory(".") to survey the workspace root.
-2. Read relevant existing files if you need to understand current interfaces.
-3. When ready, call write_phase_plan with your complete manifest and chunks.
+1. Call forge_get_project_contract for ALL contracts in the manifest above
+   — make every call in parallel in a single turn.
+2. Call list_directory(".") to survey the workspace root.
+3. Read relevant existing files if you need to understand current interfaces.
+4. When ready, call write_phase_plan with your complete manifest and chunks.
 
 The manifest must cover ALL deliverables above. The builder will produce
 no files beyond what you list.
@@ -679,6 +706,14 @@ no files beyond what you list.
 
             elif tool_name == "list_directory":
                 result = _tool_list_directory(tool_input.get("path", "."), working_dir)
+
+            elif tool_name == "forge_get_project_contract":
+                ct = tool_input.get("contract_type", "")
+                ct_content = _contract_index.get(ct)
+                if ct_content is None:
+                    result = {"error": f"Contract '{ct}' not found in project."}
+                else:
+                    result = {"contract_type": ct, "content": ct_content}
 
             elif tool_name == "write_phase_plan":
                 manifest_raw = tool_input.get("manifest", [])
