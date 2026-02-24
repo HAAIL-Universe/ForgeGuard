@@ -2278,7 +2278,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   body: JSON.stringify({ action: 'commence' }),
                 }).catch(() => { /* WS build_commenced will confirm */ });
               } else {
-                setStatus('ready');
+                // Only reset to 'ready' if not already running — prevents flash
+                // when forge_ide_ready races with /start's setStatus('running')
+                setStatus((prev) => prev === 'running' || prev === 'preparing' ? prev : 'ready');
                 setLogs((prev) => {
                   setSetupEndIndex(prev.length);
                   return [...prev,
@@ -3318,6 +3320,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         // Build mode: route /start through the interject endpoint which has
         // smart resume logic (detects gates, finds prior builds with progress,
         // scans git log, handles orphaned builds, etc.)
+        // Set refs BEFORE the fetch so WS events arriving during the await
+        // (e.g. forge_ide_ready) see them immediately — prevents race condition
+        // where forge_ide_ready resets status to 'ready' mid-start.
+        autoCommenceRef.current = true;
+        autoApprovePlanRef.current = true;
         try {
           const res = await fetch(`${API_BASE}/projects/${projectId}/build/interject`, {
             method: 'POST',
@@ -3327,17 +3334,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           if (res.ok) {
             const data = await res.json();
             if (data.build_id) setBuildId(data.build_id);
-            // Map interject response statuses to IDE states
-            const st = data.status;
-            if (st === 'commenced' || st === 'approved' || st === 'started' || st === 'continued' || st === 'resumed') {
-              setStatus('running');
-              autoCommenceRef.current = true;
-              autoApprovePlanRef.current = true;
-            } else if (st === 'already_running') {
-              setStatus('running');
-            } else {
-              setStatus('running');
-            }
+            setStatus('running');
             if (data.message) {
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(), source: 'system', level: 'info',
@@ -3345,6 +3342,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               }]);
             }
           } else {
+            // Interject failed — reset refs so stale auto-approve doesn't fire
+            autoCommenceRef.current = false;
+            autoApprovePlanRef.current = false;
             const err = await res.json().catch(() => ({ detail: 'Failed to start build' }));
             const detail = err.detail || 'Failed to start build';
             setLogs((prev) => [...prev, {
@@ -3353,6 +3353,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             }]);
           }
         } catch {
+          autoCommenceRef.current = false;
+          autoApprovePlanRef.current = false;
           setLogs((prev) => [...prev, {
             timestamp: new Date().toISOString(), source: 'system', level: 'error',
             message: 'Network error starting build',
