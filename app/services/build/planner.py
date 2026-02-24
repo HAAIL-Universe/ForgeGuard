@@ -1749,11 +1749,25 @@ async def execute_tier(
         # Auto-broadcast scratchpad entry for this file so the UI always
         # shows per-file builder activity, even when the LLM skips the
         # optional forge_scratchpad tool call.
-        _sp_summary = f"Phase {tier_index}: {fp} ({len(result.content) if result.content else 0} bytes)"
+        _phase_label = phase_index if phase_index >= 0 else tier_index
+        _sp_status = result.status if hasattr(result.status, "value") else str(result.status)
+        _sp_summary = f"Phase {_phase_label}: {fp} ({len(result.content) if result.content else 0} bytes)"
+
+        # Pipeline summary from sub-agent results
+        if result.sub_agent_results:
+            _roles_ran = [getattr(sar, "role", None) for sar in result.sub_agent_results if hasattr(sar, "role")]
+            _role_names = " \u2192 ".join(str(r.value).upper() if hasattr(r, "value") else str(r) for r in _roles_ran if r)
+            if _role_names:
+                _sp_summary += f"\nPipeline: {_role_names}"
+            _total_in = sum(getattr(sar, "input_tokens", 0) for sar in result.sub_agent_results)
+            _total_out = sum(getattr(sar, "output_tokens", 0) for sar in result.sub_agent_results)
+            if _total_in:
+                _sp_summary += f"\nTokens: {_total_in:,} in / {_total_out:,} out"
+
         if result.fixed_findings:
             _sp_summary += f"\nFixes: {result.fixed_findings[:300]}"
-        _sp_status = result.status if hasattr(result.status, "value") else str(result.status)
-        _sp_key = f"phase_{tier_index}_{Path(fp).stem}"
+
+        _sp_key = f"phase_{_phase_label}_{Path(fp).stem}"
         await _state._broadcast_build_event(
             user_id, build_id, "scratchpad_write", {
                 "key": _sp_key,
