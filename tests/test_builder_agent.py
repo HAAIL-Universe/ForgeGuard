@@ -7,10 +7,13 @@ Covers:
   3. stop_event interrupts the pipeline cleanly
   4. AUDITOR FAIL triggers FIXER dispatch
   5. Token usage accumulates across all sub-agent results
+  6. File parallelism: semaphore caps at 3, locks protect shared state
 """
 from __future__ import annotations
 
+import asyncio
 import threading
+import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -475,3 +478,163 @@ class TestTokenAccounting:
         assert result.token_usage["input_tokens"] == expected_input
         assert result.token_usage["output_tokens"] == expected_output
         assert result.iterations == 5  # 5 sub-agent calls
+
+
+# ---------------------------------------------------------------------------
+# 6. File parallelism in execute_tier
+# ---------------------------------------------------------------------------
+
+
+def _make_builder_result(file_path: str, content: str = "# ok\n", status: str = "completed"):
+    """Build a minimal BuilderResult for execute_tier tests."""
+    from builder.builder_agent import BuilderResult
+    return BuilderResult(
+        file_path=file_path,
+        content=content,
+        status=status,
+        token_usage={"input_tokens": 100, "output_tokens": 50},
+        sub_agent_results=[],
+        iterations=3,
+    )
+
+
+def _mock_planner_state(tmp_path):
+    """Create a mock _state object with all async methods properly mocked."""
+    mock_state = MagicMock()
+    mock_state._broadcast_build_event = AsyncMock()
+    mock_state.build_repo = MagicMock()
+    mock_state.build_repo.append_build_log = AsyncMock()
+    mock_state.build_repo.record_build_cost = AsyncMock()
+    mock_state.FORGE_CONTRACTS_DIR = tmp_path
+    mock_state._detect_language = MagicMock(return_value="python")
+    return mock_state
+
+
+class TestExecuteTierParallelism:
+    """Verify semaphore caps concurrency at 3 and locks protect shared state."""
+
+    @pytest.mark.asyncio
+    async def test_semaphore_caps_at_3_concurrent(self, tmp_path):
+        """With 5 files, at most 3 should run concurrently."""
+        from app.services.build.planner import execute_tier
+
+        tier_files = [
+            {"path": f"src/file_{i}.py", "purpose": f"File {i}", "depends_on": [], "context_files": []}
+            for i in range(5)
+        ]
+
+        max_concurrent = 0
+        current_concurrent = 0
+        lock = asyncio.Lock()
+
+        async def mock_run_builder(*, file_entry, working_dir, build_id, user_id, api_key, **kwargs):
+            nonlocal max_concurrent, current_concurrent
+            async with lock:
+                current_concurrent += 1
+                if current_concurrent > max_concurrent:
+                    max_concurrent = current_concurrent
+            await asyncio.sleep(0.05)  # Simulate work
+            async with lock:
+                current_concurrent -= 1
+            return _make_builder_result(file_entry["path"])
+
+        with patch("builder.builder_agent.run_builder", side_effect=mock_run_builder), \
+             patch("app.services.build.planner._state", _mock_planner_state(tmp_path)), \
+             patch("app.services.build.subagent.build_context_pack", return_value={}):
+
+            written, lessons = await execute_tier(
+                build_id=uuid4(),
+                user_id=uuid4(),
+                api_key="sk-test",
+                tier_index=0,
+                tier_files=tier_files,
+                contracts=[],
+                phase_deliverables="",
+                working_dir=str(tmp_path),
+                interface_map="",
+                all_files_written={},
+            )
+
+        assert max_concurrent <= 3, f"Expected max 3 concurrent, got {max_concurrent}"
+        assert max_concurrent >= 2, f"Expected at least 2 concurrent with 5 files, got {max_concurrent}"
+        assert len(written) == 5
+
+    @pytest.mark.asyncio
+    async def test_tier_written_consistent_under_concurrency(self, tmp_path):
+        """All completed files appear in tier_written even under concurrent writes."""
+        from app.services.build.planner import execute_tier
+
+        n_files = 6
+        tier_files = [
+            {"path": f"src/mod_{i}.py", "purpose": f"Module {i}", "depends_on": [], "context_files": []}
+            for i in range(n_files)
+        ]
+
+        async def mock_run_builder(*, file_entry, working_dir, build_id, user_id, api_key, **kwargs):
+            await asyncio.sleep(0.02)
+            return _make_builder_result(file_entry["path"], content=f"# {file_entry['path']}\n")
+
+        with patch("builder.builder_agent.run_builder", side_effect=mock_run_builder), \
+             patch("app.services.build.planner._state", _mock_planner_state(tmp_path)), \
+             patch("app.services.build.subagent.build_context_pack", return_value={}):
+
+            written, lessons = await execute_tier(
+                build_id=uuid4(),
+                user_id=uuid4(),
+                api_key="sk-test",
+                tier_index=0,
+                tier_files=tier_files,
+                contracts=[],
+                phase_deliverables="",
+                working_dir=str(tmp_path),
+                interface_map="",
+                all_files_written={},
+            )
+
+        assert len(written) == n_files
+        for i in range(n_files):
+            assert f"src/mod_{i}.py" in written
+
+    @pytest.mark.asyncio
+    async def test_lessons_accumulate_under_concurrency(self, tmp_path):
+        """Fixed findings from multiple concurrent files accumulate in lessons."""
+        from app.services.build.planner import execute_tier
+        from builder.builder_agent import BuilderResult
+
+        tier_files = [
+            {"path": f"src/svc_{i}.py", "purpose": f"Service {i}", "depends_on": [], "context_files": []}
+            for i in range(4)
+        ]
+
+        async def mock_run_builder(*, file_entry, working_dir, build_id, user_id, api_key, **kwargs):
+            await asyncio.sleep(0.02)
+            return BuilderResult(
+                file_path=file_entry["path"],
+                content=f"# {file_entry['path']}\n",
+                status="completed",
+                token_usage={"input_tokens": 50, "output_tokens": 25},
+                sub_agent_results=[],
+                iterations=3,
+                fixed_findings=f"fixed-import-in-{file_entry['path']}",
+            )
+
+        with patch("builder.builder_agent.run_builder", side_effect=mock_run_builder), \
+             patch("app.services.build.planner._state", _mock_planner_state(tmp_path)), \
+             patch("app.services.build.subagent.build_context_pack", return_value={}):
+
+            written, lessons = await execute_tier(
+                build_id=uuid4(),
+                user_id=uuid4(),
+                api_key="sk-test",
+                tier_index=0,
+                tier_files=tier_files,
+                contracts=[],
+                phase_deliverables="",
+                working_dir=str(tmp_path),
+                interface_map="",
+                all_files_written={},
+            )
+
+        # All 4 files should have contributed lessons
+        for i in range(4):
+            assert f"fixed-import-in-src/svc_{i}.py" in lessons
