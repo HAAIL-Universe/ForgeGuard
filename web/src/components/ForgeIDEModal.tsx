@@ -1219,6 +1219,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([]);
   const [findings, setFindings] = useState<FindingEntry[]>([]);
   const [scratchpadEntries, setScratchpadEntries] = useState<ScratchpadEntry[]>([]);
+  const [expandedScratchpad, setExpandedScratchpad] = useState<Set<string>>(new Set());
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKENS });
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
   const [leftTab, setLeftTab] = useState<'tasks' | 'chat' | 'log'>('tasks');
@@ -5041,6 +5042,14 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                     hour: '2-digit', minute: '2-digit', second: '2-digit',
                   }) : '';
                   const workerColor = sp.worker === 'opus' ? '#D946EF' : '#38BDF8';
+                  const isExpanded = expandedScratchpad.has(sp.id);
+
+                  // Parse destination from content (READY_FOR_CODER etc.) or infer from role
+                  const _destMatch = sp.content.match(/READY_FOR_(\w+)/i);
+                  const _roleMap: Record<string, string> = { scout: 'coder', coder: 'auditor', auditor: 'fixer', planner: 'builder' };
+                  const destination = _destMatch
+                    ? _destMatch[1].toLowerCase()
+                    : _roleMap[sp.role.toLowerCase()] || '';
 
                   return (
                     <div key={sp.id} style={{
@@ -5048,12 +5057,21 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                       borderRadius: '6px', border: '1px solid #78350F',
                       overflow: 'hidden',
                     }}>
-                      <div style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        padding: '8px 14px',
-                        background: '#F59E0B08',
-                        borderBottom: '1px solid #78350F44',
-                      }}>
+                      <div
+                        onClick={() => setExpandedScratchpad((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(sp.id)) next.delete(sp.id); else next.add(sp.id);
+                          return next;
+                        })}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '8px',
+                          padding: '8px 14px',
+                          background: '#F59E0B08',
+                          borderBottom: isExpanded ? '1px solid #78350F44' : 'none',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                        }}
+                      >
                         <span style={{
                           width: '6px', height: '6px', borderRadius: '50%',
                           background: '#F59E0B', flexShrink: 0,
@@ -5061,43 +5079,63 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         <span style={{
                           color: '#F59E0B', fontSize: '0.75rem', fontWeight: 700,
                           fontFamily: '"Cascadia Code", monospace',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>
                           {sp.key}
                         </span>
                         <span style={{
                           fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
                           borderRadius: '4px', background: workerColor + '22', color: workerColor,
-                          textTransform: 'uppercase',
+                          textTransform: 'uppercase', flexShrink: 0,
                         }}>
                           {sp.role}
                         </span>
+                        {destination && (
+                          <>
+                            <span style={{ color: '#64748B', fontSize: '0.65rem', flexShrink: 0 }}>→</span>
+                            <span style={{
+                              fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                              borderRadius: '4px', background: '#22C55E22', color: '#22C55E',
+                              textTransform: 'uppercase', flexShrink: 0,
+                            }}>
+                              {destination}
+                            </span>
+                          </>
+                        )}
                         <span style={{ flex: 1 }} />
-                        <span style={{ color: '#64748B', fontSize: '0.65rem' }}>
+                        <span style={{ color: '#64748B', fontSize: '0.65rem', flexShrink: 0 }}>
                           {sp.fullLength} chars
                         </span>
-                        <span style={{ color: '#475569', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
+                        <span style={{ color: '#475569', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
                           {ts}
                         </span>
+                        <span style={{
+                          color: '#475569', fontSize: '0.6rem', flexShrink: 0,
+                          transition: 'transform 0.15s',
+                          transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                        }}>▶</span>
                       </div>
-                      <pre style={{
-                        margin: 0,
-                        padding: '10px 14px',
-                        color: '#CBD5E1',
-                        fontSize: '0.72rem',
-                        lineHeight: 1.5,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        maxHeight: '400px',
-                        overflowY: 'auto',
-                        fontFamily: '"Cascadia Code", "Fira Code", monospace',
-                      }}>
-                        <code>{sp.content}</code>
-                        {sp.fullLength > sp.content.length && (
-                          <div style={{ color: '#64748B', fontStyle: 'italic', marginTop: '4px' }}>
-                            ... truncated ({sp.fullLength - sp.content.length} more chars)
-                          </div>
-                        )}
-                      </pre>
+                      {isExpanded && (
+                        <pre style={{
+                          margin: 0,
+                          padding: '10px 14px',
+                          color: '#CBD5E1',
+                          fontSize: '0.72rem',
+                          lineHeight: 1.5,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          maxHeight: '400px',
+                          overflowY: 'auto',
+                          fontFamily: '"Cascadia Code", "Fira Code", monospace',
+                        }}>
+                          <code>{sp.content}</code>
+                          {sp.fullLength > sp.content.length && (
+                            <div style={{ color: '#64748B', fontStyle: 'italic', marginTop: '4px' }}>
+                              ... truncated ({sp.fullLength - sp.content.length} more chars)
+                            </div>
+                          )}
+                        </pre>
+                      )}
                     </div>
                   );
                 })
