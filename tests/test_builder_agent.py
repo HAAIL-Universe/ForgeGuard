@@ -1347,12 +1347,12 @@ class TestPerRoleToolRoundCaps:
         expected = {SubAgentRole.SCOUT: 4}
         assert expected[SubAgentRole.SCOUT] == 4
 
-    def test_coder_cap_is_12(self):
-        """Coder should have room for contracts + write + syntax check + fix cycles."""
+    def test_coder_cap_is_8(self):
+        """Coder cap reduced: contracts pre-loaded, needs write + syntax + fix only."""
         from app.services.build.subagent import SubAgentRole
 
-        expected = {SubAgentRole.CODER: 12}
-        assert expected[SubAgentRole.CODER] == 12
+        expected = {SubAgentRole.CODER: 8}
+        assert expected[SubAgentRole.CODER] == 8
 
     def test_auditor_cap_is_8(self):
         """Auditor needs contracts + review rounds."""
@@ -1747,3 +1747,64 @@ class TestCompactToolHistory:
         assert compacted.startswith("[Compacted]")
         # "[Compacted] " = 12 chars, then 100 chars of content, then "..."
         assert len(compacted) <= 12 + 100 + 3
+
+
+# ---------------------------------------------------------------------------
+# 18. Mandatory scratchpad + prompt contract pre-load
+# ---------------------------------------------------------------------------
+
+
+class TestMandatoryScratchpad:
+    """Verify prompt updates: mandatory scratchpad, pre-loaded contracts, DB-direct tools."""
+
+    def test_coder_prompt_mandatory_scratchpad(self):
+        """CODER prompt must contain MANDATORY scratchpad protocol."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.CODER]
+        assert "MANDATORY" in prompt
+        assert "ALWAYS" in prompt
+        assert "coder_<filename_stem>" in prompt
+
+    def test_auditor_prompt_mandatory_scratchpad(self):
+        """AUDITOR prompt must contain MANDATORY scratchpad protocol."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.AUDITOR]
+        assert "MANDATORY" in prompt
+        assert "ALWAYS" in prompt
+        assert "audit_<filename_stem>" in prompt
+
+    def test_fixer_prompt_mandatory_scratchpad(self):
+        """FIXER prompt already had MANDATORY scratchpad — verify it still does."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.FIXER]
+        assert "MANDATORY" in prompt
+        assert "ALWAYS" in prompt
+
+    def test_coder_prompt_contracts_preloaded(self):
+        """CODER prompt says contracts are pre-loaded, not fetched via tools."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.CODER]
+        assert "pre-loaded" in prompt
+        assert "do NOT fetch them via tools" in prompt.lower() or "do NOT fetch" in prompt
+
+    def test_auditor_prompt_uses_db_direct(self):
+        """AUDITOR prompt uses forge_get_contract, not forge_get_project_contract."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.AUDITOR]
+        assert "forge_get_contract" in prompt
+        assert "forge_get_project_contract" in prompt  # referenced as "do NOT use"
+        assert "Do NOT use forge_get_project_contract" in prompt
+
+    def test_fixer_prompt_uses_db_direct(self):
+        """FIXER prompt directs to forge_get_contract, bans forge_get_build_contracts."""
+        from app.services.build.subagent import _ROLE_SYSTEM_PROMPTS, SubAgentRole
+
+        prompt = _ROLE_SYSTEM_PROMPTS[SubAgentRole.FIXER]
+        assert "forge_get_contract" in prompt
+        # forge_get_build_contracts only appears as a "Do NOT use" instruction
+        assert "Do NOT use forge_get_build_contracts" in prompt

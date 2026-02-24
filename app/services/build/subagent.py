@@ -310,12 +310,10 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "3. Phase deliverables — what other files are being built in this phase.\n"
         "4. Context files — source of existing files the Scout identified as relevant.\n\n"
         "# PROCESS\n"
-        "Step 1. Fetch contracts you need (make ALL calls in PARALLEL in one turn):\n"
-        "  - `forge_get_contract('stack')` — always\n"
-        "  - `forge_get_contract('boundaries')` — always\n"
-        "  - `forge_get_contract('schema')` — if writing DB/model code\n"
-        "  - `forge_get_contract('physics')` — if writing API endpoints\n"
-        "  - `forge_get_contract('ui')` — if writing frontend components\n"
+        "Step 1. Review the contracts in your Context Files section (contract_stack.md,\n"
+        "  contract_boundaries.md are pre-loaded — do NOT fetch them via tools).\n"
+        "  If you need schema/physics/ui contracts not already in context, fetch ONLY\n"
+        "  those using forge_get_contract (NOT forge_get_project_contract).\n"
         "Step 2. Read your assignment + Scout directives. Follow every MUST/MUST NOT.\n"
         "Step 3. Verify your design: imports match stack, endpoints match physics,\n"
         "  tables match schema, layers match boundaries.\n"
@@ -383,10 +381,10 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         '{\n  "files_written": ["path/to/file.py"],\n'
         '  "decisions": "brief non-obvious choices made",\n'
         '  "known_issues": "none | list of issues"\n}\n```\n\n'
-        "# SCRATCHPAD PROTOCOL\n"
-        "Only write to scratchpad for non-obvious implementation decisions:\n"
-        "  forge_scratchpad(\"write\", \"decision_<topic>\", \"<max 200 chars>\")\n"
-        "Do NOT write file content or obvious decisions to scratchpad.\n"
+        "# SCRATCHPAD PROTOCOL — MANDATORY\n"
+        "Before your JSON output, ALWAYS write a brief summary to scratchpad:\n"
+        "  forge_scratchpad(\"write\", \"coder_<filename_stem>\", \"<what was built, key patterns used, contract decisions — max 300 chars>\")\n"
+        "This is REQUIRED — the Auditor reads this to understand your intent.\n"
     ),
     SubAgentRole.AUDITOR: (
         "You are an **Auditor** sub-agent in the Forge build system.\n\n"
@@ -397,12 +395,12 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "# PROCESS\n"
         "Step 1. The file under review is provided in your **Context Files** section.\n"
         "  Do NOT re-read it with read_file — it is already in your context.\n"
-        "Step 2. Pull contracts (make all calls in PARALLEL in one turn):\n"
-        "  - `forge_get_project_contract('boundaries')` — layer rules\n"
-        "  - `forge_get_project_contract('physics')` — API spec\n"
-        "  - `forge_get_project_contract('schema')` — database schema\n"
-        "  **If any contract returns 404/not found, skip that check entirely.**\n"
-        "  Do NOT retry. Audit only what you can verify with available contracts.\n"
+        "Step 2. Review the contracts in your Context Files section (contract_stack.md,\n"
+        "  contract_boundaries.md are pre-loaded). Fetch ONLY missing contracts:\n"
+        "  - `forge_get_contract('physics')` — if checking API endpoints\n"
+        "  - `forge_get_contract('schema')` — if checking DB models\n"
+        "  Do NOT use forge_get_project_contract — use forge_get_contract instead.\n"
+        "  Do NOT re-fetch stack or boundaries — they are already in your context.\n"
         "Step 3. Check against the severity table below.\n"
         "Step 4. Output your verdict JSON.\n\n"
         "# SEVERITY TABLE — what triggers FAIL vs PASS\n\n"
@@ -466,10 +464,10 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "  and mock imports are acceptable even if not in stack contract).\n"
         "- If you cannot determine whether an import is valid: set severity to\n"
         "  \"warn\" not \"error\" — let the Fixer investigate rather than false-failing.\n\n"
-        "# SCRATCHPAD PROTOCOL\n"
-        "Only write to scratchpad if you found errors that need tracking:\n"
-        "  forge_scratchpad(\"write\", \"audit_issues\", \"<path:line — issue>\")\n"
-        "If all files pass: do NOT write to scratchpad — no noise.\n"
+        "# SCRATCHPAD PROTOCOL — MANDATORY\n"
+        "Before your JSON output, ALWAYS write your verdict to scratchpad:\n"
+        "  forge_scratchpad(\"write\", \"audit_<filename_stem>\", \"PASS|FAIL: <key findings or 'clean' — max 200 chars>\")\n"
+        "This is REQUIRED — the Builder and Fixer need your verdict for pipeline decisions.\n"
     ),
     SubAgentRole.FIXER: (
         "You are a **Fixer** sub-agent in the Forge build system.\n\n"
@@ -482,8 +480,9 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "2. The file content — as written by the Coder\n"
         "3. Build contracts — immutable snapshot frozen at build start\n\n"
         "# PROCESS\n"
-        "Step 1. Call `forge_get_build_contracts()` to retrieve the pinned contract\n"
-        "  snapshot. Mid-build edits do NOT affect these.\n"
+        "Step 1. Review contracts in your Context Files section. If boundaries or\n"
+        "  stack are not pre-loaded, call `forge_get_contract('boundaries')` to fetch.\n"
+        "  Do NOT use forge_get_build_contracts or forge_get_project_contract.\n"
         "Step 2. Read the audit findings carefully. Each finding has a line number,\n"
         "  severity, and message.\n"
         "Step 3. For EACH finding with severity \"error\":\n"
@@ -1296,7 +1295,7 @@ async def run_sub_agent(
     # primary defense against runaway costs.
     _MAX_TOOL_ROUNDS: dict[SubAgentRole, int] = {
         SubAgentRole.SCOUT: 4,     # list_dir + read_file + search_code (fallback path only)
-        SubAgentRole.CODER: 12,    # fetch contracts + write + syntax check + fix cycles
+        SubAgentRole.CODER: 8,     # contracts pre-loaded; write + syntax check + fix cycles
         SubAgentRole.AUDITOR: 8,   # fetch contracts + review
         SubAgentRole.FIXER: 10,    # read + edit + syntax check per finding (2-3 findings typical)
     }
