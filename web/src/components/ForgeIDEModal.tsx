@@ -1221,7 +1221,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [scratchpadEntries, setScratchpadEntries] = useState<ScratchpadEntry[]>([]);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKENS });
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; text: string; timestamp: string }[]>([]);
-  const [leftTab, setLeftTab] = useState<'tasks' | 'chat'>('tasks');
+  const [leftTab, setLeftTab] = useState<'tasks' | 'chat' | 'log'>('tasks');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
@@ -3821,7 +3821,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           <div style={{
             display: 'flex', borderBottom: '1px solid #1E293B', flexShrink: 0,
           }}>
-            {(['tasks', 'chat'] as const).map((tab) => (
+            {(['tasks', 'chat', 'log'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setLeftTab(tab)}
@@ -3833,7 +3833,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   textTransform: 'uppercase', letterSpacing: '0.5px',
                 }}
               >
-                {tab === 'tasks' ? (isBuild ? `Plan (${tasks.length})` : `Tasks (${tasks.length})`) : `💬 Chat${chatMessages.length > 0 ? ` (${chatMessages.length})` : ''}`}
+                {tab === 'tasks' ? (isBuild ? `Plan (${tasks.length})` : `Tasks (${tasks.length})`)
+                  : tab === 'chat' ? `💬 Chat${chatMessages.length > 0 ? ` (${chatMessages.length})` : ''}`
+                  : `Log (${systemLogs.length})`}
               </button>
             ))}
             <button
@@ -4123,6 +4125,31 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             </div>
           )}
 
+          {/* LOG tab — system/command log moved from center panel */}
+          {leftTab === 'log' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+              {setupEndIndex >= 0 && (
+                <button
+                  onClick={() => setSetupCollapsed(c => !c)}
+                  style={{
+                    background: '#1E293B', border: 'none', borderBottom: '1px solid #334155',
+                    color: '#94A3B8', fontSize: '0.65rem', padding: '4px 10px',
+                    cursor: 'pointer', textAlign: 'left', flexShrink: 0,
+                  }}
+                >
+                  {setupCollapsed ? '▸ Setup logs collapsed' : '▾ Setup logs expanded'}
+                </button>
+              )}
+              <LogPane
+                logs={systemLogs}
+                status={status}
+                label="LOG"
+                labelColor="#94A3B8"
+                emptyText={status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
+              />
+            </div>
+          )}
+
           {/* FILE PROGRESS section removed — phase sidebar now shows per-file status */}
         </div>
         )}
@@ -4208,34 +4235,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             ))}
           </div>
 
-          {/* Activity log — unified left (40%) + stacked Opus/Sonnet right (60%) */}
+          {/* Activity — stacked Opus (top) + Sonnet (bottom) — LOG moved to left sidebar */}
           {activeTab === 'activity' && (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
-              {/* System/command log — 40% */}
-              <div style={{ width: '40%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                {setupEndIndex >= 0 && (
-                  <button
-                    onClick={() => setSetupCollapsed(c => !c)}
-                    style={{
-                      background: '#1E293B', border: 'none', borderBottom: '1px solid #334155',
-                      color: '#94A3B8', fontSize: '0.7rem', padding: '4px 12px',
-                      cursor: 'pointer', textAlign: 'left', flexShrink: 0,
-                    }}
-                  >
-                    {setupCollapsed ? '▸ Setup logs collapsed — click to expand' : '▾ Setup logs expanded — click to collapse'}
-                  </button>
-                )}
-                <LogPane
-                  logs={systemLogs}
-                  status={status}
-                  label="LOG"
-                  labelColor="#94A3B8"
-                  emptyText={status === 'preparing' ? 'Preparing workspace…' : status === 'ready' ? 'Ready — type /start and press Enter to begin' : 'Waiting for output…'}
-                />
-              </div>
-              {/* Divider */}
-              <div style={{ width: '1px', background: '#1E293B', flexShrink: 0 }} />
-              {/* Right column — stacked Opus (top) + Sonnet (bottom) — 60% */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               <div ref={rightColRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 {/* Opus — top (agent grouped view) */}
                 <div style={{ height: `${opusPct}%`, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
