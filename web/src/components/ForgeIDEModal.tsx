@@ -2310,7 +2310,10 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'plan_complete': {
               const planPhaseList = (p.phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[]) || [];
+              const _isAutoApprove = autoApprovePlanRef.current;
+
               if (planPhaseList.length > 0) {
+                // Always populate phases, tasks, and phase files
                 setPhases(planPhaseList as any);
                 setTasks(planPhaseList.map((ph) => ({
                   id: `phase_${ph.number}`,
@@ -2323,7 +2326,6 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 })));
                 setTotalTasks(planPhaseList.length);
 
-                // Pre-populate phase files from plan manifest (all pending)
                 const initPF: Record<number, PhaseFile[]> = {};
                 for (const ph of planPhaseList) {
                   if (ph.file_manifest?.length) {
@@ -2338,42 +2340,42 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 }
                 if (Object.keys(initPF).length > 0) setPhaseFiles(initPF);
 
-                // Upsert (or append) the PLAN box in the Sonnet panel.
-                // If plan_writing_live already created a partial-content plan box,
-                // replace it with the final formatted text.  If not (e.g. restored
-                // build), append a new one.
-                const planText = formatPlanText(planPhaseList);
-                setLogs((prev) => {
-                  const existingIdx = prev.findLastIndex((l) => l.reasoning?.isPlanBox);
-                  const entry = {
-                    timestamp: new Date().toISOString(),
-                    source: 'reasoning' as const,
-                    level: 'info',
-                    message: `📋 Plan — ${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
-                    worker: 'sonnet' as const,
-                    reasoning: {
-                      text: planText,
-                      textLength: planText.length,
-                      turn: 0,
-                      phase: `${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
-                      isActualThinking: false,
-                      isPlanBox: true,
-                    },
-                  };
-                  if (existingIdx >= 0) {
-                    const next = [...prev];
-                    next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
-                    return next;
-                  }
-                  return [...prev, entry];
-                });
+                // Only inject the PLAN box when user will review manually.
+                // Auto-approve skips this — build_commenced would remove it
+                // immediately anyway, causing a visual flash.
+                if (!_isAutoApprove) {
+                  const planText = formatPlanText(planPhaseList);
+                  setLogs((prev) => {
+                    const existingIdx = prev.findLastIndex((l) => l.reasoning?.isPlanBox);
+                    const entry = {
+                      timestamp: new Date().toISOString(),
+                      source: 'reasoning' as const,
+                      level: 'info',
+                      message: `📋 Plan — ${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
+                      worker: 'sonnet' as const,
+                      reasoning: {
+                        text: planText,
+                        textLength: planText.length,
+                        turn: 0,
+                        phase: `${planPhaseList.length} phase${planPhaseList.length !== 1 ? 's' : ''}`,
+                        isActualThinking: false,
+                        isPlanBox: true,
+                      },
+                    };
+                    if (existingIdx >= 0) {
+                      const next = [...prev];
+                      next[existingIdx] = { ...next[existingIdx], message: entry.message, reasoning: entry.reasoning };
+                      return next;
+                    }
+                    return [...prev, entry];
+                  });
+                }
               }
-              setPlanReady(true);
-              setShowPlanModal(false);
 
-              // Auto-approve plan if user initiated via /start (skip second click)
-              if (autoApprovePlanRef.current) {
+              if (_isAutoApprove) {
+                // Skip planReady gate entirely — no Button B flash
                 autoApprovePlanRef.current = false;
+                setShowPlanModal(false);
                 setLogs((prev) => [...prev, {
                   timestamp: new Date().toISOString(),
                   source: 'system',
@@ -2381,9 +2383,10 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   message: '✅ Plan complete — auto-approving...',
                   worker: 'system',
                 }]);
-                // Use ref-backed callback to avoid stale closure in WS handler
                 respondToPlanReviewRef.current('approve');
               } else {
+                setPlanReady(true);
+                setShowPlanModal(false);
                 setLogs((prev) => [...prev, {
                   timestamp: new Date().toISOString(),
                   source: 'system',
