@@ -453,12 +453,14 @@ async def run_builder(
 
         # --- INTEGRATION CHECK (cross-file validation) ---
         integration_findings = ""
+        _integ_error_count = 0
         if integration_check is not None:
             if verbose:
                 print(f"[BUILDER]   INTEGRATION: cross-file check for {file_path}")
             try:
                 _integ_issues = await integration_check(file_path)
                 _integ_errors = [i for i in _integ_issues if i.severity == "error"]
+                _integ_error_count = len(_integ_errors)
                 if _integ_errors:
                     integration_findings = "Integration audit findings:\n" + "\n".join(
                         f"  [{i.severity}] {i.message}"
@@ -466,18 +468,20 @@ async def run_builder(
                         for i in _integ_errors
                     )
                     if verbose:
-                        print(f"[BUILDER]   INTEGRATION: {len(_integ_errors)} error(s) found")
+                        print(f"[BUILDER]   INTEGRATION: {_integ_error_count} error(s) found")
                 elif verbose:
                     print(f"[BUILDER]   INTEGRATION: passed")
             except Exception as _integ_exc:
                 logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
 
-        if turn_callback is not None and integration_findings:
-            turn_callback({
-                "role": "integration",
-                "status": "failed",
-                "tokens": 0,
-            })
+            if turn_callback is not None:
+                turn_callback({
+                    "role": "integration",
+                    "status": "failed" if integration_findings else "passed",
+                    "error_count": _integ_error_count,
+                    "findings": integration_findings[:500] if integration_findings else "",
+                    "tokens": 0,
+                })
 
         # Combine auditor + integration findings for FIXER
         needs_fix = audit_verdict == "FAIL" or bool(integration_findings)

@@ -1657,6 +1657,26 @@ async def execute_tier(
                 user_id=user_id,
             )
 
+        # Turn callback — broadcasts pipeline step completions to frontend
+        def _on_builder_turn(info: dict) -> None:
+            role = info.get("role", "")
+            if role == "integration":
+                _status = info.get("status", "passed")
+                _err_count = info.get("error_count", 0)
+                if _status == "passed":
+                    _msg = f"\U0001f517 Integration PASS \u2014 {fp}"
+                else:
+                    _findings = info.get("findings", "")
+                    _summary = _findings.split("\n")[1].strip() if "\n" in _findings else _findings
+                    _msg = f"\U0001f517 Integration FAIL \u2014 {fp} ({_err_count} error{'s' if _err_count != 1 else ''}: {_summary[:120]})"
+                asyncio.get_event_loop().create_task(
+                    _state._broadcast_build_event(user_id, build_id, "build_log", {
+                        "message": _msg,
+                        "source": "integration",
+                        "level": "info" if _status == "passed" else "warn",
+                    })
+                )
+
         async with _semaphore:
             # Build lessons snapshot BEFORE acquiring builder
             _current_lessons = "\n".join(_lessons_parts)
@@ -1676,6 +1696,7 @@ async def execute_tier(
                 phase_plan_context="",
                 build_mode=build_mode,
                 integration_check=_per_file_integration_check,
+                turn_callback=_on_builder_turn,
                 lessons_learned=_current_lessons,
             )
 
