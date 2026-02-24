@@ -225,35 +225,95 @@ async def delete_all_zombie_builds() -> int:
 
 
 async def interrupt_stale_builds() -> int:
-    """Mark any active builds as 'failed' on server startup.
+    """Handle active builds on server startup.
 
-    Called once during lifespan startup to clear builds that were left in an
+    Called once during lifespan startup to deal with builds left in an
     active state by a previous server instance (crash, SIGTERM, restart).
-    Without this, start_build() refuses to create a fresh build and the IDE
-    shows stale logs with no live background task behind them.
 
-    'planned' builds are also interrupted: the plan is committed to git so
-    no work is lost, and the user can start a fresh build for the builder.
+    **Gated builds** (those with a ``pending_gate``) are paused instead of
+    failed — the gate is preserved so the user can respond after restart and
+    the build can resume from where it left off.
 
-    Returns the number of builds interrupted.
+    **Non-gated builds** are marked failed (existing behaviour).
+
+    Returns the total number of builds interrupted (paused + failed).
     """
     pool = await get_pool()
     now = datetime.now(timezone.utc)
-    result = await pool.execute(
+
+    # 1. Builds WITH a pending gate → pause (preserve gate state)
+    gated_result = await pool.execute(
+        """
+        UPDATE builds
+           SET status       = 'paused',
+               paused_at    = $1,
+               pause_reason = 'Server restart — gate: ' || pending_gate
+         WHERE status IN ('pending', 'running', 'planned')
+           AND pending_gate IS NOT NULL
+        """,
+        now,
+    )
+
+    # 2. Builds WITHOUT a gate → fail (existing behaviour)
+    ungated_result = await pool.execute(
         """
         UPDATE builds
            SET status       = 'failed',
                completed_at = $1,
                error_detail = 'Interrupted by server restart'
          WHERE status IN ('pending', 'running', 'planned')
+           AND pending_gate IS NULL
         """,
         now,
     )
+
     # asyncpg returns "UPDATE N" as a string
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    def _count(r: str) -> int:
+        try:
+            return int(r.split()[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    return _count(gated_result) + _count(ungated_result)
+
+
+async def set_build_gate(build_id: UUID, gate_type: str, payload: dict | None = None) -> None:
+    """Persist a pending gate so it survives server restarts.
+
+    Called alongside the in-memory ``register_*`` helpers.  The gate type
+    should be one of: ``plan_review``, ``phase_review``, ``ide_ready``,
+    ``clarification``.
+    """
+    pool = await get_pool()
+    now = datetime.now(timezone.utc)
+    await pool.execute(
+        """
+        UPDATE builds
+           SET pending_gate      = $2,
+               gate_payload      = $3::jsonb,
+               gate_registered_at = $4
+         WHERE id = $1
+        """,
+        build_id,
+        gate_type,
+        json.dumps(payload) if payload else None,
+        now,
+    )
+
+
+async def clear_build_gate(build_id: UUID) -> None:
+    """Clear the pending gate after user responds or build ends."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE builds
+           SET pending_gate      = NULL,
+               gate_payload      = NULL,
+               gate_registered_at = NULL
+         WHERE id = $1
+        """,
+        build_id,
+    )
 
 
 async def has_active_builds(project_id: UUID) -> bool:

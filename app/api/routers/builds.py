@@ -496,7 +496,11 @@ async def get_build_errors(
     resolved: bool | None = Query(None, description="Filter by resolved status"),
     user: dict = Depends(get_current_user),
 ):
-    """Return aggregated build errors for the latest build."""
+    """Return aggregated build errors for the latest build.
+
+    Each error includes a ``category`` field (``fixable``, ``regeneratable``,
+    or ``dismiss_only``) so the frontend can show the appropriate action button.
+    """
     from app.repos import build_repo as _br
     latest = await _br.get_latest_build_for_project(project_id)
     if not latest:
@@ -504,14 +508,15 @@ async def get_build_errors(
     errors = await _br.get_build_errors(
         latest["id"], resolved_filter=resolved,
     )
-    # Serialize UUIDs + datetimes for JSON
+    # Serialize UUIDs + datetimes for JSON and add category
     for e in errors:
+        e["category"] = build_service._categorize_error(e)
         for k, v in e.items():
             if isinstance(v, UUID):
                 e[k] = str(v)
             elif hasattr(v, "isoformat"):
                 e[k] = v.isoformat()
-    return errors
+    return {"items": errors, "build_status": latest["status"]}
 
 
 class DismissErrorRequest(BaseModel):
@@ -538,3 +543,31 @@ async def dismiss_build_error(
         elif hasattr(v, "isoformat"):
             result[k] = v.isoformat()
     return result
+
+
+@router.post("/{project_id}/build/errors/{error_id}/fix")
+async def fix_build_error(
+    project_id: UUID,
+    error_id: UUID,
+    user: dict = Depends(get_current_user),
+):
+    """Fix or regenerate a build error.
+
+    Strategy is determined server-side from the error's source and message:
+    - **fixable** errors → targeted code repair via LLM
+    - **regeneratable** errors → re-generate the file (empty for trivial files)
+    - **dismiss_only** errors → rejected (use ``/dismiss`` instead)
+
+    Only allowed when the build is paused, failed, or completed.
+    """
+    try:
+        return await build_service.fix_build_error(
+            project_id, user["id"], error_id,
+        )
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if "running" in msg or "cannot fix" in msg:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -95,6 +95,12 @@ async def lifespan(application: FastAPI):
                     ADD COLUMN IF NOT EXISTS cached_plan_json  JSONB,
                     ADD COLUMN IF NOT EXISTS plan_cached_at    TIMESTAMPTZ
             """)
+            await pool.execute("""
+                ALTER TABLE builds
+                    ADD COLUMN IF NOT EXISTS pending_gate        VARCHAR(100),
+                    ADD COLUMN IF NOT EXISTS gate_payload         JSONB,
+                    ADD COLUMN IF NOT EXISTS gate_registered_at   TIMESTAMPTZ
+            """)
             from app.repos.build_repo import interrupt_stale_builds, delete_all_zombie_builds
             from app.repos.scout_repo import interrupt_stale_scout_runs
             _interrupted = await interrupt_stale_builds()

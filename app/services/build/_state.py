@@ -347,6 +347,8 @@ async def _fail_build(build_id: UUID, user_id: UUID, detail: str) -> None:
     cleanup_plan_review(bid)
     cleanup_phase_review(bid)
     cleanup_ide_ready(bid)
+    # Clear any persisted gate in the DB so the build doesn't appear gated
+    await build_repo.clear_build_gate(build_id)
     now = datetime.now(timezone.utc)
     await build_repo.update_build_status(
         build_id, "failed", completed_at=now, error_detail=detail

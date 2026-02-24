@@ -1223,6 +1223,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [expandedDiff, setExpandedDiff] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'activity' | 'changes' | 'findings' | 'scratchpad' | 'errors'>('activity');
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([]);
+  const [buildStatusForErrors, setBuildStatusForErrors] = useState<string>('');
   const [findings, setFindings] = useState<FindingEntry[]>([]);
   const [scratchpadEntries, setScratchpadEntries] = useState<ScratchpadEntry[]>([]);
   const [expandedScratchpad, setExpandedScratchpad] = useState<Set<string>>(new Set());
@@ -1537,7 +1538,40 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 setStatus('preparing');
               }
             } else if (sd.status === 'paused') {
-              if (sd.completed_phases < 0) {
+              // Set buildStatusForErrors so the ERRORS tab knows fix buttons are available
+              setBuildStatusForErrors('paused');
+              if ((sd as any).ide_gate_pending || (sd as any).pending_gate === 'ide_ready') {
+                // IDE ready gate survived server restart — restore the ready state
+                // so the user can click Commence/Cancel.
+                setStatus('ready');
+                _pendingGate = true;
+                const _gateCachedPhasesP = (sd as any).cached_plan_phases as _CachedPhase[] | undefined;
+                if (_gateCachedPhasesP && _gateCachedPhasesP.length > 0) {
+                  _pendingGateCachedPhases = _gateCachedPhasesP;
+                  setPhases(_gateCachedPhasesP as any);
+                  setTasks(_gateCachedPhasesP.map((ph) => ({
+                    id: `phase_${ph.number}`,
+                    name: `Phase ${ph.number}: ${ph.name}`,
+                    priority: 'high' as const,
+                    effort: 'large' as const,
+                    forge_automatable: true,
+                    category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                    status: 'pending' as const,
+                  })));
+                  setTotalTasks(_gateCachedPhasesP.length);
+                  setPlanReady(true);
+                  const initPFgateP: Record<number, PhaseFile[]> = {};
+                  for (const ph of _gateCachedPhasesP) {
+                    if (ph.file_manifest?.length) {
+                      initPFgateP[ph.number] = ph.file_manifest.map((f: any) => ({
+                        path: f.path, committed: false, status: 'pending' as const,
+                        action: f.action, description: f.description,
+                      }));
+                    }
+                  }
+                  if (Object.keys(initPFgateP).length > 0) setPhaseFiles(initPFgateP);
+                }
+              } else if (sd.completed_phases < 0) {
                 // Plan-ready pause: planning done, phases not yet executing.
                 // Show REVIEW + PUSH instead of the mid-build Resume button.
                 setStatus('ready');
@@ -1584,6 +1618,64 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         textLength: planText.length,
                         turn: 0,
                         phase: `${cachedPhases.length} phase${cachedPhases.length !== 1 ? 's' : ''}`,
+                        isActualThinking: false,
+                        isPlanBox: true,
+                      },
+                    }];
+                  });
+                }
+              } else if ((sd as any).pending_gate === 'phase_review') {
+                // Phase review gate persisted from before server restart.
+                // Restore the phase review UI so the user can respond.
+                setStatus('ready');
+                setPlanReady(true);
+                const gatePayload = (sd as any).gate_payload || {};
+                setLastPhaseIssues({
+                  phase: gatePayload.phase || `Phase ${gatePayload.phase_number ?? '?'}`,
+                  verification: gatePayload.verification || {},
+                  governance: gatePayload.governance || {},
+                });
+                const currentPhaseNum2 = gatePayload.phase_number ?? (sd.completed_phases ?? 0);
+                setCompletedTasks(currentPhaseNum2);
+                // Restore plan phases for sidebar
+                const cachedPhasesGate = (sd as any).cached_plan_phases as _CachedPhase[] | undefined;
+                if (cachedPhasesGate && cachedPhasesGate.length > 0) {
+                  setPhases(cachedPhasesGate as any);
+                  setTasks(cachedPhasesGate.map((ph) => ({
+                    id: `phase_${ph.number}`,
+                    name: `Phase ${ph.number}: ${ph.name}`,
+                    priority: 'high' as const,
+                    effort: 'large' as const,
+                    forge_automatable: true,
+                    category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                    status: ph.number <= currentPhaseNum2 ? 'proposed' as const : 'pending' as const,
+                  })));
+                  setTotalTasks(cachedPhasesGate.length);
+                  const initPFpr: Record<number, PhaseFile[]> = {};
+                  for (const ph of cachedPhasesGate) {
+                    if (ph.file_manifest?.length) {
+                      initPFpr[ph.number] = ph.file_manifest.map((f: any) => ({
+                        path: f.path, committed: false,
+                        status: ph.number < currentPhaseNum2 ? 'passed' as const : 'pending' as const,
+                        action: f.action, description: f.description,
+                      }));
+                    }
+                  }
+                  if (Object.keys(initPFpr).length > 0) setPhaseFiles(initPFpr);
+                  const planText = formatPlanText(cachedPhasesGate);
+                  setLogs((prev) => {
+                    if (prev.some((l) => l.reasoning?.isPlanBox)) return prev;
+                    return [...prev, {
+                      timestamp: new Date().toISOString(),
+                      source: 'reasoning' as const,
+                      level: 'info',
+                      message: `📋 Plan — ${cachedPhasesGate.length} phase${cachedPhasesGate.length !== 1 ? 's' : ''} (restored)`,
+                      worker: 'sonnet' as const,
+                      reasoning: {
+                        text: planText,
+                        textLength: planText.length,
+                        turn: 0,
+                        phase: `${cachedPhasesGate.length} phase${cachedPhasesGate.length !== 1 ? 's' : ''}`,
                         isActualThinking: false,
                         isPlanBox: true,
                       },
@@ -1798,8 +1890,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         try {
           const errRes = await fetch(`${API_BASE}/projects/${projectId}/build/errors`, { headers: hdr });
           if (errRes.ok) {
-            const errData: BuildError[] = await errRes.json();
-            if (errData.length > 0) setBuildErrors(errData);
+            const errData = await errRes.json();
+            // Response is now {items: BuildError[], build_status: string}
+            const errItems: BuildError[] = Array.isArray(errData) ? errData : (errData.items || []);
+            if (errItems.length > 0) setBuildErrors(errItems);
+            if (errData.build_status) setBuildStatusForErrors(errData.build_status);
           }
         } catch { /* silent */ }
 
@@ -2171,6 +2266,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'build_complete':
               setStatus('completed');
+              setBuildStatusForErrors('completed');
               if (p.total_input_tokens || p.total_output_tokens) {
                 setTokenUsage((prev) => ({
                   ...prev,
@@ -2191,6 +2287,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             case 'build_failed':
               // Terminal failure — show blocking overlay
               setStatus('error');
+              setBuildStatusForErrors('failed');
               if (p.error_detail || p.error) {
                 const errMsg = p.error_detail || p.error || 'Build failed';
                 setLogs((prev) => [...prev, {
@@ -2539,6 +2636,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
 
             case 'build_paused':
               setStatus('paused');
+              setBuildStatusForErrors('paused');
               setPendingPrompt(true);
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
@@ -3404,6 +3502,40 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
         setLastPhaseIssues(null);  // Clear issues display while fixing
       }
     } catch { /* WS events confirm */ }
+  }, [projectId, token]);
+
+  /** Fix or regenerate a single build error from the Errors tab. */
+  const fixBuildError = useCallback(async (errorId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/projects/${projectId}/build/errors/${errorId}/fix`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Optimistic update: mark error as resolved
+        setBuildErrors((prev) => prev.map((e) =>
+          e.id === errorId
+            ? { ...e, resolved: true, resolved_at: new Date().toISOString(),
+                resolution_method: 'auto-fix' as const,
+                resolution_summary: data.resolution_summary || `${data.action}` }
+            : e,
+        ));
+      } else {
+        const err = await res.json().catch(() => ({ detail: 'Fix failed' }));
+        setLogs((prev) => [...prev, {
+          timestamp: new Date().toISOString(),
+          source: 'system', level: 'error',
+          message: `Fix failed: ${err.detail || 'unknown error'}`,
+        }]);
+      }
+    } catch {
+      setLogs((prev) => [...prev, {
+        timestamp: new Date().toISOString(),
+        source: 'system', level: 'error',
+        message: 'Fix request failed — network error',
+      }]);
+    }
   }, [projectId, token]);
 
   /* Save plan to database as a project contract */
@@ -5273,6 +5405,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           {activeTab === 'errors' && (
             <ErrorsPanel
               errors={buildErrors}
+              buildStatus={buildStatusForErrors}
+              onFix={fixBuildError}
               onDismiss={async (errorId) => {
                 // Optimistic UI update
                 setBuildErrors((prev) => prev.map((e) =>

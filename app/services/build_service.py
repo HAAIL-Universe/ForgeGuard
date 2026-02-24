@@ -788,6 +788,7 @@ async def _handle_clarification(
     )
 
     event = register_clarification(bid)
+    await build_repo.set_build_gate(build_id, "clarification", {"question": question})
 
     try:
         await asyncio.wait_for(
@@ -796,6 +797,7 @@ async def _handle_clarification(
         )
     except asyncio.TimeoutError:
         pop_clarification_answer(bid)
+        await build_repo.clear_build_gate(build_id)
         await _broadcast_build_event(user_id, build_id, "build_clarification_resolved", {
             "build_id": bid,
             "question_id": question_id,
@@ -1268,7 +1270,27 @@ async def resume_clarification(
     build_id = str(build["id"])
     resolved = resolve_clarification(build_id, answer)
     if not resolved:
-        raise ValueError("No pending clarification for this build")
+        # No in-memory gate — server may have restarted.
+        if build.get("pending_gate") != "clarification":
+            raise ValueError("No pending clarification for this build")
+
+        # Clarification can't resume mid-turn — the builder's context is lost.
+        # Clear the gate and fail the build with an explanation.
+        await build_repo.clear_build_gate(build["id"])
+        await build_repo.update_build_status(
+            build["id"], "failed", completed_at=datetime.now(timezone.utc),
+            error_detail="Server restarted during clarification — build context lost. Please start a new build.",
+        )
+        await build_repo.append_build_log(
+            build["id"],
+            "Clarification answer received after server restart — cannot resume mid-conversation. "
+            "Please start a new build.",
+            source="system", level="error",
+        )
+        return {"ok": True, "build_id": build_id, "restarted": True}
+
+    # Normal path — clear DB gate
+    await build_repo.clear_build_gate(build["id"])
 
     return {"ok": True, "build_id": build_id}
 
@@ -1303,7 +1325,43 @@ async def approve_plan(
 
     resolved = resolve_plan_review(build_id, {"action": action})
     if not resolved:
-        raise ValueError("No pending plan review for this build")
+        # No in-memory gate — server may have restarted.
+        # Check DB for a persisted plan_review gate.
+        if build.get("pending_gate") != "plan_review":
+            raise ValueError("No pending plan review for this build")
+
+        # Post-restart path: clear the DB gate and handle action
+        await build_repo.clear_build_gate(build["id"])
+        await build_repo.append_build_log(
+            build["id"],
+            f"Plan {'approved' if action == 'approve' else 'rejected'} by user (post-restart)",
+            source="user", level="info",
+        )
+        if action == "reject":
+            await build_repo.update_build_status(
+                build["id"], "failed", completed_at=datetime.now(timezone.utc),
+                error_detail="User rejected the build plan",
+            )
+            return {"ok": True, "build_id": build_id, "action": action, "sha": "", "resumed": False}
+
+        # Approve path: commit plan then resume as a fresh build.
+        # The plan is already cached in DB so start_build will pick it up.
+        sha = ""
+        try:
+            commit_result = await commit_plan_to_git(project_id, user_id)
+            sha = commit_result.get("sha", "")
+        except Exception as exc:
+            logger.warning("approve_plan (post-restart): plan git commit skipped: %s", exc)
+        # Mark current build as completed (superseded) and start fresh
+        await build_repo.update_build_status(
+            build["id"], "completed", completed_at=datetime.now(timezone.utc),
+        )
+        new_build = await start_build(project_id, user_id)
+        return {"ok": True, "build_id": new_build.get("build_id", build_id),
+                "action": action, "sha": sha, "resumed": True}
+
+    # Normal path — in-memory gate resolved, clear DB gate
+    await build_repo.clear_build_gate(build["id"])
 
     await build_repo.append_build_log(
         build["id"],
@@ -1368,6 +1426,210 @@ def _identify_files_to_fix(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Error categorization + per-error fix (Hybrid Error Actions)
+# ---------------------------------------------------------------------------
+
+
+def _categorize_error(error: dict) -> str:
+    """Determine the fix strategy for a build error.
+
+    Returns one of:
+      - ``"fixable"``      — governance G1-G3 violations, syntax/test failures
+      - ``"regeneratable"`` — file generation failures (empty API response, etc.)
+      - ``"dismiss_only"``  — invariant violations, tier system, G4-G7 warnings
+    """
+    source = error.get("source", "")
+    message = error.get("message", "")
+
+    # File generation failures → regeneratable
+    if source == "file_generation":
+        return "regeneratable"
+
+    # Governance: only blocking checks (G1-G3) are fixable
+    if source == "governance":
+        for code in ("G1", "G2", "G3"):
+            if f"[{code}]" in message:
+                return "fixable"
+        return "dismiss_only"
+
+    # Verification / audit: syntax errors and test failures are fixable
+    if source in ("verify", "audit") and error.get("file_path"):
+        if any(kw in message.lower() for kw in ("syntax", "test fail", "tests failed")):
+            return "fixable"
+
+    return "dismiss_only"
+
+
+_REGEN_PATH_RE = re.compile(r"Failed to generate\s+(\S+)")
+
+
+def _extract_regen_path(message: str) -> str | None:
+    """Parse the file path from a "Failed to generate X: ..." error message."""
+    m = _REGEN_PATH_RE.search(message)
+    if m:
+        return m.group(1).rstrip(":")
+    return None
+
+
+_TRIVIAL_REGEN_NAMES = {"__init__.py", ".gitkeep", "py.typed", "__init__.pyi"}
+
+
+def _is_trivial_regen(file_path: str) -> bool:
+    """Return True if the file can be regenerated as an empty file (no LLM)."""
+    from pathlib import Path as _P
+    return _P(file_path).name in _TRIVIAL_REGEN_NAMES
+
+
+async def fix_build_error(
+    project_id: UUID,
+    user_id: UUID,
+    error_id: UUID,
+) -> dict:
+    """Fix or regenerate a single build error.
+
+    Determines the fix strategy from the error metadata, executes it,
+    and marks the error as resolved.  Only allowed when the build is
+    paused, failed, or completed (not actively running).
+
+    Returns a dict with ``ok``, ``error_id``, ``action``, ``resolution_summary``.
+    Raises ValueError on guard failures.
+    """
+    from app.services.build.verification import _fix_single_file
+    from app.repos.user_repo import get_user_by_id as _get_user
+
+    # ── Fetch context ─────────────────────────────────────────────
+    project = await project_repo.get_project_by_id(project_id)
+    if not project or str(project.get("user_id")) != str(user_id):
+        raise ValueError("Project not found")
+
+    build = await build_repo.get_latest_build_for_project(project_id)
+    if not build:
+        raise ValueError("No build found")
+
+    if build["status"] in ("running", "pending", "planned"):
+        raise ValueError(
+            "Cannot fix errors while the build is actively running. "
+            "Wait for it to pause or finish."
+        )
+
+    bid = build["id"]
+    working_dir = build.get("working_dir") or str(_get_workspace_dir(project_id))
+
+    # Find the specific error
+    all_errors = await build_repo.get_build_errors(bid)
+    error = next((e for e in all_errors if str(e["id"]) == str(error_id)), None)
+    if not error:
+        raise ValueError("Error not found")
+    if error["resolved"]:
+        raise ValueError("Error is already resolved")
+
+    category = _categorize_error(error)
+    if category == "dismiss_only":
+        raise ValueError(
+            "This error type cannot be auto-fixed. Use dismiss instead."
+        )
+
+    # Get API key from user record
+    user = await _get_user(user_id)
+    api_key = (
+        (user or {}).get("anthropic_api_key")
+        or settings.ANTHROPIC_API_KEY
+    )
+    if not api_key:
+        raise ValueError("No API key available for LLM fix")
+
+    # ── Execute fix strategy ──────────────────────────────────────
+    action_label = "fixed"
+    summary = ""
+
+    if category == "fixable":
+        file_path = error.get("file_path")
+        if not file_path:
+            raise ValueError("Cannot fix: no file path associated with this error")
+
+        await _broadcast_build_event(user_id, bid, "build_log", {
+            "message": f"🔧 Fixing error in {file_path}...",
+            "source": "system", "level": "info",
+        })
+
+        try:
+            await _fix_single_file(
+                bid, user_id, api_key,
+                file_path, error["message"], working_dir,
+                label="error_fix",
+            )
+            summary = f"Fixed {file_path} — targeted repair from error details"
+            action_label = "fixed"
+        except Exception as exc:
+            logger.warning("fix_build_error: fix failed for %s: %s", file_path, exc)
+            raise ValueError(f"Fix attempt failed: {exc}") from exc
+
+    elif category == "regeneratable":
+        file_path = _extract_regen_path(error["message"])
+        if not file_path:
+            raise ValueError("Cannot regenerate: unable to parse file path from error message")
+
+        if _is_trivial_regen(file_path):
+            # Trivial files — write empty, no LLM needed
+            target = Path(working_dir) / file_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("", encoding="utf-8")
+            summary = f"Regenerated {file_path} as empty file (trivial marker)"
+            action_label = "regenerated"
+
+            await _broadcast_build_event(user_id, bid, "build_log", {
+                "message": f"🔄 Regenerated {file_path} (empty marker file)",
+                "source": "system", "level": "info",
+            })
+        else:
+            # Non-trivial — use _fix_single_file with "generate from scratch"
+            await _broadcast_build_event(user_id, bid, "build_log", {
+                "message": f"🔄 Regenerating {file_path}...",
+                "source": "system", "level": "info",
+            })
+
+            try:
+                await _fix_single_file(
+                    bid, user_id, api_key,
+                    file_path,
+                    "This file needs to be generated from scratch. "
+                    "The previous generation attempt failed with an empty API response. "
+                    "Write the complete implementation for this file.",
+                    working_dir,
+                    label="regenerate",
+                )
+                summary = f"Regenerated {file_path} via LLM"
+                action_label = "regenerated"
+            except Exception as exc:
+                logger.warning("fix_build_error: regenerate failed for %s: %s", file_path, exc)
+                raise ValueError(f"Regeneration failed: {exc}") from exc
+
+    # ── Mark resolved ─────────────────────────────────────────────
+    resolved = await build_repo.resolve_build_error(
+        error_id, method="auto-fix", summary=summary,
+    )
+
+    await _broadcast_build_event(user_id, bid, "build_error_resolved", {
+        "error_id": str(error_id),
+        "method": "auto-fix",
+        "summary": summary,
+    })
+
+    await build_repo.append_build_log(
+        bid,
+        f"Error {action_label}: {summary}",
+        source="system", level="info",
+    )
+
+    return {
+        "ok": True,
+        "error_id": str(error_id),
+        "action": action_label,
+        "resolution_summary": summary,
+    }
+
+
 async def respond_phase_review(
     project_id: UUID,
     user_id: UUID,
@@ -1397,7 +1659,47 @@ async def respond_phase_review(
 
     resolved = resolve_phase_review(build_id, {"action": action})
     if not resolved:
-        raise ValueError("No pending phase review for this build")
+        # No in-memory gate — server may have restarted.
+        if build.get("pending_gate") != "phase_review":
+            raise ValueError("No pending phase review for this build")
+
+        # Post-restart path: clear the DB gate and resume the build
+        gate_data = build.get("gate_payload") or {}
+        await build_repo.clear_build_gate(build["id"])
+        await build_repo.append_build_log(
+            build["id"],
+            f"Phase review: user chose '{action}' (post-restart)",
+            source="user", level="info",
+        )
+
+        completed_phases = build.get("completed_phases", -1) or -1
+        if action == "continue":
+            # Resume from the next phase
+            await build_repo.update_build_status(
+                build["id"], "completed", completed_at=datetime.now(timezone.utc),
+            )
+            new_build = await start_build(
+                project_id, user_id,
+                resume_from_phase=completed_phases,
+                working_dir_override=build.get("working_dir"),
+            )
+            return {"ok": True, "build_id": new_build.get("build_id", build_id),
+                    "action": action, "resumed": True}
+        else:
+            # "fix" — run fix pass on the affected phase, then resume
+            await build_repo.update_build_status(
+                build["id"], "completed", completed_at=datetime.now(timezone.utc),
+            )
+            new_build = await start_build(
+                project_id, user_id,
+                resume_from_phase=max(0, completed_phases - 1),
+                working_dir_override=build.get("working_dir"),
+            )
+            return {"ok": True, "build_id": new_build.get("build_id", build_id),
+                    "action": action, "resumed": True}
+
+    # Normal path — in-memory gate resolved, clear DB gate
+    await build_repo.clear_build_gate(build["id"])
 
     await build_repo.append_build_log(
         build["id"],
@@ -1494,7 +1796,33 @@ async def commence_build(
 
     resolved = resolve_ide_ready(build_id, {"action": action})
     if not resolved:
-        raise ValueError("No pending IDE ready gate for this build")
+        # No in-memory gate — server may have restarted.
+        if build.get("pending_gate") != "ide_ready":
+            raise ValueError("No pending IDE ready gate for this build")
+
+        # Post-restart path: clear the DB gate and start fresh
+        await build_repo.clear_build_gate(build["id"])
+        await build_repo.append_build_log(
+            build["id"],
+            f"Build {'commenced' if action == 'commence' else 'cancelled'} by user (post-restart)",
+            source="user", level="info",
+        )
+        if action == "cancel":
+            await build_repo.update_build_status(
+                build["id"], "cancelled", completed_at=datetime.now(timezone.utc),
+            )
+            return {"ok": True, "build_id": build_id, "action": action, "resumed": False}
+
+        # Mark current build as completed (superseded) and start fresh
+        await build_repo.update_build_status(
+            build["id"], "completed", completed_at=datetime.now(timezone.utc),
+        )
+        new_build = await start_build(project_id, user_id)
+        return {"ok": True, "build_id": new_build.get("build_id", build_id),
+                "action": action, "resumed": True}
+
+    # Normal path — in-memory gate resolved, clear DB gate
+    await build_repo.clear_build_gate(build["id"])
 
     await build_repo.append_build_log(
         build["id"],
@@ -2644,6 +2972,29 @@ async def get_build_status(project_id: UUID, user_id: UUID) -> dict:
         _cached_term = await _gcp_term(project_id)
         if _cached_term:
             result["cached_plan_phases"] = _cached_term.get("phases", [])
+
+    # --- Persisted gate state (survives server restarts) ---
+    # If the build has a pending_gate persisted in DB, include it so the
+    # frontend can restore the appropriate gate UI even after a restart.
+    _pg = latest.get("pending_gate")
+    if _pg:
+        result["pending_gate"] = _pg
+        result["gate_payload"] = latest.get("gate_payload") or {}
+        # For paused builds with a persisted gate, also mark as IDE-gate-pending
+        # so the frontend uses the same code path to restore the gate UI.
+        if latest["status"] == "paused":
+            if _pg == "ide_ready":
+                result["ide_gate_pending"] = True
+            elif _pg == "plan_review":
+                result["plan_review_pending"] = True
+            # phase_review: the frontend reads pending_gate directly
+            # (new code path added in ForgeIDEModal)
+            # Also include cached plan phases for gate restoration
+            from app.repos.project_repo import get_cached_plan as _gcp_pg
+            _cached_pg = await _gcp_pg(project_id)
+            if _cached_pg:
+                result["cached_plan_phases"] = _cached_pg.get("phases", [])
+
     return result
 
 
@@ -3901,6 +4252,7 @@ async def _run_build_plan_execute(
     # Register the gate BEFORE broadcasting — prevents a race where the client
     # responds to forge_ide_ready before register_ide_ready has run.
     _ready_event = register_ide_ready(str(build_id))
+    await build_repo.set_build_gate(build_id, "ide_ready")
 
     await _broadcast_build_event(user_id, build_id, "forge_ide_ready", {
         "message": _welcome_summary,
@@ -4000,11 +4352,13 @@ async def _run_build_plan_execute(
             # reset its own counter, but touching here is belt-and-suspenders).
             _touch_progress(build_id)
             _ready_event = register_ide_ready(str(build_id))
+            await build_repo.set_build_gate(build_id, "ide_ready")
             continue
 
         # "commence" — break out and start building
         break
 
+    await build_repo.clear_build_gate(build_id)  # belt-and-suspenders: also cleared by commence_build()
     await build_repo.update_build_status(build_id, "running", started_at=datetime.now(timezone.utc))
     await build_repo.append_build_log(
         build_id, "Build commenced by user", source="system", level="info",
@@ -4707,6 +5061,7 @@ async def _run_build_plan_execute(
                 # the user is reading the plan (user-think-time, not a stall).
                 _touch_progress(build_id)
                 _review_event = register_plan_review(str(build_id))
+                await build_repo.set_build_gate(build_id, "plan_review")
                 try:
                     await asyncio.wait_for(
                         _review_event.wait(),
@@ -4717,6 +5072,7 @@ async def _run_build_plan_execute(
                     return
 
                 _review_response = pop_plan_review_response(str(build_id))
+                await build_repo.clear_build_gate(build_id)  # belt-and-suspenders: also cleared by approve_plan()
                 _review_action = (_review_response or {}).get("action", "approve")
 
                 if _review_action == "reject":
@@ -6220,14 +6576,18 @@ async def _run_build_plan_execute(
 
             while True:
                 _phase_review_event = register_phase_review(str(build_id))
-                await _broadcast_build_event(user_id, build_id, "phase_review", {
+                _phase_gate_payload = {
                     "phase": phase_name,
                     "phase_number": phase_num,
                     "verification": verification,
                     "governance": governance_result,
-                    "options": ["continue", "fix"],
                     "fix_round": _fix_round,
                     "max_fix_rounds": _max_fix_rounds,
+                }
+                await build_repo.set_build_gate(build_id, "phase_review", _phase_gate_payload)
+                await _broadcast_build_event(user_id, build_id, "phase_review", {
+                    **_phase_gate_payload,
+                    "options": ["continue", "fix"],
                 })
                 _touch_progress(build_id)
 
@@ -6241,6 +6601,7 @@ async def _run_build_plan_execute(
                     return
 
                 _phase_response = pop_phase_review_response(str(build_id))
+                await build_repo.clear_build_gate(build_id)  # belt-and-suspenders: also cleared by respond_phase_review()
                 _phase_action = (_phase_response or {}).get("action", "continue")
 
                 if _phase_action == "continue":

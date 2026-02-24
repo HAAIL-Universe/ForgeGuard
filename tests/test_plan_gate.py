@@ -259,6 +259,7 @@ class TestApprovePlan:
             return_value={"id": _BUILD_ID, "user_id": _USER_ID, "status": "running"}
         )
         mock_build_repo.append_build_log = AsyncMock()
+        mock_build_repo.clear_build_gate = AsyncMock()
 
         # Register a pending plan review
         register_plan_review(str(_BUILD_ID))
@@ -278,6 +279,7 @@ class TestApprovePlan:
             return_value={"id": _BUILD_ID, "user_id": _USER_ID, "status": "running"}
         )
         mock_build_repo.append_build_log = AsyncMock()
+        mock_build_repo.clear_build_gate = AsyncMock()
 
         register_plan_review(str(_BUILD_ID))
 
@@ -333,6 +335,7 @@ class TestCommenceBuild:
             return_value={"id": _BUILD_ID, "user_id": _USER_ID, "status": "running"}
         )
         mock_build_repo.append_build_log = AsyncMock()
+        mock_build_repo.clear_build_gate = AsyncMock()
 
         register_ide_ready(str(_BUILD_ID))
 
@@ -351,6 +354,7 @@ class TestCommenceBuild:
             return_value={"id": _BUILD_ID, "user_id": _USER_ID, "status": "running"}
         )
         mock_build_repo.append_build_log = AsyncMock()
+        mock_build_repo.clear_build_gate = AsyncMock()
 
         register_ide_ready(str(_BUILD_ID))
 

@@ -2,10 +2,13 @@
  * ErrorsPanel — Aggregated error viewer for the build IDE.
  *
  * Displays deduplicated errors with iOS-style occurrence badges,
- * LLM-authored resolution notes, and a Dismiss button.
+ * LLM-authored resolution notes, and category-appropriate action buttons:
+ *   - Fixable errors   → 🔧 Fix button
+ *   - Regeneratable    → 🔄 Regenerate button
+ *   - Dismiss-only     → ✕ Dismiss button
  * Unresolved errors appear at the top; resolved ones collapse at the bottom.
  */
-import { useState, memo } from 'react';
+import { useState, useCallback, memo } from 'react';
 
 /* ---------- Types ---------- */
 
@@ -24,11 +27,14 @@ export interface BuildError {
   resolved_at?: string;
   resolution_method?: 'auto-fix' | 'phase-complete' | 'dismissed';
   resolution_summary?: string;
+  category?: 'fixable' | 'regeneratable' | 'dismiss_only';
 }
 
 interface ErrorsPanelProps {
   errors: BuildError[];
   onDismiss: (errorId: string) => void;
+  onFix?: (errorId: string) => Promise<void>;
+  buildStatus?: string;
 }
 
 /* ---------- Helpers ---------- */
@@ -48,16 +54,30 @@ const METHOD_LABELS: Record<string, string> = {
   'dismissed': '✕ Dismissed',
 };
 
+/** Returns true when the build is in a state where error fixes are allowed. */
+function canFix(buildStatus?: string): boolean {
+  if (!buildStatus) return false;
+  return ['paused', 'failed', 'completed', 'cancelled'].includes(buildStatus);
+}
+
 /* ---------- Sub-components ---------- */
 
 const ErrorCard = memo(function ErrorCard({
   error,
   onDismiss,
+  onFix,
+  isFixing,
+  buildStatus,
 }: {
   error: BuildError;
   onDismiss: (id: string) => void;
+  onFix?: (id: string) => void;
+  isFixing: boolean;
+  buildStatus?: string;
 }) {
   const isResolved = error.resolved;
+  const category = error.category || 'dismiss_only';
+  const fixAllowed = canFix(buildStatus) && !isFixing;
 
   return (
     <div
@@ -153,9 +173,37 @@ const ErrorCard = memo(function ErrorCard({
         </div>
       )}
 
-      {/* Dismiss button (only for unresolved errors) */}
+      {/* Action buttons (only for unresolved errors) */}
       {!isResolved && (
-        <div style={{ paddingLeft: '16px', marginTop: '6px' }}>
+        <div style={{ paddingLeft: '16px', marginTop: '6px', display: 'flex', gap: '6px' }}>
+          {/* Fix / Regenerate button — only for fixable/regeneratable categories */}
+          {category !== 'dismiss_only' && onFix && (
+            <button
+              onClick={() => onFix(error.id)}
+              disabled={!fixAllowed}
+              title={!canFix(buildStatus) ? 'Wait for build to pause or finish' : undefined}
+              style={{
+                background: fixAllowed ? '#1E3A5F' : '#1E293B',
+                border: `1px solid ${fixAllowed ? '#60A5FA66' : '#334155'}`,
+                borderRadius: '4px',
+                color: fixAllowed ? '#60A5FA' : '#475569',
+                fontSize: '0.65rem',
+                fontWeight: 600,
+                padding: '2px 8px',
+                cursor: fixAllowed ? 'pointer' : 'not-allowed',
+                transition: 'all 0.15s',
+                opacity: isFixing ? 0.7 : 1,
+              }}
+            >
+              {isFixing
+                ? '⏳ Fixing...'
+                : category === 'regeneratable'
+                  ? '🔄 Regenerate'
+                  : '🔧 Fix'}
+            </button>
+          )}
+
+          {/* Dismiss button — always shown for unresolved */}
           <button
             onClick={() => onDismiss(error.id)}
             style={{
@@ -187,8 +235,23 @@ const ErrorCard = memo(function ErrorCard({
 
 /* ---------- Main component ---------- */
 
-function ErrorsPanel({ errors, onDismiss }: ErrorsPanelProps) {
+function ErrorsPanel({ errors, onDismiss, onFix, buildStatus }: ErrorsPanelProps) {
   const [showResolved, setShowResolved] = useState(false);
+  const [fixingIds, setFixingIds] = useState<Set<string>>(new Set());
+
+  const handleFix = useCallback(async (errorId: string) => {
+    if (!onFix) return;
+    setFixingIds((prev) => new Set(prev).add(errorId));
+    try {
+      await onFix(errorId);
+    } finally {
+      setFixingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(errorId);
+        return next;
+      });
+    }
+  }, [onFix]);
 
   const unresolved = errors.filter((e) => !e.resolved);
   const resolved = errors.filter((e) => e.resolved);
@@ -234,7 +297,14 @@ function ErrorsPanel({ errors, onDismiss }: ErrorsPanelProps) {
         )}
 
         {unresolved.map((err) => (
-          <ErrorCard key={err.id} error={err} onDismiss={onDismiss} />
+          <ErrorCard
+            key={err.id}
+            error={err}
+            onDismiss={onDismiss}
+            onFix={onFix ? handleFix : undefined}
+            isFixing={fixingIds.has(err.id)}
+            buildStatus={buildStatus}
+          />
         ))}
 
         {/* Resolved section — collapsible */}
@@ -272,7 +342,13 @@ function ErrorsPanel({ errors, onDismiss }: ErrorsPanelProps) {
             </button>
 
             {showResolved && resolved.map((err) => (
-              <ErrorCard key={err.id} error={err} onDismiss={onDismiss} />
+              <ErrorCard
+                key={err.id}
+                error={err}
+                onDismiss={onDismiss}
+                isFixing={false}
+                buildStatus={buildStatus}
+              />
             ))}
           </>
         )}

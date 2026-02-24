@@ -408,3 +408,291 @@ class TestIdentifyFilesToFix:
         assert "app/config.py" in result
         assert "app/main.py" in result
         assert "app/utils.py" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Error categorization (Hybrid Error Actions)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.build_service import (
+    _categorize_error,
+    _extract_regen_path,
+    _is_trivial_regen,
+)
+
+
+class TestCategorizeError:
+    """_categorize_error should return the correct category for each error type."""
+
+    def test_governance_g3_is_fixable(self):
+        error = {"source": "governance", "message": "[G3] Dependency gate: app/config.py imports 'x'"}
+        assert _categorize_error(error) == "fixable"
+
+    def test_governance_g2_is_fixable(self):
+        error = {"source": "governance", "message": "[G2] Boundary compliance: forbidden import"}
+        assert _categorize_error(error) == "fixable"
+
+    def test_governance_g1_is_fixable(self):
+        error = {"source": "governance", "message": "[G1] Scope: phantom files on disk"}
+        assert _categorize_error(error) == "fixable"
+
+    def test_governance_g4_warning_is_dismiss_only(self):
+        error = {"source": "governance", "message": "[G4] Secrets scan: potential key found"}
+        assert _categorize_error(error) == "dismiss_only"
+
+    def test_governance_g7_is_dismiss_only(self):
+        error = {"source": "governance", "message": "[G7] TODO scan: 3 placeholders found"}
+        assert _categorize_error(error) == "dismiss_only"
+
+    def test_file_generation_is_regeneratable(self):
+        error = {"source": "file_generation", "message": "Failed to generate tests/__init__.py: Empty response"}
+        assert _categorize_error(error) == "regeneratable"
+
+    def test_file_generation_no_text_block_is_regeneratable(self):
+        error = {"source": "file_generation", "message": "Failed to generate app/main.py: No text block"}
+        assert _categorize_error(error) == "regeneratable"
+
+    def test_verify_syntax_is_fixable(self):
+        error = {"source": "verify", "file_path": "app/models.py", "message": "Syntax error in app/models.py"}
+        assert _categorize_error(error) == "fixable"
+
+    def test_audit_test_failure_is_fixable(self):
+        error = {"source": "audit", "file_path": "app/main.py", "message": "Tests failed: 3 failures"}
+        assert _categorize_error(error) == "fixable"
+
+    def test_verify_without_file_path_is_dismiss_only(self):
+        """Verify errors without a file path can't be fixed."""
+        error = {"source": "verify", "message": "Syntax error somewhere"}
+        assert _categorize_error(error) == "dismiss_only"
+
+    def test_invariant_is_dismiss_only(self):
+        error = {"source": "invariant", "message": "INVARIANT VIOLATION: backend_test_count"}
+        assert _categorize_error(error) == "dismiss_only"
+
+    def test_tier_system_is_dismiss_only(self):
+        error = {"source": "tier_system", "message": "Chunk system error: timeout"}
+        assert _categorize_error(error) == "dismiss_only"
+
+    def test_system_is_dismiss_only(self):
+        error = {"source": "system", "message": "Build failed: some error"}
+        assert _categorize_error(error) == "dismiss_only"
+
+    def test_unknown_source_is_dismiss_only(self):
+        error = {"source": "unknown", "message": "Something went wrong"}
+        assert _categorize_error(error) == "dismiss_only"
+
+
+class TestExtractRegenPath:
+    """_extract_regen_path should parse file paths from error messages."""
+
+    def test_standard_format(self):
+        msg = "Failed to generate tests/__init__.py: Empty response from Anthropic API"
+        assert _extract_regen_path(msg) == "tests/__init__.py"
+
+    def test_no_text_block_format(self):
+        msg = "Failed to generate app/services/__init__.py: No text block in Anthropic API response"
+        assert _extract_regen_path(msg) == "app/services/__init__.py"
+
+    def test_nested_path(self):
+        msg = "Failed to generate app/services/auth/handler.py: Empty response"
+        assert _extract_regen_path(msg) == "app/services/auth/handler.py"
+
+    def test_no_match(self):
+        msg = "Some other error message"
+        assert _extract_regen_path(msg) is None
+
+    def test_colon_stripped(self):
+        msg = "Failed to generate app/main.py: timeout"
+        assert _extract_regen_path(msg) == "app/main.py"
+
+
+class TestIsTrivialRegen:
+    """_is_trivial_regen should identify files that can be regenerated as empty."""
+
+    def test_init_py(self):
+        assert _is_trivial_regen("app/__init__.py") is True
+
+    def test_nested_init_py(self):
+        assert _is_trivial_regen("app/services/auth/__init__.py") is True
+
+    def test_gitkeep(self):
+        assert _is_trivial_regen("static/.gitkeep") is True
+
+    def test_py_typed(self):
+        assert _is_trivial_regen("app/py.typed") is True
+
+    def test_regular_python_file(self):
+        assert _is_trivial_regen("app/main.py") is False
+
+    def test_config_file(self):
+        assert _is_trivial_regen("app/config.py") is False
+
+    def test_tsx_file(self):
+        assert _is_trivial_regen("web/src/App.tsx") is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Gate Persistence — interrupt_stale_builds split, _fail_build cleanup
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestGatePersistenceDesign:
+    """Verify the gate persistence design invariants at the code level.
+
+    These are pure unit tests — no DB needed. They check that the code paths
+    exist and that the data structures are correct.
+    """
+
+    def test_set_build_gate_function_exists(self):
+        """build_repo must expose set_build_gate."""
+        from app.repos import build_repo as br
+        assert hasattr(br, "set_build_gate")
+        assert callable(br.set_build_gate)
+
+    def test_clear_build_gate_function_exists(self):
+        """build_repo must expose clear_build_gate."""
+        from app.repos import build_repo as br
+        assert hasattr(br, "clear_build_gate")
+        assert callable(br.clear_build_gate)
+
+    def test_fail_build_calls_clear_gate(self):
+        """_fail_build source should contain clear_build_gate call."""
+        import inspect
+        from app.services.build._state import _fail_build
+        src = inspect.getsource(_fail_build)
+        assert "clear_build_gate" in src, "_fail_build must clear persisted gate"
+
+    def test_interrupt_stale_preserves_gated(self):
+        """interrupt_stale_builds should pause (not fail) gated builds."""
+        import inspect
+        from app.repos.build_repo import interrupt_stale_builds
+        src = inspect.getsource(interrupt_stale_builds)
+        # Must contain BOTH a paused path and a failed path
+        assert "paused" in src.lower(), "Should pause gated builds"
+        assert "failed" in src.lower(), "Should fail ungated builds"
+        assert "pending_gate IS NOT NULL" in src, "Must check for gate presence"
+        assert "pending_gate IS NULL" in src, "Must check for gate absence"
+
+    def test_main_lifespan_applies_gate_migration(self):
+        """app/main.py lifespan must apply the gate columns."""
+        import inspect
+        from app.main import lifespan
+        src = inspect.getsource(lifespan)
+        assert "pending_gate" in src, "lifespan must add pending_gate column"
+        assert "gate_payload" in src, "lifespan must add gate_payload column"
+        assert "gate_registered_at" in src, "lifespan must add gate_registered_at column"
+
+
+class TestGateRegistrationPoints:
+    """Verify that each gate registration also persists to DB."""
+
+    def _get_build_service_source(self):
+        import inspect
+        import app.services.build_service as bs
+        return inspect.getsource(bs)
+
+    def test_ide_ready_persists(self):
+        src = self._get_build_service_source()
+        # After register_ide_ready there should be a set_build_gate call
+        idx = src.index("register_ide_ready(")
+        nearby = src[idx:idx+300]
+        assert "set_build_gate" in nearby, "ide_ready registration must persist gate"
+
+    def test_plan_review_persists(self):
+        src = self._get_build_service_source()
+        idx = src.index("register_plan_review(")
+        nearby = src[idx:idx+300]
+        assert "set_build_gate" in nearby, "plan_review registration must persist gate"
+
+    def test_phase_review_persists(self):
+        src = self._get_build_service_source()
+        idx = src.index("register_phase_review(")
+        nearby = src[idx:idx+600]  # wider window: payload is constructed between register + persist
+        assert "set_build_gate" in nearby, "phase_review registration must persist gate"
+
+    def test_clarification_persists(self):
+        src = self._get_build_service_source()
+        idx = src.index("register_clarification(")
+        nearby = src[idx:idx+300]
+        assert "set_build_gate" in nearby, "clarification registration must persist gate"
+
+
+class TestGateResolutionClear:
+    """Verify that each gate resolution function clears the DB gate."""
+
+    def _get_func_source(self, func_name):
+        import inspect
+        import app.services.build_service as bs
+        func = getattr(bs, func_name)
+        return inspect.getsource(func)
+
+    def test_approve_plan_clears(self):
+        src = self._get_func_source("approve_plan")
+        assert "clear_build_gate" in src, "approve_plan must clear DB gate"
+
+    def test_respond_phase_review_clears(self):
+        src = self._get_func_source("respond_phase_review")
+        assert "clear_build_gate" in src, "respond_phase_review must clear DB gate"
+
+    def test_commence_build_clears(self):
+        src = self._get_func_source("commence_build")
+        assert "clear_build_gate" in src, "commence_build must clear DB gate"
+
+    def test_resume_clarification_clears(self):
+        src = self._get_func_source("resume_clarification")
+        assert "clear_build_gate" in src, "resume_clarification must clear DB gate"
+
+
+class TestGatePostRestartHandling:
+    """Verify post-restart fallback paths exist in resolution functions."""
+
+    def _get_func_source(self, func_name):
+        import inspect
+        import app.services.build_service as bs
+        func = getattr(bs, func_name)
+        return inspect.getsource(func)
+
+    def test_approve_plan_handles_restart(self):
+        src = self._get_func_source("approve_plan")
+        assert 'pending_gate' in src, "approve_plan must check for persisted gate"
+        assert 'post-restart' in src.lower(), "approve_plan must have post-restart path"
+
+    def test_respond_phase_review_handles_restart(self):
+        src = self._get_func_source("respond_phase_review")
+        assert 'pending_gate' in src, "respond_phase_review must check for persisted gate"
+        assert 'post-restart' in src.lower(), "respond_phase_review must have post-restart path"
+
+    def test_commence_build_handles_restart(self):
+        src = self._get_func_source("commence_build")
+        assert 'pending_gate' in src, "commence_build must check for persisted gate"
+        assert 'post-restart' in src.lower(), "commence_build must have post-restart path"
+
+    def test_resume_clarification_handles_restart(self):
+        src = self._get_func_source("resume_clarification")
+        assert 'pending_gate' in src, "resume_clarification must check for persisted gate"
+        assert 'context lost' in src.lower() or 'cannot resume' in src.lower(), \
+            "resume_clarification must explain why clarification can't resume"
+
+
+class TestGetBuildStatusGateFields:
+    """Verify get_build_status includes gate information."""
+
+    def test_includes_pending_gate_in_source(self):
+        import inspect
+        import app.services.build_service as bs
+        src = inspect.getsource(bs.get_build_status)
+        assert "pending_gate" in src, "get_build_status must include pending_gate"
+        assert "gate_payload" in src, "get_build_status must include gate_payload"
+
+    def test_sets_ide_gate_pending_for_paused_ide_gate(self):
+        import inspect
+        import app.services.build_service as bs
+        src = inspect.getsource(bs.get_build_status)
+        # Should set ide_gate_pending when pending_gate is ide_ready
+        assert "ide_gate_pending" in src
+
+    def test_sets_plan_review_pending_for_paused_plan_gate(self):
+        import inspect
+        import app.services.build_service as bs
+        src = inspect.getsource(bs.get_build_status)
+        assert "plan_review_pending" in src
