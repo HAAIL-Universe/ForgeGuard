@@ -2390,6 +2390,11 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             case 'plan_complete': {
               const planPhaseList = (p.phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[]) || [];
               const _isAutoApprove = autoApprovePlanRef.current;
+              // Cached plan replays arrive AFTER build_commenced (which already
+              // cleared autoApprovePlanRef).  Detect them via the from_cache flag
+              // so we still populate sidebar data without injecting the plan box
+              // or re-triggering the plan approval flow.
+              const _isCachedReplay = !!(p as any).from_cache;
 
               if (planPhaseList.length > 0) {
                 // Always populate phases, tasks, and phase files
@@ -2420,9 +2425,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 if (Object.keys(initPF).length > 0) setPhaseFiles(initPF);
 
                 // Only inject the PLAN box when user will review manually.
-                // Auto-approve skips this — build_commenced would remove it
-                // immediately anyway, causing a visual flash.
-                if (!_isAutoApprove) {
+                // Auto-approve and cached replays skip this — the build is
+                // already running so the box would flash unnecessarily.
+                if (!_isAutoApprove && !_isCachedReplay) {
                   const planText = formatPlanText(planPhaseList);
                   setLogs((prev) => {
                     const existingIdx = prev.findLastIndex((l) => l.reasoning?.isPlanBox);
@@ -2463,6 +2468,12 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   worker: 'system',
                 }]);
                 respondToPlanReviewRef.current('approve');
+              } else if (_isCachedReplay) {
+                // Cached replay: build already running — just consume the ref
+                // and silently populate data. Don't set planReady, don't call
+                // respondToPlanReview (no review gate to clear).
+                autoApprovePlanRef.current = false;
+                setShowPlanModal(false);
               } else {
                 setPlanReady(true);
                 setShowPlanModal(false);

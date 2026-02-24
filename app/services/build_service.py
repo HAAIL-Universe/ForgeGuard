@@ -4680,7 +4680,13 @@ async def _run_build_plan_execute(
 
                 for chunk_idx, chunk in enumerate(chunks):
                     chunk_name = chunk.get("name", f"Chunk {chunk_idx}")
-                    chunk_files = chunk.get("entries", [])
+                    # Resolve chunk files to full manifest entries (with path,
+                    # purpose, depends_on, etc.) that execute_tier expects.
+                    # Chunks from different sources may use "entries" (dicts) or
+                    # "files" (path strings); the fallback chunk only has "files".
+                    # Always resolve from _pending_manifest for consistency.
+                    _chunk_paths = set(chunk.get("files", []))
+                    chunk_files = [f for f in _pending_manifest if f["path"] in _chunk_paths]
                     builder_prompt = chunk.get("builder_prompt", "")
                     work_order = chunk.get("work_order", {})
 
