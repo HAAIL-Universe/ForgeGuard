@@ -1587,9 +1587,24 @@ async def execute_tier(
         ],
     })
 
-    # Pull-first: agents fetch contracts on demand via forge tools.
-    # No contract pre-loading needed — builder_contract.md is injected
-    # into system prompts by run_sub_agent() for caching.
+    # Pre-fetch shared project contracts once for this tier.
+    # Eliminates repeated tool calls from CODER/AUDITOR per file.
+    _tier_contracts: dict[str, str] = {}
+    try:
+        from app.services.tool_executor import execute_tool_async as _exec_tool
+        for _ctype in ("stack", "boundaries"):
+            try:
+                _cval = await _exec_tool(
+                    "forge_get_project_contract",
+                    {"contract_type": _ctype, "project_id": str(build_id)},
+                    working_dir,
+                )
+                if _cval and "error" not in str(_cval).lower()[:60] and "not found" not in str(_cval).lower()[:60]:
+                    _tier_contracts[f"contract_{_ctype}.md"] = str(_cval)[:4000]
+            except Exception:
+                pass  # Contract not available — agents will fetch on demand
+    except ImportError:
+        pass  # tool_executor unavailable (test environment)
 
     # Per-file builder pipeline — up to 3 concurrent file builds per tier
     _semaphore = asyncio.Semaphore(3)
@@ -1648,7 +1663,12 @@ async def execute_tier(
         if interface_map and not _skip_imap:
             context_files["interface_map.md"] = interface_map
 
-        # Pull-first: agents fetch contracts via tools; pass empty list
+        # Inject pre-fetched contracts so CODER/AUDITOR skip redundant tool calls
+        for _ck, _cv in _tier_contracts.items():
+            if _ck not in context_files:
+                context_files[_ck] = _cv
+
+        # Pull-first: agents fetch remaining contracts via tools as needed
         _contracts_list: list[str] = []
 
         # Broadcast file_generating
