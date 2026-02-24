@@ -926,3 +926,72 @@ class TestEdgeCases:
         (tmp_path / ".forge").mkdir()
         (tmp_path / ".forge" / "progress.json").write_text("{bad", encoding="utf-8")
         assert load_progress(str(tmp_path)) == {}
+
+
+# ===================================================================
+# Contract Stripping Tests
+# ===================================================================
+
+
+class TestContractStripping:
+    """Verify role-specific builder contract variants strip irrelevant sections."""
+
+    def test_core_strips_aem(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_CORE
+        assert "Autonomous Execution Mode" not in _BUILDER_CONTRACT_CORE
+
+    def test_core_keeps_verification(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_CORE
+        assert "Verification hierarchy" in _BUILDER_CONTRACT_CORE
+
+    def test_scout_strips_aem(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_SCOUT
+        assert "Autonomous Execution Mode" not in _BUILDER_CONTRACT_SCOUT
+
+    def test_scout_strips_verification(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_SCOUT
+        assert "Verification hierarchy" not in _BUILDER_CONTRACT_SCOUT
+
+    def test_scout_strips_contract_read_gate(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_SCOUT
+        assert "Contract read gate" not in _BUILDER_CONTRACT_SCOUT
+
+    def test_scout_keeps_folder_structure(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_SCOUT
+        assert "Folder structure" in _BUILDER_CONTRACT_SCOUT
+
+    def test_fixer_strips_aem(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_FIXER
+        assert "Autonomous Execution Mode" not in _BUILDER_CONTRACT_FIXER
+
+    def test_fixer_strips_verification(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_FIXER
+        assert "Verification hierarchy" not in _BUILDER_CONTRACT_FIXER
+
+    def test_fixer_keeps_scratchpad_protocol(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_FIXER
+        assert "Scratchpad Protocol" in _BUILDER_CONTRACT_FIXER
+
+    def test_contract_for_role_returns_correct_variant(self):
+        from app.services.build.subagent import (
+            _contract_for_role, _BUILDER_CONTRACT_CORE,
+            _BUILDER_CONTRACT_SCOUT, _BUILDER_CONTRACT_FIXER,
+            SubAgentRole,
+        )
+        assert _contract_for_role(SubAgentRole.SCOUT) is _BUILDER_CONTRACT_SCOUT
+        assert _contract_for_role(SubAgentRole.CODER) is _BUILDER_CONTRACT_CORE
+        assert _contract_for_role(SubAgentRole.AUDITOR) is _BUILDER_CONTRACT_CORE
+        assert _contract_for_role(SubAgentRole.FIXER) is _BUILDER_CONTRACT_FIXER
+
+    def test_core_is_smaller_than_full(self):
+        from app.services.build.subagent import _BUILDER_CONTRACT_FULL, _BUILDER_CONTRACT_CORE
+        assert len(_BUILDER_CONTRACT_CORE) < len(_BUILDER_CONTRACT_FULL)
+        # AEM is ~37% of the contract — core should be at least 30% smaller
+        assert len(_BUILDER_CONTRACT_CORE) < len(_BUILDER_CONTRACT_FULL) * 0.75
+
+    def test_scout_is_smallest(self):
+        from app.services.build.subagent import (
+            _BUILDER_CONTRACT_SCOUT, _BUILDER_CONTRACT_CORE, _BUILDER_CONTRACT_FIXER,
+        )
+        assert len(_BUILDER_CONTRACT_SCOUT) < len(_BUILDER_CONTRACT_CORE)
+        assert len(_BUILDER_CONTRACT_SCOUT) < len(_BUILDER_CONTRACT_FIXER)
