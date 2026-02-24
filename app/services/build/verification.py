@@ -150,11 +150,22 @@ async def _run_inline_audit(
         audit_text = result["text"] if isinstance(result, dict) else result
         audit_usage = result.get("usage", {}) if isinstance(result, dict) else {}
 
+        # Track tokens in the cost accumulator so the UI counter is accurate
+        _audit_in = audit_usage.get("input_tokens", 0)
+        _audit_out = audit_usage.get("output_tokens", 0)
+        _audit_model = _state.settings.LLM_QUESTIONNAIRE_MODEL
+        if _audit_in or _audit_out:
+            _audit_rate_in, _audit_rate_out = _get_token_rates(_audit_model)
+            _audit_cost = (
+                Decimal(_audit_in) * _audit_rate_in
+                + Decimal(_audit_out) * _audit_rate_out
+            )
+            await _accumulate_cost(build_id, _audit_in, _audit_out, _audit_model, _audit_cost)
+
         # Log the full audit report
         await _state.build_repo.append_build_log(
             build_id,
-            f"Auditor report ({audit_usage.get('input_tokens', 0)} in / "
-            f"{audit_usage.get('output_tokens', 0)} out):\n{audit_text}",
+            f"Auditor report ({_audit_in} in / {_audit_out} out):\n{audit_text}",
             source="audit",
             level="info",
         )

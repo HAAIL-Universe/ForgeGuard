@@ -1129,13 +1129,25 @@ async def run_sub_agent(
     # 7. Finalise result
     result.finished_at = time.time()
     result.duration_seconds = result.finished_at - result.started_at
-    result.input_tokens = usage.input_tokens
+    # Include ALL input tokens (fresh + cache_read + cache_creation) so the
+    # UI token counter reflects actual API usage, not just fresh tokens.
+    result.input_tokens = (
+        usage.input_tokens
+        + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens
+    )
     result.output_tokens = usage.output_tokens
 
-    # Cost calculation
+    # Cost calculation — cache tokens have different rates:
+    #   cache_read = 10% of base input rate
+    #   cache_creation = 125% of base input rate (25% surcharge)
     input_rate, output_rate = _get_token_rates(model)
+    _cache_read_rate = input_rate * Decimal("0.1")
+    _cache_create_rate = input_rate * Decimal("1.25")
     result.cost_usd = float(
         Decimal(usage.input_tokens) * input_rate
+        + Decimal(usage.cache_read_input_tokens) * _cache_read_rate
+        + Decimal(usage.cache_creation_input_tokens) * _cache_create_rate
         + Decimal(usage.output_tokens) * output_rate
     )
 

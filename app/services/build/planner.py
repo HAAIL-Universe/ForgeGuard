@@ -1413,6 +1413,16 @@ async def _generate_fix_manifest(
 
         text = result["text"] if isinstance(result, dict) else result
 
+        # Track tokens so the UI counter is accurate
+        _fm_usage = result.get("usage", {}) if isinstance(result, dict) else {}
+        _fm_in = _fm_usage.get("input_tokens", 0)
+        _fm_out = _fm_usage.get("output_tokens", 0)
+        _fm_model = _state.settings.LLM_PLANNER_MODEL
+        if _fm_in or _fm_out:
+            _fm_rate_in, _fm_rate_out = _get_token_rates(_fm_model)
+            _fm_cost = Decimal(_fm_in) * _fm_rate_in + Decimal(_fm_out) * _fm_rate_out
+            await _accumulate_cost(build_id, _fm_in, _fm_out, _fm_model, _fm_cost)
+
         cleaned = text.strip()
         if cleaned.startswith("```"):
             first_nl = cleaned.find("\n")
