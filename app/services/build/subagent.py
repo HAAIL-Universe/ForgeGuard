@@ -1561,6 +1561,27 @@ async def run_sub_agent(
         + Decimal(usage.output_tokens) * output_rate
     )
 
+    # --- Sub-agent cost summary metric ---
+    _total_in_for_metric = (
+        usage.input_tokens + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens
+    )
+    _cache_pct = (
+        (usage.cache_read_input_tokens / _total_in_for_metric * 100)
+        if _total_in_for_metric > 0 else 0
+    )
+    logger.info(
+        "METRIC | type=subagent_cost | role=%s | file=%s | model=%s | "
+        "fresh=%d | cached=%d | cache_create=%d | out=%d | "
+        "cache_hit_pct=%.0f | cost_usd=%.4f | rounds=%d/%d | wall_s=%.1f",
+        handoff.role.value, (handoff.files[0] if handoff.files else "?"),
+        model,
+        usage.input_tokens, usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens, usage.output_tokens,
+        _cache_pct, result.cost_usd,
+        tool_rounds, max_tool_rounds, result.duration_seconds,
+    )
+
     # 8. Parse structured JSON BEFORE broadcast so verdict is available
     result.structured_output = _extract_json_block(result.text_output)
 

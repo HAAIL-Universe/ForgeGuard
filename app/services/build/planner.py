@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time as _time_mod
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -1541,6 +1542,7 @@ async def execute_tier(
     lessons_learned: str = "",
     stop_event: "asyncio.Event | None" = None,
     phase_index: int = -1,
+    project_id: UUID | None = None,
 ) -> tuple[dict[str, str], str]:
     """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
@@ -1555,6 +1557,8 @@ async def execute_tier(
     from .verification import _is_test_file
     from .integration_audit import run_integration_audit as _run_integ_audit
     from builder.builder_agent import run_builder, BuilderError  # noqa: E402
+
+    _tier_t0 = _time_mod.monotonic()
 
     # Compute common path prefix for display stripping
     all_paths = [f["path"] for f in tier_files]
@@ -1588,23 +1592,26 @@ async def execute_tier(
     })
 
     # Pre-fetch shared project contracts once for this tier.
-    # Eliminates repeated tool calls from CODER/AUDITOR per file.
+    # Uses forge_get_contract (DB-direct) — forge_get_project_contract (MCP/HTTP)
+    # was returning 404 because the internal HTTP call lacks proper auth context.
     _tier_contracts: dict[str, str] = {}
-    try:
-        from app.services.tool_executor import execute_tool_async as _exec_tool
-        for _ctype in ("stack", "boundaries"):
-            try:
-                _cval = await _exec_tool(
-                    "forge_get_project_contract",
-                    {"contract_type": _ctype, "project_id": str(build_id)},
-                    working_dir,
-                )
-                if _cval and "error" not in str(_cval).lower()[:60] and "not found" not in str(_cval).lower()[:60]:
-                    _tier_contracts[f"contract_{_ctype}.md"] = str(_cval)[:4000]
-            except Exception:
-                pass  # Contract not available — agents will fetch on demand
-    except ImportError:
-        pass  # tool_executor unavailable (test environment)
+    if project_id:
+        try:
+            from app.services.tool_executor import execute_tool_async as _exec_tool
+            for _ctype in ("stack", "boundaries"):
+                try:
+                    _cval = await _exec_tool(
+                        "forge_get_contract",
+                        {"name": _ctype},
+                        working_dir,
+                        project_id=str(project_id),
+                    )
+                    if _cval and not str(_cval).startswith("Error"):
+                        _tier_contracts[f"contract_{_ctype}.md"] = str(_cval)[:4000]
+                except Exception:
+                    pass  # Contract not available — agents will fetch on demand
+        except ImportError:
+            pass  # tool_executor unavailable (test environment)
 
     # -- Tier-level deterministic scout (replaces N per-file LLM scouts) ----
     # Runs once per tier, produces the same JSON schema the LLM scout outputs.
@@ -1653,6 +1660,7 @@ async def execute_tier(
 
     tier_written: dict[str, str] = {}
     _tier_lock = asyncio.Lock()  # protects tier_written
+    _tier_costs: list[float] = []  # per-file costs for tier summary
 
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
         fp = file_entry["path"]
@@ -1764,7 +1772,7 @@ async def execute_tier(
             result = await run_builder(
                 file_entry=file_entry,
                 contracts=_contracts_list,
-                context=list(context_files.values()),
+                context=[],
                 phase_deliverables=[phase_deliverables] if phase_deliverables else [],
                 working_dir=working_dir,
                 build_id=str(build_id),
@@ -1778,6 +1786,8 @@ async def execute_tier(
                 stop_event=stop_event,
                 phase_index=phase_index,
                 tier_scout_context=_tier_scout,
+                project_id=str(project_id) if project_id else "",
+                context_files=context_files,
             )
 
         if result.status == "completed" and result.content:
@@ -1825,8 +1835,10 @@ async def execute_tier(
                 )
 
         # Accumulate cost from all sub-agents in the pipeline
+        _file_cost = 0.0
         for sar in result.sub_agent_results:
             if isinstance(sar, SubAgentResult):
+                _file_cost += sar.cost_usd
                 try:
                     await _accumulate_cost(
                         build_id,
@@ -1836,6 +1848,7 @@ async def execute_tier(
                     )
                 except Exception:
                     pass
+        _tier_costs.append(_file_cost)
 
         # Broadcast completion
         await _state._broadcast_build_event(user_id, build_id, "agent_done", {
@@ -1850,6 +1863,15 @@ async def execute_tier(
     await asyncio.gather(*[
         run_one_file(fe, idx) for idx, fe in enumerate(tier_files)
     ], return_exceptions=False)
+
+    # --- Tier summary metric ---
+    _tier_elapsed = _time_mod.monotonic() - _tier_t0
+    logger.info(
+        "METRIC | type=tier_summary | build=%s | tier=%d | files=%d | "
+        "written=%d | cost_usd=%.4f | wall_s=%.1f",
+        str(build_id)[:8], tier_index, len(tier_files),
+        len(tier_written), sum(_tier_costs), _tier_elapsed,
+    )
 
     # Emit file_generated events for each successfully written file
     for fp, content in tier_written.items():
