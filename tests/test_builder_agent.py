@@ -638,3 +638,177 @@ class TestExecuteTierParallelism:
         # All 4 files should have contributed lessons
         for i in range(4):
             assert f"fixed-import-in-src/svc_{i}.py" in lessons
+
+
+# ---------------------------------------------------------------------------
+# 7. Config-file skip logic
+# ---------------------------------------------------------------------------
+
+
+class TestConfigFileSkip:
+    """Verify _is_config_file correctly identifies config/static files."""
+
+    def test_is_config_file_true(self):
+        from builder.builder_agent import _is_config_file
+
+        config_files = [
+            "tsconfig.json", "package.json", "Dockerfile",
+            "docker-compose.yml", "pyproject.toml", "requirements.txt",
+            ".gitignore", "vite.config.ts", "index.html",
+            "Makefile", "Procfile", ".prettierrc",
+        ]
+        for f in config_files:
+            assert _is_config_file(f), f"{f} should be detected as config"
+            # Also test with directory prefix
+            assert _is_config_file(f"web/{f}"), f"web/{f} should be detected as config"
+
+    def test_is_config_file_false(self):
+        from builder.builder_agent import _is_config_file
+
+        source_files = [
+            "app/main.py", "src/index.ts", "lib/utils.py",
+            "api/routes/health.py", "components/App.tsx",
+            "models/user.py", "tests/test_main.py",
+        ]
+        for f in source_files:
+            assert not _is_config_file(f), f"{f} should NOT be detected as config"
+
+    @pytest.mark.asyncio
+    async def test_config_file_skips_scout(self, tmp_path):
+        """Config files should skip SCOUT (only CODER + AUDITOR)."""
+        from builder.builder_agent import run_builder
+
+        fe = {
+            "path": "tsconfig.json",
+            "purpose": "TypeScript config",
+            "estimated_lines": 15,
+            "language": "json",
+        }
+        (tmp_path / "tsconfig.json").write_text(
+            '{\n  "compilerOptions": {\n    "target": "ES2020",\n    "module": "ESNext",\n    "strict": true\n  }\n}\n',
+            encoding="utf-8",
+        )
+
+        dispatch_order: list[str] = []
+
+        async def mock_run_sub_agent(handoff, working_dir, api_key, **kwargs):
+            role = handoff.role.value
+            dispatch_order.append(role)
+            return _make_sub_agent_result(role, verdict="PASS")
+
+        with patch("builder.builder_agent.run_sub_agent", side_effect=mock_run_sub_agent):
+            result = await run_builder(
+                file_entry=fe,
+                contracts=[],
+                context=[],
+                phase_deliverables=[],
+                working_dir=str(tmp_path),
+                build_id=BUILD_ID,
+                user_id=USER_ID,
+                api_key=API_KEY,
+                verbose=False,
+                phase_index=1,  # non-zero so only config check triggers skip
+            )
+
+        assert "scout" not in dispatch_order, "SCOUT should be skipped for config files"
+        assert "coder" in dispatch_order, "CODER should still run"
+
+    @pytest.mark.asyncio
+    async def test_config_file_auto_passes_audit(self, tmp_path):
+        """Config files should auto-pass audit (no AUDITOR sub-agent call)."""
+        from builder.builder_agent import run_builder
+
+        fe = {
+            "path": "package.json",
+            "purpose": "npm package manifest",
+            "estimated_lines": 20,
+            "language": "json",
+        }
+        (tmp_path / "package.json").write_text(
+            '{\n  "name": "my-app",\n  "version": "1.0.0",\n  "dependencies": {\n    "react": "^18.2.0"\n  }\n}\n',
+            encoding="utf-8",
+        )
+
+        dispatch_order: list[str] = []
+
+        async def mock_run_sub_agent(handoff, working_dir, api_key, **kwargs):
+            role = handoff.role.value
+            dispatch_order.append(role)
+            return _make_sub_agent_result(role, verdict="PASS",
+                                          files_written=["package.json"] if role == "coder" else [])
+
+        with patch("builder.builder_agent.run_sub_agent", side_effect=mock_run_sub_agent):
+            result = await run_builder(
+                file_entry=fe,
+                contracts=[],
+                context=[],
+                phase_deliverables=[],
+                working_dir=str(tmp_path),
+                build_id=BUILD_ID,
+                user_id=USER_ID,
+                api_key=API_KEY,
+                verbose=False,
+                phase_index=1,
+            )
+
+        assert "auditor" not in dispatch_order, "AUDITOR should be skipped for config files"
+        assert result.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# 8. Token reporting — cache breakdown
+# ---------------------------------------------------------------------------
+
+
+class TestTokenReportingCache:
+    """Verify cache_read_tokens and cache_creation_tokens accumulate correctly."""
+
+    def test_accumulate_tokens_includes_cache(self):
+        from builder.builder_agent import _accumulate_tokens
+        from app.services.build.subagent import SubAgentResult, SubAgentRole
+
+        total: dict[str, int] = {}
+        r1 = SubAgentResult(handoff_id="h1", role=SubAgentRole.CODER)
+        r1.input_tokens = 1000
+        r1.output_tokens = 200
+        r1.cache_read_tokens = 800
+        r1.cache_creation_tokens = 100
+
+        r2 = SubAgentResult(handoff_id="h2", role=SubAgentRole.AUDITOR)
+        r2.input_tokens = 500
+        r2.output_tokens = 100
+        r2.cache_read_tokens = 400
+        r2.cache_creation_tokens = 50
+
+        _accumulate_tokens(total, r1)
+        _accumulate_tokens(total, r2)
+
+        assert total["input_tokens"] == 1500
+        assert total["output_tokens"] == 300
+        assert total["cache_read_tokens"] == 1200
+        assert total["cache_creation_tokens"] == 150
+
+    def test_print_summary_shows_cache_breakdown(self, capsys):
+        from builder.builder_agent import BuilderResult, _print_summary
+
+        result = BuilderResult(
+            file_path="app/main.py",
+            content="# ok\n",
+            status="completed",
+            token_usage={
+                "input_tokens": 5000,
+                "output_tokens": 1000,
+                "cache_read_tokens": 4000,
+                "cache_creation_tokens": 500,
+            },
+            iterations=3,
+        )
+        _print_summary(result)
+        captured = capsys.readouterr()
+
+        assert "fresh:" in captured.out
+        assert "cached:" in captured.out
+        assert "cache-create:" in captured.out
+        # fresh = 5000 - 4000 - 500 = 500
+        assert "500" in captured.out
+        assert "4,000" in captured.out
