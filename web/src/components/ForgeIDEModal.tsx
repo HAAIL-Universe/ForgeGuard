@@ -1277,6 +1277,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
   const [setupEndIndex, setSetupEndIndex] = useState(-1);
   const [setupCollapsed, setSetupCollapsed] = useState(true);
   const autoCommenceRef = useRef(false);
+  const autoApprovePlanRef = useRef(false);
   // Tracks the intended log count synchronously — used by forge_ide_ready to set
   // setupEndIndex correctly.  logs.length is stale inside the WS handler closure
   // because React batches the preceding setLogs(prev=>) functional updates and
@@ -2369,13 +2370,28 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               }
               setPlanReady(true);
               setShowPlanModal(false);
-              setLogs((prev) => [...prev, {
-                timestamp: new Date().toISOString(),
-                source: 'system',
-                level: 'system',
-                message: '✅ Plan complete — click START to begin building',
-                worker: 'system',
-              }]);
+
+              // Auto-approve plan if user initiated via /start (skip second click)
+              if (autoApprovePlanRef.current) {
+                autoApprovePlanRef.current = false;
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system',
+                  level: 'system',
+                  message: '✅ Plan complete — auto-approving...',
+                  worker: 'system',
+                }]);
+                // Use ref-backed callback to avoid stale closure in WS handler
+                respondToPlanReviewRef.current('approve');
+              } else {
+                setLogs((prev) => [...prev, {
+                  timestamp: new Date().toISOString(),
+                  source: 'system',
+                  level: 'system',
+                  message: '✅ Plan complete — click START to begin building',
+                  worker: 'system',
+                }]);
+              }
               break;
             }
 
@@ -3218,6 +3234,8 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           if (startRes.ok) {
             const startData = await startRes.json().catch(() => ({}));
             setStatus('running');
+            autoCommenceRef.current = true;
+            autoApprovePlanRef.current = true;
             if (startData.message) {
               setLogs((prev) => [...prev, {
                 timestamp: new Date().toISOString(),
@@ -3242,6 +3260,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
       }
     } catch { /* WS plan_approved event confirms */ }
   }, [projectId, token]);
+  // Ref-backed stable reference for WS handler (avoids stale closure)
+  const respondToPlanReviewRef = useRef(respondToPlanReview);
+  respondToPlanReviewRef.current = respondToPlanReview;
 
   /* Save plan to database as a project contract */
   const savePlan = useCallback(async () => {
@@ -3308,6 +3329,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
             if (st === 'commenced' || st === 'approved' || st === 'started' || st === 'continued' || st === 'resumed') {
               setStatus('running');
               autoCommenceRef.current = true;
+              autoApprovePlanRef.current = true;
             } else if (st === 'already_running') {
               setStatus('running');
             } else {
