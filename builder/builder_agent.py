@@ -44,6 +44,7 @@ import logging
 import re
 import sys
 import threading
+import time as _time_mod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -384,6 +385,8 @@ async def run_builder(
             pass  # non-UUID project_id — tools will get empty string
 
     # Shared state across the pipeline
+    _pipeline_t0 = _time_mod.monotonic()
+    _role_timings: dict[str, float] = {"scout": 0.0, "coder": 0.0, "auditor": 0.0, "fixer": 0.0}
     total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     sub_agent_results: list[SubAgentResult] = []
     deliverables_text = _phase_deliverables_text(phase_deliverables)
@@ -434,6 +437,7 @@ async def run_builder(
     #     and trivial __init__.py files — nothing to scan)
     # ────────────────────────────────────────────────────────────────────────
     scout_result: SubAgentResult | None = None
+    _scout_t0 = _time_mod.monotonic()
 
     if _skip_scout:
         if _has_tier_scout:
@@ -499,6 +503,8 @@ async def run_builder(
                 "tokens": scout_result.input_tokens + scout_result.output_tokens,
             })
 
+    _role_timings["scout"] = _time_mod.monotonic() - _scout_t0
+
     # ────────────────────────────────────────────────────────────────────────
     # (2) CHECK STOP SIGNAL
     # ────────────────────────────────────────────────────────────────────────
@@ -516,6 +522,7 @@ async def run_builder(
     # ────────────────────────────────────────────────────────────────────────
     # (3) CODER — generate the file (single-shot mode)
     # ────────────────────────────────────────────────────────────────────────
+    _coder_t0 = _time_mod.monotonic()
     if verbose:
         _blog(f"{_TAG_CODER}   [2/3+] Generating {file_path}")
 
@@ -603,9 +610,12 @@ async def run_builder(
             iterations=len(sub_agent_results),
         )
 
+    _role_timings["coder"] = _time_mod.monotonic() - _coder_t0
+
     # ────────────────────────────────────────────────────────────────────────
     # (4) AUDITOR → FIXER loop (max MAX_FIX_RETRIES fix attempts)
     # ────────────────────────────────────────────────────────────────────────
+    _audit_t0 = _time_mod.monotonic()
     audit_verdict = "PASS"
     last_audit_findings = ""
     _fixer_ran = False
@@ -843,12 +853,14 @@ async def run_builder(
                 build_mode=build_mode,
             )
 
+            _fixer_t0 = _time_mod.monotonic()
             fixer_result = await run_sub_agent(
                 fixer_handoff,
                 str(working_dir),
                 audit_api_key or api_key,
                 stop_event=stop_event,
             )
+            _role_timings["fixer"] += _time_mod.monotonic() - _fixer_t0
             sub_agent_results.append(fixer_result)
             _accumulate_tokens(total_usage, fixer_result)
 
@@ -872,6 +884,8 @@ async def run_builder(
                 _fixer_status, len(fixer_result.files_written),
                 "+".join(_fix_sources) if _fix_sources else "unknown",
             )
+
+    _role_timings["auditor"] = _time_mod.monotonic() - _audit_t0 - _role_timings["fixer"]
 
     # ────────────────────────────────────────────────────────────────────────
     # (5) READ FINAL FILE CONTENT FROM DISK
@@ -918,5 +932,26 @@ async def run_builder(
 
     if verbose:
         _print_summary(result)
+
+    # --- File pipeline timing metric ---
+    _pipeline_elapsed = _time_mod.monotonic() - _pipeline_t0
+    _ext = Path(file_path).suffix or "none"
+    _total_in = total_usage.get("input_tokens", 0)
+    _total_out = total_usage.get("output_tokens", 0)
+    _total_cost = sum(
+        getattr(sar, "cost_usd", 0.0) for sar in sub_agent_results
+    )
+    _audit_pass_first = "true" if (audit_verdict == "PASS" and not _fixer_ran) else "false"
+    logger.info(
+        "METRIC | type=file_pipeline | file=%s | ext=%s | status=%s | "
+        "verdict=%s | fixer_ran=%s | first_pass=%s | "
+        "scout_s=%.1f | coder_s=%.1f | auditor_s=%.1f | fixer_s=%.1f | "
+        "wall_s=%.1f | in=%d | out=%d | cost_usd=%.4f",
+        file_path, _ext, result.status,
+        audit_verdict, str(_fixer_ran).lower(), _audit_pass_first,
+        _role_timings["scout"], _role_timings["coder"],
+        _role_timings["auditor"], _role_timings["fixer"],
+        _pipeline_elapsed, _total_in, _total_out, _total_cost,
+    )
 
     return result

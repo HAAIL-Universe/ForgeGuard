@@ -3897,6 +3897,9 @@ async def _run_build_plan_execute(
 
     No accumulating conversation. Memory is the filesystem.
     """
+    import time as _time_mod
+    _build_t0 = _time_mod.monotonic()
+
     if not working_dir:
         await _fail_build(build_id, user_id, "No working directory for plan-execute mode")
         return
@@ -4525,6 +4528,9 @@ async def _run_build_plan_execute(
             except Exception:
                 pass
             continue
+
+        import time as _time_mod
+        _phase_t0 = _time_mod.monotonic()
 
         await build_repo.update_build_status(
             build_id, "running", phase=phase_name
@@ -6517,6 +6523,16 @@ async def _run_build_plan_execute(
                 "files": _phase_file_list,
                 "committed": _phase_committed,
             })
+
+            # --- Phase summary metric ---
+            _phase_elapsed = _time_mod.monotonic() - _phase_t0
+            logger.info(
+                "METRIC | type=phase_summary | build=%s | phase=%d | "
+                "files=%d | wall_s=%.1f | status=pass",
+                str(build_id)[:8], phase_num,
+                len(phase_files_written), _phase_elapsed,
+            )
+
             # Auto-resolve errors for this phase
             try:
                 resolved = await build_repo.resolve_errors_for_phase(build_id, phase_name)
@@ -6927,6 +6943,22 @@ async def _run_build_plan_execute(
         logger.warning("Sign-off failed (non-fatal): %s", _signoff_exc)
 
     cost_summary = await build_repo.get_build_cost_summary(build_id)
+
+    # --- Build summary metric ---
+    _build_elapsed = _time_mod.monotonic() - _build_t0
+    _total_files = len(all_files_written) if all_files_written else 0
+    _files_per_hour = (_total_files / _build_elapsed * 3600) if _build_elapsed > 0 else 0
+    _total_cost = float(cost_summary.get("total_cost_usd", 0))
+    _cost_per_file = (_total_cost / _total_files) if _total_files > 0 else 0
+    logger.info(
+        "METRIC | type=build_summary | build=%s | project=%s | status=completed | "
+        "phases=%d | files=%d | wall_s=%.1f | files_per_hour=%.1f | "
+        "total_cost_usd=%.4f | cost_per_file=%.4f",
+        str(build_id)[:8], str(project_id)[:8],
+        len(phases), _total_files, _build_elapsed, _files_per_hour,
+        _total_cost, _cost_per_file,
+    )
+
     await _broadcast_build_event(user_id, build_id, "build_complete", {
         "id": str(build_id),
         "status": "completed",
