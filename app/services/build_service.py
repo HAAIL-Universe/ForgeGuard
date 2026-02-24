@@ -4808,6 +4808,7 @@ async def _run_build_plan_execute(
                         build_mode=_build_mode,
                         lessons_learned=_accumulated_lessons,
                         stop_event=_stop_event,
+                        phase_index=phase_num,
                     )
 
                     # ── Step 3: Merge results + audit ──

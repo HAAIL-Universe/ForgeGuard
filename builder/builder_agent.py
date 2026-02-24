@@ -69,6 +69,35 @@ logger = logging.getLogger(__name__)
 # Maximum number of FIXER + re-AUDIT cycles per file.
 MAX_FIX_RETRIES = 2
 
+# ---------------------------------------------------------------------------
+# Trivial file detection — files that can be generated deterministically
+# ---------------------------------------------------------------------------
+
+_TRIVIAL_NAMES = frozenset({
+    "__init__.py", "py.typed", ".gitkeep",
+})
+
+# Keywords in purpose that indicate the file needs real content (re-exports)
+_NONTRIVIAL_KEYWORDS = ("export", "re-export", "import", "barrel", "public api")
+
+
+def _is_trivial_file(file_path: str, purpose: str) -> bool:
+    """True if file can be generated deterministically without any LLM call."""
+    name = Path(file_path).name
+    if name not in _TRIVIAL_NAMES:
+        return False
+    purpose_lower = purpose.lower()
+    return not any(kw in purpose_lower for kw in _NONTRIVIAL_KEYWORDS)
+
+
+def _is_init_with_exports(file_path: str, purpose: str) -> bool:
+    """True if file is __init__.py that needs re-exports (minimal CODER, no Scout/Auditor)."""
+    name = Path(file_path).name
+    if name != "__init__.py":
+        return False
+    purpose_lower = purpose.lower()
+    return any(kw in purpose_lower for kw in _NONTRIVIAL_KEYWORDS)
+
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -179,6 +208,7 @@ async def run_builder(
     stop_event: "threading.Event | None" = None,
     integration_check: "callable | None" = None,
     lessons_learned: str = "",
+    phase_index: int = -1,
 ) -> BuilderResult:
     """
     Run the Builder Agent pipeline for a single file.
@@ -229,53 +259,92 @@ async def run_builder(
     if stop_event is not None and stop_event.is_set():
         raise BuilderError(f"Builder interrupted by stop signal before starting {file_path}")
 
-    # ────────────────────────────────────────────────────────────────────────
-    # (1) SCOUT — gather context before coding begins
-    # ────────────────────────────────────────────────────────────────────────
-    if verbose:
-        print(f"[BUILDER]   [1/3+] SCOUT: mapping context for {file_path}")
+    file_purpose = file_entry.get("purpose", "")
 
-    scout_context: dict[str, str] = {}
-    if phase_plan_context:
-        scout_context["phase_plan_context.md"] = phase_plan_context
-    if lessons_learned:
-        scout_context["lessons_learned.md"] = lessons_learned
+    # ────────────────────────────────────────────────────────────────────────
+    # (0a) TRIVIAL FILE FAST PATH — deterministic generation, zero LLM calls
+    # ────────────────────────────────────────────────────────────────────────
+    if _is_trivial_file(file_path, file_purpose):
+        if verbose:
+            print(f"[BUILDER]   TRIVIAL: {file_path} — deterministic generation (0 tokens)")
+        file_abs = working_dir / file_path
+        file_abs.parent.mkdir(parents=True, exist_ok=True)
+        file_abs.write_text("", encoding="utf-8")
+        result = BuilderResult(
+            file_path=file_path,
+            content="",
+            status="completed",
+            token_usage={"input_tokens": 0, "output_tokens": 0},
+            sub_agent_results=[],
+            iterations=0,
+        )
+        if verbose:
+            _print_summary(result)
+        return result
 
-    scout_handoff = SubAgentHandoff(
-        role=SubAgentRole.SCOUT,
-        build_id=_build_uuid,
-        user_id=_user_uuid,
-        assignment=(
-            f"Map context for {file_path}. "
-            f"Purpose: {file_entry.get('purpose', 'unknown')}. "
-            "Read the project structure and identify patterns relevant to writing this file."
-        ),
-        files=[file_path],
-        context_files=scout_context,
-        contracts_text="",          # Scout fetches contracts via its own tools
-        phase_deliverables=deliverables_text,
-        build_mode=build_mode,
+    # Determine whether to skip Scout
+    _skip_scout = (
+        phase_index == 0                               # Phase 0: empty workspace, nothing to scan
+        or _is_init_with_exports(file_path, file_purpose)  # __init__.py with re-exports
     )
 
-    scout_result = await run_sub_agent(
-        scout_handoff,
-        str(working_dir),
-        api_key,
-        stop_event=stop_event,
-    )
-    sub_agent_results.append(scout_result)
-    _accumulate_tokens(total_usage, scout_result)
+    # ────────────────────────────────────────────────────────────────────────
+    # (1) SCOUT — gather context before coding begins (skipped for Phase 0
+    #     and trivial __init__.py files — nothing to scan)
+    # ────────────────────────────────────────────────────────────────────────
+    scout_result: SubAgentResult | None = None
 
-    if verbose:
-        status_str = scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status)
-        print(f"[BUILDER]   SCOUT done: {status_str} ({scout_result.input_tokens + scout_result.output_tokens} tokens)")
+    if _skip_scout:
+        if verbose:
+            _reason = "Phase 0 (empty workspace)" if phase_index == 0 else "init-with-exports"
+            print(f"[BUILDER]   [1/3+] SCOUT: SKIPPED ({_reason}) for {file_path}")
+        if turn_callback is not None:
+            turn_callback({"role": "scout", "status": "skipped", "tokens": 0})
+    else:
+        if verbose:
+            print(f"[BUILDER]   [1/3+] SCOUT: mapping context for {file_path}")
 
-    if turn_callback is not None:
-        turn_callback({
-            "role": "scout",
-            "status": scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status),
-            "tokens": scout_result.input_tokens + scout_result.output_tokens,
-        })
+        scout_context: dict[str, str] = {}
+        if phase_plan_context:
+            scout_context["phase_plan_context.md"] = phase_plan_context
+        if lessons_learned:
+            scout_context["lessons_learned.md"] = lessons_learned
+
+        scout_handoff = SubAgentHandoff(
+            role=SubAgentRole.SCOUT,
+            build_id=_build_uuid,
+            user_id=_user_uuid,
+            assignment=(
+                f"Map context for {file_path}. "
+                f"Purpose: {file_entry.get('purpose', 'unknown')}. "
+                "Read the project structure and identify patterns relevant to writing this file."
+            ),
+            files=[file_path],
+            context_files=scout_context,
+            contracts_text="",
+            phase_deliverables=deliverables_text,
+            build_mode=build_mode,
+        )
+
+        scout_result = await run_sub_agent(
+            scout_handoff,
+            str(working_dir),
+            api_key,
+            stop_event=stop_event,
+        )
+        sub_agent_results.append(scout_result)
+        _accumulate_tokens(total_usage, scout_result)
+
+        if verbose:
+            status_str = scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status)
+            print(f"[BUILDER]   SCOUT done: {status_str} ({scout_result.input_tokens + scout_result.output_tokens} tokens)")
+
+        if turn_callback is not None:
+            turn_callback({
+                "role": "scout",
+                "status": scout_result.status.value if hasattr(scout_result.status, "value") else str(scout_result.status),
+                "tokens": scout_result.input_tokens + scout_result.output_tokens,
+            })
 
     # ────────────────────────────────────────────────────────────────────────
     # (2) CHECK STOP SIGNAL
@@ -299,7 +368,7 @@ async def run_builder(
 
     # Merge scout's structured output + provided context into coder's context_files
     coder_context: dict[str, str] = {}
-    if scout_result.structured_output:
+    if scout_result is not None and scout_result.structured_output:
         coder_context["scout_analysis.json"] = json.dumps(
             scout_result.structured_output, indent=2
         )
@@ -366,201 +435,227 @@ async def run_builder(
     _fixer_ran = False
     _last_combined_findings = ""          # what FIXER was asked to fix
 
-    for fix_attempt in range(MAX_FIX_RETRIES + 1):
-        # Check stop signal before each audit/fix cycle
-        if stop_event is not None and stop_event.is_set():
-            return BuilderResult(
-                file_path=file_path,
-                content="",
-                status="failed",
-                error=f"Builder interrupted by stop signal (fix_attempt={fix_attempt})",
-                token_usage=total_usage,
-                sub_agent_results=sub_agent_results,
-                iterations=len(sub_agent_results),
-            )
-
-        # Read the file from disk for auditor context
-        file_abs = working_dir / file_path
-        auditor_context: dict[str, str] = {}
-        if file_abs.exists():
-            try:
-                auditor_context[file_path] = file_abs.read_text(encoding="utf-8")
-            except Exception as e:
-                logger.warning("Could not read %s for auditor: %s", file_abs, e)
-
-        # --- AUDITOR ---
+    # Auto-pass: test files and trivially small files skip the LLM auditor
+    # (matches verification.py:599-620 background audit fast-path)
+    from app.services.build.verification import _is_test_file
+    _file_abs_for_audit = working_dir / file_path
+    _file_text_for_audit = ""
+    if _file_abs_for_audit.exists():
+        try:
+            _file_text_for_audit = _file_abs_for_audit.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    _audit_auto_pass = (
+        len(_file_text_for_audit.strip()) < 50
+        or _is_test_file(file_path)
+        or _is_init_with_exports(file_path, file_purpose)
+    )
+    if _audit_auto_pass:
+        _reason = (
+            "test file" if _is_test_file(file_path)
+            else "trivial content" if len(_file_text_for_audit.strip()) < 50
+            else "init-with-exports"
+        )
         if verbose:
-            label = f"[{fix_attempt + 3}/3+]" if fix_attempt == 0 else f"[re-audit {fix_attempt}]"
-            print(f"[BUILDER]   {label} AUDITOR: reviewing {file_path}")
-
-        auditor_handoff = SubAgentHandoff(
-            role=SubAgentRole.AUDITOR,
-            build_id=_build_uuid,
-            user_id=_user_uuid,
-            assignment=f"Audit {file_path} for structural issues and contract compliance.",
-            files=[file_path],
-            context_files=auditor_context,
-            contracts_text="",               # pull-first: Auditor fetches via tools
-            phase_deliverables=deliverables_text,
-            build_mode=build_mode,
-        )
-
-        auditor_result = await run_sub_agent(
-            auditor_handoff,
-            str(working_dir),
-            audit_api_key or api_key,
-            stop_event=stop_event,
-        )
-        sub_agent_results.append(auditor_result)
-        _accumulate_tokens(total_usage, auditor_result)
-
-        audit_verdict = auditor_result.structured_output.get("verdict", "")
-        _audit_skipped = False
-
-        if not audit_verdict:
-            # JSON parsing failed — try regex fallback on the raw text output
-            _text = auditor_result.text_output or ""
-            _m = re.search(r'\bverdict["\s:]*\b(PASS|FAIL)\b', _text, re.IGNORECASE)
-            if _m:
-                audit_verdict = _m.group(1).upper()
-                logger.info("Auditor verdict recovered from text: %s (file: %s)", audit_verdict, file_path)
-            else:
-                # No verdict recoverable — flag as skipped, don't silently PASS
-                audit_verdict = "PASS"
-                _audit_skipped = True
-                logger.warning(
-                    "Auditor produced no parseable verdict for %s — audit skipped "
-                    "(text_output length: %d chars)",
-                    file_path, len(_text),
+            print(f"[BUILDER]   AUDITOR: auto-pass ({_reason}) for {file_path}")
+        last_audit_findings = f"auto-pass ({_reason})"
+        if turn_callback is not None:
+            turn_callback({"role": "auditor", "status": "auto-pass", "verdict": "PASS", "tokens": 0})
+    else:
+        # --- Full LLM audit loop ---
+        for fix_attempt in range(MAX_FIX_RETRIES + 1):
+            # Check stop signal before each audit/fix cycle
+            if stop_event is not None and stop_event.is_set():
+                return BuilderResult(
+                    file_path=file_path,
+                    content="",
+                    status="failed",
+                    error=f"Builder interrupted by stop signal (fix_attempt={fix_attempt})",
+                    token_usage=total_usage,
+                    sub_agent_results=sub_agent_results,
+                    iterations=len(sub_agent_results),
                 )
 
-        last_audit_findings = _format_audit_findings(auditor_result.structured_output)
-        if _audit_skipped:
-            last_audit_findings = (
-                "⚠ AUDIT_SKIPPED: Auditor did not produce structured JSON verdict. "
-                "File was not formally reviewed.\n" + last_audit_findings
+            # Read the file from disk for auditor context
+            file_abs = working_dir / file_path
+            auditor_context: dict[str, str] = {}
+            if file_abs.exists():
+                try:
+                    auditor_context[file_path] = file_abs.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning("Could not read %s for auditor: %s", file_abs, e)
+
+            # --- AUDITOR ---
+            if verbose:
+                label = f"[{fix_attempt + 3}/3+]" if fix_attempt == 0 else f"[re-audit {fix_attempt}]"
+                print(f"[BUILDER]   {label} AUDITOR: reviewing {file_path}")
+
+            auditor_handoff = SubAgentHandoff(
+                role=SubAgentRole.AUDITOR,
+                build_id=_build_uuid,
+                user_id=_user_uuid,
+                assignment=f"Audit {file_path} for structural issues and contract compliance.",
+                files=[file_path],
+                context_files=auditor_context,
+                contracts_text="",
+                phase_deliverables=deliverables_text,
+                build_mode=build_mode,
             )
 
-        if verbose:
-            _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
-            status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
-            print(f"[BUILDER]   AUDITOR done: verdict={audit_verdict}{_skip_tag} ({auditor_result.input_tokens + auditor_result.output_tokens} tokens)")
+            auditor_result = await run_sub_agent(
+                auditor_handoff,
+                str(working_dir),
+                audit_api_key or api_key,
+                stop_event=stop_event,
+            )
+            sub_agent_results.append(auditor_result)
+            _accumulate_tokens(total_usage, auditor_result)
 
-        if turn_callback is not None:
-            turn_callback({
-                "role": "auditor",
-                "status": auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status),
-                "verdict": audit_verdict,
-                "tokens": auditor_result.input_tokens + auditor_result.output_tokens,
-            })
+            audit_verdict = auditor_result.structured_output.get("verdict", "")
+            _audit_skipped = False
 
-        # --- INTEGRATION CHECK (cross-file validation) ---
-        integration_findings = ""
-        _integ_error_count = 0
-        if integration_check is not None:
-            if verbose:
-                print(f"[BUILDER]   INTEGRATION: cross-file check for {file_path}")
-            try:
-                _integ_issues = await integration_check(file_path)
-                _integ_errors = [i for i in _integ_issues if i.severity == "error"]
-                _integ_error_count = len(_integ_errors)
-                if _integ_errors:
-                    integration_findings = "Integration audit findings:\n" + "\n".join(
-                        f"  [{i.severity}] {i.message}"
-                        + (f" (related: {i.related_file})" if i.related_file else "")
-                        for i in _integ_errors
+            if not audit_verdict:
+                _text = auditor_result.text_output or ""
+                _m = re.search(r'\bverdict["\s:]*\b(PASS|FAIL)\b', _text, re.IGNORECASE)
+                if _m:
+                    audit_verdict = _m.group(1).upper()
+                    logger.info("Auditor verdict recovered from text: %s (file: %s)", audit_verdict, file_path)
+                else:
+                    audit_verdict = "PASS"
+                    _audit_skipped = True
+                    logger.warning(
+                        "Auditor produced no parseable verdict for %s — audit skipped "
+                        "(text_output length: %d chars)",
+                        file_path, len(_text),
                     )
-                    if verbose:
-                        print(f"[BUILDER]   INTEGRATION: {_integ_error_count} error(s) found")
-                elif verbose:
-                    print(f"[BUILDER]   INTEGRATION: passed")
-            except Exception as _integ_exc:
-                logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
+
+            last_audit_findings = _format_audit_findings(auditor_result.structured_output)
+            if _audit_skipped:
+                last_audit_findings = (
+                    "⚠ AUDIT_SKIPPED: Auditor did not produce structured JSON verdict. "
+                    "File was not formally reviewed.\n" + last_audit_findings
+                )
+
+            if verbose:
+                _skip_tag = " [AUDIT_SKIPPED]" if _audit_skipped else ""
+                status_str = auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status)
+                print(f"[BUILDER]   AUDITOR done: verdict={audit_verdict}{_skip_tag} ({auditor_result.input_tokens + auditor_result.output_tokens} tokens)")
 
             if turn_callback is not None:
                 turn_callback({
-                    "role": "integration",
-                    "status": "failed" if integration_findings else "passed",
-                    "error_count": _integ_error_count,
-                    "findings": integration_findings[:500] if integration_findings else "",
-                    "tokens": 0,
+                    "role": "auditor",
+                    "status": auditor_result.status.value if hasattr(auditor_result.status, "value") else str(auditor_result.status),
+                    "verdict": audit_verdict,
+                    "tokens": auditor_result.input_tokens + auditor_result.output_tokens,
                 })
 
-        # Combine auditor + integration findings for FIXER
-        needs_fix = audit_verdict == "FAIL" or bool(integration_findings)
-        combined_findings = last_audit_findings
-        if integration_findings:
-            combined_findings = (combined_findings + "\n\n" + integration_findings).strip()
+            # --- INTEGRATION CHECK (cross-file validation) ---
+            integration_findings = ""
+            _integ_error_count = 0
+            if integration_check is not None:
+                if verbose:
+                    print(f"[BUILDER]   INTEGRATION: cross-file check for {file_path}")
+                try:
+                    _integ_issues = await integration_check(file_path)
+                    _integ_errors = [i for i in _integ_issues if i.severity == "error"]
+                    _integ_error_count = len(_integ_errors)
+                    if _integ_errors:
+                        integration_findings = "Integration audit findings:\n" + "\n".join(
+                            f"  [{i.severity}] {i.message}"
+                            + (f" (related: {i.related_file})" if i.related_file else "")
+                            for i in _integ_errors
+                        )
+                        if verbose:
+                            print(f"[BUILDER]   INTEGRATION: {_integ_error_count} error(s) found")
+                    elif verbose:
+                        print(f"[BUILDER]   INTEGRATION: passed")
+                except Exception as _integ_exc:
+                    logger.warning("Integration check failed for %s: %s", file_path, _integ_exc)
 
-        # PASS on both → done
-        if not needs_fix:
-            break
+                if turn_callback is not None:
+                    turn_callback({
+                        "role": "integration",
+                        "status": "failed" if integration_findings else "passed",
+                        "error_count": _integ_error_count,
+                        "findings": integration_findings[:500] if integration_findings else "",
+                        "tokens": 0,
+                    })
 
-        # FAIL + retries exhausted → give up
-        if fix_attempt >= MAX_FIX_RETRIES:
+            # Combine auditor + integration findings for FIXER
+            needs_fix = audit_verdict == "FAIL" or bool(integration_findings)
+            combined_findings = last_audit_findings
+            if integration_findings:
+                combined_findings = (combined_findings + "\n\n" + integration_findings).strip()
+
+            # PASS on both -> done
+            if not needs_fix:
+                break
+
+            # FAIL + retries exhausted -> give up
+            if fix_attempt >= MAX_FIX_RETRIES:
+                if verbose:
+                    print(f"[BUILDER]   Max fix retries ({MAX_FIX_RETRIES}) reached for {file_path}")
+                break
+
+            # Check stop signal before dispatching fixer
+            if stop_event is not None and stop_event.is_set():
+                return BuilderResult(
+                    file_path=file_path,
+                    content="",
+                    status="failed",
+                    error="Builder interrupted by stop signal before FIXER",
+                    token_usage=total_usage,
+                    sub_agent_results=sub_agent_results,
+                    iterations=len(sub_agent_results),
+                )
+
+            # --- FIXER (receives combined audit + integration findings) ---
+            _fixer_ran = True
+            _last_combined_findings = combined_findings
+
             if verbose:
-                print(f"[BUILDER]   Max fix retries ({MAX_FIX_RETRIES}) reached for {file_path}")
-            break
+                _fix_sources = []
+                if audit_verdict == "FAIL":
+                    _fix_sources.append("audit")
+                if integration_findings:
+                    _fix_sources.append("integration")
+                print(f"[BUILDER]   FIXER: applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
 
-        # Check stop signal before dispatching fixer
-        if stop_event is not None and stop_event.is_set():
-            return BuilderResult(
-                file_path=file_path,
-                content="",
-                status="failed",
-                error="Builder interrupted by stop signal before FIXER",
-                token_usage=total_usage,
-                sub_agent_results=sub_agent_results,
-                iterations=len(sub_agent_results),
+            fixer_handoff = SubAgentHandoff(
+                role=SubAgentRole.FIXER,
+                build_id=_build_uuid,
+                user_id=_user_uuid,
+                assignment=(
+                    f"Fix {file_path}: apply surgical edits to resolve the findings below. "
+                    "Use edit_file only — do NOT rewrite the entire file with write_file."
+                ),
+                files=[file_path],
+                context_files=auditor_context,
+                contracts_text="",
+                phase_deliverables=deliverables_text,
+                error_context=combined_findings,
+                build_mode=build_mode,
             )
 
-        # --- FIXER (receives combined audit + integration findings) ---
-        _fixer_ran = True
-        _last_combined_findings = combined_findings
+            fixer_result = await run_sub_agent(
+                fixer_handoff,
+                str(working_dir),
+                audit_api_key or api_key,
+                stop_event=stop_event,
+            )
+            sub_agent_results.append(fixer_result)
+            _accumulate_tokens(total_usage, fixer_result)
 
-        if verbose:
-            _fix_sources = []
-            if audit_verdict == "FAIL":
-                _fix_sources.append("audit")
-            if integration_findings:
-                _fix_sources.append("integration")
-            print(f"[BUILDER]   FIXER: applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
+            if verbose:
+                status_str = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
+                print(f"[BUILDER]   FIXER done: {status_str} ({fixer_result.input_tokens + fixer_result.output_tokens} tokens)")
 
-        fixer_handoff = SubAgentHandoff(
-            role=SubAgentRole.FIXER,
-            build_id=_build_uuid,
-            user_id=_user_uuid,
-            assignment=(
-                f"Fix {file_path}: apply surgical edits to resolve the findings below. "
-                "Use edit_file only — do NOT rewrite the entire file with write_file."
-            ),
-            files=[file_path],
-            context_files=auditor_context,
-            contracts_text="",               # pull-first: Fixer uses forge_get_build_contracts
-            phase_deliverables=deliverables_text,
-            error_context=combined_findings,
-            build_mode=build_mode,
-        )
-
-        fixer_result = await run_sub_agent(
-            fixer_handoff,
-            str(working_dir),
-            audit_api_key or api_key,
-            stop_event=stop_event,
-        )
-        sub_agent_results.append(fixer_result)
-        _accumulate_tokens(total_usage, fixer_result)
-
-        if verbose:
-            status_str = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
-            print(f"[BUILDER]   FIXER done: {status_str} ({fixer_result.input_tokens + fixer_result.output_tokens} tokens)")
-
-        if turn_callback is not None:
-            turn_callback({
-                "role": "fixer",
-                "status": fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status),
-                "tokens": fixer_result.input_tokens + fixer_result.output_tokens,
-            })
+            if turn_callback is not None:
+                turn_callback({
+                    "role": "fixer",
+                    "status": fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status),
+                    "tokens": fixer_result.input_tokens + fixer_result.output_tokens,
+                })
 
     # ────────────────────────────────────────────────────────────────────────
     # (5) READ FINAL FILE CONTENT FROM DISK

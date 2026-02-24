@@ -77,21 +77,14 @@ class HandoffStatus(str, enum.Enum):
 # The conductor picks the right set via ``tools_for_role(role)``.
 
 _ROLE_TOOL_NAMES: dict[SubAgentRole, frozenset[str]] = {
-    # Scout — pure read for reconnaissance / context gathering
+    # Scout — workspace scanning only. Contracts are the Coder's domain.
+    # Scout reads existing code to identify patterns, interfaces, imports.
     SubAgentRole.SCOUT: frozenset({
         "read_file",
         "list_directory",
         "search_code",
-        "forge_get_contract",
-        "forge_get_phase_window",
-        "forge_list_contracts",
-        "forge_get_summary",
         "forge_scratchpad",
         "forge_ask_clarification",
-        # Project-scoped tools (Phase F) — pull contracts from DB on demand
-        "forge_get_project_context",
-        "forge_list_project_contracts",
-        "forge_get_project_contract",
     }),
     # Coder — pull-first model: fetches contracts via tools, writes
     # files via write_file, and checks syntax interactively.
@@ -172,26 +165,23 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
     SubAgentRole.SCOUT: (
         "You are a **Scout** sub-agent in the Forge build system.\n\n"
         "# ROLE\n"
-        "Gather context about the project before coding begins. You have READ-ONLY\n"
-        "access to the project files and governance contracts. Your output directly\n"
-        "feeds the Coder — everything you miss, the Coder will hallucinate.\n\n"
+        "Scan the workspace to gather context before coding begins. You have READ-ONLY\n"
+        "access to project files on disk. Your output directly feeds the Coder —\n"
+        "everything you miss, the Coder will hallucinate.\n\n"
+        "You do NOT have access to contracts — the Coder fetches those directly.\n"
+        "Your job is workspace analysis: directory structure, existing patterns,\n"
+        "interfaces, and import conventions.\n\n"
         "# INPUTS\n"
         "1. Working directory — the project workspace on disk\n"
-        "2. Phase deliverables — what files will be built in this phase\n"
-        "3. Contract access — via tool calls to the ForgeGuard database\n\n"
+        "2. Phase deliverables — what files will be built in this phase\n\n"
         "# PROCESS (follow this order)\n"
-        "Step 1. Pull contracts:\n"
-        "  - Call `forge_get_project_context()` to see available contract types\n"
-        "  - Call `forge_get_project_contract('stack')` for tech stack\n"
-        "  - Call `forge_get_project_contract('schema')` for database schema\n"
-        "  - Call `forge_get_project_contract('boundaries')` for layer rules\n"
-        "  Make all calls in PARALLEL in a single turn.\n\n"
-        "Step 2. Scan the workspace:\n"
+        "Step 1. Scan the workspace:\n"
         "  - `list_directory('.')` for top-level structure\n"
         "  - `list_directory` on key subdirectories (app/, src/, etc.)\n"
         "  - `read_file` on files that the current phase's deliverables depend on\n"
-        "  - `search_code` for import patterns, class definitions, route handlers\n\n"
-        "Step 3. Produce DIRECTIVE output — not just observations, but explicit\n"
+        "  - `search_code` for import patterns, class definitions, route handlers\n"
+        "  Make multiple calls in PARALLEL in a single turn for speed.\n\n"
+        "Step 2. Produce DIRECTIVE output — not just observations, but explicit\n"
         "  instructions the Coder must follow.\n\n"
         "# OUTPUT FORMAT — MANDATORY\n"
         "Output exactly this JSON structure. Truncate field values to their limits.\n"
@@ -258,10 +248,9 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         '}\n'
         "</example>\n\n"
         "# FAILURE MODES\n"
-        "- If a contract is unavailable: proceed with workspace analysis only,\n"
-        "  note the missing contract in recommendations\n"
-        "- If the workspace is empty: derive all directives from contracts,\n"
-        "  set patterns and imports_map to empty\n"
+        "- If the workspace is empty (new project): set directory_tree to \"empty\",\n"
+        "  set key_interfaces to [], patterns to {}, imports_map to {},\n"
+        "  and put a note in recommendations that this is a fresh project\n"
         "- If you cannot determine a pattern: omit that key rather than guessing\n\n"
         "# SCRATCHPAD PROTOCOL\n"
         "After completing your analysis, write key findings to scratchpad so future\n"

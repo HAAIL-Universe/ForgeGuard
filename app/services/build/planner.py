@@ -1530,6 +1530,7 @@ async def execute_tier(
     build_mode: str = "full",
     lessons_learned: str = "",
     stop_event: "asyncio.Event | None" = None,
+    phase_index: int = -1,
 ) -> tuple[dict[str, str], str]:
     """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
@@ -1626,8 +1627,11 @@ async def execute_tier(
             if k not in context_files:
                 context_files[k] = v
 
-        # Include interface map as a named context file so SCOUT and CODER see it
-        if interface_map:
+        # Include interface map for non-trivial source files only
+        _skip_imap = Path(fp).name in (
+            "__init__.py", "py.typed", ".gitkeep",
+        ) or _is_config_only
+        if interface_map and not _skip_imap:
             context_files["interface_map.md"] = interface_map
 
         # Pull-first: agents fetch contracts via tools; pass empty list
@@ -1700,6 +1704,7 @@ async def execute_tier(
                 turn_callback=_on_builder_turn,
                 lessons_learned=_current_lessons,
                 stop_event=stop_event,
+                phase_index=phase_index,
             )
 
         if result.status == "completed" and result.content:
