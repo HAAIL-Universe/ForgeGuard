@@ -14,9 +14,13 @@ import asyncio
 import ast
 import fnmatch
 import json
+import logging
 import os
 import re
+import time as _time_mod
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -197,9 +201,15 @@ async def execute_tool_async(
     }
 
     if tool_name in sync_handlers:
+        _t0 = _time_mod.monotonic()
         try:
             result = sync_handlers[tool_name](tool_input, working_dir)
         except Exception as exc:
+            _elapsed = _time_mod.monotonic() - _t0
+            logger.debug(
+                "METRIC | type=tool_exec | tool=%s | ok=false | ms=%.0f | err=%s",
+                tool_name, _elapsed * 1000, str(exc)[:200],
+            )
             return f"Error executing {tool_name}: {exc}"
 
         # Post-write hook: auto-install dependencies when a manifest is written
@@ -209,20 +219,50 @@ async def execute_tool_async(
             if install_msg:
                 result = f"{result}\n\n{install_msg}"
 
+        _elapsed = _time_mod.monotonic() - _t0
+        logger.debug(
+            "METRIC | type=tool_exec | tool=%s | ok=true | ms=%.0f | result_chars=%d",
+            tool_name, _elapsed * 1000, len(result),
+        )
         return result
 
     if tool_name in forge_db_handlers:
+        _t0 = _time_mod.monotonic()
         try:
-            return await forge_db_handlers[tool_name](tool_input, project_id)
+            result = await forge_db_handlers[tool_name](tool_input, project_id)
         except Exception as exc:
+            _elapsed = _time_mod.monotonic() - _t0
+            logger.debug(
+                "METRIC | type=tool_exec | tool=%s | ok=false | ms=%.0f | err=%s",
+                tool_name, _elapsed * 1000, str(exc)[:200],
+            )
             return f"Error executing {tool_name}: {exc}"
+        _elapsed = _time_mod.monotonic() - _t0
+        logger.debug(
+            "METRIC | type=tool_exec | tool=%s | ok=true | ms=%.0f | result_chars=%d",
+            tool_name, _elapsed * 1000, len(result),
+        )
+        return result
 
     if tool_name in async_handlers:
+        _t0 = _time_mod.monotonic()
         try:
-            return await async_handlers[tool_name](tool_input, working_dir)
+            result = await async_handlers[tool_name](tool_input, working_dir)
         except Exception as exc:
+            _elapsed = _time_mod.monotonic() - _t0
+            logger.debug(
+                "METRIC | type=tool_exec | tool=%s | ok=false | ms=%.0f | err=%s",
+                tool_name, _elapsed * 1000, str(exc)[:200],
+            )
             return f"Error executing {tool_name}: {exc}"
+        _elapsed = _time_mod.monotonic() - _t0
+        logger.debug(
+            "METRIC | type=tool_exec | tool=%s | ok=true | ms=%.0f | result_chars=%d",
+            tool_name, _elapsed * 1000, len(result),
+        )
+        return result
 
+    logger.debug("METRIC | type=tool_exec | tool=%s | ok=false | err=unknown_tool", tool_name)
     return f"Error: Unknown tool '{tool_name}'"
 
 
