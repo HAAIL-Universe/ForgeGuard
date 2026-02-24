@@ -1606,6 +1606,43 @@ async def execute_tier(
     except ImportError:
         pass  # tool_executor unavailable (test environment)
 
+    # -- Tier-level deterministic scout (replaces N per-file LLM scouts) ----
+    # Runs once per tier, produces the same JSON schema the LLM scout outputs.
+    # Zero LLM tokens. O(workspace_file_count) time. Falls back gracefully
+    # to per-file LLM scouts if the scanner fails.
+    _tier_scout: dict | None = None
+    if phase_index != 0:  # Phase 0 = empty workspace, nothing to scan
+        try:
+            from .subagent import build_tier_scout_context
+            _tier_scout = build_tier_scout_context(
+                working_dir,
+                tier_files,
+                all_files_written,
+            )
+            logger.info(
+                "Tier %d: deterministic scout built (%d interfaces, %d directives, %d imports)",
+                tier_index,
+                len(_tier_scout.get("key_interfaces", [])),
+                len(_tier_scout.get("directives", [])),
+                len(_tier_scout.get("imports_map", {})),
+            )
+            await _state._broadcast_build_event(user_id, build_id, "build_log", {
+                "message": (
+                    f"Tier {tier_index}: deterministic scout — "
+                    f"{len(_tier_scout.get('key_interfaces', []))} interfaces, "
+                    f"{len(_tier_scout.get('directives', []))} directives "
+                    f"(0 LLM tokens)"
+                ),
+                "source": "scout",
+                "level": "info",
+            })
+        except Exception as _scout_exc:
+            logger.warning(
+                "Tier %d: deterministic scout failed: %s — falling back to per-file LLM scouts",
+                tier_index, _scout_exc,
+            )
+            _tier_scout = None  # fallback: run_builder will use LLM scout
+
     # Per-file builder pipeline — up to 3 concurrent file builds per tier
     _semaphore = asyncio.Semaphore(3)
     _LESSONS_CAP = 2000  # max chars for accumulated lessons string
@@ -1740,6 +1777,7 @@ async def execute_tier(
                 lessons_learned=_current_lessons,
                 stop_event=stop_event,
                 phase_index=phase_index,
+                tier_scout_context=_tier_scout,
             )
 
         if result.status == "completed" and result.content:

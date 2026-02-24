@@ -128,6 +128,65 @@ def _is_config_file(file_path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tier-level scout synthesis (deterministic, 0 tokens)
+# ---------------------------------------------------------------------------
+
+
+def _synthesize_file_scout(
+    tier_context: dict,
+    file_entry: dict,
+) -> SubAgentResult:
+    """Create a synthetic SubAgentResult from tier-level scout context.
+
+    Narrows the shared tier_scout_context to be file-aware by prepending
+    a file-specific recommendation. All other fields pass through unchanged —
+    they are workspace-level facts useful to every file.
+
+    Parameters
+    ----------
+    tier_context:
+        Output of build_tier_scout_context() — shared across all files in a tier.
+    file_entry:
+        Dict with 'path', 'purpose', etc. for the specific file being built.
+
+    Returns
+    -------
+    SubAgentResult
+        A completed result with structured_output matching the LLM scout schema.
+        input_tokens=0, output_tokens=0, cost_usd=0.0.
+    """
+    file_path = file_entry.get("path", "unknown")
+    file_purpose = file_entry.get("purpose", "")
+
+    # Personalize recommendations with file-specific context
+    _file_rec = f"Building {file_path}: {file_purpose}."
+    _tier_rec = tier_context.get("recommendations", "")
+    combined_rec = f"{_file_rec} {_tier_rec}"[:400]
+
+    filtered = {
+        "directory_tree": tier_context.get("directory_tree", "empty"),
+        "key_interfaces": tier_context.get("key_interfaces", []),
+        "patterns": tier_context.get("patterns", {}),
+        "imports_map": tier_context.get("imports_map", {}),
+        "directives": tier_context.get("directives", []),
+        "recommendations": combined_rec,
+    }
+
+    return SubAgentResult(
+        handoff_id=f"tier_scout_{Path(file_path).stem}_{id(tier_context) & 0xFFFF:04x}",
+        role=SubAgentRole.SCOUT,
+        status=HandoffStatus.COMPLETED,
+        structured_output=filtered,
+        text_output="",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        cost_usd=0.0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
 
@@ -241,6 +300,7 @@ async def run_builder(
     integration_check: "callable | None" = None,
     lessons_learned: str = "",
     phase_index: int = -1,
+    tier_scout_context: dict | None = None,
 ) -> BuilderResult:
     """
     Run the Builder Agent pipeline for a single file.
@@ -313,11 +373,13 @@ async def run_builder(
             _print_summary(result)
         return result
 
-    # Determine whether to skip Scout
+    # Determine whether to skip LLM Scout
+    _has_tier_scout = tier_scout_context is not None
     _skip_scout = (
         phase_index == 0                                    # Phase 0: empty workspace, nothing to scan
         or _is_init_with_exports(file_path, file_purpose)   # __init__.py with re-exports
         or _is_config_file(file_path)                       # config/static files don't need scanning
+        or _has_tier_scout                                   # tier-level deterministic scout replaces per-file LLM scout
     )
 
     # ────────────────────────────────────────────────────────────────────────
@@ -327,16 +389,24 @@ async def run_builder(
     scout_result: SubAgentResult | None = None
 
     if _skip_scout:
-        if verbose:
-            if phase_index == 0:
-                _reason = "Phase 0 (empty workspace)"
-            elif _is_config_file(file_path):
-                _reason = "config/static file"
-            else:
-                _reason = "init-with-exports"
-            print(f"[BUILDER]   [1/3+] SCOUT: SKIPPED ({_reason}) for {file_path}")
-        if turn_callback is not None:
-            turn_callback({"role": "scout", "status": "skipped", "tokens": 0})
+        if _has_tier_scout:
+            # Tier-level deterministic scout — synthesize per-file result (0 tokens)
+            scout_result = _synthesize_file_scout(tier_scout_context, file_entry)
+            if verbose:
+                print(f"[BUILDER]   [1/3+] SCOUT: TIER-SCOUT (deterministic, 0 tokens) for {file_path}")
+            if turn_callback is not None:
+                turn_callback({"role": "scout", "status": "tier-scout", "tokens": 0})
+        else:
+            if verbose:
+                if phase_index == 0:
+                    _reason = "Phase 0 (empty workspace)"
+                elif _is_config_file(file_path):
+                    _reason = "config/static file"
+                else:
+                    _reason = "init-with-exports"
+                print(f"[BUILDER]   [1/3+] SCOUT: SKIPPED ({_reason}) for {file_path}")
+            if turn_callback is not None:
+                turn_callback({"role": "scout", "status": "skipped", "tokens": 0})
     else:
         if verbose:
             print(f"[BUILDER]   [1/3+] SCOUT: mapping context for {file_path}")

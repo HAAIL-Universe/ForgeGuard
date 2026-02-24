@@ -793,6 +793,312 @@ def build_context_pack(
 
 
 # ---------------------------------------------------------------------------
+# Deterministic tier-level scout (replaces per-file LLM scouts)
+# ---------------------------------------------------------------------------
+
+_SCOUT_SKIP_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "__pycache__", ".forge",
+    ".mypy_cache", ".pytest_cache", "dist", "build", ".tox",
+    ".eggs", ".ruff_cache", "htmlcov", ".coverage",
+})
+
+_SCOUT_SOURCE_SUFFIXES = frozenset({".py", ".ts", ".tsx", ".js", ".jsx"})
+
+
+def build_tier_scout_context(
+    working_dir: str,
+    tier_files: list[dict],
+    all_files_written: dict[str, str],
+    *,
+    max_tree_chars: int = 500,
+    max_interfaces: int = 10,
+    max_imports: int = 10,
+    max_directives: int = 10,
+) -> dict:
+    """Build scout-equivalent structured context for an entire tier deterministically.
+
+    Produces the same JSON schema the LLM scout outputs (matching _trim_scout_output
+    caps). Zero LLM tokens. Runs once per tier. O(n) in workspace file count.
+
+    Uses only stdlib: os, ast, re, pathlib. No network, no subprocess.
+
+    Parameters
+    ----------
+    working_dir:
+        Absolute path to the build workspace on disk.
+    tier_files:
+        List of file dicts (with 'path', 'purpose', etc.) for the current tier.
+    all_files_written:
+        Dict of {relative_path: content} for all files written in prior tiers.
+    max_tree_chars:
+        Character cap for directory_tree field (default: 500).
+    max_interfaces:
+        Maximum entries in key_interfaces (default: 10).
+    max_imports:
+        Maximum entries in imports_map (default: 10).
+    max_directives:
+        Maximum entries in directives (default: 10).
+
+    Returns
+    -------
+    dict
+        Scout-schema JSON: directory_tree, key_interfaces, patterns,
+        imports_map, directives, recommendations.
+    """
+    import ast as _ast
+    import os as _os
+    import re as _re
+
+    wd = Path(working_dir)
+    result: dict = {}
+
+    def _should_skip_dir(dirname: str) -> bool:
+        return dirname in _SCOUT_SKIP_DIRS or dirname.endswith(".egg-info")
+
+    # -- 1. directory_tree --------------------------------------------------
+    tree_parts: list[str] = []
+    tree_len = 0
+    for dirpath, dirnames, _filenames in _os.walk(str(wd)):
+        dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
+        rel = _os.path.relpath(dirpath, str(wd)).replace("\\", "/")
+        if rel == ".":
+            rel = ""
+        if dirnames:
+            entry = (f"{rel}/" if rel else "") + " ".join(sorted(dirnames)) + "/"
+        elif rel:
+            entry = f"{rel}/"
+        else:
+            continue
+        if entry and tree_len + len(entry) + 2 < max_tree_chars:
+            tree_parts.append(entry)
+            tree_len += len(entry) + 2
+        if tree_len >= max_tree_chars:
+            break
+    result["directory_tree"] = (
+        "  ".join(tree_parts)[:max_tree_chars] if tree_parts else "empty"
+    )
+
+    # -- 2. key_interfaces (Python: ast.parse; TS/JS: regex) ----------------
+    interfaces: list[dict] = []
+    _scanned_for_iface = 0
+    _MAX_IFACE_SCAN = 200
+
+    def _extract_py_exports(file_path: Path) -> str | None:
+        """Extract public class/function signatures from a Python file via AST."""
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="replace")
+            tree = _ast.parse(source, filename=str(file_path))
+        except Exception:
+            return None
+        exports: list[str] = []
+        for node in _ast.iter_child_nodes(tree):
+            if isinstance(node, _ast.ClassDef):
+                init = next(
+                    (n for n in _ast.iter_child_nodes(node)
+                     if isinstance(n, _ast.FunctionDef) and n.name == "__init__"),
+                    None,
+                )
+                if init:
+                    args = [a.arg for a in init.args.args if a.arg != "self"]
+                    exports.append(f"{node.name}({', '.join(args)})")
+                else:
+                    exports.append(node.name)
+            elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                if node.name.startswith("_"):
+                    continue
+                args = [a.arg for a in node.args.args if a.arg != "self"]
+                exports.append(f"{node.name}({', '.join(args)})")
+        return ", ".join(exports[:8]) if exports else None
+
+    def _extract_ts_exports(file_path: Path) -> str | None:
+        """Extract named exports from a TypeScript/JavaScript file via regex."""
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        names: list[str] = []
+        for m in _re.finditer(
+            r'export\s+(?:default\s+)?(?:function|class|const|interface|type|enum)\s+(\w+)',
+            source,
+        ):
+            names.append(m.group(1))
+        return ", ".join(names[:8]) if names else None
+
+    for dirpath, dirnames, filenames in _os.walk(str(wd)):
+        dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
+        for fname in sorted(filenames):
+            if _scanned_for_iface >= _MAX_IFACE_SCAN or len(interfaces) >= max_interfaces:
+                break
+            fpath = Path(dirpath) / fname
+            suffix = fpath.suffix.lower()
+            if suffix not in _SCOUT_SOURCE_SUFFIXES:
+                continue
+            _scanned_for_iface += 1
+            rel = str(fpath.relative_to(wd)).replace("\\", "/")
+            if suffix == ".py":
+                exports_str = _extract_py_exports(fpath)
+            elif suffix in (".ts", ".tsx", ".js", ".jsx"):
+                exports_str = _extract_ts_exports(fpath)
+            else:
+                continue
+            if exports_str:
+                interfaces.append({"file": rel, "exports": exports_str[:150]})
+        if len(interfaces) >= max_interfaces:
+            break
+    result["key_interfaces"] = interfaces[:max_interfaces]
+
+    # -- 3. patterns (heuristic detection via regex) ------------------------
+    _PATTERN_SEARCHES: dict[str, list[tuple[str, str]]] = {
+        "auth": [
+            (r"get_current_user|verify_token|jwt|bearer|oauth", "auth middleware"),
+            (r"Depends\(get_current_user\)", "FastAPI dependency injection auth"),
+        ],
+        "db": [
+            (r"get_db|async_session|asyncpg|create_pool", "async DB sessions"),
+            (r"Column\(|relationship\(|mapped_column", "SQLAlchemy ORM"),
+            (r"await\s+\w+\.fetch|\.execute\(", "raw async DB queries"),
+        ],
+        "api": [
+            (r"@(?:app|router)\.\w+\(", "decorated route handlers"),
+            (r"APIRouter\(\)", "FastAPI router pattern"),
+            (r"BaseModel|Field\(", "Pydantic models"),
+        ],
+    }
+    _pattern_evidence: dict[str, list[str]] = {"auth": [], "db": [], "api": []}
+    _pattern_files_checked = 0
+    _MAX_PATTERN_FILES = 50
+
+    for dirpath, dirnames, filenames in _os.walk(str(wd)):
+        dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
+        for fname in sorted(filenames):
+            if _pattern_files_checked >= _MAX_PATTERN_FILES:
+                break
+            fpath = Path(dirpath) / fname
+            if fpath.suffix.lower() not in _SCOUT_SOURCE_SUFFIXES:
+                continue
+            try:
+                sample = fpath.read_text(encoding="utf-8", errors="replace")[:5000]
+            except Exception:
+                continue
+            _pattern_files_checked += 1
+            for category, searches in _PATTERN_SEARCHES.items():
+                for pattern, label in searches:
+                    if _re.search(pattern, sample):
+                        bucket = _pattern_evidence[category]
+                        if label not in bucket:
+                            bucket.append(label)
+        if _pattern_files_checked >= _MAX_PATTERN_FILES:
+            break
+
+    patterns: dict[str, str] = {}
+    for cat, evidence in _pattern_evidence.items():
+        if evidence:
+            patterns[cat] = ", ".join(evidence)[:150]
+    result["patterns"] = patterns
+
+    # -- 4. imports_map (Python from-import parsing) ------------------------
+    imports_map: dict[str, list[str]] = {}
+    for dirpath, dirnames, filenames in _os.walk(str(wd)):
+        dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
+        for fname in sorted(filenames):
+            fpath = Path(dirpath) / fname
+            if fpath.suffix.lower() != ".py":
+                continue
+            try:
+                source = fpath.read_text(encoding="utf-8", errors="replace")[:8000]
+            except Exception:
+                continue
+            for m in _re.finditer(r'from\s+([\w.]+)\s+import\s+(.+?)(?:\n|$)', source):
+                mod = m.group(1)
+                # Only track project-internal imports (not stdlib/third-party)
+                if not any(mod.startswith(p) for p in ("app.", "src.", "lib.", "api.")):
+                    continue
+                names = [n.strip().split(" as ")[0].strip()
+                         for n in m.group(2).split(",")]
+                if mod not in imports_map:
+                    imports_map[mod] = []
+                for name in names:
+                    if name and name not in imports_map[mod]:
+                        imports_map[mod].append(name)
+            if len(imports_map) >= max_imports:
+                break
+        if len(imports_map) >= max_imports:
+            break
+    result["imports_map"] = dict(list(imports_map.items())[:max_imports])
+
+    # -- 5. directives (workspace-structure-derived rules) ------------------
+    directives: list[str] = []
+    has_repos = (wd / "app" / "repos").is_dir()
+    has_services = (wd / "app" / "services").is_dir()
+    has_routers = (
+        (wd / "app" / "api" / "routers").is_dir()
+        or (wd / "app" / "routers").is_dir()
+    )
+    has_conftest = (wd / "tests" / "conftest.py").is_file()
+    has_alembic = (wd / "alembic").is_dir()
+
+    if has_repos and has_services and has_routers:
+        directives.append(
+            "MUST NOT import repos directly in routers — go through services layer"
+        )
+        directives.append(
+            "MUST NOT import routers in services — layer violation"
+        )
+    if has_repos:
+        directives.append(
+            "MUST place database access code in app/repos/ — never in routers or services"
+        )
+    if has_services:
+        directives.append(
+            "MUST use service layer for business logic between routers and repos"
+        )
+    if has_conftest:
+        directives.append(
+            "MUST use conftest.py fixtures for test setup — do not duplicate"
+        )
+    if has_alembic:
+        directives.append(
+            "MUST NOT modify database schema directly — use Alembic migrations"
+        )
+
+    # Detect lifespan pattern from main.py
+    _main_candidates = [wd / "app" / "main.py", wd / "main.py", wd / "src" / "main.py"]
+    for mc in _main_candidates:
+        if mc.is_file():
+            try:
+                main_src = mc.read_text(encoding="utf-8", errors="replace")[:3000]
+                if "lifespan" in main_src:
+                    directives.append(
+                        "MUST use lifespan context manager for app startup/shutdown"
+                    )
+                break
+            except Exception:
+                pass
+
+    result["directives"] = [d[:200] for d in directives[:max_directives]]
+
+    # -- 6. recommendations -------------------------------------------------
+    tier_paths = [f.get("path", "") for f in tier_files]
+    existing_count = sum(1 for p in tier_paths if (wd / p).is_file())
+    written_count = len(all_files_written)
+    rec_parts: list[str] = []
+    if written_count > 0:
+        rec_parts.append(f"{written_count} files already built in prior tiers")
+    rec_parts.append(f"This tier builds {len(tier_files)} files")
+    if existing_count > 0:
+        rec_parts.append(
+            f"{existing_count}/{len(tier_files)} already exist on disk (overwrite)"
+        )
+    if interfaces:
+        rec_parts.append(
+            f"Workspace has {len(interfaces)} interface files to reference"
+        )
+    result["recommendations"] = ". ".join(rec_parts)[:400]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # .forge directory management
 # ---------------------------------------------------------------------------
 
@@ -983,7 +1289,17 @@ async def run_sub_agent(
     # 6. Stream with tool loop (all roles including CODER)
     usage = StreamUsage()
     text_chunks: list[str] = []
-    max_tool_rounds = 25  # safety limit
+    # Per-role tool round caps — prevents O(n^2) token growth from multi-turn
+    # conversations.  Each round re-sends full message history, so cumulative
+    # token cost across rounds grows quadratically.  Capping rounds is the
+    # primary defense against runaway costs.
+    _MAX_TOOL_ROUNDS: dict[SubAgentRole, int] = {
+        SubAgentRole.SCOUT: 4,     # list_dir + read_file + search_code (fallback path only)
+        SubAgentRole.CODER: 12,    # fetch contracts + write + syntax check + fix cycles
+        SubAgentRole.AUDITOR: 8,   # fetch contracts + review
+        SubAgentRole.FIXER: 10,    # read + edit + syntax check per finding (2-3 findings typical)
+    }
+    max_tool_rounds = _MAX_TOOL_ROUNDS.get(handoff.role, 25)
     tool_rounds = 0
 
     try:
