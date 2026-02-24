@@ -1708,7 +1708,6 @@ async def execute_tier(
                 user_id=str(user_id),
                 api_key=api_key,
                 audit_api_key=audit_api_key,
-                phase_plan_context="",
                 build_mode=build_mode,
                 integration_check=_per_file_integration_check,
                 turn_callback=_on_builder_turn,

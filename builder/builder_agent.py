@@ -234,7 +234,6 @@ async def run_builder(
     user_id: str,
     api_key: str,
     audit_api_key: "str | None" = None,
-    phase_plan_context: str = "",
     build_mode: str = "full",
     verbose: bool = True,
     turn_callback: "callable | None" = None,
@@ -258,7 +257,6 @@ async def run_builder(
         build_id:           Active build UUID (string).
         user_id:            Authenticated user UUID (string).
         api_key:            Anthropic API key for LLM calls.
-        phase_plan_context: Serialized cross-phase context string.
         verbose:            If True, prints progress to stdout.
         turn_callback:      Optional callable(dict) fired after each sub-agent.
         stop_event:         If set, the pipeline is interrupted cleanly.
@@ -344,8 +342,6 @@ async def run_builder(
             print(f"[BUILDER]   [1/3+] SCOUT: mapping context for {file_path}")
 
         scout_context: dict[str, str] = {}
-        if phase_plan_context:
-            scout_context["phase_plan_context.md"] = phase_plan_context
         if lessons_learned:
             scout_context["lessons_learned.md"] = lessons_learned
 
