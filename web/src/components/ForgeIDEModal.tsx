@@ -1695,7 +1695,15 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               for (const [k, v] of Object.entries(pfData.phases)) {
                 mapped[parseInt(k, 10)] = v as any;
               }
-              setPhaseFiles(mapped);
+              // MERGE — phase-files only has completed phases. Don't clobber
+              // plan-manifest entries for phases that haven't started yet.
+              setPhaseFiles((prev) => {
+                const next = { ...prev };
+                for (const [k, files] of Object.entries(mapped)) {
+                  next[+k] = files as any;  // committed status from outcomes takes priority
+                }
+                return next;
+              });
             }
           }
         } catch { /* silent */ }
@@ -1867,7 +1875,9 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 category: ph.objective?.substring(0, 50) || '',
                 status: 'pending' as const,
               })));
-              // Also populate phaseFiles if file_manifest included (belt-and-suspenders)
+              // Also populate phaseFiles if file_manifest included (belt-and-suspenders).
+              // MERGE — only add phases that don't already have data (preserves
+              // committed status from phase-files or plan_complete).
               const overviewPF: Record<number, PhaseFile[]> = {};
               for (const ph of (p.phases || [])) {
                 if (ph.file_manifest?.length) {
@@ -1878,7 +1888,13 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 }
               }
               if (Object.keys(overviewPF).length > 0) {
-                setPhaseFiles((prev) => Object.keys(prev).length > 0 ? prev : overviewPF);
+                setPhaseFiles((prev) => {
+                  const next = { ...prev };
+                  for (const [k, v] of Object.entries(overviewPF)) {
+                    if (!next[+k]?.length) next[+k] = v;
+                  }
+                  return next;
+                });
               }
               break;
             }
@@ -2354,7 +2370,16 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                         }));
                       }
                     }
-                    if (Object.keys(initPF).length > 0) setPhaseFiles(initPF);
+                    if (Object.keys(initPF).length > 0) {
+                      // MERGE — don't clobber data from plan_complete or file_manifest
+                      setPhaseFiles((prev) => {
+                        const next = { ...prev };
+                        for (const [k, v] of Object.entries(initPF)) {
+                          if (!next[+k]?.length) next[+k] = v;
+                        }
+                        return next;
+                      });
+                    }
                   }
                 }).catch(() => {});
                 return prev;
