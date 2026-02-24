@@ -3641,7 +3641,11 @@ async def _run_build_plan_execute(
     if phases:
         await _broadcast_build_event(user_id, build_id, "build_overview", {
             "phases": [
-                {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                {
+                    "number": p["number"], "name": p["name"],
+                    "objective": p.get("objective", ""),
+                    "file_manifest": p.get("file_manifest", []),
+                }
                 for p in phases
             ],
         })
@@ -3872,7 +3876,11 @@ async def _run_build_plan_execute(
             if phases:
                 await _broadcast_build_event(user_id, build_id, "build_overview", {
                     "phases": [
-                        {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                        {
+                            "number": p["number"], "name": p["name"],
+                            "objective": p.get("objective", ""),
+                            "file_manifest": p.get("file_manifest", []),
+                        }
                         for p in phases
                     ],
                 })
@@ -3926,6 +3934,19 @@ async def _run_build_plan_execute(
                 }
                 for p in _db_plan["phases"]
             ]
+            # Replay plan_complete so the frontend populates tasks/phaseFiles
+            # identically to a fresh planner run.  Without this, mini builds
+            # (where /build/phases returns []) have no task population source.
+            await _broadcast_build_event(user_id, build_id, "plan_complete", {
+                "plan_path": "",
+                "phases": _db_plan["phases"],  # raw phases with file_manifest
+                "token_usage": {
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+                "iterations": 0,
+                "from_cache": True,
+            })
 
         # ── New project planner agent (primary path) ──────────────────────
         # Only runs if no cached plan exists.  Falls back to the legacy
@@ -3978,7 +3999,11 @@ async def _run_build_plan_execute(
     if resume_from_phase < 0:
         await _broadcast_build_event(user_id, build_id, "build_overview", {
             "phases": [
-                {"number": p["number"], "name": p["name"], "objective": p.get("objective", "")}
+                {
+                    "number": p["number"], "name": p["name"],
+                    "objective": p.get("objective", ""),
+                    "file_manifest": p.get("file_manifest", []),
+                }
                 for p in phases
             ],
         })

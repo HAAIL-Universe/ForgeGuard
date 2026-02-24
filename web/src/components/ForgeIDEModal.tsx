@@ -1867,6 +1867,19 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                 category: ph.objective?.substring(0, 50) || '',
                 status: 'pending' as const,
               })));
+              // Also populate phaseFiles if file_manifest included (belt-and-suspenders)
+              const overviewPF: Record<number, PhaseFile[]> = {};
+              for (const ph of (p.phases || [])) {
+                if (ph.file_manifest?.length) {
+                  overviewPF[ph.number] = ph.file_manifest.map((f: any) => ({
+                    path: f.path, committed: false, status: 'pending' as const,
+                    action: f.action, description: f.description || f.purpose || '',
+                  }));
+                }
+              }
+              if (Object.keys(overviewPF).length > 0) {
+                setPhaseFiles((prev) => Object.keys(prev).length > 0 ? prev : overviewPF);
+              }
               break;
             }
 
@@ -2303,13 +2316,51 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
-            case 'build_commenced':
+            case 'build_commenced': {
               setPlanReady(false);
               setShowPlanModal(false);
               setStatus('running');
               // Remove the plan box from Sonnet panel — phases sidebar now shows files
               setLogs((prev) => prev.filter((l) => !l.reasoning?.isPlanBox));
+              // Safety: consume stale auto-approve ref if plan_complete never fired
+              // (e.g. plan loaded from DB cache before the replay was added).
+              autoApprovePlanRef.current = false;
+              // Safety net: if tasks still empty (missed plan_complete + build_overview),
+              // fetch cached plan from backend so sidebar isn't blank during the build.
+              setTasks((prev) => {
+                if (prev.length > 0) return prev;
+                fetch(`${API_BASE}/projects/${projectId}/build/status`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                }).then(r => r.ok ? r.json() : null).then(sd => {
+                  if (!sd) return;
+                  const cached = (sd as any).cached_plan_phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[] | undefined;
+                  if (cached && cached.length > 0) {
+                    setPhases(cached as any);
+                    setTasks(cached.map((ph) => ({
+                      id: `phase_${ph.number}`,
+                      name: `Phase ${ph.number}: ${ph.name}`,
+                      priority: 'high' as const, effort: 'large' as const,
+                      forge_automatable: true,
+                      category: (ph.purpose || ph.objective)?.substring(0, 50) || 'Build phase',
+                      status: 'pending' as const,
+                    })));
+                    setTotalTasks(cached.length);
+                    const initPF: Record<number, PhaseFile[]> = {};
+                    for (const ph of cached) {
+                      if (ph.file_manifest?.length) {
+                        initPF[ph.number] = ph.file_manifest.map((f: any) => ({
+                          path: f.path, committed: false, status: 'pending' as const,
+                          action: f.action, description: f.description,
+                        }));
+                      }
+                    }
+                    if (Object.keys(initPF).length > 0) setPhaseFiles(initPF);
+                  }
+                }).catch(() => {});
+                return prev;
+              });
               break;
+            }
 
             case 'plan_complete': {
               const planPhaseList = (p.phases as { number: number; name: string; purpose?: string; objective?: string; file_manifest?: any[] }[]) || [];
