@@ -3731,7 +3731,11 @@ async def _run_build_plan_execute(
     from forge_ide.invariants import InvariantRegistry as _InvariantRegistry
     _inv_registry = _InvariantRegistry()
     _inv_initial: dict[str, int] = {}
-    if _ws_snapshot is not None:
+    # Only inherit baselines from workspace when NOT starting from Phase 0.
+    # Phase 0 = genesis — the project is built from scratch, old baselines
+    # (like 53 prior tests) should not block a fresh skeleton with 0 tests.
+    _first_phase = resume_from_phase if resume_from_phase >= 0 else 0
+    if _ws_snapshot is not None and _first_phase > 0:
         _inv_initial["backend_test_count"] = _ws_snapshot.test_inventory.test_count
         _inv_initial["total_files"] = _ws_snapshot.total_files
     _inv_registry.register_builtins(_inv_initial)

@@ -121,6 +121,11 @@ _PY_NAME_MAP = {
     "jose": "python-jose",
     "jwt": "PyJWT",
     "pydantic": "pydantic",
+    "pydantic_settings": "pydantic-settings",
+    "dateutil": "python-dateutil",
+    "attr": "attrs",
+    "gi": "PyGObject",
+    "serial": "pyserial",
 }
 
 

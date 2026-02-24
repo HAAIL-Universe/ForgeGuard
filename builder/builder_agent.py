@@ -77,8 +77,11 @@ _TRIVIAL_NAMES = frozenset({
     "__init__.py", "py.typed", ".gitkeep",
 })
 
-# Keywords in purpose that indicate the file needs real content (re-exports)
-_NONTRIVIAL_KEYWORDS = ("export", "re-export", "import", "barrel", "public api")
+# Keywords in purpose that indicate the file needs real content (re-exports).
+# NOTE: "import" and "export" alone are too broad — they match generic descriptions
+# like "Package initialization — handles imports".  Only match specific barrel/re-export
+# patterns that genuinely require LLM-generated content.
+_NONTRIVIAL_KEYWORDS = ("re-export", "barrel", "public api", "public interface")
 
 
 def _is_trivial_file(file_path: str, purpose: str) -> bool:
@@ -415,8 +418,25 @@ async def run_builder(
             "tokens": coder_result.input_tokens + coder_result.output_tokens,
         })
 
-    # If CODER failed entirely (e.g., parse error), bail early
+    # If CODER failed entirely (e.g., parse error), bail early — BUT for __init__.py
+    # files, fall back to an empty file instead of failing.  In Phase 0 especially,
+    # there is nothing to re-export yet so the CODER may return empty content which
+    # the Anthropic client surfaces as "Empty response from Anthropic API".
     if coder_result.status == HandoffStatus.FAILED:
+        if Path(file_path).name == "__init__.py":
+            if verbose:
+                print(f"[BUILDER]   CODER returned empty/failed for {file_path} — fallback to empty __init__.py")
+            file_abs = working_dir / file_path
+            file_abs.parent.mkdir(parents=True, exist_ok=True)
+            file_abs.write_text("", encoding="utf-8")
+            return BuilderResult(
+                file_path=file_path,
+                content="",
+                status="completed",
+                token_usage=total_usage,
+                sub_agent_results=sub_agent_results,
+                iterations=len(sub_agent_results),
+            )
         return BuilderResult(
             file_path=file_path,
             content="",

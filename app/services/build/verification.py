@@ -1276,6 +1276,10 @@ async def _run_governance_checks(
                                 continue
                             look_for = _PY_NAME_MAP.get(imp, imp)
                             if not re.search(re.escape(look_for), dep_content, re.IGNORECASE):
+                                # Fallback: try replacing underscores with hyphens (pip convention)
+                                alt = imp.replace("_", "-")
+                                if alt != imp and re.search(re.escape(alt), dep_content, re.IGNORECASE):
+                                    continue  # matched via underscore→hyphen normalization
                                 g3_failures.append(
                                     f"{tf} imports '{imp}' (not in {dep_file})"
                                 )
