@@ -102,6 +102,31 @@ def _is_init_with_exports(file_path: str, purpose: str) -> bool:
     return any(kw in purpose_lower for kw in _NONTRIVIAL_KEYWORDS)
 
 
+# Config/static files that don't need SCOUT scanning or LLM auditing
+_CONFIG_NAMES = frozenset({
+    "tsconfig.json", "tsconfig.node.json", "tsconfig.app.json",
+    "package.json", "package-lock.json",
+    ".eslintrc.json", ".eslintrc.js", ".eslintrc.cjs",
+    ".prettierrc", ".prettierrc.json", ".prettierignore",
+    "vite.config.ts", "vite.config.js", "vite.config.mts",
+    "tailwind.config.js", "tailwind.config.ts",
+    "postcss.config.js", "postcss.config.cjs",
+    "jest.config.ts", "jest.config.js",
+    "vitest.config.ts", "vitest.config.js",
+    ".gitignore", ".dockerignore", ".env.example",
+    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "pyproject.toml", "setup.cfg", "setup.py",
+    "requirements.txt", "requirements-dev.txt",
+    "Makefile", "Procfile",
+    "index.html",
+})
+
+
+def _is_config_file(file_path: str) -> bool:
+    """True if file is a config/static file that doesn't need SCOUT or LLM audit."""
+    return Path(file_path).name in _CONFIG_NAMES
+
+
 # ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
@@ -138,6 +163,8 @@ def _accumulate_tokens(
     """Add a sub-agent result's token counts into *total* in-place."""
     total["input_tokens"] = total.get("input_tokens", 0) + result.input_tokens
     total["output_tokens"] = total.get("output_tokens", 0) + result.output_tokens
+    total["cache_read_tokens"] = total.get("cache_read_tokens", 0) + result.cache_read_tokens
+    total["cache_creation_tokens"] = total.get("cache_creation_tokens", 0) + result.cache_creation_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +202,9 @@ def _print_summary(result: BuilderResult) -> None:
     u = result.token_usage
     inp = u.get("input_tokens", 0)
     out = u.get("output_tokens", 0)
+    cache_read = u.get("cache_read_tokens", 0)
+    cache_create = u.get("cache_creation_tokens", 0)
+    fresh = inp - cache_read - cache_create
 
     print(f"\n[BUILDER] ════════════════════════════════════")
     print(f"[BUILDER] FILE {'COMPLETE' if result.status == 'completed' else 'FAILED'}")
@@ -184,7 +214,7 @@ def _print_summary(result: BuilderResult) -> None:
         print(f"[BUILDER]   Error:      {result.error}")
     print(f"[BUILDER]   Iterations: {result.iterations}  (sub-agent calls)")
     print(f"[BUILDER] TOKEN USAGE:")
-    print(f"[BUILDER]   Input:      {inp:>10,}")
+    print(f"[BUILDER]   Input:      {inp:>10,}  (fresh: {fresh:,} | cached: {cache_read:,} | cache-create: {cache_create:,})")
     print(f"[BUILDER]   Output:     {out:>10,}")
     print(f"[BUILDER] ════════════════════════════════════")
 
@@ -287,8 +317,9 @@ async def run_builder(
 
     # Determine whether to skip Scout
     _skip_scout = (
-        phase_index == 0                               # Phase 0: empty workspace, nothing to scan
-        or _is_init_with_exports(file_path, file_purpose)  # __init__.py with re-exports
+        phase_index == 0                                    # Phase 0: empty workspace, nothing to scan
+        or _is_init_with_exports(file_path, file_purpose)   # __init__.py with re-exports
+        or _is_config_file(file_path)                       # config/static files don't need scanning
     )
 
     # ────────────────────────────────────────────────────────────────────────
@@ -299,7 +330,12 @@ async def run_builder(
 
     if _skip_scout:
         if verbose:
-            _reason = "Phase 0 (empty workspace)" if phase_index == 0 else "init-with-exports"
+            if phase_index == 0:
+                _reason = "Phase 0 (empty workspace)"
+            elif _is_config_file(file_path):
+                _reason = "config/static file"
+            else:
+                _reason = "init-with-exports"
             print(f"[BUILDER]   [1/3+] SCOUT: SKIPPED ({_reason}) for {file_path}")
         if turn_callback is not None:
             turn_callback({"role": "scout", "status": "skipped", "tokens": 0})
@@ -469,11 +505,13 @@ async def run_builder(
         len(_file_text_for_audit.strip()) < 50
         or _is_test_file(file_path)
         or _is_init_with_exports(file_path, file_purpose)
+        or _is_config_file(file_path)
     )
     if _audit_auto_pass:
         _reason = (
             "test file" if _is_test_file(file_path)
             else "trivial content" if len(_file_text_for_audit.strip()) < 50
+            else "config/static file" if _is_config_file(file_path)
             else "init-with-exports"
         )
         if verbose:

@@ -357,11 +357,14 @@ _ROLE_SYSTEM_PROMPTS: dict[SubAgentRole, str] = {
         "access — you CANNOT modify any files. Your verdict determines whether\n"
         "the file ships or gets sent to the Fixer.\n\n"
         "# PROCESS\n"
-        "Step 1. Pull contracts (make all calls in PARALLEL in one turn):\n"
+        "Step 1. The file under review is provided in your **Context Files** section.\n"
+        "  Do NOT re-read it with read_file — it is already in your context.\n"
+        "Step 2. Pull contracts (make all calls in PARALLEL in one turn):\n"
         "  - `forge_get_project_contract('boundaries')` — layer rules\n"
         "  - `forge_get_project_contract('physics')` — API spec\n"
         "  - `forge_get_project_contract('schema')` — database schema\n"
-        "Step 2. Read the file under review.\n"
+        "  **If any contract returns 404/not found, skip that check entirely.**\n"
+        "  Do NOT retry. Audit only what you can verify with available contracts.\n"
         "Step 3. Check against the severity table below.\n"
         "Step 4. Output your verdict JSON.\n\n"
         "# SEVERITY TABLE — what triggers FAIL vs PASS\n\n"
@@ -605,8 +608,10 @@ class SubAgentResult:
     files_read: list[str] = field(default_factory=list)
 
     # Token accounting
-    input_tokens: int = 0
+    input_tokens: int = 0          # total input (fresh + cache_read + cache_creation)
     output_tokens: int = 0
+    cache_read_tokens: int = 0     # subset of input_tokens served from cache (90% cheaper)
+    cache_creation_tokens: int = 0 # subset of input_tokens that created cache (25% surcharge)
     model: str = ""
     cost_usd: float = 0.0
 
@@ -1100,13 +1105,17 @@ async def run_sub_agent(
                 ),
             })
 
-            # Tool results
+            # Tool results — cap at 4K to limit context bloat across rounds
             tool_result_blocks = []
+            _MAX_TOOL_RESULT = 4_000
             for tc in tool_calls_this_round:
+                _raw = str(tc["result"])
+                if len(_raw) > _MAX_TOOL_RESULT:
+                    _raw = _raw[:_MAX_TOOL_RESULT] + f"\n... [truncated, {len(_raw)} total chars]"
                 tool_result_blocks.append({
                     "type": "tool_result",
                     "tool_use_id": tc["id"],
-                    "content": str(tc["result"])[:10_000],
+                    "content": _raw,
                 })
             messages.append({"role": "user", "content": tool_result_blocks})
 
@@ -1137,6 +1146,8 @@ async def run_sub_agent(
         + usage.cache_creation_input_tokens
     )
     result.output_tokens = usage.output_tokens
+    result.cache_read_tokens = usage.cache_read_input_tokens
+    result.cache_creation_tokens = usage.cache_creation_input_tokens
 
     # Cost calculation — cache tokens have different rates:
     #   cache_read = 10% of base input rate
