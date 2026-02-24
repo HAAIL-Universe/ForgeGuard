@@ -728,6 +728,24 @@ async def run_builder(
                 _v_color = _C_CODER if audit_verdict == "PASS" else "\033[31m"
                 _blog(f"{_TAG_AUDITOR}   Done: {_v_color}{_C_BOLD}verdict={audit_verdict}{_C_RESET}{_skip_tag} {_C_TOKENS}({auditor_result.input_tokens + auditor_result.output_tokens} tokens){_C_RESET}")
 
+            # --- Audit findings metric ---
+            _findings = auditor_result.structured_output.get("findings", []) if auditor_result.structured_output else []
+            if _findings or audit_verdict == "FAIL":
+                _finding_summary = "; ".join(
+                    f"L{f.get('line', '?')}:{f.get('severity', '?')}:{f.get('message', '')[:80]}"
+                    for f in _findings[:5]
+                )
+                if verbose and _findings:
+                    _blog(f"{_TAG_AUDITOR}   Findings: {_C_DIM}{_finding_summary}{_C_RESET}")
+                logger.info(
+                    "METRIC | type=audit_findings | file=%s | verdict=%s | "
+                    "error_count=%d | warn_count=%d | findings=%s",
+                    file_path, audit_verdict,
+                    sum(1 for f in _findings if f.get("severity") == "error"),
+                    sum(1 for f in _findings if f.get("severity") == "warn"),
+                    _finding_summary[:300],
+                )
+
             if turn_callback is not None:
                 turn_callback({
                     "role": "auditor",
@@ -800,12 +818,12 @@ async def run_builder(
             _fixer_ran = True
             _last_combined_findings = combined_findings
 
+            _fix_sources = []
+            if audit_verdict == "FAIL":
+                _fix_sources.append("audit")
+            if integration_findings:
+                _fix_sources.append("integration")
             if verbose:
-                _fix_sources = []
-                if audit_verdict == "FAIL":
-                    _fix_sources.append("audit")
-                if integration_findings:
-                    _fix_sources.append("integration")
                 _blog(f"{_TAG_FIXER}   Applying fixes from {'+'.join(_fix_sources)} (attempt {fix_attempt + 1}/{MAX_FIX_RETRIES})")
 
             fixer_handoff = SubAgentHandoff(
@@ -844,6 +862,16 @@ async def run_builder(
                     "status": fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status),
                     "tokens": fixer_result.input_tokens + fixer_result.output_tokens,
                 })
+
+            # --- Fixer detail metric ---
+            _fixer_status = fixer_result.status.value if hasattr(fixer_result.status, "value") else str(fixer_result.status)
+            logger.info(
+                "METRIC | type=fixer_detail | file=%s | attempt=%d/%d | "
+                "status=%s | files_written=%d | source=%s",
+                file_path, fix_attempt + 1, MAX_FIX_RETRIES,
+                _fixer_status, len(fixer_result.files_written),
+                "+".join(_fix_sources) if _fix_sources else "unknown",
+            )
 
     # ────────────────────────────────────────────────────────────────────────
     # (5) READ FINAL FILE CONTENT FROM DISK
