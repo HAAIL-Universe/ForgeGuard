@@ -4750,16 +4750,21 @@ async def _run_build_plan_execute(
             if _phase_plan:
                 manifest = _phase_plan["manifest"]
                 _phase_chunks = _phase_plan.get("chunks", [])
-                # Backfill exports from project-level plan — phase planner
-                # may not emit them (tool schema is optional for exports).
-                _proj_manifest = phase.get("file_manifest", [])
-                if _proj_manifest:
-                    _exports_by_path = {
-                        f["path"]: f.get("exports", []) for f in _proj_manifest
-                    }
+                # Backfill depends_on + exports from project-level plan.
+                # The phase planner agent may not emit them, so merge from
+                # ALL phases' file_manifests (not just the current phase,
+                # which may be empty — that's why we fell back to the agent).
+                _all_proj_files: list[dict] = []
+                for _p in phases:
+                    _all_proj_files.extend(_p.get("file_manifest", []))
+                if _all_proj_files:
+                    _proj_by_path = {f["path"]: f for f in _all_proj_files}
                     for _entry in manifest:
-                        if not _entry.get("exports") and _entry["path"] in _exports_by_path:
-                            _entry["exports"] = _exports_by_path[_entry["path"]]
+                        _proj_entry = _proj_by_path.get(_entry["path"], {})
+                        if not _entry.get("exports") and _proj_entry.get("exports"):
+                            _entry["exports"] = _proj_entry["exports"]
+                        if not _entry.get("depends_on") and _proj_entry.get("depends_on"):
+                            _entry["depends_on"] = _proj_entry["depends_on"]
 
         if manifest:
             # Persist manifest to disk for resume resilience

@@ -9,6 +9,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Fix 1: Phase planner fallback — exports in schema + enrichment + backfill
 # ---------------------------------------------------------------------------
 
+class TestPhasePlannerPrompt:
+    """Verify phase planner system prompt instructs agent to emit depends_on + exports."""
+
+    def test_system_prompt_mentions_depends_on(self):
+        """Phase planner prompt must instruct agent to set depends_on."""
+        from app.services.build.planner_agent_loop import _build_system_prompt
+
+        blocks = _build_system_prompt()
+        full_prompt = " ".join(b["text"] for b in blocks)
+        assert "depends_on" in full_prompt
+        assert "Models before services" in full_prompt
+
+    def test_system_prompt_mentions_exports(self):
+        """Phase planner prompt must instruct agent to set exports."""
+        from app.services.build.planner_agent_loop import _build_system_prompt
+
+        blocks = _build_system_prompt()
+        full_prompt = " ".join(b["text"] for b in blocks)
+        assert "exports" in full_prompt.lower()
+        assert "PUBLIC API signatures" in full_prompt
+
+
 class TestPhasePlannerExports:
     """Verify phase planner schema and enrichment preserve exports."""
 
@@ -99,37 +121,52 @@ class TestPhasePlannerExports:
 
 
 # ---------------------------------------------------------------------------
-# Fix 1c: Exports backfill from project-level plan
+# Fix 1c: Exports + depends_on backfill from ALL phases' file_manifests
 # ---------------------------------------------------------------------------
 
 class TestExportsBackfill:
-    """Verify exports are backfilled from top-level plan when phase planner omits them."""
+    """Verify exports and depends_on are backfilled from ALL phases when phase planner omits them."""
+
+    @staticmethod
+    def _run_backfill(manifest, phases):
+        """Simulate the backfill logic from build_service.py."""
+        _all_proj_files = []
+        for _p in phases:
+            _all_proj_files.extend(_p.get("file_manifest", []))
+        if _all_proj_files:
+            _proj_by_path = {f["path"]: f for f in _all_proj_files}
+            for _entry in manifest:
+                _proj_entry = _proj_by_path.get(_entry["path"], {})
+                if not _entry.get("exports") and _proj_entry.get("exports"):
+                    _entry["exports"] = _proj_entry["exports"]
+                if not _entry.get("depends_on") and _proj_entry.get("depends_on"):
+                    _entry["depends_on"] = _proj_entry["depends_on"]
 
     def test_backfill_exports_from_project_plan(self):
         """Phase planner output without exports gets backfilled from project plan."""
-        # Simulate the backfill logic from build_service.py
         phase_planner_manifest = [
             {"path": "app/models/timer.py", "action": "create", "purpose": "Timer model"},
             {"path": "app/services/timer_service.py", "action": "create", "purpose": "Service"},
         ]
-        project_file_manifest = [
-            {
-                "path": "app/models/timer.py",
-                "exports": ["class Timer(BaseModel): id, name", "enum TimerStatus"],
-            },
-            {
-                "path": "app/services/timer_service.py",
-                "exports": ["class TimerService.__init__(self, repo)"],
-            },
+        # File manifests spread across multiple phases
+        phases = [
+            {"file_manifest": [
+                {
+                    "path": "app/models/timer.py",
+                    "exports": ["class Timer(BaseModel): id, name", "enum TimerStatus"],
+                    "depends_on": [],
+                },
+            ]},
+            {"file_manifest": [
+                {
+                    "path": "app/services/timer_service.py",
+                    "exports": ["class TimerService.__init__(self, repo)"],
+                    "depends_on": ["app/models/timer.py"],
+                },
+            ]},
         ]
 
-        # Backfill logic (mirrors build_service.py)
-        _exports_by_path = {
-            f["path"]: f.get("exports", []) for f in project_file_manifest
-        }
-        for entry in phase_planner_manifest:
-            if not entry.get("exports") and entry["path"] in _exports_by_path:
-                entry["exports"] = _exports_by_path[entry["path"]]
+        self._run_backfill(phase_planner_manifest, phases)
 
         assert phase_planner_manifest[0]["exports"] == [
             "class Timer(BaseModel): id, name", "enum TimerStatus"
@@ -137,6 +174,50 @@ class TestExportsBackfill:
         assert phase_planner_manifest[1]["exports"] == [
             "class TimerService.__init__(self, repo)"
         ]
+
+    def test_backfill_depends_on_from_project_plan(self):
+        """Phase planner output without depends_on gets backfilled."""
+        phase_planner_manifest = [
+            {"path": "app/services/timer_service.py", "action": "create", "purpose": "Service"},
+        ]
+        phases = [
+            {"file_manifest": [
+                {
+                    "path": "app/services/timer_service.py",
+                    "depends_on": ["app/models/timer.py", "app/repos/timer_repo.py"],
+                    "exports": ["class TimerService"],
+                },
+            ]},
+        ]
+
+        self._run_backfill(phase_planner_manifest, phases)
+
+        assert phase_planner_manifest[0]["depends_on"] == [
+            "app/models/timer.py", "app/repos/timer_repo.py"
+        ]
+        assert phase_planner_manifest[0]["exports"] == ["class TimerService"]
+
+    def test_backfill_reads_all_phases(self):
+        """Backfill should read file_manifests from ALL phases, not just current."""
+        phase_planner_manifest = [
+            {"path": "app/services/timer_service.py", "action": "create", "purpose": "Service"},
+        ]
+        # timer_service.py is in phase 0's manifest, but the current phase (1) is empty
+        phases = [
+            {"number": 0, "file_manifest": [
+                {
+                    "path": "app/services/timer_service.py",
+                    "exports": ["class TimerService"],
+                    "depends_on": ["app/models/timer.py"],
+                },
+            ]},
+            {"number": 1, "file_manifest": []},  # current phase — empty!
+        ]
+
+        self._run_backfill(phase_planner_manifest, phases)
+
+        assert phase_planner_manifest[0]["exports"] == ["class TimerService"]
+        assert phase_planner_manifest[0]["depends_on"] == ["app/models/timer.py"]
 
     def test_backfill_does_not_overwrite_existing_exports(self):
         """If phase planner DID emit exports, don't overwrite them."""
@@ -147,22 +228,42 @@ class TestExportsBackfill:
                 "exports": ["class Timer(BaseModel): id"],  # Phase planner's version
             },
         ]
-        project_file_manifest = [
-            {
-                "path": "app/models/timer.py",
-                "exports": ["class Timer(BaseModel): id, name", "enum TimerStatus"],
-            },
+        phases = [
+            {"file_manifest": [
+                {
+                    "path": "app/models/timer.py",
+                    "exports": ["class Timer(BaseModel): id, name", "enum TimerStatus"],
+                },
+            ]},
         ]
 
-        _exports_by_path = {
-            f["path"]: f.get("exports", []) for f in project_file_manifest
-        }
-        for entry in phase_planner_manifest:
-            if not entry.get("exports") and entry["path"] in _exports_by_path:
-                entry["exports"] = _exports_by_path[entry["path"]]
+        self._run_backfill(phase_planner_manifest, phases)
 
         # Phase planner's version should be kept
         assert phase_planner_manifest[0]["exports"] == ["class Timer(BaseModel): id"]
+
+    def test_backfill_does_not_overwrite_existing_depends_on(self):
+        """If phase planner DID emit depends_on, don't overwrite."""
+        phase_planner_manifest = [
+            {
+                "path": "app/routers/timers.py",
+                "action": "create",
+                "depends_on": ["app/services/timer_service.py"],  # Phase planner's version
+            },
+        ]
+        phases = [
+            {"file_manifest": [
+                {
+                    "path": "app/routers/timers.py",
+                    "depends_on": ["app/services/timer_service.py", "app/models/timer.py"],
+                },
+            ]},
+        ]
+
+        self._run_backfill(phase_planner_manifest, phases)
+
+        # Phase planner's version should be kept
+        assert phase_planner_manifest[0]["depends_on"] == ["app/services/timer_service.py"]
 
 
 # ---------------------------------------------------------------------------

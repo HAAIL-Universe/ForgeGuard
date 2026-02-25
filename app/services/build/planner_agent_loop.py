@@ -153,6 +153,15 @@ MANIFEST RULES (builder_contract.md §9):
   - If this phase imports from a prior phase, the manifest should NOT re-build those files.
   - Assign each file a layer: "router" | "service" | "repo" | "llm" | "config" | "test"
   - Set action: "create" or "modify"
+  - Set depends_on: list file paths IN THIS PHASE that must be built before this
+    file.  Models before services, services before routers, source before tests.
+  - Set exports: list the PUBLIC API signatures this file will expose.
+    Format examples: "class Timer(BaseModel): id, name, status",
+    "enum TimerStatus: ACTIVE, PAUSED, COMPLETED",
+    "def create_timer(duration: int) -> Timer",
+    "class TimerService.__init__(self, repo: TimerRepo)"
+    Downstream CODER agents will code against these EXACT names and signatures,
+    so be precise — wrong names here cause import failures across the build.
 
 CHUNK RULES:
   - Group files into 1-6 chunks of 2-5 files each.
