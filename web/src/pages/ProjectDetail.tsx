@@ -684,52 +684,8 @@ function ProjectDetail() {
         )}
 
         {/* Build Actions */}
-        <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
-          {!buildActive && project?.has_saved_plan && buildCompleted && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ color: '#22C55E', fontSize: '0.8rem', fontWeight: 500 }}>
-                Build complete ({latestCompleted?.branch || 'main'})
-              </span>
-              <button
-                onClick={handleStartBuild}
-                disabled={starting}
-                style={{
-                  background: '#2563EB',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '10px 20px',
-                  cursor: starting ? 'wait' : 'pointer',
-                  fontSize: '0.875rem',
-                  fontWeight: 600,
-                  opacity: starting ? 0.6 : 1,
-                }}
-              >
-                {starting ? 'Starting...' : 'New Build'}
-              </button>
-            </div>
-          )}
-          {!buildActive && project?.has_saved_plan && !buildCompleted && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>Plan ready</span>
-              <button
-                onClick={() => navigate(`/projects/${projectId}/build`)}
-                style={{
-                  background: '#581C87',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '10px 20px',
-                  cursor: 'pointer',
-                  fontSize: '0.875rem',
-                  fontWeight: 600,
-                }}
-              >
-                Continue Build
-              </button>
-            </div>
-          )}
-          {!buildActive && !project?.has_saved_plan && (
+        <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', alignItems: 'center' }}>
+          {!buildActive && (
             <button
               onClick={handleStartBuild}
               disabled={starting}
@@ -745,38 +701,26 @@ function ProjectDetail() {
                 opacity: starting ? 0.6 : 1,
               }}
             >
-              {starting ? 'Starting...' : hasContracts ? 'Start Build' : 'Start Build — Begin Intake'}
+              {starting ? 'Starting...' : hasContracts ? 'New Build' : 'New Build — Begin Intake'}
             </button>
           )}
           {buildActive && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {activeBuild?.status === 'paused' && (
-                  <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>
-                    ⏸ Plan ready
-                  </span>
-                )}
-                {activeBuild?.status === 'running' && (
-                  <span style={{ color: '#3B82F6', fontSize: '0.8rem', fontWeight: 500 }}>
-                    🔄 In progress
-                  </span>
-                )}
-                <button
-                  onClick={() => navigate(`/projects/${projectId}/build`)}
-                  style={{
-                    background: activeBuild?.status === 'paused' ? '#581C87' : '#2563EB',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '10px 20px',
-                    cursor: 'pointer',
-                    fontSize: '0.875rem',
-                    fontWeight: 600,
-                  }}
-                >
-                  {activeBuild?.status === 'paused' ? 'Continue Build' : 'Open Build'}
-                </button>
-              </div>
+              <button
+                onClick={() => navigate(`/projects/${projectId}/build`)}
+                style={{
+                  background: activeBuild?.status === 'paused' ? '#581C87' : '#2563EB',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '10px 20px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                }}
+              >
+                {activeBuild?.status === 'paused' ? 'Continue Build' : 'Open Build'}
+              </button>
               <button
                 onClick={() => setShowCancelConfirm(true)}
                 style={{
