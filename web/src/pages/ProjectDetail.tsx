@@ -1006,7 +1006,16 @@ function ProjectDetail() {
                       </div>
                       <div style={{ display: 'flex', gap: '12px', color: '#64748B', fontSize: '0.7rem' }}>
                         <span>🌿 {b.branch || 'main'}</span>
-                        <span>{b.loop_count} loops</span>
+                        <span>{(() => {
+                          if (!b.started_at) return '—';
+                          const start = new Date(b.started_at).getTime();
+                          const end = b.completed_at ? new Date(b.completed_at).getTime() : Date.now();
+                          const secs = Math.floor((end - start) / 1000);
+                          if (secs < 60) return '< 1m';
+                          const m = Math.floor(secs / 60);
+                          const s = secs % 60;
+                          return `${m}m ${s}s`;
+                        })()}{!b.completed_at && b.started_at && isActive ? ' ⏱' : ''}</span>
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
