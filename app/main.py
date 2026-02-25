@@ -22,6 +22,7 @@ from app.api.routers.ws import router as ws_router
 from app.clients import github_client, llm_client
 from app.config import settings
 from app.middleware import RequestIDMiddleware
+from app.middleware.access_log import AccessLogMiddleware
 from app.middleware.exception_handler import setup_exception_handlers
 from app.repos.db import close_pool, get_pool
 from app.services.upgrade_executor import shutdown_all as _shutdown_upgrades
@@ -79,6 +80,14 @@ async def lifespan(application: FastAPI):
     _handler.setFormatter(_ColorFormatter())
     _handlers: list[logging.Handler] = [_handler]
 
+    class _PlainFormatter(logging.Formatter):
+        """Plain-text formatter for file logs (no ANSI codes)."""
+        def format(self, record: logging.LogRecord) -> str:
+            ts = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
+            name = record.name.split(".")[-1][:20]
+            msg = record.getMessage()
+            return f"{ts} {record.levelname:<8s} [{name:>20s}] {msg}"
+
     # Persistent file log — readable by Claude Code for build analysis.
     # Set LOG_FILE in .env (e.g. LOG_FILE=Z:/ForgeCollection/logs/forge.log).
     if settings.LOG_FILE:
@@ -86,14 +95,6 @@ async def lifespan(application: FastAPI):
         from pathlib import Path as _LogPath
         _log_path = _LogPath(settings.LOG_FILE)
         _log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        class _PlainFormatter(logging.Formatter):
-            """Plain-text formatter for file logs (no ANSI codes)."""
-            def format(self, record: logging.LogRecord) -> str:
-                ts = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
-                name = record.name.split(".")[-1][:20]
-                msg = record.getMessage()
-                return f"{ts} {record.levelname:<8s} [{name:>20s}] {msg}"
 
         _file_handler = RotatingFileHandler(
             str(_log_path),
@@ -105,6 +106,25 @@ async def lifespan(application: FastAPI):
         _handlers.append(_file_handler)
 
     logging.basicConfig(level=_log_level, handlers=_handlers)
+
+    # App-level HTTP request log — separate from build metrics in forge.log.
+    # Set APP_LOG_FILE in .env (e.g. APP_LOG_FILE=Z:/ForgeCollection/logs/app.log).
+    if settings.APP_LOG_FILE:
+        from logging.handlers import RotatingFileHandler as _AppRFH
+        from pathlib import Path as _AppLogPath
+        _app_log_path = _AppLogPath(settings.APP_LOG_FILE)
+        _app_log_path.parent.mkdir(parents=True, exist_ok=True)
+        _app_file_handler = _AppRFH(
+            str(_app_log_path),
+            maxBytes=10 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        _app_file_handler.setFormatter(_PlainFormatter())
+        _access_logger = logging.getLogger("forgeguard.access")
+        _access_logger.addHandler(_app_file_handler)
+        _access_logger.setLevel(logging.DEBUG)
+        _access_logger.propagate = False  # keep app.log lines out of forge.log
 
     # Quiet noisy loggers — uvicorn access logs flood the terminal
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -182,6 +202,11 @@ def create_app() -> FastAPI:
     # with request_id tracing — see app/middleware/exception_handler.py).
     setup_exception_handlers(application)
 
+    # Middleware stack (last added = outermost = runs first):
+    #   CORSMiddleware → RequestIDMiddleware → AccessLogMiddleware → routes
+    # RequestIDMiddleware sets scope["state"]["request_id"] before
+    # AccessLogMiddleware reads it.
+    application.add_middleware(AccessLogMiddleware)
     application.add_middleware(RequestIDMiddleware)
     application.add_middleware(
         CORSMiddleware,

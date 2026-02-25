@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .access_log import AccessLogMiddleware  # noqa: F401
 from .exception_handler import setup_exception_handlers  # noqa: F401
 
 

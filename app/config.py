@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = ""  # path to persistent log file (e.g. "Z:/ForgeCollection/logs/forge.log")
+    APP_LOG_FILE: str = ""  # path to app-level HTTP request log (e.g. "Z:/ForgeCollection/logs/app.log")
 
     # -------------------------------------------------------------------------
     # Model tier — controls which models are used across ALL agents.
