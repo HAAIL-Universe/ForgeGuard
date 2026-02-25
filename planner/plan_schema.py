@@ -50,6 +50,19 @@ class FileManifest(BaseModel):
     layer: str          # "router" | "service" | "repo" | "llm" | "config" | "test"
     action: str         # "create" | "modify" | "delete"
     description: str    # what this file does (1 sentence)
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="File paths this file imports from or depends on",
+    )
+    exports: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Public interface signatures this file MUST export. "
+            "One-line strings: 'class Timer(BaseModel): id, name, state' or "
+            "'async def create_timer(name: str, duration: int) -> Timer' or "
+            "'router prefix: /timers — POST / GET /{id}'"
+        ),
+    )
 
 
 class AcceptanceCriterion(BaseModel):

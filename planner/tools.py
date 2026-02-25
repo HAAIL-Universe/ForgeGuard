@@ -118,7 +118,8 @@ TOOL_DEFINITIONS: list[dict] = [
             '      "name": "Phase name",\n'
             '      "purpose": "1-2 sentence TL;DR of this phase",\n'
             '      "file_manifest": [\n'
-            '        {"path": "app/main.py", "layer": "router", "action": "create", "description": "one sentence"}\n'
+            '        {"path": "app/main.py", "layer": "router", "action": "create", "description": "one sentence", '
+            '"depends_on": ["app/routers/users.py"], "exports": ["router prefix: /api/users"]}\n'
             "      ],\n"
             '      "acceptance_criteria": [\n'
             '        {"id": "AC-0-1", "description": "observable criterion", "test_hint": "test file or manual step"}\n'

@@ -1683,6 +1683,9 @@ async def execute_tier(
     _tier_lock = asyncio.Lock()  # protects tier_written + _tier_state_mgr
     _tier_costs: list[float] = []  # per-file costs for tier summary
 
+    # Build lookup for dependency contract injection
+    _file_entries_by_path: dict[str, dict] = {f["path"]: f for f in tier_files}
+
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
         fp = file_entry["path"]
         _is_test = _is_test_file(fp)
@@ -1711,6 +1714,32 @@ async def execute_tier(
                     break
                 context_files[ctx] = _snippet
                 _ctx_total += len(_snippet)
+
+        # Dependency contracts — inject planned interface signatures
+        _dep_contract_parts: list[str] = []
+        for dep in file_entry.get("depends_on", []):
+            _dep_entry = _file_entries_by_path.get(dep, {})
+            _dep_exports = _dep_entry.get("exports", [])
+            if _dep_exports:
+                _dep_contract_parts.append(
+                    f"### {dep}\n" + "\n".join(f"- {e}" for e in _dep_exports)
+                )
+        if _dep_contract_parts:
+            context_files["dependency_contracts.md"] = (
+                "# Dependency Contracts\n"
+                "These are the EXACT interfaces your dependencies export. "
+                "Match these signatures precisely — do not invent your own.\n\n"
+                + "\n\n".join(_dep_contract_parts)
+            )
+
+        # Implementation contract — what THIS file must export
+        _own_exports = file_entry.get("exports", [])
+        if _own_exports:
+            context_files["implementation_contract.md"] = (
+                "# Implementation Contract\n"
+                "This file MUST export the following interfaces exactly as specified:\n\n"
+                + "\n".join(f"- {e}" for e in _own_exports)
+            )
 
         # Auto-detected disk context (slim for test files)
         disk_context = build_context_pack(
@@ -1816,10 +1845,10 @@ async def execute_tier(
             if _prior_summaries:
                 _summary_lines = []
                 for s in _prior_summaries[-10:]:
-                    _exports = ", ".join(s.get("key_exports", [])[:5])
-                    _summary_lines.append(
-                        f"- `{s['path']}`: {s.get('purpose', '')} — exports: {_exports}"
-                    )
+                    _exports = s.get("key_exports", [])[:8]
+                    _summary_lines.append(f"### {s['path']} — {s.get('purpose', '')}")
+                    for _exp in _exports:
+                        _summary_lines.append(f"- {_exp}")
                 context_files["prior_files.md"] = (
                     "## Previously Built Files\n" + "\n".join(_summary_lines)
                 )

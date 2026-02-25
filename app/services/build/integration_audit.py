@@ -642,6 +642,34 @@ def _verify_ts_named_exports(
                 if name:
                     exported_names.add(name)
 
+    # Check for default-vs-named mismatch
+    _has_default_export = bool(re.search(
+        r"export\s+default\s+", target_content, re.MULTILINE,
+    ))
+    if _has_default_export:
+        # Target uses default export — named import { X } is likely wrong
+        for name in names:
+            if name in exported_names:
+                continue  # It IS a named export too (re-export pattern)
+            # Check if default export matches this name
+            _default_match = re.search(
+                r"export\s+default\s+(?:function|class|)\s*(\w+)?",
+                target_content,
+            )
+            _default_name = _default_match.group(1) if _default_match and _default_match.group(1) else None
+            if _default_name and _default_name == name:
+                issues.append(IntegrationIssue(
+                    file_path=importer,
+                    severity="error",
+                    message=(
+                        f"'{name}' is a default export in `{target_path}` "
+                        f"but imported as named '{{ {name} }}'. "
+                        f"Use: import {name} from '...'"
+                    ),
+                    related_file=target_path,
+                    check_name="default_named_mismatch",
+                ))
+
     for name in names:
         if name not in exported_names:
             issues.append(IntegrationIssue(
@@ -853,6 +881,369 @@ def _check_js_syntax(
 
 
 # ---------------------------------------------------------------------------
+# Check 6: Dependency map — method existence, async/sync, __init__.py, routes
+# ---------------------------------------------------------------------------
+
+
+def _check_dependency_map(
+    chunk_files: dict[str, str],
+    all_files: dict[str, str],
+    working_dir: str,
+) -> list[IntegrationIssue]:
+    """Cross-file dependency validation using AST analysis.
+
+    Sub-checks:
+      A) Missing __init__.py for Python package imports
+      B) Method/attribute existence on imported classes
+      C) Async/sync mismatch (await on sync, or unawaited async)
+      D) API route consistency (FastAPI backend vs frontend fetch calls)
+    """
+    issues: list[IntegrationIssue] = []
+    issues.extend(_check_missing_init_py(chunk_files, all_files, working_dir))
+    issues.extend(_check_method_existence(chunk_files, all_files))
+    issues.extend(_check_async_sync(chunk_files, all_files))
+    issues.extend(_check_route_consistency(all_files))
+    return issues
+
+
+# -- Sub-check A: Missing __init__.py -------------------------------------
+
+def _check_missing_init_py(
+    chunk_files: dict[str, str],
+    all_files: dict[str, str],
+    working_dir: str,
+) -> list[IntegrationIssue]:
+    """Verify __init__.py exists for every Python package directory used in imports."""
+    issues: list[IntegrationIssue] = []
+    _all_known_files = set(all_files.keys())
+    # Also check disk
+    _wd = Path(working_dir)
+    if _wd.exists():
+        for p in _wd.rglob("__init__.py"):
+            try:
+                _all_known_files.add(str(p.relative_to(_wd)).replace("\\", "/"))
+            except ValueError:
+                pass
+
+    _checked: set[str] = set()
+
+    for file_path, content in chunk_files.items():
+        if not file_path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+
+        for node in ast.walk(tree):
+            module = ""
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+
+            if not module:
+                continue
+
+            # Only check internal-looking imports
+            parts = module.split(".")
+            if parts[0] not in ("app", "src", "lib", "core", "api", "backend",
+                                "services", "models", "routers", "repos", "utils"):
+                continue
+
+            # Check each intermediate package has __init__.py
+            for i in range(1, len(parts)):
+                pkg_path = "/".join(parts[:i])
+                init_path = f"{pkg_path}/__init__.py"
+                if init_path in _checked:
+                    continue
+                _checked.add(init_path)
+                if init_path not in _all_known_files:
+                    issues.append(IntegrationIssue(
+                        file_path=file_path,
+                        severity="error",
+                        message=f"Missing __init__.py: '{init_path}' required for 'import {module}'",
+                        check_name="missing_init_py",
+                    ))
+
+    return issues
+
+
+# -- Sub-check B: Method/attribute existence -------------------------------
+
+def _build_class_registry(all_files: dict[str, str]) -> dict[str, dict]:
+    """Build a registry of classes with their methods and init params.
+
+    Returns {ClassName: {file, methods: {name: is_async}, init_params: [str]}}.
+    """
+    registry: dict[str, dict] = {}
+
+    for file_path, content in all_files.items():
+        if not file_path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+
+        for node in ast.iter_child_nodes(tree):
+            if not isinstance(node, ast.ClassDef) or node.name.startswith('_'):
+                continue
+
+            methods: dict[str, bool] = {}  # {method_name: is_async}
+            init_params: list[str] = []
+
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    is_async = isinstance(item, ast.AsyncFunctionDef)
+                    if item.name == '__init__':
+                        init_params = [
+                            a.arg for a in item.args.args if a.arg != 'self'
+                        ]
+                    elif not item.name.startswith('_'):
+                        methods[item.name] = is_async
+                # Also capture class-level attributes for attribute access
+                elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    if not item.target.id.startswith('_'):
+                        methods[item.target.id] = False  # attribute, not async
+
+            registry[node.name] = {
+                "file": file_path,
+                "methods": methods,
+                "init_params": init_params,
+            }
+
+    return registry
+
+
+def _check_method_existence(
+    chunk_files: dict[str, str],
+    all_files: dict[str, str],
+) -> list[IntegrationIssue]:
+    """Verify that method calls on imported classes actually exist."""
+    issues: list[IntegrationIssue] = []
+    registry = _build_class_registry(all_files)
+
+    for file_path, content in chunk_files.items():
+        if not file_path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+
+        # Track variable→class mappings from simple assignments
+        # e.g., `service = TimerService(...)` → service→TimerService
+        var_types: dict[str, str] = {}
+
+        # Also track imported class names
+        imported_classes: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.names:
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    if name in registry:
+                        imported_classes.add(name)
+
+        for node in ast.walk(tree):
+            # Track: var = ClassName(...)
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if (isinstance(target, ast.Name) and isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Name)):
+                    cls_name = node.value.func.id
+                    if cls_name in registry:
+                        var_types[target.id] = cls_name
+
+            # Track: var = ClassName(...)  via annotated assign
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if (node.value and isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Name)):
+                    cls_name = node.value.func.id
+                    if cls_name in registry:
+                        var_types[node.target.id] = cls_name
+
+            # Check: var.method(...) where var maps to a known class
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name):
+                    var_name = node.func.value.id
+                    method_name = node.func.attr
+                    cls_name = var_types.get(var_name)
+                    if cls_name and cls_name in registry:
+                        cls_info = registry[cls_name]
+                        if (method_name not in cls_info["methods"]
+                                and method_name != '__init__'
+                                and not method_name.startswith('_')):
+                            issues.append(IntegrationIssue(
+                                file_path=file_path,
+                                severity="error",
+                                message=(
+                                    f"Method '{method_name}' called on {cls_name} "
+                                    f"but not defined in {cls_info['file']}"
+                                ),
+                                related_file=cls_info["file"],
+                                check_name="missing_method",
+                            ))
+
+    return issues
+
+
+# -- Sub-check C: Async/sync mismatch ------------------------------------
+
+def _check_async_sync(
+    chunk_files: dict[str, str],
+    all_files: dict[str, str],
+) -> list[IntegrationIssue]:
+    """Detect await on synchronous methods and unawaited async methods."""
+    issues: list[IntegrationIssue] = []
+    registry = _build_class_registry(all_files)
+
+    for file_path, content in chunk_files.items():
+        if not file_path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+
+        # Track variable→class
+        var_types: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if (isinstance(target, ast.Name) and isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Name)):
+                    cls_name = node.value.func.id
+                    if cls_name in registry:
+                        var_types[target.id] = cls_name
+
+        # Check await expressions
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+                call = node.value
+                if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+                    var_name = call.func.value.id
+                    method_name = call.func.attr
+                    cls_name = var_types.get(var_name)
+                    if cls_name and cls_name in registry:
+                        methods = registry[cls_name]["methods"]
+                        if method_name in methods and not methods[method_name]:
+                            issues.append(IntegrationIssue(
+                                file_path=file_path,
+                                severity="error",
+                                message=(
+                                    f"'await' used on synchronous method "
+                                    f"'{cls_name}.{method_name}()' — "
+                                    f"remove 'await' or make method async"
+                                ),
+                                related_file=registry[cls_name]["file"],
+                                check_name="async_sync_mismatch",
+                            ))
+
+    return issues
+
+
+# -- Sub-check D: API route consistency -----------------------------------
+
+_FASTAPI_ROUTER_RE = re.compile(
+    r"""@(?:router|app)\.(get|post|put|delete|patch)\s*\(\s*["']([^"']+)["']""",
+    re.MULTILINE,
+)
+_INCLUDE_ROUTER_RE = re.compile(
+    r"""include_router\s*\([^,]+,\s*prefix\s*=\s*["']([^"']+)["']""",
+    re.MULTILINE,
+)
+_FRONTEND_FETCH_RE = re.compile(
+    r"""(?:fetch|axios\.(?:get|post|put|delete|patch))\s*\(\s*[`"']([^`"']+)[`"']""",
+    re.MULTILINE,
+)
+
+
+def _check_route_consistency(
+    all_files: dict[str, str],
+) -> list[IntegrationIssue]:
+    """Compare backend API routes with frontend fetch calls."""
+    issues: list[IntegrationIssue] = []
+
+    # Extract backend routes
+    backend_routes: set[str] = set()  # normalized URL patterns
+    router_prefixes: dict[str, str] = {}  # router variable → prefix
+
+    # First pass: find include_router prefix mappings from main/app files
+    for file_path, content in all_files.items():
+        if not file_path.endswith(".py"):
+            continue
+        for m in _INCLUDE_ROUTER_RE.finditer(content):
+            prefix = m.group(1).rstrip("/")
+            router_prefixes[file_path] = prefix
+
+    # Second pass: find route decorators
+    for file_path, content in all_files.items():
+        if not file_path.endswith(".py"):
+            continue
+        prefix = router_prefixes.get(file_path, "")
+        for m in _FASTAPI_ROUTER_RE.finditer(content):
+            method = m.group(1).upper()
+            path = m.group(2)
+            # Normalize: /timers/{id} → /timers/{param}
+            normalized = re.sub(r"\{[^}]+\}", "{param}", prefix + path)
+            backend_routes.add(f"{method} {normalized}")
+
+    if not backend_routes:
+        return issues
+
+    # Extract frontend API calls
+    frontend_calls: list[tuple[str, str, str]] = []  # (file, method, path)
+    for file_path, content in all_files.items():
+        if not any(file_path.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")):
+            continue
+        for m in _FRONTEND_FETCH_RE.finditer(content):
+            url = m.group(1)
+            # Skip template literals with expressions
+            if "${" in url:
+                continue
+            # Infer method from axios call or default to GET for fetch
+            call_text = content[max(0, m.start() - 10):m.start() + 5]
+            method = "GET"
+            for verb in ("post", "put", "delete", "patch"):
+                if verb in call_text.lower():
+                    method = verb.upper()
+                    break
+            frontend_calls.append((file_path, method, url))
+
+    if not frontend_calls:
+        return issues
+
+    # Compare: for each frontend call, check if a matching backend route exists
+    for fe_file, fe_method, fe_url in frontend_calls:
+        # Normalize frontend URL: strip /api prefix, normalize params
+        normalized_url = fe_url.rstrip("/")
+        normalized_url = re.sub(r"\{[^}]+\}", "{param}", normalized_url)
+        # Also try with common prefix stripping
+        variants = [
+            f"{fe_method} {normalized_url}",
+        ]
+        # Strip common /api prefix
+        if normalized_url.startswith("/api"):
+            variants.append(f"{fe_method} {normalized_url[4:]}")
+
+        if not any(v in backend_routes for v in variants):
+            issues.append(IntegrationIssue(
+                file_path=fe_file,
+                severity="warning",
+                message=(
+                    f"Frontend calls {fe_method} '{fe_url}' "
+                    f"but no matching backend route found. "
+                    f"Backend routes: {', '.join(sorted(backend_routes)[:5])}"
+                ),
+                check_name="route_mismatch",
+            ))
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -915,6 +1306,12 @@ async def run_integration_audit(
         issues.extend(_check_js_syntax(chunk_files))
     except Exception as e:
         logger.warning("[INTEGRATION_AUDIT] JS syntax check failed: %s", e)
+
+    # Check 6: Dependency map (method existence, async/sync, __init__.py, routes)
+    try:
+        issues.extend(_check_dependency_map(chunk_files, all_files, working_dir))
+    except Exception as e:
+        logger.warning("[INTEGRATION_AUDIT] Dependency map check failed: %s", e)
 
     if issues:
         error_count = sum(1 for i in issues if i.severity == "error")

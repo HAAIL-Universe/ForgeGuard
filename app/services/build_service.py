@@ -224,8 +224,9 @@ def _adapt_project_manifest(
             "path": path,
             "action": entry.get("action", "create"),
             "purpose": entry.get("description", f"Implement {path}"),
-            "depends_on": [],
+            "depends_on": entry.get("depends_on", []),
             "context_files": [],
+            "exports": entry.get("exports", []),
             "estimated_lines": 100,
             "language": _PLANNER_LANGUAGE_MAP.get(ext, "python"),
             "status": "pending",
@@ -233,6 +234,16 @@ def _adapt_project_manifest(
 
     if not manifest:
         return [], []
+
+    # Validate dependency references — warn on dangling refs
+    _all_paths = {m["path"] for m in manifest}
+    for m in manifest:
+        for dep in m.get("depends_on", []):
+            if dep not in _all_paths:
+                logger.warning(
+                    "[DEPENDENCY_MAP] %s depends_on '%s' which is not in this phase manifest",
+                    m["path"], dep,
+                )
 
     # Sort by layer order for dependency-correct chunk sequencing
     def _layer_key(m: dict) -> int:

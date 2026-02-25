@@ -177,6 +177,41 @@ DISCIPLINE:
   - The plan must be self-contained: the builder uses ONLY plan.json to build.
     It must not need to ask clarifying questions.
 
+DEPENDENCY MAPPING (REQUIRED):
+  For EVERY file in file_manifest, you MUST specify:
+
+  1. depends_on: list of file paths (from the same plan) that this file imports from.
+     - Router depends on service → ["app/services/timer_service.py"]
+     - Service depends on repo + models → ["app/repos/timer_repo.py", "app/models/timer.py"]
+     - Test depends on the module it tests → ["app/services/timer_service.py"]
+     - Frontend component depends on hooks → ["src/hooks/useTimer.ts"]
+     - Files with no dependencies → [] (but still include the field)
+
+  2. exports: list of public interface signatures this file MUST export.
+     One string per class, function, enum, type, or route group.
+     Include parameter names + types for functions/methods.
+     Include field names + types for models/interfaces.
+     Include route prefixes + HTTP methods for routers.
+     These form the CONTRACT — downstream files code against these exact signatures.
+
+     Examples:
+       "class Timer(BaseModel): id: str, name: str, duration_seconds: int, state: TimerState"
+       "class TimerService.__init__(self, repo: TimerRepo)"
+       "async def TimerService.create_timer(self, name: str, duration: int) -> Timer"
+       "enum TimerState(str, Enum): IDLE, RUNNING, PAUSED"
+       "router prefix: /timers — POST / GET /{id} DELETE /{id} PUT /{id}/start"
+       "interface TimerState { id: string; name: string; durationSeconds: number }"
+       "function useTimer(timerId: string): { timer, start, pause, reset }"
+
+  Dependency mapping rules:
+     - If file A depends_on file B, file B's exports MUST contain everything A needs.
+     - Field names must be consistent: if backend uses snake_case, list snake_case names
+       and note the frontend camelCase equivalent in the frontend file's exports.
+     - Every __init__.py needed for Python package imports MUST appear in the manifest.
+     - Router prefix chains must be explicit: if main.py mounts at /api and router adds
+       /timers, the router's exports should say "router prefix: /api/timers".
+     - async vs sync must be explicit: use "async def" for async methods, "def" for sync.
+
 EXAMPLE — CORRECT PHASE STRUCTURE:
   {
     "phase_number": 0,
@@ -184,9 +219,36 @@ EXAMPLE — CORRECT PHASE STRUCTURE:
     "objectives": ["Set up FastAPI app structure", "Create database models and migrations", "Implement core CRUD repositories"],
     "acceptance_criteria": ["Server starts without errors", "All models have corresponding repos", "Database migrations run cleanly"],
     "file_manifest": [
-      {"path": "app/main.py", "purpose": "FastAPI app entry point", "language": "python", "layer": "entrypoint", "action": "create", "estimated_lines": 30},
-      {"path": "app/db/session.py", "purpose": "Database session factory", "language": "python", "layer": "infrastructure", "action": "create", "estimated_lines": 25},
-      {"path": "app/models/user.py", "purpose": "User Pydantic models", "language": "python", "layer": "model", "action": "create", "estimated_lines": 40}
+      {
+        "path": "app/__init__.py", "purpose": "Package marker", "language": "python",
+        "layer": "config", "action": "create", "estimated_lines": 1,
+        "depends_on": [], "exports": []
+      },
+      {
+        "path": "app/models/user.py", "purpose": "User data model", "language": "python",
+        "layer": "model", "action": "create", "estimated_lines": 40,
+        "depends_on": [],
+        "exports": [
+          "class User(BaseModel): id: UUID, email: str, name: str, created_at: datetime",
+          "class CreateUserRequest(BaseModel): email: str, name: str"
+        ]
+      },
+      {
+        "path": "app/repos/user_repo.py", "purpose": "User CRUD repository", "language": "python",
+        "layer": "repo", "action": "create", "estimated_lines": 50,
+        "depends_on": ["app/models/user.py"],
+        "exports": [
+          "class UserRepo.__init__(self)",
+          "async def UserRepo.create(self, req: CreateUserRequest) -> User",
+          "async def UserRepo.get_by_id(self, user_id: UUID) -> User | None"
+        ]
+      },
+      {
+        "path": "app/main.py", "purpose": "FastAPI app entry point", "language": "python",
+        "layer": "entrypoint", "action": "create", "estimated_lines": 30,
+        "depends_on": ["app/routers/users.py"],
+        "exports": ["router prefix: /api/users (from users_router)"]
+      }
     ],
     "wires_from_phase": []
   }

@@ -330,27 +330,35 @@ def _private():
     pass
 """
         exports = _extract_exports(code)
-        assert "User" in exports
-        assert "get_user" in exports
-        assert "create_user" in exports
-        assert "_Internal" not in exports
-        assert "_private" not in exports
+        export_text = " ".join(exports)
+        assert "User" in export_text
+        assert "get_user" in export_text
+        assert "create_user" in export_text
+        assert "_Internal" not in export_text
+        assert "_private" not in export_text
 
     def test_all_dunder(self):
-        code = '''__all__ = ["User", "UserCreate", "get_db"]'''
+        # __all__ is only used by the regex fallback; AST path ignores it
+        # and extracts class/function signatures instead.
+        code = '''__all__ = ["User", "UserCreate", "get_db"]\nclass User:\n    pass\nclass UserCreate:\n    pass\ndef get_db():\n    pass\n'''
         exports = _extract_exports(code)
-        assert exports == ["User", "UserCreate", "get_db"]
+        export_text = " ".join(exports)
+        assert "User" in export_text
+        assert "UserCreate" in export_text
+        assert "get_db" in export_text
 
     def test_all_dunder_single_quotes(self):
-        code = "__all__ = ['Foo', 'Bar']"
+        code = "__all__ = ['Foo', 'Bar']\nclass Foo:\n    pass\nclass Bar:\n    pass\n"
         exports = _extract_exports(code)
-        assert exports == ["Foo", "Bar"]
+        export_text = " ".join(exports)
+        assert "Foo" in export_text
+        assert "Bar" in export_text
 
-    def test_max_10_exports(self):
-        lines = [f"class C{i}:\n    pass\n" for i in range(15)]
+    def test_max_15_exports(self):
+        lines = [f"class C{i}:\n    pass\n" for i in range(20)]
         code = "\n".join(lines)
         exports = _extract_exports(code)
-        assert len(exports) == 10
+        assert len(exports) == 15
 
 
 # ---------------------------------------------------------------------------

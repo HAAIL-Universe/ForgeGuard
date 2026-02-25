@@ -299,8 +299,10 @@ def _state_to_context_files(scoped_state: dict) -> dict[str, str]:
     if summaries:
         lines = []
         for s in summaries[-10:]:  # last 10 files max
-            exports = ", ".join(s.get("key_exports", [])[:5])
-            lines.append(f"- `{s['path']}`: {s.get('purpose', '')} — exports: {exports}")
+            exports = s.get("key_exports", [])[:8]
+            lines.append(f"### {s['path']} — {s.get('purpose', '')}")
+            for exp in exports:
+                lines.append(f"- {exp}")
         ctx["prior_files.md"] = "## Previously Built Files\n" + "\n".join(lines)
 
     # Phase deliverables
@@ -315,22 +317,30 @@ def _state_to_context_files(scoped_state: dict) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _extract_exports(source_code: str) -> list[str]:
-    """Extract public exports from Python source code.
+    """Extract public exports with signatures from Python source code.
 
-    Looks for: __all__, class definitions, function definitions.
-    Returns a list of export names (max 10).
+    Uses AST to extract class signatures (with methods), function signatures,
+    and enum members. Falls back to regex for non-Python or unparseable code.
+    Returns a list of one-line signature strings (max 15).
     """
     if not source_code:
         return []
+
+    # Try AST-based extraction first (Python files)
+    try:
+        return _extract_exports_ast(source_code)
+    except SyntaxError:
+        pass
+
+    # Fallback: regex-based extraction (non-Python or broken syntax)
+    exports: list[str] = []
 
     # Check for explicit __all__
     all_match = re.search(r'__all__\s*=\s*\[([^\]]+)\]', source_code)
     if all_match:
         items = re.findall(r'"([^"]+)"|\'([^\']+)\'', all_match.group(1))
-        return [a or b for a, b in items][:10]
+        return [a or b for a, b in items][:15]
 
-    # Fall back to class and function definitions
-    exports = []
     for match in re.finditer(
         r'^(?:class|def|async def)\s+([A-Za-z]\w*)',
         source_code, re.MULTILINE,
@@ -339,7 +349,106 @@ def _extract_exports(source_code: str) -> list[str]:
         if not name.startswith('_'):
             exports.append(name)
 
-    return exports[:10]
+    return exports[:15]
+
+
+def _extract_exports_ast(source_code: str) -> list[str]:
+    """AST-based export extraction with full signatures."""
+    import ast as _ast
+
+    tree = _ast.parse(source_code)
+    exports: list[str] = []
+
+    for node in _ast.iter_child_nodes(tree):
+        if isinstance(node, _ast.ClassDef) and not node.name.startswith('_'):
+            bases = [_ast.unparse(b) for b in node.bases] if node.bases else []
+            base_str = f"({', '.join(bases)})" if bases else ""
+
+            # Check if it's an Enum
+            is_enum = any("Enum" in b for b in bases)
+            if is_enum:
+                members = []
+                for item in node.body:
+                    if isinstance(item, _ast.Assign):
+                        for t in item.targets:
+                            if isinstance(t, _ast.Name) and not t.id.startswith('_'):
+                                members.append(t.id)
+                if members:
+                    exports.append(
+                        f"enum {node.name}{base_str}: {', '.join(members[:8])}"
+                    )
+                else:
+                    exports.append(f"class {node.name}{base_str}")
+                continue
+
+            # Regular class — extract fields and methods
+            fields: list[str] = []
+            for item in node.body:
+                if isinstance(item, _ast.AnnAssign) and isinstance(item.target, _ast.Name):
+                    if not item.target.id.startswith('_'):
+                        ann = _ast.unparse(item.annotation)
+                        fields.append(f"{item.target.id}: {ann}")
+
+            if fields:
+                exports.append(
+                    f"class {node.name}{base_str}: {', '.join(fields[:8])}"
+                )
+            else:
+                exports.append(f"class {node.name}{base_str}")
+
+            # Extract methods (max 10 per class)
+            method_count = 0
+            for item in node.body:
+                if method_count >= 10:
+                    break
+                if isinstance(item, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    if item.name.startswith('_') and item.name != '__init__':
+                        continue
+                    prefix = "async " if isinstance(item, _ast.AsyncFunctionDef) else ""
+                    params = _format_params(item.args)
+                    returns = f" -> {_ast.unparse(item.returns)}" if item.returns else ""
+                    exports.append(
+                        f"{prefix}def {node.name}.{item.name}({params}){returns}"
+                    )
+                    method_count += 1
+
+        elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            if node.name.startswith('_'):
+                continue
+            prefix = "async " if isinstance(node, _ast.AsyncFunctionDef) else ""
+            params = _format_params(node.args)
+            returns = f" -> {_ast.unparse(node.returns)}" if node.returns else ""
+            exports.append(f"{prefix}def {node.name}({params}){returns}")
+
+    return exports[:15]
+
+
+def _format_params(args) -> str:
+    """Format AST function arguments into a concise signature string."""
+    import ast as _ast
+
+    parts: list[str] = []
+    # args.args includes 'self' for methods
+    defaults_offset = len(args.args) - len(args.defaults)
+    for i, arg in enumerate(args.args):
+        name = arg.arg
+        ann = f": {_ast.unparse(arg.annotation)}" if arg.annotation else ""
+        default_idx = i - defaults_offset
+        default = f" = {_ast.unparse(args.defaults[default_idx])}" if default_idx >= 0 else ""
+        parts.append(f"{name}{ann}{default}")
+
+    # *args
+    if args.vararg:
+        parts.append(f"*{args.vararg.arg}")
+    # **kwargs
+    if args.kwarg:
+        parts.append(f"**{args.kwarg.arg}")
+
+    result = ", ".join(parts)
+    # Truncate very long signatures
+    if len(result) > 200:
+        result = result[:197] + "..."
+    return result
 
 
 # ---------------------------------------------------------------------------
