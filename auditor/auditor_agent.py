@@ -7,17 +7,17 @@ It is completely independent and uses governance contracts for standards.
 Modes:
   - "plan": audit a plan.json from Planner
   - "phase": audit a builder phase output
+  - "integration": audit cross-file consistency
 """
 
 from __future__ import annotations
 
-import asyncio
-import functools
 import json
 import logging
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 from uuid import UUID
@@ -28,7 +28,7 @@ _AUDITOR_DIR = Path(__file__).resolve().parent
 if str(_AUDITOR_DIR) not in sys.path:
     sys.path.insert(0, str(_AUDITOR_DIR))
 
-import anthropic
+import httpx
 
 from audit_schema import AuditResult, TokenUsage, validate_audit_result
 from tools import TOOL_DEFINITIONS, dispatch_tool
@@ -43,33 +43,67 @@ build_audit_system_prompt = _cl_module.build_audit_system_prompt
 
 logger = logging.getLogger(__name__)
 
+# ─── Raw API helpers (bypass Anthropic SDK to avoid Pydantic by_alias bug) ────
 
-def _content_to_params(content: list) -> list[dict]:
-    """Convert Anthropic SDK content block objects to plain dicts.
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_VERSION = "2023-06-01"
 
-    The SDK returns typed Pydantic objects (TextBlock, ToolUseBlock, etc.).
-    Storing them directly in message history and re-sending causes
-    PydanticSerializationError on the next API call (model_dump(by_alias=True)
-    fails when a field value is None). Converting to plain dicts avoids this.
-    """
-    params = []
-    for block in content:
-        if block.type == "text":
-            params.append({"type": "text", "text": block.text})
-        elif block.type == "tool_use":
-            params.append({
-                "type": "tool_use",
-                "id": block.id,
-                "name": block.name,
-                "input": block.input,
-            })
-        elif block.type == "thinking":
-            params.append({
-                "type": "thinking",
-                "thinking": block.thinking,
-                "signature": block.signature,
-            })
-    return params
+
+def _api_headers(api_key: str) -> dict:
+    return {
+        "x-api-key": api_key,
+        "anthropic-version": ANTHROPIC_API_VERSION,
+        "Content-Type": "application/json",
+    }
+
+
+@dataclass
+class _RawResponse:
+    """Minimal parsed response from the Messages API."""
+    content: list[dict]
+    stop_reason: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+
+
+async def _call_messages_api(
+    api_key: str,
+    model: str,
+    max_tokens: int,
+    system: list[dict],
+    tools: list[dict],
+    messages: list[dict],
+) -> _RawResponse:
+    """Call the Anthropic Messages API directly via httpx (no SDK)."""
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "tools": tools,
+        "messages": messages,
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            ANTHROPIC_MESSAGES_URL,
+            headers=_api_headers(api_key),
+            json=payload,
+        )
+    if resp.status_code != 200:
+        body = resp.text[:500]
+        raise RuntimeError(f"API {resp.status_code}: {body}")
+
+    data = resp.json()
+    usage = data.get("usage", {})
+    return _RawResponse(
+        content=data.get("content", []),
+        stop_reason=data.get("stop_reason", "end_turn"),
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
+        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+    )
 
 
 # Configuration
@@ -175,8 +209,9 @@ async def run_auditor(
     if verbose:
         logger.info(f"[AUDITOR] Starting {agent_name} (build={build_id}, mode={mode})")
 
-    # Initialize client
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise AuditorError("ANTHROPIC_API_KEY not set")
 
     # Build system prompt with governance contracts
     system_blocks = build_audit_system_prompt(mode, contract_fetcher=contract_fetcher)
@@ -219,7 +254,7 @@ async def run_auditor(
     else:
         raise AuditorError(f"Unknown mode: {mode}")
 
-    messages = [{"role": "user", "content": user_turn}]
+    messages: list[dict] = [{"role": "user", "content": user_turn}]
     total_usage = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -239,37 +274,31 @@ async def run_auditor(
             logger.info(f"[AUDITOR] Turn {iteration}/{MAX_ITERATIONS}")
 
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                functools.partial(
-                    client.messages.create,
-                    model=MODEL,
-                    max_tokens=MAX_TOKENS,
-                    system=system_blocks,
-                    tools=TOOL_DEFINITIONS,
-                    messages=messages,
-                ),
+            response = await _call_messages_api(
+                api_key=api_key,
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system_blocks,
+                tools=TOOL_DEFINITIONS,
+                messages=messages,
             )
         except Exception as e:
             raise AuditorError(f"API call failed: {e}")
 
         # Accumulate token usage
-        u = response.usage
-        total_usage["input_tokens"] += u.input_tokens
-        total_usage["output_tokens"] += u.output_tokens
-        total_usage["cache_read_tokens"] += getattr(u, "cache_read_input_tokens", 0)
-        total_usage["cache_write_tokens"] += getattr(u, "cache_creation_input_tokens", 0)
+        total_usage["input_tokens"] += response.input_tokens
+        total_usage["output_tokens"] += response.output_tokens
+        total_usage["cache_read_tokens"] += response.cache_read_input_tokens
+        total_usage["cache_write_tokens"] += response.cache_creation_input_tokens
 
         if verbose:
             logger.info(
-                f"[AUDITOR] API: {u.output_tokens} output tokens, "
+                f"[AUDITOR] API: {response.output_tokens} output tokens, "
                 f"cache_read={total_usage['cache_read_tokens']}"
             )
 
-        # Append assistant response to messages (plain dicts to avoid
-        # Pydantic by_alias serialization errors on subsequent API calls)
-        messages.append({"role": "assistant", "content": _content_to_params(response.content)})
+        # Append assistant response to messages (already plain dicts from httpx)
+        messages.append({"role": "assistant", "content": response.content})
 
         # Handle end_turn (protocol violation)
         if response.stop_reason == "end_turn":
@@ -278,18 +307,18 @@ async def run_auditor(
         # Dispatch tool calls
         tool_results = []
         for block in response.content:
-            if block.type != "tool_use":
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
 
             if verbose:
-                logger.info(f"[AUDITOR] Tool: {block.name}")
+                logger.info(f"[AUDITOR] Tool: {block['name']}")
 
             try:
-                result = dispatch_tool(block.name, block.input)
+                result = dispatch_tool(block["name"], block["input"])
             except Exception as e:
                 result = {"error": str(e), "success": False}
 
-            if block.name == "audit_complete":
+            if block["name"] == "audit_complete":
                 # Audit complete — extract result
                 if result.get("success"):
                     audit_data = result.get("audit_result", {})
@@ -333,7 +362,7 @@ async def run_auditor(
                     tool_results.append(
                         {
                             "type": "tool_result",
-                            "tool_use_id": block.id,
+                            "tool_use_id": block["id"],
                             "content": json.dumps(result),
                         }
                     )
@@ -342,7 +371,7 @@ async def run_auditor(
                 tool_results.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "tool_use_id": block["id"],
                         "content": json.dumps(result),
                     }
                 )

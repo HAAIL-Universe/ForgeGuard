@@ -4151,8 +4151,23 @@ async def _run_build_plan_execute(
     # --- Reconnaissance: capture initial workspace snapshot ---
     _ws_snapshot = None
     if fresh_start:
-        # Fresh start: skip scanning existing files
-        _recon_log = "Fresh start -- skipping workspace scan, building from contracts only"
+        # Fresh start: wipe generated source files so the build loop
+        # doesn't skip them via the "already exists on disk" check.
+        _preserve = {".git", ".gitignore", "forge.json", ".venv", "node_modules", ".env"}
+        _ws_path = Path(working_dir)
+        _wiped = 0
+        for child in list(_ws_path.iterdir()):
+            if child.name in _preserve:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+            _wiped += 1
+        _recon_log = (
+            f"Fresh start -- wiped {_wiped} entries from workspace, "
+            "building from contracts only"
+        )
         await build_repo.append_build_log(
             build_id, _recon_log, source="system", level="info",
         )
@@ -4163,7 +4178,7 @@ async def _run_build_plan_execute(
         await _broadcast_build_event(user_id, build_id, "build_log", {
             "message": _recon_log, "source": "system", "level": "info",
         })
-        logger.info("Fresh start build %s -- workspace recon skipped", build_id)
+        logger.info("Fresh start build %s -- wiped %d entries, workspace clean", build_id, _wiped)
     else:
         try:
             from forge_ide.workspace import Workspace as _IdeWorkspace, capture_snapshot, snapshot_to_workspace_info, update_snapshot as _update_snapshot
@@ -5691,6 +5706,46 @@ async def _run_build_plan_execute(
                     if _phase_dag is not None and _skip_tid and _phase_dag.nodes[_skip_tid].status.value == "pending":
                         _phase_dag.mark_skipped(_skip_tid)
                     continue
+
+            # --- Fast-path: __init__.py files are static templates (no LLM) ---
+            _basename = Path(file_path).name
+            if _basename == "__init__.py":
+                _init_content = ""  # empty package marker
+                _init_path = Path(working_dir) / file_path
+                _init_path.parent.mkdir(parents=True, exist_ok=True)
+                _init_path.write_text(_init_content, encoding="utf-8")
+                phase_files_written[file_path] = _init_content
+                all_files_written[file_path] = _init_content
+                touched_files.add(file_path)
+                await _broadcast_build_event(user_id, build_id, "file_generated", {
+                    "path": file_path,
+                    "size_bytes": 0,
+                    "language": "python",
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "duration_ms": 0,
+                    "skipped": True,
+                })
+                await _broadcast_build_event(user_id, build_id, "plan_task_complete", {
+                    "task_id": i + 1,
+                    "status": "done",
+                })
+                await _broadcast_build_event(user_id, build_id, "file_audited", {
+                    "path": file_path,
+                    "verdict": "PASS",
+                    "findings": "",
+                    "duration_ms": 0,
+                })
+                passed_files.append(file_path)
+                _skip_tid = _path_to_dag_id.get(file_path)
+                if _phase_dag is not None and _skip_tid and _phase_dag.nodes[_skip_tid].status.value == "pending":
+                    _phase_dag.mark_skipped(_skip_tid)
+                await build_repo.append_build_log(
+                    build_id,
+                    f"Static template: {file_path} (empty __init__.py)",
+                    source="system", level="info",
+                )
+                continue
 
             # Track which file is being generated (for audit trail on /stop etc.)
             _current_generating[bid] = file_path

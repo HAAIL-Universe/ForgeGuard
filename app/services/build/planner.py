@@ -1741,7 +1741,7 @@ async def execute_tier(
         _ctx_keys = list(context_files.keys())
         _contract_keys = [k for k in _ctx_keys if k.startswith("contract_")]
         _ctx_total_chars = sum(len(v) for v in context_files.values())
-        logger.debug(
+        logger.info(
             "METRIC | type=context_assembly | file=%s | "
             "context_files=%d | context_chars=%d | contracts=%s | deps=%d",
             fp, len(_ctx_keys), _ctx_total_chars,

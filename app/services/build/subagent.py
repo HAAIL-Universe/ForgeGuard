@@ -1445,7 +1445,7 @@ async def run_sub_agent(
     _ctx_keys = list(handoff.context_files.keys()) if handoff.context_files else []
     _contract_keys = [k for k in _ctx_keys if k.startswith("contract_")]
     _ctx_total_chars = sum(len(v) for v in handoff.context_files.values()) if handoff.context_files else 0
-    logger.debug(
+    logger.info(
         "METRIC | type=context_load | role=%s | file=%s | "
         "context_files=%d | contract_files=%d | contracts=%s | total_chars=%d",
         handoff.role.value, (handoff.files[0] if handoff.files else "?"),
@@ -1717,7 +1717,7 @@ async def run_sub_agent(
             _delta_cache_create = usage.cache_creation_input_tokens - _pre_cache_create
             _delta_fresh = _delta_in - _delta_cache_read - _delta_cache_create
             _tools_this_round = [tc["name"] for tc in tool_calls_this_round]
-            logger.debug(
+            logger.info(
                 "METRIC | type=round_tokens | role=%s | round=%d/%d | "
                 "fresh=%d | cached=%d | cache_create=%d | out=%d | "
                 "tools=%s | tool_count=%d | wall_ms=%.0f | msgs=%d",
@@ -1760,7 +1760,7 @@ async def run_sub_agent(
             if tool_rounds > 2:
                 _compacted, _saved = _compact_tool_history(messages, keep_recent=2)
                 if _compacted > 0:
-                    logger.debug(
+                    logger.info(
                         "METRIC | type=compaction | role=%s | round=%d | "
                         "rounds_compacted=%d | chars_saved=%d | msgs_after=%d",
                         handoff.role.value, tool_rounds,

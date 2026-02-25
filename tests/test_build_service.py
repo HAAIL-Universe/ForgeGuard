@@ -2094,6 +2094,58 @@ class TestResumeGuardBypass:
         assert result["status"] == "pending"
 
 
+class TestFreshStartWorkspaceWipe:
+    """fresh_start=True should wipe generated source files from workspace."""
+
+    def test_wipe_removes_source_files_preserves_infra(self, tmp_path):
+        """Simulate the workspace wipe logic: source files deleted, infra preserved."""
+        import shutil
+        from pathlib import Path
+
+        # Create workspace with generated files + infrastructure
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main")
+        (tmp_path / ".gitignore").write_text("*.pyc\n")
+        (tmp_path / "forge.json").write_text("{}")
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".env").write_text("SECRET=foo")
+        (tmp_path / "node_modules").mkdir()
+        # Generated source files
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "main.py").write_text("print('hello')")
+        (tmp_path / "web").mkdir()
+        (tmp_path / "web" / "App.tsx").write_text("export default App")
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "requirements.txt").write_text("fastapi")
+
+        # Run the same wipe logic as build_service fresh_start
+        _preserve = {".git", ".gitignore", "forge.json", ".venv", "node_modules", ".env"}
+        _wiped = 0
+        for child in list(tmp_path.iterdir()):
+            if child.name in _preserve:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+            _wiped += 1
+
+        # Infrastructure preserved
+        assert (tmp_path / ".git" / "HEAD").exists()
+        assert (tmp_path / ".gitignore").exists()
+        assert (tmp_path / "forge.json").exists()
+        assert (tmp_path / ".venv").exists()
+        assert (tmp_path / ".env").exists()
+        assert (tmp_path / "node_modules").exists()
+
+        # Generated files wiped
+        assert not (tmp_path / "app").exists()
+        assert not (tmp_path / "web").exists()
+        assert not (tmp_path / "package.json").exists()
+        assert not (tmp_path / "requirements.txt").exists()
+        assert _wiped == 4  # app/, web/, package.json, requirements.txt
+
+
 # ---------------------------------------------------------------------------
 # Tests: delete_builds
 # ---------------------------------------------------------------------------
