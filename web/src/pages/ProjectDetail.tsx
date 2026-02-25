@@ -570,7 +570,37 @@ function ProjectDetail() {
           <p style={{ color: '#94A3B8', fontSize: '0.85rem', marginBottom: '24px' }}>{project.description}</p>
         )}
 
-        {/* 4-chip grid removed — functionality relocated to inline sections */}
+        {/* Forge Seal banner — shown when latest build is completed or cycle is sealed */}
+        {(buildCompleted || buildCycle?.status === 'sealed') && (
+          <div
+            onClick={() => setShowCertificate(true)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setShowCertificate(true); }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              background: 'rgba(34,197,94,0.08)',
+              border: '1px solid rgba(34,197,94,0.2)',
+              borderRadius: '8px',
+              padding: '10px 16px',
+              marginBottom: '16px',
+              cursor: 'pointer',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(34,197,94,0.14)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(34,197,94,0.08)')}
+          >
+            <span style={{ fontSize: '1.1rem' }}>🛡️</span>
+            <span style={{ color: '#4ADE80', fontSize: '0.85rem', fontWeight: 600 }}>
+              Build Sealed
+            </span>
+            <span style={{ color: '#6EE7B7', fontSize: '0.75rem', marginLeft: 'auto' }}>
+              View Certificate →
+            </span>
+          </div>
+        )}
 
         {/* Background generation progress bar */}
         {bgGenActive && !showRegenerate && !showQuestionnaire && (
