@@ -516,6 +516,7 @@ function ProjectDetail() {
   const buildActive = project.latest_build && ['pending', 'running', 'paused'].includes(project.latest_build.status);
   const activeBuild = buildHistory.find((b) => ['running', 'paused', 'pending'].includes(b.status)) ?? null;
   const buildCompleted = project.latest_build?.status === 'completed';
+  const latestCompleted = buildHistory.find((b) => b.status === 'completed');
 
   return (
     <AppShell>
@@ -590,7 +591,7 @@ function ProjectDetail() {
             <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Build Progress</span>
             <span style={{ color: '#94A3B8', fontSize: '0.7rem' }}>
               {project.latest_build
-                ? `${project.latest_build.phase} — ${project.latest_build.status}`
+                ? `${buildHistory[0]?.branch || 'main'} — ${project.latest_build.phase} ${project.latest_build.status}`
                 : project.has_saved_plan
                   ? 'Plan ready — continue build'
                   : 'No builds yet'}
@@ -917,7 +918,9 @@ function ProjectDetail() {
         <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
           {!buildActive && project?.has_saved_plan && buildCompleted && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ color: '#22C55E', fontSize: '0.8rem', fontWeight: 500 }}>Build complete</span>
+              <span style={{ color: '#22C55E', fontSize: '0.8rem', fontWeight: 500 }}>
+                Build complete ({latestCompleted?.branch || 'main'})
+              </span>
               <button
                 onClick={handleStartBuild}
                 disabled={starting}
@@ -934,21 +937,6 @@ function ProjectDetail() {
                 }}
               >
                 {starting ? 'Starting...' : 'New Build'}
-              </button>
-              <button
-                onClick={() => navigate(`/projects/${projectId}/build`)}
-                style={{
-                  background: 'transparent',
-                  color: '#94A3B8',
-                  border: '1px solid #334155',
-                  borderRadius: '6px',
-                  padding: '10px 20px',
-                  cursor: 'pointer',
-                  fontSize: '0.875rem',
-                  fontWeight: 500,
-                }}
-              >
-                View Build
               </button>
             </div>
           )}
@@ -1160,6 +1148,8 @@ function ProjectDetail() {
                 };
                 const statusColor = statusColors[b.status] || '#94A3B8';
                 const isActive = b.status === 'running' || b.status === 'pending';
+                const isDead = b.status === 'cancelled' || b.status === 'failed';
+                const isLatest = latestCompleted?.id === b.id;
                 const isSelected = selectedBuilds.has(b.id);
                 return (
                   <div
@@ -1188,7 +1178,7 @@ function ProjectDetail() {
                       cursor: selectMode && isActive ? 'not-allowed' : 'pointer',
                       fontSize: '0.78rem',
                       transition: 'background 0.15s',
-                      opacity: selectMode && isActive ? 0.5 : 1,
+                      opacity: (selectMode && isActive) || isDead ? 0.5 : 1,
                       border: isSelected ? '1px solid #3B82F6' : '1px solid transparent',
                     }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#1A2740'; }}
@@ -1232,6 +1222,20 @@ function ProjectDetail() {
                         <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
                           {b.status}
                         </span>
+                        {isLatest && (
+                          <span style={{
+                            background: '#14532D',
+                            color: '#22C55E',
+                            fontSize: '0.6rem',
+                            fontWeight: 600,
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.03em',
+                          }}>
+                            Latest
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: '12px', color: '#64748B', fontSize: '0.7rem' }}>
                         <span>🌿 {b.branch || 'main'}</span>
