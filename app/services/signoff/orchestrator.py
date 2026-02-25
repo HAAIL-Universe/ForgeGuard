@@ -115,6 +115,15 @@ async def run_signoff(
             result.readme_generated = True
             result.files_written.append("README.md")
             await log_fn(build_id, "Sign-off: README.md generated", "system", "info")
+            # Update project description from README's first paragraph
+            desc = _extract_readme_description(readme_content)
+            if desc:
+                try:
+                    from app.repos import project_repo
+                    await project_repo.update_project(project_id, description=desc)
+                    logger.info("Sign-off: updated project description from README")
+                except Exception as exc:
+                    logger.warning("Sign-off: failed to update project description: %s", exc)
     except Exception as exc:
         logger.warning("Sign-off README generation failed: %s", exc)
         result.errors.append(f"README: {exc}")
@@ -239,6 +248,38 @@ def _stack_to_profile(stack: StackInfo) -> dict:
         "database": stack.database,
         "containerized": stack.has_docker,
     }
+
+
+def _extract_readme_description(readme: str) -> str | None:
+    """Extract the first non-heading paragraph after the H1 title.
+
+    Returns the paragraph text (stripped, max 2000 chars) or None.
+    """
+    lines = readme.split("\n")
+    past_h1 = False
+    para_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not past_h1:
+            if stripped.startswith("# "):
+                past_h1 = True
+            continue
+        # Skip blank lines before the first paragraph
+        if not para_lines and not stripped:
+            continue
+        # Skip any sub-headings, badges, or image lines
+        if stripped.startswith("#") or stripped.startswith("![") or stripped.startswith("[!["):
+            if para_lines:
+                break
+            continue
+        # End of paragraph on blank line
+        if not stripped and para_lines:
+            break
+        para_lines.append(stripped)
+    if not para_lines:
+        return None
+    desc = " ".join(para_lines).strip()
+    return desc[:2000] if desc else None
 
 
 async def _noop(*args: Any, **kwargs: Any) -> None:

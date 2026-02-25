@@ -133,6 +133,31 @@ async def get_project(
     return await get_project_detail(current_user["id"], project_id)
 
 
+class PatchProjectRequest(BaseModel):
+    """Request body for updating project metadata."""
+    description: str | None = Field(None, max_length=2000)
+
+
+@router.patch("/{project_id}")
+async def patch_project(
+    project_id: UUID,
+    body: PatchProjectRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Update project metadata (currently: description)."""
+    project = await project_repo.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if str(project["user_id"]) != str(current_user["id"]):
+        raise HTTPException(status_code=403, detail="Not your project")
+    updates = {}
+    if body.description is not None:
+        updates["description"] = body.description
+    if updates:
+        await project_repo.update_project(project_id, **updates)
+    return {"status": "updated", **updates}
+
+
 @router.delete("/{project_id}")
 async def remove_project(
     project_id: UUID,

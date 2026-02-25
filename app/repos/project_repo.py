@@ -244,6 +244,26 @@ async def update_questionnaire_history(
     )
 
 
+async def update_project(project_id: UUID, **fields: str) -> None:
+    """Update allowed fields on a project. Currently supports: description."""
+    allowed = {"description"}
+    to_update = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not to_update:
+        return
+    pool = await get_pool()
+    # Build SET clause dynamically for allowed fields
+    parts = []
+    args: list = [project_id]
+    for i, (col, val) in enumerate(to_update.items(), start=2):
+        parts.append(f"{col} = ${i}")
+        args.append(val)
+    parts.append("updated_at = now()")
+    await pool.execute(
+        f"UPDATE projects SET {', '.join(parts)} WHERE id = $1",
+        *args,
+    )
+
+
 async def delete_project(project_id: UUID) -> bool:
     """Delete a project by primary key. Returns True if a row was deleted."""
     pool = await get_pool()
