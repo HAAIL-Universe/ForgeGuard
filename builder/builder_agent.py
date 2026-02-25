@@ -138,10 +138,13 @@ _TRIVIAL_NAMES = frozenset({
 _NONTRIVIAL_KEYWORDS = ("re-export", "barrel", "public api", "public interface")
 
 
-def _is_trivial_file(file_path: str, purpose: str) -> bool:
+def _is_trivial_file(file_path: str, purpose: str, exports: list | None = None) -> bool:
     """True if file can be generated deterministically without any LLM call."""
     name = Path(file_path).name
     if name not in _TRIVIAL_NAMES:
+        return False
+    # If the plan specifies exports, the file needs real content
+    if exports:
         return False
     purpose_lower = purpose.lower()
     return not any(kw in purpose_lower for kw in _NONTRIVIAL_KEYWORDS)
@@ -443,7 +446,7 @@ async def run_builder(
     # ────────────────────────────────────────────────────────────────────────
     # (0a) TRIVIAL FILE FAST PATH — deterministic generation, zero LLM calls
     # ────────────────────────────────────────────────────────────────────────
-    if _is_trivial_file(file_path, file_purpose):
+    if _is_trivial_file(file_path, file_purpose, file_entry.get("exports")):
         if verbose:
             _blog(f"{_TAG_BUILDER} {_C_DIM}TRIVIAL: {file_path} — deterministic generation (0 tokens){_C_RESET}")
         file_abs = working_dir / file_path
@@ -796,11 +799,12 @@ async def run_builder(
             auditor_context: dict[str, str] = _state_to_context_files(
                 _auditor_handoff_data.pipeline_state,
             )
-            # Auditor gets only contracts from context_files (not deps)
-            # — the file under review + contracts are already in state
+            # Auditor gets contracts + dependency/implementation contracts
+            # so it can verify the CODER matched planned interfaces.
+            _AUDITOR_EXTRA = ("dependency_contracts.md", "implementation_contract.md")
             if context_files:
                 for k, v in context_files.items():
-                    if k.startswith("contract_") and k not in auditor_context:
+                    if (k.startswith("contract_") or k in _AUDITOR_EXTRA) and k not in auditor_context:
                         auditor_context[k] = v
 
             # --- AUDITOR ---

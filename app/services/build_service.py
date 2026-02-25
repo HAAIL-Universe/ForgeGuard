@@ -4750,6 +4750,16 @@ async def _run_build_plan_execute(
             if _phase_plan:
                 manifest = _phase_plan["manifest"]
                 _phase_chunks = _phase_plan.get("chunks", [])
+                # Backfill exports from project-level plan — phase planner
+                # may not emit them (tool schema is optional for exports).
+                _proj_manifest = phase.get("file_manifest", [])
+                if _proj_manifest:
+                    _exports_by_path = {
+                        f["path"]: f.get("exports", []) for f in _proj_manifest
+                    }
+                    for _entry in manifest:
+                        if not _entry.get("exports") and _entry["path"] in _exports_by_path:
+                            _entry["exports"] = _exports_by_path[_entry["path"]]
 
         if manifest:
             # Persist manifest to disk for resume resilience

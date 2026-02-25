@@ -267,6 +267,7 @@ _TOOL_DEFINITIONS: list[dict] = [
                             "action":         {"type": "string", "enum": ["create", "modify"], "description": "create or modify"},
                             "purpose":        {"type": "string", "description": "One sentence: what this file does"},
                             "depends_on":     {"type": "array",  "items": {"type": "string"}, "description": "Other files in THIS phase that must exist first"},
+                            "exports":        {"type": "array",  "items": {"type": "string"}, "description": "Public API signatures this file exposes (classes, functions, enums, routes). Downstream files code against these EXACT signatures."},
                             "estimated_lines":{"type": "integer","description": "Rough line count estimate"},
                         },
                         "required": ["path", "action", "purpose"],
@@ -396,6 +397,7 @@ def _validate_and_enrich_plan(
             "action": action,
             "purpose": entry.get("purpose", ""),
             "depends_on": entry.get("depends_on", []),
+            "exports": entry.get("exports", []),
             "context_files": entry.get("depends_on", []),  # builder uses depends_on as context
             "estimated_lines": int(entry.get("estimated_lines", 100)),
             "language": LANGUAGE_MAP.get(ext, "python"),
