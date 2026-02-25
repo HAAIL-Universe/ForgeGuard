@@ -1,6 +1,7 @@
 """Tests for app/clients/git_client.py -- thin async git wrapper."""
 
 import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -47,6 +48,30 @@ async def test_run_git_failure(mock_run):
 
 
 # ---------------------------------------------------------------------------
+# Tests: has_repo
+# ---------------------------------------------------------------------------
+
+
+def test_has_repo_valid(tmp_path):
+    """has_repo returns True for a directory with .git/HEAD."""
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    assert git_client.has_repo(tmp_path) is True
+
+
+def test_has_repo_missing(tmp_path):
+    """has_repo returns False when .git/ doesn't exist."""
+    assert git_client.has_repo(tmp_path) is False
+
+
+def test_has_repo_empty_dir(tmp_path):
+    """has_repo returns False when .git/ is an empty directory (no HEAD)."""
+    (tmp_path / ".git").mkdir()
+    assert git_client.has_repo(tmp_path) is False
+
+
+# ---------------------------------------------------------------------------
 # Tests: init_repo
 # ---------------------------------------------------------------------------
 
@@ -57,11 +82,41 @@ async def test_init_repo(mock_run):
     """init_repo runs git init and sets committer identity."""
     await git_client.init_repo("/tmp/test")
 
-    # Should make multiple calls (init + config)
+    # Should make multiple calls (init + checkout)
     assert mock_run.call_count >= 1
     # First call should be 'init'
     first_args = mock_run.call_args_list[0][0][0]
     assert "init" in first_args
+
+
+@pytest.mark.asyncio
+@patch("app.clients.git_client._run_git", new_callable=AsyncMock)
+async def test_init_repo_branch_already_exists(mock_run):
+    """init_repo handles 'branch main already exists' gracefully."""
+    # checkout -b main fails, checkout main succeeds
+    mock_run.side_effect = [
+        None,                                          # git init
+        RuntimeError("branch 'main' already exists"),  # checkout -b main
+        None,                                          # checkout main
+    ]
+    result = await git_client.init_repo("/tmp/test")
+    assert Path(result) == Path("/tmp/test")
+    assert mock_run.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_init_repo_cleans_empty_git_dir(tmp_path):
+    """init_repo removes an empty .git/ dir before initializing."""
+    empty_git = tmp_path / ".git"
+    empty_git.mkdir()
+    assert empty_git.exists()
+    assert not (empty_git / "HEAD").exists()
+
+    with patch("app.clients.git_client._run_git", new_callable=AsyncMock):
+        await git_client.init_repo(str(tmp_path))
+
+    # The empty .git/ should have been removed before git init ran
+    # (git init then recreates it properly)
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +141,14 @@ async def test_add_all_no_repo(tmp_path):
     """add_all skips gracefully when .git/ is missing."""
     result = await git_client.add_all(str(tmp_path))
     assert result is None  # returns None, no error raised
+
+
+@pytest.mark.asyncio
+async def test_add_all_empty_git_dir(tmp_path):
+    """add_all skips when .git/ exists but is an empty directory (no HEAD)."""
+    (tmp_path / ".git").mkdir()
+    result = await git_client.add_all(str(tmp_path))
+    assert result is None  # treated as "no repo"
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +217,13 @@ async def test_push(mock_run, _mock_has_repo):
 @pytest.mark.asyncio
 async def test_push_no_repo(tmp_path):
     """push skips gracefully when .git/ is missing."""
+    await git_client.push(str(tmp_path))  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_push_empty_git_dir(tmp_path):
+    """push skips when .git/ exists but is an empty directory."""
+    (tmp_path / ".git").mkdir()
     await git_client.push(str(tmp_path))  # should not raise
 
 

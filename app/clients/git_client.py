@@ -126,12 +126,39 @@ async def clone_repo(
 
 
 async def init_repo(dest: str | Path) -> str:
-    """Initialize a new git repo at dest. Returns the dest path."""
+    """Initialize a new git repo at *dest*. Returns the dest path.
+
+    Safe to call when ``.git/`` is missing **or** when it exists but is
+    invalid (empty directory from a failed earlier init).  ``git init`` is
+    idempotent on a valid repo, so this never destroys existing history.
+    """
     path = Path(dest)
     path.mkdir(parents=True, exist_ok=True)
+
+    # Remove an invalid .git/ shell (empty dir, no HEAD) so git init
+    # can start fresh instead of silently producing a broken state.
+    git_dir = path / ".git"
+    if git_dir.is_dir() and not (git_dir / "HEAD").exists():
+        import shutil
+        import stat
+
+        def _force_remove(_func, _path, _exc_info):
+            """Clear read-only bit and retry (git objects are read-only on Windows)."""
+            os.chmod(_path, stat.S_IWRITE)
+            _func(_path)
+
+        shutil.rmtree(git_dir, onerror=_force_remove)
+
     await _run_git(["init"], cwd=path)
-    # Set default branch to main
-    await _run_git(["checkout", "-b", "main"], cwd=path)
+    # Set default branch to main — may already exist on git ≥ 2.28
+    # with init.defaultBranch configured.
+    try:
+        await _run_git(["checkout", "-b", "main"], cwd=path)
+    except RuntimeError:
+        try:
+            await _run_git(["checkout", "main"], cwd=path)
+        except RuntimeError:
+            pass  # already on main
     return str(path)
 
 
@@ -166,8 +193,13 @@ async def exclude_contracts_from_staging(repo_path: str | Path) -> None:
 
 
 def has_repo(repo_path: str | Path) -> bool:
-    """Return True if *repo_path* contains an initialised git repository."""
-    return (Path(repo_path) / ".git").is_dir()
+    """Return True if *repo_path* contains an initialised git repository.
+
+    Checks for ``.git/HEAD`` — not just a ``.git/`` directory — so an
+    empty or corrupted ``.git/`` folder is correctly treated as "no repo".
+    """
+    git_dir = Path(repo_path) / ".git"
+    return git_dir.is_dir() and (git_dir / "HEAD").exists()
 
 
 async def add_all(repo_path: str | Path, *, include_contracts: bool = False) -> None:

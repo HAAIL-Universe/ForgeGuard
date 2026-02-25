@@ -2642,9 +2642,10 @@ async def interject_build(
             raise ValueError("No GitHub repository linked to this project")
 
         try:
-            # Ensure git repo exists
-            git_dir = Path(working_dir) / ".git"
-            if not git_dir.exists():
+            # Ensure working dir has a *valid* git repo — not just
+            # a .git/ directory (which may be an empty shell left by
+            # a failed earlier init or a workspace reset).
+            if not git_client.has_repo(working_dir):
                 await git_client.init_repo(working_dir)
 
             # Commit any uncommitted changes first
