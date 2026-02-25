@@ -515,6 +515,7 @@ function ProjectDetail() {
 
   const buildActive = project.latest_build && ['pending', 'running', 'paused'].includes(project.latest_build.status);
   const activeBuild = buildHistory.find((b) => ['running', 'paused', 'pending'].includes(b.status)) ?? null;
+  const buildCompleted = project.latest_build?.status === 'completed';
 
   return (
     <AppShell>
@@ -914,9 +915,46 @@ function ProjectDetail() {
 
         {/* Build Actions */}
         <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
-          {!buildActive && project?.has_saved_plan && (
+          {!buildActive && project?.has_saved_plan && buildCompleted && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>⏸ Plan ready</span>
+              <span style={{ color: '#22C55E', fontSize: '0.8rem', fontWeight: 500 }}>Build complete</span>
+              <button
+                onClick={handleStartBuild}
+                disabled={starting}
+                style={{
+                  background: '#2563EB',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '10px 20px',
+                  cursor: starting ? 'wait' : 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  opacity: starting ? 0.6 : 1,
+                }}
+              >
+                {starting ? 'Starting...' : 'New Build'}
+              </button>
+              <button
+                onClick={() => navigate(`/projects/${projectId}/build`)}
+                style={{
+                  background: 'transparent',
+                  color: '#94A3B8',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '10px 20px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                View Build
+              </button>
+            </div>
+          )}
+          {!buildActive && project?.has_saved_plan && !buildCompleted && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ color: '#A855F7', fontSize: '0.8rem', fontWeight: 500 }}>Plan ready</span>
               <button
                 onClick={() => navigate(`/projects/${projectId}/build`)}
                 style={{
