@@ -232,8 +232,28 @@ function Build() {
             padding: '24px',
             marginBottom: '32px',
             border: '1px solid #3B3F6B',
+            position: 'relative',
+            opacity: 0.5,
+            pointerEvents: 'none',
           }}
         >
+          <div
+            style={{
+              position: 'absolute',
+              top: '12px',
+              right: '16px',
+              background: '#64748B',
+              color: '#fff',
+              fontSize: '0.65rem',
+              fontWeight: 700,
+              padding: '3px 10px',
+              borderRadius: '10px',
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+            }}
+          >
+            Coming Soon
+          </div>
           <div
             style={{
               display: 'inline-block',
