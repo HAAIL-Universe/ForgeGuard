@@ -136,6 +136,9 @@ interface FindingEntry {
   relatedFile?: string;
   phase?: string;
   verdict?: string;
+  resolved?: boolean;
+  resolved_at?: string;
+  resolution_method?: string;
 }
 
 interface ScratchpadEntry {
@@ -2760,6 +2763,18 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
               break;
             }
 
+            /* ---- Finding resolved (post-fix re-check) ---- */
+            case 'finding_resolved': {
+              const rFile = p.file as string;
+              const rCheck = p.check as string;
+              setFindings(prev => prev.map(f =>
+                f.type === 'integration_audit' && f.file === rFile && f.check === rCheck && !f.resolved
+                  ? { ...f, resolved: true, resolved_at: new Date().toISOString(), resolution_method: (p.resolution_method as string) || 'auto-fix' }
+                  : f
+              ));
+              break;
+            }
+
             /* ---- Scratchpad writes (from any agent) ---- */
             case 'scratchpad_write': {
               const spWorker: 'sonnet' | 'opus' = p.source === 'sonnet' ? 'sonnet' : 'opus';
@@ -4515,7 +4530,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   : tab === 'changes'
                     ? `Changes (${fileDiffs.length})`
                     : tab === 'findings'
-                      ? `Findings (${findings.length})`
+                      ? `Findings (${findings.filter(f => !f.resolved).length})`
                       : tab === 'scratchpad'
                         ? `Scratchpad (${scratchpadEntries.length})`
                         : `Errors (${buildErrors.filter(e => !e.resolved).length})`}
@@ -4528,7 +4543,7 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
                   }} />
                 )}
                 {/* Red badge for findings with errors */}
-                {tab === 'findings' && findings.some(f => f.severity === 'error') && activeTab !== 'findings' && (
+                {tab === 'findings' && findings.some(f => f.severity === 'error' && !f.resolved) && activeTab !== 'findings' && (
                   <span className="forge-error-badge-pulse" style={{
                     position: 'absolute', top: '2px', right: '2px',
                     width: '7px', height: '7px', borderRadius: '50%',
@@ -5194,98 +5209,137 @@ export default function ForgeIDEModal({ runId, projectId, repoName, onClose, mod
           )}
 
           {/* Findings tab */}
-          {activeTab === 'findings' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-              {findings.length === 0 ? (
-                <div style={{ color: '#475569', padding: '20px 0', fontSize: '0.8rem' }}>
-                  {status === 'running' ? 'Audit findings will appear here as files are checked...' : 'No findings recorded.'}
-                </div>
-              ) : (
-                findings.map((f) => {
-                  const isError = f.severity === 'error';
-                  const severityColor = isError ? '#EF4444' : '#F59E0B';
-                  const severityLabel = isError ? 'ERROR' : 'WARN';
-                  const typeLabel = f.type === 'file_audit' ? 'FILE AUDIT'
-                    : f.type === 'integration_audit' ? 'INTEGRATION'
-                    : 'GOVERNANCE';
-                  const ts = f.timestamp ? new Date(f.timestamp).toLocaleTimeString([], {
-                    hour: '2-digit', minute: '2-digit', second: '2-digit',
-                  }) : '';
+          {activeTab === 'findings' && (() => {
+            const unresolvedFindings = findings.filter(f => !f.resolved);
+            const resolvedFindings = findings.filter(f => f.resolved);
 
-                  return (
-                    <div key={f.id} style={{
-                      marginBottom: '6px', background: '#0F172A',
-                      borderRadius: '6px', border: `1px solid ${isError ? '#7F1D1D' : '#78350F'}`,
-                      padding: '10px 14px',
+            const renderFindingCard = (f: FindingEntry) => {
+              const isResolved = !!f.resolved;
+              const isError = f.severity === 'error';
+              const severityColor = isResolved ? '#22C55E' : isError ? '#EF4444' : '#F59E0B';
+              const severityLabel = isResolved ? 'RESOLVED' : isError ? 'ERROR' : 'WARN';
+              const typeLabel = f.type === 'file_audit' ? 'FILE AUDIT'
+                : f.type === 'integration_audit' ? 'INTEGRATION'
+                : 'GOVERNANCE';
+              const ts = f.timestamp ? new Date(f.timestamp).toLocaleTimeString([], {
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+              }) : '';
+
+              return (
+                <div key={f.id} style={{
+                  marginBottom: '6px', background: '#0F172A',
+                  borderRadius: '6px',
+                  border: `1px solid ${isResolved ? '#22C55E33' : isError ? '#7F1D1D' : '#78350F'}`,
+                  padding: '10px 14px',
+                  opacity: isResolved ? 0.6 : 1,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                    <span style={{
+                      width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                      background: severityColor,
+                    }} />
+                    <span style={{
+                      fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                      borderRadius: '4px', background: severityColor + '22', color: severityColor,
+                      textTransform: 'uppercase',
                     }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
-                        <span style={{
-                          width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-                          background: severityColor,
-                        }} />
-                        <span style={{
-                          fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
-                          borderRadius: '4px', background: severityColor + '22', color: severityColor,
-                          textTransform: 'uppercase',
-                        }}>
-                          {severityLabel}
-                        </span>
-                        <span style={{
-                          fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
-                          borderRadius: '4px', background: '#22D3EE22', color: '#22D3EE',
-                          textTransform: 'uppercase',
-                        }}>
-                          {typeLabel}
-                        </span>
-                        {f.check && (
-                          <span style={{ color: '#94A3B8', fontSize: '0.72rem', fontWeight: 600 }}>
-                            {f.check}
-                          </span>
-                        )}
-                        {f.file && (
-                          <span style={{
-                            color: '#60A5FA', fontSize: '0.72rem', fontFamily: '"Cascadia Code", monospace',
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            maxWidth: '300px',
-                          }}>
-                            {f.file}
-                          </span>
-                        )}
-                        {f.relatedFile && (
-                          <>
-                            <span style={{ color: '#475569', fontSize: '0.65rem' }}>related:</span>
-                            <span style={{
-                              color: '#A78BFA', fontSize: '0.72rem', fontFamily: '"Cascadia Code", monospace',
-                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                              maxWidth: '200px',
-                            }}>
-                              {f.relatedFile}
-                            </span>
-                          </>
-                        )}
-                        <span style={{ flex: 1 }} />
-                        <span style={{ color: '#475569', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
-                          {ts}
-                        </span>
-                      </div>
-                      <div style={{
-                        color: '#CBD5E1', fontSize: '0.75rem', lineHeight: 1.5,
-                        fontFamily: '"Cascadia Code", monospace',
-                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      {severityLabel}
+                    </span>
+                    <span style={{
+                      fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px',
+                      borderRadius: '4px', background: '#22D3EE22', color: '#22D3EE',
+                      textTransform: 'uppercase',
+                    }}>
+                      {typeLabel}
+                    </span>
+                    {f.check && (
+                      <span style={{ color: isResolved ? '#64748B' : '#94A3B8', fontSize: '0.72rem', fontWeight: 600 }}>
+                        {f.check}
+                      </span>
+                    )}
+                    {f.file && (
+                      <span style={{
+                        color: isResolved ? '#64748B' : '#60A5FA', fontSize: '0.72rem', fontFamily: '"Cascadia Code", monospace',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        maxWidth: '300px',
                       }}>
-                        {f.message}
-                      </div>
-                      {f.phase && (
-                        <div style={{ color: '#64748B', fontSize: '0.65rem', marginTop: '4px' }}>
-                          Phase: {f.phase}
-                        </div>
-                      )}
+                        {f.file}
+                      </span>
+                    )}
+                    {f.relatedFile && (
+                      <>
+                        <span style={{ color: '#475569', fontSize: '0.65rem' }}>related:</span>
+                        <span style={{
+                          color: isResolved ? '#64748B' : '#A78BFA', fontSize: '0.72rem', fontFamily: '"Cascadia Code", monospace',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          maxWidth: '200px',
+                        }}>
+                          {f.relatedFile}
+                        </span>
+                      </>
+                    )}
+                    <span style={{ flex: 1 }} />
+                    <span style={{ color: '#475569', fontSize: '0.65rem', fontVariantNumeric: 'tabular-nums' }}>
+                      {ts}
+                    </span>
+                  </div>
+                  <div style={{
+                    color: isResolved ? '#94A3B8' : '#CBD5E1', fontSize: '0.75rem', lineHeight: 1.5,
+                    fontFamily: '"Cascadia Code", monospace',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  }}>
+                    {f.message}
+                  </div>
+                  {isResolved && f.resolution_method && (
+                    <div style={{ marginTop: '4px' }}>
+                      <span style={{ color: '#22C55E', fontSize: '0.65rem', fontWeight: 600 }}>
+                        {f.resolution_method === 'auto-fix' ? 'Fixed by builder' : 'Resolved'}
+                      </span>
                     </div>
-                  );
-                })
-              )}
-            </div>
-          )}
+                  )}
+                  {f.phase && !isResolved && (
+                    <div style={{ color: '#64748B', fontSize: '0.65rem', marginTop: '4px' }}>
+                      Phase: {f.phase}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            return (
+              <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+                {findings.length === 0 ? (
+                  <div style={{ color: '#475569', padding: '20px 0', fontSize: '0.8rem' }}>
+                    {status === 'running' ? 'Audit findings will appear here as files are checked...' : 'No findings recorded.'}
+                  </div>
+                ) : unresolvedFindings.length === 0 && resolvedFindings.length > 0 ? (
+                  <div style={{ color: '#22C55E', fontSize: '0.8rem', textAlign: 'center', padding: '40px 20px' }}>
+                    <span style={{ fontSize: '1.5rem' }}>{'\u2705'}</span>
+                    <div style={{ marginTop: '8px' }}>All findings resolved</div>
+                  </div>
+                ) : null}
+                {unresolvedFindings.map(renderFindingCard)}
+                {resolvedFindings.length > 0 && unresolvedFindings.length > 0 && (
+                  <details style={{ marginTop: '12px' }}>
+                    <summary style={{
+                      color: '#64748B', fontSize: '0.72rem', cursor: 'pointer',
+                      padding: '6px 0', userSelect: 'none',
+                    }}>
+                      {resolvedFindings.length} resolved finding{resolvedFindings.length !== 1 ? 's' : ''}
+                    </summary>
+                    <div style={{ marginTop: '6px' }}>
+                      {resolvedFindings.map(renderFindingCard)}
+                    </div>
+                  </details>
+                )}
+                {resolvedFindings.length > 0 && unresolvedFindings.length === 0 && (
+                  <div style={{ marginTop: '12px' }}>
+                    {resolvedFindings.map(renderFindingCard)}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Scratchpad tab */}
           {activeTab === 'scratchpad' && (

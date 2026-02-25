@@ -5415,6 +5415,7 @@ async def _run_build_plan_execute(
                     # Primary integration checks run per-file inside run_builder()
                     # between AUDITOR and FIXER. This pass catches any remaining
                     # cross-file issues after the chunk-level FIXER completes.
+                    _integ_issues: list = []  # Track for Step 6.5 re-check
                     if chunk_written:
                         try:
                             from app.services.build.integration_audit import run_integration_audit
@@ -5509,6 +5510,39 @@ async def _run_build_plan_execute(
                                     pass
                             elif not any(bp == fpath for bp, _ in blocking_files):
                                 blocking_files.append((fpath, ffindings))
+
+                    # ── Step 6.5: Re-check integration after fixes — resolve findings ──
+                    # If Step 5.5 found issues and the FIXER ran, re-run the integration
+                    # audit. Any original findings that no longer appear get a
+                    # finding_resolved WS event so the UI can mark them green.
+                    if chunk_written and _integ_issues:
+                        try:
+                            _recheck_issues = await run_integration_audit(
+                                working_dir=working_dir,
+                                chunk_files={fp: all_files_written.get(fp, "") for fp in chunk_written},
+                                all_files=all_files_written,
+                                build_id=build_id,
+                                user_id=user_id,
+                            )
+                            _recheck_fps = {
+                                (ri.check_name, ri.file_path) for ri in _recheck_issues
+                            }
+                            for _orig in _integ_issues:
+                                _fp_key = (_orig.check_name, _orig.file_path)
+                                if _fp_key not in _recheck_fps:
+                                    await _broadcast_build_event(
+                                        user_id, build_id, "finding_resolved", {
+                                            "file": _orig.file_path,
+                                            "check": _orig.check_name,
+                                            "message": _orig.message,
+                                            "resolution_method": "auto-fix",
+                                        },
+                                    )
+                        except Exception as _recheck_exc:
+                            logger.debug(
+                                "Integration re-check failed (non-blocking): %s",
+                                _recheck_exc,
+                            )
 
                     # ── Step 7: Commit + push ──
                     if chunk_written:

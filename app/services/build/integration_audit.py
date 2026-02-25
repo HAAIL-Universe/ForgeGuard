@@ -510,7 +510,13 @@ def _check_ts_imports_regex(
 
             # --- Non-relative imports: validate against package.json ---
             if not from_path.startswith("."):
-                pkg_name = from_path.split("/")[0]
+                # Scoped packages: "@vitejs/plugin-react" → "@vitejs/plugin-react"
+                # Unscoped packages: "lodash/merge" → "lodash"
+                if from_path.startswith("@"):
+                    _parts = from_path.split("/")
+                    pkg_name = "/".join(_parts[:2]) if len(_parts) >= 2 else _parts[0]
+                else:
+                    pkg_name = from_path.split("/")[0]
                 # Skip Node builtins
                 if pkg_name in _NODE_BUILTINS or pkg_name.startswith("node:"):
                     continue
