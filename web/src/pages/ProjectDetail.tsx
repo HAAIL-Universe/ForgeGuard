@@ -925,15 +925,13 @@ function ProjectDetail() {
                     key={b.id}
                     onClick={() => {
                       if (selectMode) {
-                        if (isActive) return; // can't select active builds
+                        if (isActive) return;
                         setSelectedBuilds((prev) => {
                           const next = new Set(prev);
                           if (next.has(b.id)) next.delete(b.id);
                           else next.add(b.id);
                           return next;
                         });
-                      } else {
-                        navigate(`/projects/${projectId}/build?buildId=${b.id}`);
                       }
                     }}
                     style={{
@@ -944,13 +942,13 @@ function ProjectDetail() {
                       padding: '10px 12px',
                       background: isSelected ? '#1E293B' : '#0F172A',
                       borderRadius: '6px',
-                      cursor: selectMode && isActive ? 'not-allowed' : 'pointer',
+                      cursor: selectMode ? (isActive ? 'not-allowed' : 'pointer') : 'default',
                       fontSize: '0.78rem',
                       transition: 'background 0.15s',
                       opacity: (selectMode && isActive) || isDead ? 0.5 : 1,
                       border: isSelected ? '1px solid #3B82F6' : '1px solid transparent',
                     }}
-                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#1A2740'; }}
+                    onMouseEnter={(e) => { if (!isSelected && selectMode) e.currentTarget.style.background = '#1A2740'; }}
                     onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = '#0F172A'; }}
                   >
                     {selectMode && (
@@ -1011,10 +1009,48 @@ function ProjectDetail() {
                         <span>{b.loop_count} loops</span>
                       </div>
                     </div>
-                    <span style={{ color: '#64748B', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
-                      {new Date(b.created_at).toLocaleDateString()}{' '}
-                      {new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ color: '#64748B', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
+                        {new Date(b.created_at).toLocaleDateString()}{' '}
+                        {new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      {!selectMode && b.status === 'completed' && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigate(`/projects/${projectId}/build?buildId=${b.id}`); }}
+                          style={{
+                            background: '#14532D',
+                            color: '#22C55E',
+                            border: '1px solid #22C55E',
+                            borderRadius: '4px',
+                            padding: '3px 10px',
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Inspect
+                        </button>
+                      )}
+                      {!selectMode && b.status === 'paused' && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigate(`/projects/${projectId}/build`); }}
+                          style={{
+                            background: '#3B0764',
+                            color: '#A855F7',
+                            border: '1px solid #A855F7',
+                            borderRadius: '4px',
+                            padding: '3px 10px',
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Continue
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
