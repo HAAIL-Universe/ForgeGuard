@@ -740,9 +740,9 @@ function ProjectDetail() {
           )}
         </div>
 
-        {/* Upgrade mini → full */}
+        {/* Upgrade mini → full (subtle link) */}
         {project?.build_mode === 'mini' && !buildActive && (
-          <div style={{ marginBottom: '16px' }}>
+          <div style={{ marginBottom: '16px', marginTop: '-16px' }}>
             <button
               onClick={async () => {
                 setUpgrading(true);
@@ -756,7 +756,6 @@ function ProjectDetail() {
                     throw new Error(err.detail || 'Upgrade failed');
                   }
                   addToast('Upgraded to Full Build — complete the remaining questionnaire sections.', 'success');
-                  // Reload project data to reflect new build_mode + status
                   window.location.reload();
                 } catch (e: any) {
                   addToast(e.message || 'Upgrade failed', 'error');
@@ -766,18 +765,17 @@ function ProjectDetail() {
               }}
               disabled={upgrading}
               style={{
-                background: 'transparent',
-                color: '#A78BFA',
-                border: '1px solid #7C3AED',
-                borderRadius: '6px',
-                padding: '8px 16px',
+                background: 'none',
+                border: 'none',
+                color: '#7C3AED',
+                fontSize: '0.75rem',
+                textDecoration: 'underline',
                 cursor: upgrading ? 'wait' : 'pointer',
-                fontSize: '0.8rem',
-                fontWeight: 600,
+                padding: 0,
                 opacity: upgrading ? 0.6 : 1,
               }}
             >
-              {upgrading ? 'Upgrading...' : '🔮 Upgrade to Full Build'}
+              {upgrading ? 'Upgrading...' : 'Upgrade to Full Build →'}
             </button>
           </div>
         )}
