@@ -1545,6 +1545,7 @@ async def execute_tier(
     stop_event: "asyncio.Event | None" = None,
     phase_index: int = -1,
     project_id: UUID | None = None,
+    phase_manifest: list[dict] | None = None,
 ) -> tuple[dict[str, str], str]:
     """Execute a tier using per-file Builder Agent pipelines (SCOUT→CODER→AUDITOR→FIXER).
 
@@ -1683,8 +1684,11 @@ async def execute_tier(
     _tier_lock = asyncio.Lock()  # protects tier_written + _tier_state_mgr
     _tier_costs: list[float] = []  # per-file costs for tier summary
 
-    # Build lookup for dependency contract injection
-    _file_entries_by_path: dict[str, dict] = {f["path"]: f for f in tier_files}
+    # Build lookup for dependency contract injection.
+    # Use full phase_manifest (all chunks) so cross-chunk dependencies resolve.
+    # Fall back to tier_files if phase_manifest not provided.
+    _all_entries = phase_manifest if phase_manifest else tier_files
+    _file_entries_by_path: dict[str, dict] = {f["path"]: f for f in _all_entries}
 
     async def run_one_file(file_entry: dict, file_idx: int) -> None:
         fp = file_entry["path"]
@@ -1770,12 +1774,19 @@ async def execute_tier(
         _ctx_keys = list(context_files.keys())
         _contract_keys = [k for k in _ctx_keys if k.startswith("contract_")]
         _ctx_total_chars = sum(len(v) for v in context_files.values())
+        _dep_count = len(file_entry.get("depends_on", []))
+        _export_count = len(file_entry.get("exports", []))
+        _has_dep_contract = "dependency_contracts.md" in context_files
+        _has_impl_contract = "implementation_contract.md" in context_files
         logger.info(
             "METRIC | type=context_assembly | file=%s | "
-            "context_files=%d | context_chars=%d | contracts=%s | deps=%d",
+            "context_files=%d | context_chars=%d | contracts=%s | deps=%d | "
+            "exports=%d | dep_contract=%s | impl_contract=%s | entry_keys=%s",
             fp, len(_ctx_keys), _ctx_total_chars,
             "+".join(_contract_keys) if _contract_keys else "none",
-            len(file_entry.get("depends_on", [])),
+            _dep_count, _export_count,
+            _has_dep_contract, _has_impl_contract,
+            "+".join(sorted(file_entry.keys())),
         )
 
         # Broadcast file_generating

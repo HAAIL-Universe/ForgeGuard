@@ -264,6 +264,9 @@ async def restart_project(
                 except Exception:
                     pass
 
+    # Clear cached plan so the next build triggers a fresh planning run
+    await project_repo.clear_cached_plan(project_id)
+
     # Reset project status to contracts_ready
     await project_repo.update_project_status(project_id, "contracts_ready")
 
