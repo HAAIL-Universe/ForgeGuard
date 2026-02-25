@@ -282,7 +282,11 @@ async def push(
     if access_token:
         env = _make_askpass_env(access_token)
 
-    cmd = ["push", "-u", remote, branch]
+    # Use HEAD:refs/heads/<branch> so the push works regardless of which
+    # local branch is checked out (fixes "src refspec does not match any"
+    # when the workspace is on main but the build targets forge/build-vN).
+    refspec = f"HEAD:refs/heads/{branch}"
+    cmd = ["push", remote, refspec]
     if force_with_lease:
         cmd.insert(1, "--force-with-lease")
     await _run_git(cmd, cwd=repo_path, env=env or None)

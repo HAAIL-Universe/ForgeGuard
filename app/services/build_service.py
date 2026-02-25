@@ -4108,6 +4108,18 @@ async def _run_build_plan_execute(
             "message": _log_msg, "source": "system", "level": "info",
         })
 
+        # Ensure we're on the correct branch for commits + pushes.
+        # The fresh-build path creates/checks-out the branch, but the
+        # continuation path skips that block entirely.
+        if branch and branch != "main":
+            try:
+                await git_client.checkout_branch(working_dir, branch)
+            except Exception:
+                try:
+                    await git_client.create_branch(working_dir, branch)
+                except Exception:
+                    pass  # Commits still work on current branch; push uses HEAD:
+
     # Signal frontend that workspace is ready
     await _broadcast_build_event(user_id, build_id, "workspace_ready", {
         "id": str(build_id),
@@ -4959,7 +4971,7 @@ async def _run_build_plan_execute(
                             _pa, settings.GIT_PUSH_MAX_RETRIES, label, _pe,
                         )
                         _pe_str = str(_pe)
-                        _permanent = ("not a git repository", "does not exist", "No configured push destination")
+                        _permanent = ("not a git repository", "does not exist", "No configured push destination", "does not match any")
                         if any(p in _pe_str for p in _permanent):
                             break
                         if _pa < settings.GIT_PUSH_MAX_RETRIES:
