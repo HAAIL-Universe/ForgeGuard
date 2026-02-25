@@ -38,13 +38,14 @@ export default function BranchPickerModal({
   loadingStatus,
   contractVersions = [],
 }: BranchPickerModalProps) {
+  const suggestedBranch = `forge/build-v${(contractVersions?.length ?? 0) + 2}`;
   const [mode, setMode] = useState<'main' | 'new'>('main');
   const [customBranch, setCustomBranch] = useState('');
   const [step, setStep] = useState<'branch' | 'version'>('branch');
   const [selectedBatch, setSelectedBatch] = useState<number | null>(null);
   const [freshStart, setFreshStart] = useState(false);
 
-  const branchName = mode === 'main' ? 'main' : customBranch.trim();
+  const branchName = mode === 'main' ? 'main' : (customBranch.trim() || suggestedBranch);
   const canConfirm = !starting && (mode === 'main' || branchName.length > 0);
   const hasMultipleVersions = contractVersions.length > 0;
 
@@ -375,9 +376,9 @@ export default function BranchPickerModal({
         {mode === 'new' && (
           <input
             type="text"
-            value={customBranch}
+            value={customBranch || suggestedBranch}
             onChange={(e) => setCustomBranch(e.target.value.replace(/\s/g, '-'))}
-            placeholder="forge/build-v2"
+            placeholder={suggestedBranch}
             autoFocus
             data-testid="branch-name-input"
             style={{
@@ -386,7 +387,13 @@ export default function BranchPickerModal({
               fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box',
               marginLeft: '26px', maxWidth: 'calc(100% - 26px)',
             }}
-            onFocus={(e) => (e.currentTarget.style.borderColor = '#2563EB')}
+            onFocus={(e) => {
+              e.currentTarget.style.borderColor = '#2563EB';
+              // Select all on first focus so user can type to replace
+              if (!customBranch) {
+                e.currentTarget.select();
+              }
+            }}
             onBlur={(e) => (e.currentTarget.style.borderColor = '#334155')}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && canConfirm) handleBranchNext();
