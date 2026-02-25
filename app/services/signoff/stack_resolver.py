@@ -63,6 +63,14 @@ def resolve_stack(
     # --- Detect from filesystem (overrides/supplements contract data) ---
     _detect_from_filesystem(wd, info)
 
+    # --- Cross-check: if contracts claim a DB but no driver is installed, clear it ---
+    if info.database and not _has_db_driver(wd):
+        logger.info(
+            "Stack contract claims %s but no DB driver found — setting database=None",
+            info.database,
+        )
+        info.database = None
+
     return info
 
 
@@ -271,3 +279,57 @@ def _parse_env_example(env_path: Path, search_dir: str, info: StackInfo) -> None
             })
     except Exception:
         pass
+
+
+# DB driver packages to look for in dependency files
+_PYTHON_DB_DRIVERS = {
+    "psycopg2", "psycopg2-binary", "psycopg", "asyncpg",
+    "sqlalchemy", "prisma", "databases", "tortoise-orm",
+    "pymongo", "motor", "aiosqlite", "sqlite3",
+}
+_NODE_DB_DRIVERS = {
+    "pg", "pg-promise", "mongoose", "prisma", "@prisma/client",
+    "typeorm", "sequelize", "knex", "better-sqlite3",
+    "drizzle-orm", "mikro-orm",
+}
+
+
+def _has_db_driver(wd: Path) -> bool:
+    """Check whether actual dependency files contain a known DB driver."""
+    # Check requirements.txt / pyproject.toml
+    for req_file in ("requirements.txt", "requirements/base.txt"):
+        req_path = wd / req_file
+        if req_path.exists():
+            try:
+                text = req_path.read_text(encoding="utf-8").lower()
+                for drv in _PYTHON_DB_DRIVERS:
+                    if drv in text:
+                        return True
+            except Exception:
+                pass
+
+    pyproject = wd / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            text = pyproject.read_text(encoding="utf-8").lower()
+            for drv in _PYTHON_DB_DRIVERS:
+                if drv in text:
+                    return True
+        except Exception:
+            pass
+
+    # Check package.json (root and common subdirs)
+    for search_dir in (".", "backend", "server", "api"):
+        pkg = wd / search_dir / "package.json"
+        if pkg.exists():
+            try:
+                data = json.loads(pkg.read_text(encoding="utf-8"))
+                all_deps = set(data.get("dependencies", {}).keys()) | set(
+                    data.get("devDependencies", {}).keys()
+                )
+                if all_deps & _NODE_DB_DRIVERS:
+                    return True
+            except Exception:
+                pass
+
+    return False

@@ -43,6 +43,35 @@ build_audit_system_prompt = _cl_module.build_audit_system_prompt
 
 logger = logging.getLogger(__name__)
 
+
+def _content_to_params(content: list) -> list[dict]:
+    """Convert Anthropic SDK content block objects to plain dicts.
+
+    The SDK returns typed Pydantic objects (TextBlock, ToolUseBlock, etc.).
+    Storing them directly in message history and re-sending causes
+    PydanticSerializationError on the next API call (model_dump(by_alias=True)
+    fails when a field value is None). Converting to plain dicts avoids this.
+    """
+    params = []
+    for block in content:
+        if block.type == "text":
+            params.append({"type": "text", "text": block.text})
+        elif block.type == "tool_use":
+            params.append({
+                "type": "tool_use",
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
+        elif block.type == "thinking":
+            params.append({
+                "type": "thinking",
+                "thinking": block.thinking,
+                "signature": block.signature,
+            })
+    return params
+
+
 # Configuration
 MODEL = os.environ.get("LLM_AUDITOR_MODEL", "claude-opus-4-1")
 MAX_TOKENS = 16_000  # Audits are typically shorter than planning
@@ -238,21 +267,9 @@ async def run_auditor(
                 f"cache_read={total_usage['cache_read_tokens']}"
             )
 
-        # Append assistant response to messages
-        assistant_content = []
-        for block in response.content:
-            if block.type == "text":
-                assistant_content.append({"type": "text", "text": block.text})
-            elif block.type == "tool_use":
-                assistant_content.append(
-                    {
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
-                    }
-                )
-        messages.append({"role": "assistant", "content": assistant_content})
+        # Append assistant response to messages (plain dicts to avoid
+        # Pydantic by_alias serialization errors on subsequent API calls)
+        messages.append({"role": "assistant", "content": _content_to_params(response.content)})
 
         # Handle end_turn (protocol violation)
         if response.stop_reason == "end_turn":

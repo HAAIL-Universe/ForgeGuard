@@ -15,6 +15,7 @@ from uuid import UUID
 
 from app.clients import git_client
 from app.config import settings
+from app.services.build.context import inject_forge_gitignore
 
 from .instructions_generator import generate_user_instructions
 from .stack_resolver import StackInfo, resolve_stack
@@ -88,6 +89,15 @@ async def run_signoff(
     except Exception:
         file_structure = []
 
+    # Filesystem fallback when git ls-files returns empty (e.g. .git/ missing)
+    if not file_structure:
+        ws = Path(working_dir)
+        file_structure = sorted(
+            str(p.relative_to(ws)).replace("\\", "/")
+            for p in ws.rglob("*")
+            if p.is_file() and ".git" not in p.parts and ".forge" not in p.parts
+        )[:50]
+
     # 3. Generate README.md (v3)
     try:
         from app.services.readme_generator import generate_project_readme
@@ -143,7 +153,14 @@ async def run_signoff(
         logger.warning("Sign-off USER_INSTRUCTIONS generation failed: %s", exc)
         result.errors.append(f"USER_INSTRUCTIONS: {exc}")
 
-    # 6. Git commit + push
+    # 6. Ensure .gitignore excludes Forge artifacts before commit
+    try:
+        if inject_forge_gitignore(working_dir):
+            result.files_written.append(".gitignore")
+    except Exception as exc:
+        logger.warning("Sign-off .gitignore injection failed: %s", exc)
+
+    # 7. Git commit + push
     if result.files_written:
         try:
             sha = await git_client.commit(

@@ -2648,6 +2648,9 @@ async def interject_build(
             if not git_client.has_repo(working_dir):
                 await git_client.init_repo(working_dir)
 
+            # Ensure .gitignore excludes Forge artifacts before commit
+            inject_forge_gitignore(working_dir)
+
             # Commit any uncommitted changes first
             await git_client.add_all(working_dir)
             sha = await git_client.commit(working_dir, "forge: manual commit via /push")

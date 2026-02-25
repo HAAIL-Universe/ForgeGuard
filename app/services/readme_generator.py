@@ -176,12 +176,23 @@ async def generate_project_readme(
     if build_summary:
         build_text = json.dumps(build_summary, indent=2, default=str)
 
+    # Extract top-level directory names so the LLM uses actual paths
+    dir_map = ""
+    if file_structure:
+        top_dirs = sorted({p.split("/")[0] for p in file_structure if "/" in p})
+        if top_dirs:
+            dir_map = f"\nTop-level directories: {', '.join(top_dirs)}\n"
+
     user_msg = (
         f"Project: {project_name}\n"
         f"Description: {project_description or 'No description provided'}\n\n"
         f"Technology Stack:\n{stack_text}\n\n"
         f"Architecture:\n{arch_text}\n\n"
-        f"File Structure:\n{tree_text}\n\n"
+        f"File Structure:\n{tree_text}\n"
+        f"{dir_map}\n"
+        f"IMPORTANT: Use the actual directory names shown above (e.g. app/, web/) "
+        f"— do NOT substitute generic names like backend/ or frontend/ unless those "
+        f"directories actually exist in the file structure.\n\n"
         f"Build Summary:\n{build_text}"
     )
 
