@@ -662,12 +662,12 @@ async def start_build(
             zombies, project_id,
         )
 
-    # Block new FRESH build if a meaningful historical build exists (completed >= 1 phase).
-    # The user must continue it (via /start → interject_build) or explicitly delete it
-    # via Build History first.  When resume_from_phase >= 0, the caller (interject_build)
-    # already performed smart resume detection and is intentionally creating a
-    # continuation build — allow it through.
-    if resume_from_phase < 0:
+    # Block new FRESH build if a meaningful historical build exists (completed >= 1 phase)
+    # AND the user is building on the same branch.  When building on a NEW branch or
+    # with fresh_start=True, the user is explicitly starting a separate iteration —
+    # allow it through.  When resume_from_phase >= 0, the caller (interject_build)
+    # already performed smart resume detection — also allow it through.
+    if resume_from_phase < 0 and not fresh_start and branch == "main":
         latest = await build_repo.get_latest_build_for_project(project_id)
         if latest and latest.get("completed_phases") is not None and latest["completed_phases"] >= 0:
             raise ValueError(

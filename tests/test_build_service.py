@@ -2031,6 +2031,68 @@ class TestResumeGuardBypass:
         with pytest.raises(ValueError, match="previous build with progress"):
             await build_service.start_build(_PROJECT_ID, _USER_ID)
 
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.asyncio.create_task")
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    @patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+    async def test_new_branch_build_allowed_when_progress_exists(
+        self, mock_get_user, mock_build_repo, mock_project_repo,
+        mock_create_task, mock_get_pool,
+    ):
+        """start_build on a new branch bypasses the historical build guard."""
+        mock_pool = AsyncMock()
+        mock_get_pool.return_value = mock_pool
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        mock_project_repo.update_project_status = AsyncMock()
+        mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+        mock_build_repo.get_latest_build_for_project = AsyncMock(
+            return_value=_build(status="completed", completed_phases=3)
+        )
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+        mock_build_repo.create_build = AsyncMock(return_value=_build())
+        mock_create_task.return_value = MagicMock()
+        mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+        # Building on a different branch should NOT raise
+        result = await build_service.start_build(
+            _PROJECT_ID, _USER_ID, branch="forge/build-v2",
+        )
+        assert result["status"] == "pending"
+
+    @pytest.mark.asyncio
+    @patch("app.services.build_service.get_pool", new_callable=AsyncMock)
+    @patch("app.services.build_service.asyncio.create_task")
+    @patch("app.services.build_service.project_repo")
+    @patch("app.services.build_service.build_repo")
+    @patch("app.services.build_service.get_user_by_id", new_callable=AsyncMock)
+    async def test_fresh_start_build_allowed_when_progress_exists(
+        self, mock_get_user, mock_build_repo, mock_project_repo,
+        mock_create_task, mock_get_pool,
+    ):
+        """start_build with fresh_start=True bypasses the historical build guard."""
+        mock_pool = AsyncMock()
+        mock_get_pool.return_value = mock_pool
+        mock_project_repo.get_project_by_id = AsyncMock(return_value=_project())
+        mock_project_repo.get_contracts_by_project = AsyncMock(return_value=_contracts())
+        mock_project_repo.update_project_status = AsyncMock()
+        mock_project_repo.get_contract_by_type = AsyncMock(return_value=None)
+        mock_build_repo.get_latest_build_for_project = AsyncMock(
+            return_value=_build(status="completed", completed_phases=3)
+        )
+        mock_build_repo.delete_zombie_builds_for_project = AsyncMock(return_value=[])
+        mock_build_repo.create_build = AsyncMock(return_value=_build())
+        mock_create_task.return_value = MagicMock()
+        mock_get_user.return_value = {"id": _USER_ID, "anthropic_api_key": "sk-ant-test123"}
+
+        # fresh_start=True should NOT raise
+        result = await build_service.start_build(
+            _PROJECT_ID, _USER_ID, fresh_start=True,
+        )
+        assert result["status"] == "pending"
+
 
 # ---------------------------------------------------------------------------
 # Tests: delete_builds
