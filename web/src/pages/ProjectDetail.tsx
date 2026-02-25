@@ -623,149 +623,6 @@ function ProjectDetail() {
           </div>
         )}
 
-        {/* Contracts expanded panel */}
-        {contractsExpanded && hasContracts && (
-          <div style={{ background: '#1E293B', borderRadius: '8px', padding: '16px 20px', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <h3 style={{ margin: 0, fontSize: '0.9rem' }}>Generated Contracts</h3>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  onClick={() => setShowRegenerate(true)}
-                  style={{
-                    background: '#2563EB',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '6px 14px',
-                    cursor: 'pointer',
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    transition: 'background 0.15s',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = '#1D4ED8')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = '#2563EB')}
-                >
-                  ↻ Regenerate
-                </button>
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {project.contracts.map((c) => (
-                <div
-                  key={c.contract_type}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '6px 10px',
-                    background: '#0F172A',
-                    borderRadius: '4px',
-                    fontSize: '0.78rem',
-                  }}
-                >
-                  <span style={{ color: '#F8FAFC', textTransform: 'capitalize' }}>
-                    {c.contract_type.replace(/_/g, ' ')}
-                  </span>
-                  <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
-                    v{c.version} · {new Date(c.updated_at).toLocaleDateString()}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Version History */}
-            <div style={{ marginTop: '12px', borderTop: '1px solid #334155', paddingTop: '10px' }}>
-              <div
-                onClick={async () => {
-                  const next = !historyExpanded;
-                  setHistoryExpanded(next);
-                  if (next && versionHistory.length === 0) {
-                    try {
-                      const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/history`, {
-                        headers: { Authorization: `Bearer ${token}` },
-                      });
-                      if (res.ok) {
-                        const data = await res.json();
-                        setVersionHistory(data.items || []);
-                      }
-                    } catch { /* ignore */ }
-                  }
-                }}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', padding: '4px 0' }}
-              >
-                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#94A3B8' }}>Previous Versions</span>
-                <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: historyExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
-              </div>
-              {historyExpanded && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                  {versionHistory.length === 0 && (
-                    <span style={{ color: '#475569', fontSize: '0.75rem', fontStyle: 'italic' }}>No previous versions</span>
-                  )}
-                  {versionHistory.map((v) => (
-                    <div key={v.batch} style={{ background: '#0F172A', borderRadius: '6px', overflow: 'hidden' }}>
-                      <div
-                        onClick={async () => {
-                          if (expandedBatch === v.batch) {
-                            setExpandedBatch(null);
-                            return;
-                          }
-                          setExpandedBatch(v.batch);
-                          if (!batchContracts[v.batch]) {
-                            setLoadingBatch(v.batch);
-                            try {
-                              const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/history/${v.batch}`, {
-                                headers: { Authorization: `Bearer ${token}` },
-                              });
-                              if (res.ok) {
-                                const data = await res.json();
-                                setBatchContracts((prev) => ({ ...prev, [v.batch]: data.items || [] }));
-                              }
-                            } catch { /* ignore */ }
-                            setLoadingBatch(null);
-                          }
-                        }}
-                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', cursor: 'pointer' }}
-                      >
-                        <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#F8FAFC' }}>V{v.batch}</span>
-                        <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
-                          {v.count} contracts · {new Date(v.created_at).toLocaleDateString()}
-                          {' '}{expandedBatch === v.batch ? '▲' : '▼'}
-                        </span>
-                      </div>
-                      {expandedBatch === v.batch && (
-                        <div style={{ padding: '0 10px 8px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                          {loadingBatch === v.batch && <span style={{ color: '#64748B', fontSize: '0.7rem' }}>Loading...</span>}
-                          {(batchContracts[v.batch] || []).map((c) => (
-                            <div
-                              key={c.contract_type}
-                              style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                padding: '4px 8px',
-                                background: '#1E293B',
-                                borderRadius: '3px',
-                                fontSize: '0.72rem',
-                              }}
-                            >
-                              <span style={{ color: '#CBD5E1', textTransform: 'capitalize' }}>
-                                {c.contract_type.replace(/_/g, ' ')}
-                              </span>
-                              <span style={{ color: '#475569', fontSize: '0.65rem' }}>
-                                {c.content.length.toLocaleString()} chars
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* BYOK warning */}
         {hasContracts && !buildActive && !(user?.has_anthropic_key) && needsKeyBanner}
 
@@ -1162,6 +1019,163 @@ function ProjectDetail() {
                 );
               })}
             </div>
+          </div>
+        )}
+
+        {/* Contracts — collapsible section at bottom */}
+        {hasContracts && (
+          <div style={{ marginTop: '24px' }}>
+            <div
+              onClick={() => setContractsExpanded(!contractsExpanded)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 16px',
+                background: '#1E293B',
+                borderRadius: contractsExpanded ? '8px 8px 0 0' : '8px',
+                cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#263348')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = '#1E293B')}
+            >
+              <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#F8FAFC' }}>
+                {contractsExpanded ? '▾' : '▸'} Contracts ({project.contracts?.length ?? 0} generated)
+              </span>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowRegenerate(true); }}
+                style={{
+                  background: 'transparent',
+                  color: '#60A5FA',
+                  border: 'none',
+                  fontSize: '0.72rem',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                  textDecoration: 'underline',
+                }}
+              >
+                Regenerate
+              </button>
+            </div>
+            {contractsExpanded && (
+              <div style={{ background: '#1E293B', borderRadius: '0 0 8px 8px', padding: '0 16px 16px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {project.contracts.map((c) => (
+                    <div
+                      key={c.contract_type}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '6px 10px',
+                        background: '#0F172A',
+                        borderRadius: '4px',
+                        fontSize: '0.78rem',
+                      }}
+                    >
+                      <span style={{ color: '#F8FAFC', textTransform: 'capitalize' }}>
+                        {c.contract_type.replace(/_/g, ' ')}
+                      </span>
+                      <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
+                        v{c.version} · {new Date(c.updated_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Version History */}
+                <div style={{ marginTop: '12px', borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                  <div
+                    onClick={async () => {
+                      const next = !historyExpanded;
+                      setHistoryExpanded(next);
+                      if (next && versionHistory.length === 0) {
+                        try {
+                          const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/history`, {
+                            headers: { Authorization: `Bearer ${token}` },
+                          });
+                          if (res.ok) {
+                            const data = await res.json();
+                            setVersionHistory(data.items || []);
+                          }
+                        } catch { /* ignore */ }
+                      }
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', padding: '4px 0' }}
+                  >
+                    <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#94A3B8' }}>Previous Versions</span>
+                    <span style={{ color: '#64748B', fontSize: '0.7rem', transition: 'transform 0.2s', transform: historyExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
+                  </div>
+                  {historyExpanded && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                      {versionHistory.length === 0 && (
+                        <span style={{ color: '#475569', fontSize: '0.75rem', fontStyle: 'italic' }}>No previous versions</span>
+                      )}
+                      {versionHistory.map((v) => (
+                        <div key={v.batch} style={{ background: '#0F172A', borderRadius: '6px', overflow: 'hidden' }}>
+                          <div
+                            onClick={async () => {
+                              if (expandedBatch === v.batch) {
+                                setExpandedBatch(null);
+                                return;
+                              }
+                              setExpandedBatch(v.batch);
+                              if (!batchContracts[v.batch]) {
+                                setLoadingBatch(v.batch);
+                                try {
+                                  const res = await fetch(`${API_BASE}/projects/${projectId}/contracts/history/${v.batch}`, {
+                                    headers: { Authorization: `Bearer ${token}` },
+                                  });
+                                  if (res.ok) {
+                                    const data = await res.json();
+                                    setBatchContracts((prev) => ({ ...prev, [v.batch]: data.items || [] }));
+                                  }
+                                } catch { /* ignore */ }
+                                setLoadingBatch(null);
+                              }
+                            }}
+                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', cursor: 'pointer' }}
+                          >
+                            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#F8FAFC' }}>V{v.batch}</span>
+                            <span style={{ color: '#64748B', fontSize: '0.7rem' }}>
+                              {v.count} contracts · {new Date(v.created_at).toLocaleDateString()}
+                              {' '}{expandedBatch === v.batch ? '▲' : '▼'}
+                            </span>
+                          </div>
+                          {expandedBatch === v.batch && (
+                            <div style={{ padding: '0 10px 8px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                              {loadingBatch === v.batch && <span style={{ color: '#64748B', fontSize: '0.7rem' }}>Loading...</span>}
+                              {(batchContracts[v.batch] || []).map((c) => (
+                                <div
+                                  key={c.contract_type}
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '4px 8px',
+                                    background: '#1E293B',
+                                    borderRadius: '3px',
+                                    fontSize: '0.72rem',
+                                  }}
+                                >
+                                  <span style={{ color: '#CBD5E1', textTransform: 'capitalize' }}>
+                                    {c.contract_type.replace(/_/g, ' ')}
+                                  </span>
+                                  <span style={{ color: '#475569', fontSize: '0.65rem' }}>
+                                    {c.content.length.toLocaleString()} chars
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
